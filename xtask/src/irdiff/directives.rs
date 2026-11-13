@@ -216,6 +216,9 @@ pub struct Expectations {
     pub dialect: Option<u32>,
     /// Where the oracle is not used (`oracle-skip`).
     pub oracle_skip: Vec<OracleSkip>,
+    /// CPU features the emulated runner's model gets for this test
+    /// (`cpu`), without their `+`; the test is for one architecture.
+    pub cpu: Vec<String>,
 }
 
 impl Default for Expectations {
@@ -238,6 +241,7 @@ impl Default for Expectations {
             pre_opt: false,
             dialect: None,
             oracle_skip: Vec::new(),
+            cpu: Vec::new(),
         }
     }
 }
@@ -338,6 +342,9 @@ impl Expectations {
         }
         if !self.llc_args.is_empty() {
             line("llc-args", &self.llc_args.join(" "));
+        }
+        if !self.cpu.is_empty() {
+            line("cpu", &join(self.cpu.iter().map(|feature| format!("+{feature}"))));
         }
         for skip in &self.oracle_skip {
             let majors: Vec<String> = skip.llvm.iter().map(u32::to_string).collect();
@@ -467,6 +474,16 @@ pub fn parse(text: &str) -> Result<Expectations, Vec<DirectiveError>> {
             parser.code_first = true;
         }
     }
+    if let Some((_, line)) = parser.seen.iter().find(|(key, _)| key == "cpu")
+        && parser.found.targets.len() != 1
+    {
+        parser.errors.push(DirectiveError {
+            line: *line,
+            message: "'cpu' names features of one architecture: the test needs a 'target' \
+                      directive with exactly one"
+                .to_owned(),
+        });
+    }
     if parser.errors.is_empty() { Ok(parser.found) } else { Err(parser.errors) }
 }
 
@@ -524,6 +541,7 @@ impl Parser {
                     | "tier"
                     | "covers"
                     | "llc-args"
+                    | "cpu"
                     | "stdout-no-newline"
                     | "module"
             );
@@ -560,6 +578,7 @@ impl Parser {
             }
             "stdout-no-newline" => found.stdout.extend_from_slice(value.as_bytes()),
             "llc-args" => found.llc_args = parse_llc_args(value)?,
+            "cpu" => found.cpu = parse_cpu(value)?,
             "module" => {
                 let name = value.trim();
                 let valid = name.starts_with(|c: char| c.is_ascii_alphanumeric())
@@ -656,6 +675,31 @@ impl Parser {
         }
         Ok(())
     }
+}
+
+/// The features of `cpu`: words `+<feature>`, a feature of lower-case
+/// letters, digits, `.`, `_` and `-` (QEMU's names: `cx16`, `popcnt`,
+/// `sse4.2`, `lahf-lm`), each once.
+fn parse_cpu(value: &str) -> Result<Vec<String>, String> {
+    let mut features: Vec<String> = Vec::new();
+    for word in words(value) {
+        let feature = word.strip_prefix('+').unwrap_or("");
+        let valid = !feature.is_empty()
+            && feature
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b));
+        if !valid {
+            return Err(format!(
+                "invalid cpu feature '{word}': expected '+<feature>' (lower-case letters, \
+                 digits, '.', '_' and '-')"
+            ));
+        }
+        if features.iter().any(|seen| seen == feature) {
+            return Err(format!("cpu feature '{word}' is given twice"));
+        }
+        features.push(feature.to_owned());
+    }
+    Ok(features)
 }
 
 /// The items of a list value: separated by spaces and tabs.
@@ -1259,6 +1303,7 @@ mod tests {
                 OracleSkip { llvm: vec![19, 22], reason: "the oracle crashes".to_owned() },
                 OracleSkip { llvm: vec![22], reason: "and another".to_owned() },
             ],
+            cpu: Vec::new(),
         };
         let printed = all.to_directives();
         assert_eq!(
@@ -1277,6 +1322,34 @@ mod tests {
         let dialect = Expectations { dialect: Some(22), ..Expectations::default() };
         assert_eq!(dialect.to_directives(), ";@ dialect: 22\n");
         assert_eq!(ok(";@ dialect: 22\n"), dialect);
+    }
+
+    // "Test directives", `cpu` (WP-139): CPU features of the emulated
+    // runner, for a test of one architecture, written after `llc-args`.
+    #[test]
+    fn cpu_features() {
+        let found = ok(";@ cpu: +cx16 +sse4.2\n;@ target: x86_64\n");
+        assert_eq!(found.cpu, ["cx16", "sse4.2"]);
+        assert_eq!(found.to_directives(), ";@ target: x86_64\n;@ cpu: +cx16 +sse4.2\n");
+        let with_args = Expectations { llc_args: vec!["-mcpu=x86-64".to_owned()], ..found.clone() };
+        assert_eq!(
+            with_args.to_directives(),
+            ";@ target: x86_64\n;@ llc-args: -mcpu=x86-64\n;@ cpu: +cx16 +sse4.2\n"
+        );
+        for (text, message) in [
+            (";@ target: x86_64\n;@ cpu: cx16", "invalid cpu feature 'cx16'"),
+            (";@ target: x86_64\n;@ cpu: -cx16", "invalid cpu feature '-cx16'"),
+            (";@ target: x86_64\n;@ cpu: +CX16", "invalid cpu feature '+CX16'"),
+            (";@ target: x86_64\n;@ cpu: +", "invalid cpu feature '+'"),
+            (";@ target: x86_64\n;@ cpu: +cx16 +cx16", "is given twice"),
+            (";@ target: x86_64\n;@ cpu:", "requires a value"),
+            (";@ target: x86_64\n;@ cpu: +a\n;@ cpu: +b", "duplicate directive 'cpu'"),
+            (";@ cpu: +cx16", "exactly one"),
+            (";@ cpu: +cx16\n;@ target: x86_64 aarch64", "exactly one"),
+            (";@ target: x86_64\n;@ cpu(x86_64): +cx16", "takes no conditions"),
+        ] {
+            assert!(error(text).contains(message), "{text}: {}", error(text));
+        }
     }
 
     // "Test directives", `input`, `dialect` and `oracle-skip` (WP-105).

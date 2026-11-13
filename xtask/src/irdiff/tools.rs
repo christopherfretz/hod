@@ -95,6 +95,26 @@ pub struct Emulator {
     pub args: Vec<OsString>,
 }
 
+impl Emulator {
+    /// [`Emulator::args`] for a test whose `cpu` directive names
+    /// `features`: the model after `-cpu` gets them
+    /// ([`hod_testutil::target::cpu_with_features`]).
+    pub fn args_with(&self, features: &[String]) -> Vec<OsString> {
+        let mut args = self.args.clone();
+        if features.is_empty() {
+            return args;
+        }
+        let features: Vec<&str> = features.iter().map(String::as_str).collect();
+        if let Some(at) = args.iter().position(|arg| arg == "-cpu")
+            && let Some(model) = args.get_mut(at + 1)
+        {
+            let cpu = hod_testutil::target::cpu_with_features(&model.to_string_lossy(), &features);
+            *model = cpu.into();
+        }
+        args
+    }
+}
+
 /// The `hod_testutil` name of an architecture, which knows its cross
 /// tools, system root and emulated CPU.
 pub fn target_of(arch: Arch) -> Target {

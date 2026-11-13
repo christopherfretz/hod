@@ -686,7 +686,7 @@ impl Session {
         };
         let configure = |command: &mut std::process::Command| {
             if let Some(emulator) = &self.toolchain.emulator {
-                command.args(&emulator.args).arg(&program);
+                command.args(emulator.args_with(&expect.cpu)).arg(&program);
             }
             command.args(&expect.args).current_dir(dir);
         };

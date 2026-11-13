@@ -165,8 +165,12 @@ pub fn verify(options: &Options) -> Result<VerifyReport, String> {
         }
         config.llvm = Some(major.to_string());
         let mode = if config.mode == Mode::Hybrid { "hybrid" } else { "strict" };
-        config.results =
-            Some(config.build_dir.join("corpus").join(format!("verify-llvm{major}-{mode}.tsv")));
+        // The other architecture's corpus has results of its own.
+        let arch = crate::corpus::other_target(config.target)
+            .map_or_else(String::new, |arch| format!("{}-", arch.name()));
+        config.results = Some(
+            config.build_dir.join("corpus").join(format!("verify-{arch}llvm{major}-{mode}.tsv")),
+        );
         report.runs.push((major, irdiff::run(&config)?));
     }
     Ok(report)

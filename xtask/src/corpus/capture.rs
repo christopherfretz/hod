@@ -23,7 +23,7 @@ use super::manifest::{self, Manifest, Row, Skip, Skips};
 use super::{kiln, sha256, torture};
 use crate::irdiff::directives::{Arch, Expectations, Lib};
 use crate::irdiff::process::{self, End, Limits, Output};
-use crate::irdiff::tools::{self, Llvm};
+use crate::irdiff::tools::{self, Emulator, Llvm};
 use crate::irdiff::{
     BuiltBy, LINKER_NAMES, Linker, MAX_JOBS, Mode, Outcome, Record, Search, Session, Test,
     Toolchain, engine,
@@ -42,6 +42,11 @@ const FORMAT: &str = "hod-corpus-2";
 /// The table of what the captures of a corpus did, in the corpus
 /// directory. Unlike the manifest it holds times.
 pub const RUNS: &str = "CAPTURE.tsv";
+
+/// The table of how long each captured test's program ran, in the corpus
+/// directory: a measurement, like [`RUNS`].
+pub const TIMES: &str = "TIMES.tsv";
+const TIMES_HEADER: &str = "source\tllvm\ttest\tseconds\tended";
 const RUNS_HEADER: &str = "source\tllvm\ttests\tcaptured\treused\tskipped\tseconds\tjobs";
 
 /// The reason the stand-in for hod gives when it declines a module during
@@ -64,6 +69,13 @@ exit 2\n";
 /// A capture.
 #[derive(Clone, Debug)]
 pub struct Options {
+    /// The architecture the modules and programs are for; `None` is this
+    /// machine's. Another architecture's programs are linked by its cross
+    /// tools and run under its emulator ("Other targets").
+    pub target: Option<Arch>,
+    /// The other architecture's system root, for its emulator; `None`, the
+    /// cross packages' (`/usr/<prefix>`).
+    pub sysroot: Option<PathBuf>,
     /// The sources to capture, of [`SOURCES`].
     pub sources: Vec<&'static str>,
     /// The LLVM majors to capture with; empty is every one of
@@ -104,6 +116,8 @@ impl Options {
     pub fn new(out: PathBuf) -> Self {
         let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
         Self {
+            target: None,
+            sysroot: None,
             sources: SOURCES.to_vec(),
             llvm: Vec::new(),
             out,
@@ -404,13 +418,20 @@ struct Group<'a> {
     options: &'a Options,
     source: &'static str,
     llvm: &'a Llvm,
-    host: Arch,
+    /// The architecture of the modules and programs.
+    target: Arch,
+    /// Whether that is not this machine's: kiln++ and clang are told the
+    /// target, and the programs run under `emulator`.
+    cross: bool,
+    emulator: Option<Emulator>,
     producer: Producer,
     /// The group's `llvm-dis`: what writes a module that reached `llc` as
     /// bitcode as text.
     llvm_dis: Option<PathBuf>,
     /// This run's directory under the work directory.
     run: PathBuf,
+    /// How long each test's program ran, and how it ended ([`TIMES`]).
+    times: Mutex<Vec<(String, f64, End)>>,
 }
 
 impl Group<'_> {
@@ -639,7 +660,7 @@ impl Group<'_> {
         job: &Path,
     ) -> Result<Candidate, Unfit> {
         let broken = |what: String| Unfit::new("capture-broken", what);
-        let plan = kiln::plan(test, header, self.host, self.llvm.major)?;
+        let plan = kiln::plan_for(test, header, self.target, self.cross, self.llvm.major)?;
         let program = job.join("test.out");
         let (calls, producer_args) = self.kiln_calls(&plan, job, &program)?;
 
@@ -670,10 +691,12 @@ impl Group<'_> {
             modules.push(self.module_of_call(name, call.stdin, test, &plan, job)?);
         }
 
-        let ran = self.run_program(&program, &plan.run_args, &plan.stdin, job).map_err(broken)?;
+        let ran = self
+            .run_program(&test.name, &program, &plan.run_args, &plan.stdin, job)
+            .map_err(broken)?;
         let recipe = Recipe {
             covers: format!("{KILN} {}", test.name),
-            arch: self.host,
+            arch: self.target,
             llvm: self.llvm.major,
             libs: vec![Lib::Cxx, Lib::M],
             pie,
@@ -715,12 +738,15 @@ impl Group<'_> {
         }
         let source = fs::read(&test.path).map_err(|e| broken(io("read", &test.path, &e)))?;
         let x_file = fs::read_to_string(test.path.with_extension("x")).ok();
-        let flags = torture::flags(
+        let mut flags = torture::flags(
             &test.name,
             &String::from_utf8_lossy(&source),
             x_file.as_deref(),
-            self.host,
+            self.target,
         )?;
+        if self.cross {
+            flags.insert(0, format!("--target={}", self.target.triple()));
+        }
         let tool_limits = self.options.tool_limits;
         let step = |tool: &Path,
                     name: &str,
@@ -776,10 +802,10 @@ impl Group<'_> {
         args.push("-lm".as_ref());
         step(driver, "link", "link-fails", &args, &program)?;
 
-        let ran = self.run_program(&program, &[], b"", job).map_err(broken)?;
+        let ran = self.run_program(&test.name, &program, &[], b"", job).map_err(broken)?;
         let recipe = Recipe {
             covers: format!("{TORTURE} {}", test.name),
-            arch: self.host,
+            arch: self.target,
             llvm: self.llvm.major,
             libs: vec![Lib::M],
             pie: true,
@@ -796,17 +822,42 @@ impl Group<'_> {
         Candidate { expect, producer_args, llc_args, modules }.checked()
     }
 
+    /// Runs the program of `test`, under the emulator for another
+    /// architecture (with [`engine::EMULATION_SLOWDOWN`] times the time),
+    /// and records how long it took.
     fn run_program(
         &self,
+        test: &str,
         program: &Path,
         args: &[String],
         stdin: &[u8],
         job: &Path,
     ) -> Result<Output, String> {
+        let (runner, limits) = match &self.emulator {
+            Some(emulator) => (
+                &emulator.program,
+                Limits {
+                    time: self.options.run_limits.time * engine::EMULATION_SLOWDOWN,
+                    ..self.options.run_limits
+                },
+            ),
+            None => (&program.to_path_buf(), self.options.run_limits),
+        };
         let configure = |command: &mut std::process::Command| {
+            if let Some(emulator) = &self.emulator {
+                command.args(&emulator.args).arg(program);
+            }
             command.args(args).current_dir(job.join("run"));
         };
-        process::run(program, configure, stdin, self.options.run_limits)
+        let started = Instant::now();
+        let output = process::run(runner, configure, stdin, limits)?;
+        let seconds = started.elapsed().as_secs_f64();
+        self.times.lock().unwrap_or_else(PoisonError::into_inner).push((
+            test.to_owned(),
+            seconds,
+            output.end,
+        ));
+        Ok(output)
     }
 }
 
@@ -855,7 +906,12 @@ fn key_of(parts: &[&str]) -> String {
 
 /// The tools every group needs.
 struct Common {
+    /// This machine's architecture.
     host: Arch,
+    /// The architecture of the corpus.
+    target: Arch,
+    /// What runs `target`'s programs when it is not `host`.
+    emulator: Option<Emulator>,
     driver: PathBuf,
     linkers: Vec<Linker>,
     decline: PathBuf,
@@ -994,15 +1050,14 @@ fn capture_group(
     let mut todo = Vec::new();
     for (test, path, work) in limited {
         let content = fs::read(&path).map_err(|e| io("read", &path, &e))?;
-        let key = key_of(&[
-            source,
-            &major.to_string(),
-            &llvm_version,
-            producer,
-            revision,
-            &test,
-            &sha256::hex(&content),
-        ]);
+        let (major_text, hash) = (major.to_string(), sha256::hex(&content));
+        let mut parts = vec![source, &major_text, &llvm_version, producer, revision, &test, &hash];
+        // Another architecture's entries are made from the same inputs
+        // differently.
+        if group.cross {
+            parts.push(group.target.triple());
+        }
+        let key = key_of(&parts);
         let slot = (source.to_owned(), major, test.clone());
         if !options.force {
             let entry = entry_path(source, major, &test);
@@ -1050,9 +1105,9 @@ fn capture_group(
             hod: common.decline.clone(),
             driver: Some(common.driver.clone()),
             linkers: common.linkers.clone(),
-            emulator: None,
+            emulator: common.emulator.clone(),
         },
-        arch: common.host,
+        arch: common.target,
         host: Some(common.host),
         mode: Mode::Strict,
         tool_limits: options.tool_limits,
@@ -1166,6 +1221,8 @@ fn capture_group(
     }
     manifest.write(&options.out)?;
     skips.write(&options.out)?;
+    let times = std::mem::take(&mut *group.times.lock().unwrap_or_else(PoisonError::into_inner));
+    record_times(&options.out, source, major, &times)?;
     stats.seconds = started.elapsed().as_secs_f64();
     // Only a capture of the whole group from nothing is timed: how long
     // an incremental one takes says nothing about the corpus.
@@ -1245,6 +1302,81 @@ fn record_run(out: &Path, stats: &GroupStats, jobs: usize) -> Result<(), String>
     write_file(&out.join(RUNS), text.as_bytes(), 0o644)
 }
 
+/// One row of [`TIMES`]: how long the program of a test ran when it was
+/// last captured, and how it ended (`exit`, `signal`, `timeout`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TimeRow {
+    pub source: String,
+    pub llvm: u32,
+    pub test: String,
+    pub seconds: f64,
+    pub ended: String,
+}
+
+/// Reads `<dir>/TIMES.tsv`; a missing or damaged file is no rows.
+pub fn read_times(dir: &Path) -> Vec<TimeRow> {
+    let table = fs::read_to_string(dir.join(TIMES)).unwrap_or_default();
+    table
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split('\t').collect();
+            let [source, llvm, test, seconds, ended] = fields[..] else { return None };
+            Some(TimeRow {
+                source: source.to_owned(),
+                llvm: llvm.parse().ok()?,
+                test: manifest::unescape(test),
+                seconds: seconds.parse().ok()?,
+                ended: ended.to_owned(),
+            })
+        })
+        .collect()
+}
+
+/// Replaces the rows of `source` with LLVM `major` for the tests in
+/// `times` (what this capture ran) and keeps the others.
+fn record_times(
+    out: &Path,
+    source: &str,
+    major: u32,
+    times: &[(String, f64, End)],
+) -> Result<(), String> {
+    if times.is_empty() {
+        return Ok(());
+    }
+    let ran: BTreeSet<&str> = times.iter().map(|(test, _, _)| test.as_str()).collect();
+    let mut rows = read_times(out);
+    rows.retain(|row| !(row.source == source && row.llvm == major && ran.contains(&*row.test)));
+    for (test, seconds, end) in times {
+        let ended = match end {
+            End::Exit(_) => "exit",
+            End::Signal(_) => "signal",
+            End::TimedOut => "timeout",
+        };
+        rows.push(TimeRow {
+            source: source.to_owned(),
+            llvm: major,
+            test: test.clone(),
+            seconds: *seconds,
+            ended: ended.to_owned(),
+        });
+    }
+    rows.sort_by(|a, b| (&a.source, a.llvm, &a.test).cmp(&(&b.source, b.llvm, &b.test)));
+    let mut text = format!("{TIMES_HEADER}\n");
+    for row in rows {
+        let _ = writeln!(
+            text,
+            "{}\t{}\t{}\t{:.3}\t{}",
+            row.source,
+            row.llvm,
+            manifest::escape(&row.test),
+            row.seconds,
+            row.ended
+        );
+    }
+    write_file(&out.join(TIMES), text.as_bytes(), 0o644)
+}
+
 /// The LLVM installation directory an `llc` belongs to: the parent of the
 /// `bin` directory its resolved path is in.
 fn installation(llc: &Path) -> Option<PathBuf> {
@@ -1276,6 +1408,8 @@ pub fn capture(options: &Options) -> Result<CaptureReport, String> {
     let host = Arch::host().ok_or(
         "this host is not a Linux machine of a supported architecture; a capture runs programs",
     )?;
+    let target = options.target.unwrap_or(host);
+    let cross = target != host;
     let out = &options.out;
     fs::create_dir_all(out).map_err(|e| io("create", out, &e))?;
     let mut manifest = Manifest::read(out)?;
@@ -1306,11 +1440,12 @@ pub fn capture(options: &Options) -> Result<CaptureReport, String> {
             ),
         }
     }
-    // The link: what admission needs, and so what every entry needs.
-    let driver = tools::find_driver(&options.search);
+    // The link: what admission needs, and so what every entry needs. For
+    // another architecture, its cross tools ("Other targets").
+    let driver = tools::find_driver_for(target, &options.search);
     let mut linkers = Vec::new();
     for name in LINKER_NAMES {
-        match tools::find_linker(name, &options.search) {
+        match tools::find_linker_for(name, target, &options.search) {
             Some(path) => linkers.push(Linker { name: name.to_owned(), path }),
             None => missing(
                 &mut report,
@@ -1319,14 +1454,39 @@ pub fn capture(options: &Options) -> Result<CaptureReport, String> {
             ),
         }
     }
+    let unlinked = |report: &mut CaptureReport, manifest: &Manifest, what: String| {
+        missing(report, what, true);
+        totals(report, manifest);
+        Ok(std::mem::take(report))
+    };
     let Some(driver) = driver.filter(|_| !linkers.is_empty()) else {
-        missing(
-            &mut report,
-            "no linker driver (gcc) or no linker found; nothing is captured".to_owned(),
-            true,
+        let what = format!(
+            "no linker driver ({}) or no linker found; nothing is captured",
+            tools::target_of(target).c_driver()
         );
-        totals(&mut report, &manifest);
-        return Ok(report);
+        return unlinked(&mut report, &manifest, what);
+    };
+    let emulator = if cross {
+        let of = tools::target_of(target);
+        let sysroot = options.sysroot.clone().unwrap_or_else(|| of.sysroot());
+        match tools::find_emulator(target, &options.search) {
+            Some(program) if sysroot.is_dir() => {
+                Some(Emulator { args: of.emulator_args(&sysroot), program })
+            }
+            _ => {
+                let what = format!(
+                    "no emulator '{}' or no system root '{}' (Debian packages {} and {}); nothing is captured for {}",
+                    of.emulator(),
+                    sysroot.display(),
+                    of.cross_package("emulator"),
+                    of.cross_package("sysroot"),
+                    target.name()
+                );
+                return unlinked(&mut report, &manifest, what);
+            }
+        }
+    } else {
+        None
     };
 
     let work = work_dir(out);
@@ -1337,7 +1497,7 @@ pub fn capture(options: &Options) -> Result<CaptureReport, String> {
     fs::create_dir_all(&run).map_err(|e| io("create", &run, &e))?;
     let decline = work.join("decline-hod");
     write_file(&decline, DECLINE_SCRIPT.as_bytes(), 0o755)?;
-    let common = Common { host, driver, linkers, decline, run: run.clone() };
+    let common = Common { host, target, emulator, driver, linkers, decline, run: run.clone() };
 
     let result = (|| -> Result<(), String> {
         for source in SOURCES {
@@ -1455,10 +1615,13 @@ pub fn capture(options: &Options) -> Result<CaptureReport, String> {
                     options,
                     source,
                     llvm,
-                    host,
+                    target,
+                    cross,
+                    emulator: common.emulator.clone(),
                     producer,
                     llvm_dis,
                     run: common.run.clone(),
+                    times: Mutex::new(Vec::new()),
                 };
                 let stats = capture_group(
                     &group,
@@ -1484,7 +1647,7 @@ pub fn capture(options: &Options) -> Result<CaptureReport, String> {
 }
 
 /// The names of both tables, for callers that list a corpus's own files.
-pub const TABLES: [&str; 3] = [manifest::MANIFEST, manifest::SKIPPED, RUNS];
+pub const TABLES: [&str; 4] = [manifest::MANIFEST, manifest::SKIPPED, RUNS, TIMES];
 
 #[cfg(test)]
 mod tests {

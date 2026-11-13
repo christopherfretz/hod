@@ -501,16 +501,16 @@ mod tests {
     fn arguments() {
         let args = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
         let build = Path::new("/b/target-x");
-        let (options, report) = crate::corpus::parse_reasons(&args(&[]), build).unwrap();
+        let (options, report) = crate::corpus::parse_reasons(&args(&[]), build, None).unwrap();
         assert_eq!(options.hod, Path::new("/b/target-x/release/hod"));
         assert_eq!(options.dir, Path::new("/b/corpus"));
         assert!(report.is_none() && !options.llc && options.before.is_none());
         let given = args(&["--llc", "--limit", "3", "-j", "2", "--report", "/r.md", "/c"]);
-        let (options, report) = crate::corpus::parse_reasons(&given, build).unwrap();
+        let (options, report) = crate::corpus::parse_reasons(&given, build, None).unwrap();
         assert!(options.llc);
         assert_eq!((options.limit, options.jobs), (Some(3), 2));
         assert_eq!((report.unwrap(), options.dir), (PathBuf::from("/r.md"), PathBuf::from("/c")));
-        assert!(crate::corpus::parse_reasons(&args(&["--bogus"]), build).is_err());
-        assert!(crate::corpus::parse_reasons(&args(&["/a", "/b"]), build).is_err());
+        assert!(crate::corpus::parse_reasons(&args(&["--bogus"]), build, None).is_err());
+        assert!(crate::corpus::parse_reasons(&args(&["/a", "/b"]), build, None).is_err());
     }
 }

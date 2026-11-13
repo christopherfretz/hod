@@ -27,14 +27,33 @@ use std::path::{Path, PathBuf};
 /// to AVX2 and would hide such a use.
 ///
 /// `cmpxchg16b` is not in the baseline: LLVM's default x86-64 CPU calls
-/// `__atomic_compare_exchange_16` for a 16-byte `cmpxchg`, and a hod that
-/// assumes the instruction must say so in its design and change this
-/// model to `qemu64,-sse3,-lahf-lm`.
+/// `__atomic_compare_exchange_16` for a 16-byte `cmpxchg`, and hod uses
+/// the instruction only in functions whose target features include
+/// `+cx16`. A test of such a function asks for the feature with the `cpu`
+/// directive (`spec/harness.md` "Test directives"), which
+/// [`cpu_with_features`] adds to this model for that test alone.
 pub const X86_64_EMULATED_CPU: &str = "qemu64,-sse3,-cx16,-lahf-lm";
 
 /// The CPU `qemu-aarch64` models: ARMv8.0-A without the extensions (no
 /// LSE atomics), hod's AArch64 baseline. Not exercised on an AArch64 host.
 pub const AARCH64_EMULATED_CPU: &str = "cortex-a53";
+
+/// The CPU model `cpu` (`<model>,<+feature|-feature>...`, QEMU's syntax)
+/// with each of `features` (names without the sign) turned on: a
+/// `-<feature>` of the model is dropped and `+<feature>` appended, once.
+/// QEMU applies every `-` after every `+`, so removing the `-` is what
+/// turns a feature back on; the `+` turns on one the model lacks.
+pub fn cpu_with_features(cpu: &str, features: &[&str]) -> String {
+    let mut parts: Vec<String> = cpu.split(',').map(str::to_owned).collect();
+    for feature in features {
+        parts.retain(|part| part.strip_prefix('-') != Some(feature));
+        let on = format!("+{feature}");
+        if !parts.contains(&on) {
+            parts.push(on);
+        }
+    }
+    parts.join(",")
+}
 
 /// A target architecture of a Linux program.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -119,7 +138,15 @@ impl Target {
     /// environment's `QEMU_LD_PREFIX` is the same thing, but an argument
     /// cannot leak into or out of the program's environment).
     pub fn emulator_args(self, sysroot: &Path) -> Vec<OsString> {
-        vec!["-cpu".into(), self.emulated_cpu().into(), "-L".into(), sysroot.into()]
+        self.emulator_args_with(sysroot, &[])
+    }
+
+    /// [`Target::emulator_args`] with CPU `features` added to the model
+    /// ([`cpu_with_features`]): the runner of a test with a `cpu`
+    /// directive.
+    pub fn emulator_args_with(self, sysroot: &Path, features: &[&str]) -> Vec<OsString> {
+        let cpu = cpu_with_features(self.emulated_cpu(), features);
+        vec!["-cpu".into(), cpu.into(), "-L".into(), sysroot.into()]
     }
 
     /// The Debian package that provides `what` for this target as a cross
@@ -198,6 +225,11 @@ mod tests {
         let args = Target::X86_64.emulator_args(Path::new("/sys/root"));
         assert_eq!(args, ["-cpu", X86_64_EMULATED_CPU, "-L", "/sys/root"]);
         assert!(!X86_64_EMULATED_CPU.contains("max"));
+        // The `cpu` directive's features: a feature the model removes is
+        // turned back on, one it lacks is added, each once.
+        let args = Target::X86_64.emulator_args_with(Path::new("/r"), &["cx16", "popcnt", "cx16"]);
+        assert_eq!(args, ["-cpu", "qemu64,-sse3,-lahf-lm,+cx16,+popcnt", "-L", "/r"]);
+        assert_eq!(cpu_with_features("qemu64,+cx16", &["cx16"]), "qemu64,+cx16");
         let package = |what| Target::X86_64.cross_package(what);
         assert_eq!(package("gcc"), "gcc-x86-64-linux-gnu");
         assert_eq!(package("ld.bfd"), "binutils-x86-64-linux-gnu");

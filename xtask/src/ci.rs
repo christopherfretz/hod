@@ -88,24 +88,17 @@ pub struct IrdiffRun {
     pub paths: &'static [&'static str],
 }
 
-/// The seeds the quick gate runs under the emulator, for the target that
-/// is not the host ("In the gate"): a fixed handful that crosses the
-/// process interface (arguments, input, exit status), calls into the C
-/// library, floating point, and the C++ runtime with an exception, which
-/// together take about a minute at load 20.
+/// The oracle of the quick gate's run for the target that is not the
+/// host ("In the gate"): the newest LLVM, over every seed.
 #[cfg(unix)]
-pub const QUICK_CROSS_SEEDS: [&str; 4] = [
-    "tests/ir/main_args.ll",
-    "tests/ir/exit_float.ll",
-    "tests/ir/two_modules.ll",
-    "tests/ir/eh_invoke.ll",
-];
+pub const QUICK_CROSS_LLVM: u32 = crate::irdiff::tools::LLVM_MAJORS[0];
 
 /// The `irdiff` runs of the gate, in order, on a host of architecture
 /// `host` ("In the gate"):
 ///
 /// - quick: the quick tier with the default oracle; then, for the other
-///   architecture, [`QUICK_CROSS_SEEDS`] under the emulator;
+///   architecture, every seed under the emulator with
+///   [`QUICK_CROSS_LLVM`] (WP-139: all of them take under 20 s);
 /// - full: every test with the witness, once per oracle (LLVM 22, 19);
 ///   every test in hybrid mode with the default oracle; and every test for
 ///   the other architecture under the emulator, once per oracle, so that a
@@ -131,7 +124,7 @@ pub fn irdiff_runs(quick: bool, host: Option<crate::irdiff::Arch>) -> Vec<Irdiff
     if quick {
         runs.push(IrdiffRun { tier: TierFilter::Quick, ..base.clone() });
         if let Some(other) = other {
-            runs.push(IrdiffRun { target: Some(other), paths: &QUICK_CROSS_SEEDS, ..base });
+            runs.push(IrdiffRun { llvm: Some(QUICK_CROSS_LLVM), target: Some(other), ..base });
         }
         return runs;
     }
@@ -181,18 +174,16 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_gates_irdiff_runs() {
-        use super::{QUICK_CROSS_SEEDS, irdiff_command, irdiff_runs};
+        use super::{irdiff_command, irdiff_runs};
         use crate::irdiff::Arch;
         let commands = |quick, host| -> Vec<String> {
             irdiff_runs(quick, host).iter().map(irdiff_command).collect()
         };
-        let seeds = QUICK_CROSS_SEEDS.join(" ");
+        // The quick gate runs every seed for the other architecture, with
+        // LLVM 22 (WP-139).
         assert_eq!(
             commands(true, Some(Arch::Aarch64)),
-            [
-                "cargo xtask irdiff --tier quick".to_owned(),
-                format!("cargo xtask irdiff --target x86_64 {seeds}")
-            ]
+            ["cargo xtask irdiff --tier quick", "cargo xtask irdiff --llvm 22 --target x86_64"]
         );
         assert_eq!(
             commands(false, Some(Arch::Aarch64)),
@@ -208,13 +199,6 @@ mod tests {
         assert_eq!(on_x86[3], "cargo xtask irdiff --llvm 22 --target aarch64");
         assert_eq!(commands(true, None), ["cargo xtask irdiff --tier quick"]);
         assert_eq!(commands(false, None).len(), 3);
-        // The quick cross seeds exist, and none is in another LLVM's
-        // dialect or for one target only.
-        for seed in QUICK_CROSS_SEEDS {
-            let text = std::fs::read_to_string(crate::irdiff::workspace_root().join(seed));
-            let expect = crate::irdiff::directives::parse(&text.unwrap()).unwrap();
-            assert!(expect.dialect.is_none() && Arch::ALL.iter().all(|a| expect.runs_on(*a)));
-        }
     }
 
     // spec/harness.md "ci": one rerun, only for a missing crate, and only

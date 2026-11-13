@@ -215,6 +215,12 @@ fn spread_f(values: &mut [f64]) -> Option<(f64, f64, f64)> {
     (!values.is_empty()).then(|| (at(50), at(99), at(100)))
 }
 
+/// The coverage log of worker `worker` of the run of process `pid`: two
+/// runs at once in one build directory must not share one.
+pub fn worker_log(work: &Path, pid: u32, worker: usize) -> PathBuf {
+    work.join(format!("worker-{pid}-{worker}.tsv"))
+}
+
 /// Runs every entry and returns the report (Markdown).
 ///
 /// # Errors
@@ -240,7 +246,7 @@ pub fn run(options: &Options) -> Result<String, String> {
         for worker in 0..options.jobs.clamp(1, entries.len().max(1)) {
             let (next, rows, failures, entries) = (&next, &rows, &failures, &entries);
             scope.spawn(move || {
-                let log = options.work.join(format!("worker-{worker}.tsv"));
+                let log = worker_log(&options.work, std::process::id(), worker);
                 loop {
                     let index = next.fetch_add(1, Ordering::Relaxed);
                     let Some((entry, llvm, llc_args)) = entries.get(index) else { break };
@@ -655,6 +661,15 @@ fn costs(out: &mut String, rows: &[Row], majors: &[u32], options: &Options) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // spec/harness.md "corpus", "reasons": runs at once keep apart.
+    #[test]
+    fn worker_logs_are_per_process() {
+        let work = Path::new("/b/corpus-reasons");
+        assert_ne!(worker_log(work, 1, 0), worker_log(work, 2, 0));
+        assert_ne!(worker_log(work, 1, 0), worker_log(work, 1, 1));
+        assert_eq!(worker_log(work, 7, 3), Path::new("/b/corpus-reasons/worker-7-3.tsv"));
+    }
 
     #[test]
     fn spreads_and_census_fields() {

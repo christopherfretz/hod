@@ -2736,16 +2736,17 @@ sequence puts an instruction other than `mov`, `lea`, `movzx`/`movsx`,
   which front ends leave untranslated (`rdtsc` with `"=A"`), `llc` 19
   and 22 do read on x86-64: `rax` for a value of up to 64 bits (an
   `i64` `=A` after `rdtsc` is `rax` alone, without `edx`), `rdx:rax`
-  for `i128`, as an input, an output or a tied pair; hod lowers only
-  empty templates, so it keeps refusing `A` as
-  `x64:inline-asm-constraint` and a non-empty template as
-  `x64:inline-asm` (WP-144, `tests/leftovers.rs`).
+  for `i128`, as an input, an output or a tied pair; hod keeps refusing
+  `A`, as `x64:inline-asm-constraint` in an empty template and as
+  `asm:constraint/A` in one of instructions (WP-144, WP-187,
+  `tests/leftovers.rs`).
 
 Refused names: `x64:intrinsic` (an intrinsic not listed), and also
 `x64:intrinsic-wide` (a width above 128, or i128 where only `Int` is
 on), `x64:intrinsic-vector`, `x64:mem-inline-length` (an `.inline` form
 with a variable length), `x64:frame-depth`, `x64:eh-typeid`,
-`x64:inline-asm` (a template that is not empty), and
+`x64:inline-asm` (a `callbr` whose template is not empty; other
+templates are §5.6.28's since WP-187), and
 `x64:inline-asm-{output,outputs,constraint,clobber,operand,bundle}`.
 
 Evidence: `crates/hod_x64/tests/intrinsic.rs` and `tests/barrier.rs`,
@@ -3612,6 +3613,78 @@ result types are not LLVM's declaration is `x64:x86-intrinsic-signature`.
    `sse41.*` and `sse42.*`. AArch64 refuses every `llvm.x86.*` name.
 
 Evidence: `spec/landed/codegen/WP-173.md`.
+
+#### 5.6.28 Inline assembly with a template (WP-187)
+
+A call or `invoke` of inline assembly whose template is not empty is
+`crates/hod_x64/src/barrier/template.rs` (hook: `barrier::asm`); the
+template is substituted (`hod_asm::template`, `hod_asm::x64::print_operand`)
+and assembled (`hod_asm::x64::assemble`, `spec/asm.md` §10) before
+anything is emitted, so a template that refuses leaves no code. The
+sequence:
+
+1. Every input placed in a register or memory, and every pointer of an
+   indirect operand, is evaluated and stored to a 16-byte slot of its
+   own (one per distinct value).
+2. Every register value is displaced; every holdable register the
+   template may write (operand registers, clobbers) is taken. A taken
+   register is a used one, so the prologue saves `rbx` and `r12`..`r15`
+   among them (§5.6.15); `rax`, `rcx`, `rdx`, `r10`, `r11` and the SSE
+   registers hold no value across an instruction.
+3. Inputs are loaded into their registers (`movzx` for 1 and 2 bytes,
+   the 32-bit `mov` for 4, so an integer is zero-extended to 32 bits at
+   least; `movss`/`movsd`/`movups` for SSE); a memory operand's address
+   is put in its register (`lea` of the slot, or the pointer loaded).
+4. The template's bytes.
+5. Register outputs are stored to their slots (`mov`, flags kept); flag
+   outputs are `setcc r11b`, `movzx`, stored; indirect register outputs
+   are copied from their slots through their pointers (`r11`, the value
+   in `r10` or `xmm15`).
+6. The result is loaded from its slot, or the struct of several results
+   copied field by field; an `invoke` continues at its normal
+   destination.
+
+Only frame accesses (`rbp`-relative, `rbx`-relative in a coroutine body)
+and the operand registers are touched between 3 and 5 besides the
+template, so `push`/`pop` inside a template keep the frame valid (the
+CFA is `rbp`-based throughout, §5.6.15).
+
+**Registers.** Every operand gets a register of its own, distinct from
+every other operand's and every clobber, except a tied input, which is
+its output's register; this satisfies `&` always. General registers in
+the order `rax`, `rcx`, `rdx`, `rsi`, `rdi`, `r8`..`r11`, `rbx`,
+`r12`..`r15` within the code's class (`Q`: `rax`..`rbx`; `R`: the
+legacy eight); SSE registers from `xmm0`. `{reg}` is that register;
+`rsp`, `rbp` operands or clobbers are `x64:inline-asm-frame-register`;
+a template that may write `rbx` in a coroutine body (its frame base,
+WP-137) is `x64:inline-asm-frame-base`.
+
+**Choice.** Of several alternatives, `llc`'s by weights (as §5.6.8, with
+the ranged immediates weighing 3 when the constant fits). Within one, as
+`llc`'s `ComputeConstraintToUse`: a flag output; an explicit register; a
+tied input's output register; an immediate code (or `X`) for a constant
+integer in range (a constant out of every range of an immediate-only
+alternative is `asm:constraint/range`); memory (`m`, `o`) unless the
+operand is a direct output or an output an input is tied to (`rm` on an
+input is memory, as `llc` takes it); otherwise a register (`X` of a
+floating-point or vector value: SSE).
+
+**Types.** A general register holds `i8`, `i16`, `i32`, `i64`, `ptr`,
+`float`, `double`; an SSE register `float`, `double`, `i32`, `i64`,
+`i128`, `fp128` and vectors of 4, 8 or 16 bytes; a tied pair must have
+the same size; a flag output is an integer. Otherwise
+`x64:inline-asm-operand-type`. More than 16 operands, 4 alternatives,
+or the registers of a class: `x64:inline-asm-operands`.
+
+**Refused.** `inteldialect` (`x64:inline-asm-intel`), `unwind` on an
+`invoke` (`x64:inline-asm-unwind`), a bundle (`x64:inline-asm-bundle`),
+a `callbr` with a template (`x64:inline-asm`), `asm goto` labels in a
+call, symbols (`asm:operand/symbol`), and `hod_asm`'s `asm:*` names.
+
+Evidence: `crates/hod_asm/tests/llvm_mc_x64.rs`,
+`crates/hod_x64/tests/inline_asm.rs` (execution against `llc` 19 and
+22 under the emulator; the `forced_*` templates' bytes equal to `llc`'s),
+summarized in `spec/landed/codegen/WP-187.md`.
 
 ## 6. Control flow
 

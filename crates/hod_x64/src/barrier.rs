@@ -2,7 +2,7 @@
 //! §2.3, `spec/codegen.md` §5.6.8 "Intrinsics (WP-128)"): optimization
 //! barriers such as `asm volatile("" : : "r,m"(x) : "memory")` and
 //! `asm("" : "+r"(x))`. A template that assembles to something is
-//! [`INLINE_ASM`]: hod has no x86 assembler for templates.
+//! [`template`]'s (WP-187); in a `callbr` it is [`INLINE_ASM`].
 //!
 //! **Owner: WP-128.** Tests: `tests/barrier.rs`. Entry: `target.rs`
 //! (`lower_call`). The decisions are `hod_a64::barrier`'s (WP-075); only
@@ -49,6 +49,8 @@ use hod_ir::{Const, Inst, MemFlags, Opcode, TypeId, TypeKind, Value, ValueKind};
 use crate::common::{branch, deferred_first, unsupported, value_ty};
 use crate::target::X64;
 
+pub mod template;
+
 /// An output the template leaves undefined: one no input is tied to, or
 /// an indirect one whose operand `llc` may give a register.
 pub const OUTPUT: &str = "x64:inline-asm-output";
@@ -68,8 +70,7 @@ pub const CLOBBER: &str = "x64:inline-asm-clobber";
 pub const OPERAND: &str = "x64:inline-asm-operand";
 /// A call of inline assembly with an operand bundle.
 pub const BUNDLE: &str = "x64:inline-asm-bundle";
-/// Inline assembly whose template assembles to something: hod has no
-/// x86 assembler for templates.
+/// A `callbr` whose template assembles to something.
 pub const INLINE_ASM: &str = "x64:inline-asm";
 
 /// Every name this module refuses with.
@@ -475,7 +476,11 @@ pub fn asm<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>) -> CgResult<()> {
     };
     let asm = cx.module.asm(id);
     if !hod_ir::asm_template_is_empty(hod_ir::Arch::X86_64, asm.template) {
-        return unsupported(INLINE_ASM);
+        // WP-187: a `callbr` with a template stays refused.
+        if inst.opcode() == Opcode::CallBr {
+            return unsupported(INLINE_ASM);
+        }
+        return template::call(cx, inst);
     }
     if site.bundle_count() != 0 {
         return unsupported(BUNDLE);

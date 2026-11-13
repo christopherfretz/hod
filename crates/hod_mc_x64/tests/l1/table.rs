@@ -456,6 +456,12 @@ pub const CONSTRUCTORS: &[(&str, &[&str])] = &[
     ("rdtscp", &["rdtscp"]),
     ("cpuid", &["cpuid"]),
     ("cld", &["cld"]),
+    // inline assembly (WP-187)
+    ("std", &["std"]),
+    ("hlt", &["hlt"]),
+    ("syscall", &["syscall"]),
+    ("xgetbv", &["xgetbv"]),
+    ("int_i", &["int", "int3"]),
     ("rep_movs", &["rep movs*"]),
     ("rep_stos", &["rep stos*"]),
     // tls

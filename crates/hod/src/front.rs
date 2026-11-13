@@ -295,6 +295,7 @@ fn front(
             }
             session
         }
+        InputKind::Module => unreachable!("InputKind::detect never says module"),
     };
     let mut object = Vec::new();
     answer(session.finish(&mut object).map(|done| (object, done)), report)

@@ -9,6 +9,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
+use hod_ir::kit::{GlobalAttachment, global_attachment_construct};
 use hod_ir::{
     Body, FunctionBuilder, IrErrorKind, Layering, Module, NoLayer, ParamAttrs, TypeId, TypeKind,
     Value,
@@ -617,14 +618,11 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
                                 format!("metadata kind {} is not defined", pair[0]),
                             );
                         };
-                        match &name[..] {
-                            b"dbg" | b"type" | b"vcall_visibility" | b"prof"
-                            | b"section_prefix" | b"annotation" => {}
-                            _ => {
-                                let construct: Cow<'static, str> = Cow::Owned(format!(
-                                    "global-metadata:{}",
-                                    String::from_utf8_lossy(name)
-                                ));
+                        match GlobalAttachment::of(name) {
+                            GlobalAttachment::Debug | GlobalAttachment::Dropped => {}
+                            GlobalAttachment::Unsupported => {
+                                let construct: Cow<'static, str> =
+                                    Cow::Owned(global_attachment_construct(name));
                                 if !self.s.definition_notes.contains(&construct) {
                                     self.s.definition_notes.push(construct);
                                 }

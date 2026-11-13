@@ -4,9 +4,14 @@
 
 use hod_ir::{
     AtomicOrdering, BlockId, Bundle, CallConv, CallDesc, Clause, Const, ConstId, FloatPredicate,
-    FnAttrs, InlineAsm, IntPredicate, Intrinsic, Layering, MemFlags, NoCode, Opcode, ParamAttrs,
-    RmwOp, SHUFFLE_UNDEF, SymId, SyncScope, TailKind, TypeId, TypeKind, Value, aggregate_field,
+    InlineAsm, IntPredicate, Intrinsic, Layering, MemFlags, NoCode, Opcode, ParamAttrs, RmwOp,
+    SHUFFLE_UNDEF, SymId, SyncScope, TailKind, TypeId, TypeKind, Value, aggregate_field,
     no_code_intrinsic, resolve_intrinsic,
+};
+
+use hod_ir::kit::{
+    AllocaDesc, AllocaError, CALL_SITE_FLAGS, Gep, gep_index_value, lower_alloca,
+    set_call_site_flags,
 };
 
 use crate::attrs::{self, FUNCTION_INDEX};
@@ -14,27 +19,12 @@ use crate::body::{CalleeInfo, Fx, Local, Ops};
 use crate::codes::func;
 use crate::error::{BcErrorKind, BcResult, fail, ir};
 
-/// The call-site function attributes `hod_ir` keeps (`spec/ir.md` §5.7):
-/// `CallDesc`'s flags.
-const CALL_SITE_FLAGS: u32 =
-    FnAttrs::NORETURN | FnAttrs::NOUNWIND | FnAttrs::RETURNS_TWICE | FnAttrs::CONVERGENT;
-
 /// What an instruction leaves: its result type and value (`void` and no
 /// value for most), and whether it ended the block.
 pub(crate) type Done = (TypeId, Value, bool);
 
 /// The length of a vector type and whether it is scalable.
 type Shape = Option<(u32, bool)>;
-
-/// `value` sign-extended from `bits` bits.
-fn sext64(value: u64, bits: u32) -> i64 {
-    if bits >= 64 {
-        value as i64
-    } else {
-        let shift = 64 - bits;
-        ((value << shift) as i64) >> shift
-    }
-}
 
 /// What is called.
 #[derive(Clone, Copy)]
@@ -631,38 +621,26 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
         if !self.module.types.is_int(count_ty) {
             return self.mistyped("element count must have integer type");
         }
-        let types = &self.module.types;
-        if !types.is_sized(ty) || ty == TypeId::TOKEN {
-            return self.mistyped("invalid type for alloca");
-        }
-        let result =
-            if space == 0 { TypeId::PTR } else { ir(self.at, self.module.types.ptr(space))? };
-        if in_alloca {
-            self.note("alloca:inalloca");
-            return Ok((result, self.stand_in(result)?));
-        }
-        if swift_error {
-            self.note("alloca:swifterror");
-            return Ok((result, self.stand_in(result)?));
-        }
-        let types = &self.module.types;
-        if types.is_scalable(ty) {
-            self.note("alloca:scalable");
-            return Ok((result, self.stand_in(result)?));
-        }
-        let elem_size = types.alloc_size_of(ty);
-        let align = align.unwrap_or_else(|| types.pref_align_of(ty));
-        let literal = count.value.as_const().and_then(|id| self.module.consts.int_value(id));
         // A static alloca is a slot: in the entry block, with a count
         // that is a literal.
-        if self.begun == 1
-            && space == 0
-            && let Some(size) = literal.and_then(|count| elem_size.checked_mul(count))
-        {
-            let slot = ir(self.at, self.b.add_slot(size, align))?;
-            return Ok((result, ir(self.at, self.b.slot(slot))?));
+        let desc = AllocaDesc {
+            ty,
+            count: Some(count.value),
+            align,
+            addr_space: space,
+            in_entry_block: self.begun == 1,
+            in_alloca,
+            swift_error,
+        };
+        let (result, lowered) = match lower_alloca(&mut *self.module, &mut self.b, &desc) {
+            Ok(done) => done,
+            Err(AllocaError::InvalidType) => return self.mistyped("invalid type for alloca"),
+            Err(AllocaError::Ir(error)) => return ir(self.at, Err(error)),
+        };
+        if let Some(construct) = lowered.refused() {
+            self.note(construct);
         }
-        Ok((result, ir(self.at, self.b.alloca(result, count.value, elem_size, align))?))
+        Ok((result, lowered.value()))
     }
 
     fn cmpxchg(&mut self, o: &mut Ops<'_>) -> BcResult<(TypeId, Value)> {
@@ -746,49 +724,26 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
 
     // ---- addresses and aggregates ----
 
-    fn index_value(&self, id: ConstId) -> Option<i64> {
-        let module = &*self.module;
-        match module.consts.get(id) {
-            Const::Int { ty, value } => {
-                Some(sext64(value, module.types.int_bits(ty).unwrap_or(64)))
-            }
-            Const::WideInt { words, .. } => Some(words[0] as i64),
-            Const::Zero(_) => Some(0),
-            Const::Splat { elem, .. } => self.index_value(elem),
-            Const::Aggregate { elems, .. } => {
-                let first = self.index_value(*elems.first()?)?;
-                elems[1..]
-                    .iter()
-                    .all(|&elem| self.index_value(elem) == Some(first))
-                    .then_some(first)
-            }
-            _ => None,
-        }
-    }
-
     /// `getelementptr`: a `PtrAdd` with every constant index folded into
-    /// the offset, as `hod_ll` builds it.
+    /// the offset ([`Gep`]), as `hod_ll` builds it.
     fn get_element_ptr(&mut self, o: &mut Ops<'_>) -> BcResult<(TypeId, Value)> {
         let _flags = o.next()?;
         let source = self.ty(o.next()?)?;
         let base = self.vt(o)?;
-        let (pointer, mut shape) = self.shape(base.ty);
-        if !self.module.types.is_ptr(pointer) {
-            return self.mistyped("base of getelementptr must be a pointer");
-        }
-        if !self.module.types.is_sized(source) {
-            return self.mistyped("base element of getelementptr must be sized");
-        }
+        let gep = match Gep::new(&self.module.types, source, base.ty) {
+            Ok(gep) => gep,
+            Err(error) => return self.mistyped(error.message()),
+        };
         let mut indices = std::mem::take(&mut self.s.indices);
         indices.clear();
-        let result = self.gep_indices(o, source, &mut shape, &mut indices);
-        let built = result.and_then(|(offset, unsupported)| {
-            let result = self.shaped(pointer, shape)?;
-            if let Some(reason) = unsupported {
-                self.note(reason);
-                return Ok((result, self.stand_in(result)?));
+        let result = self.gep_indices(o, gep, &mut indices);
+        let built = result.and_then(|gep| {
+            let (result, lowered) =
+                ir(self.at, gep.build(&mut *self.module, &mut self.b, base.value, &indices))?;
+            if let Some(construct) = lowered.refused() {
+                self.note(construct);
             }
-            Ok((result, ir(self.at, self.b.ptr_add(result, base.value, offset, &indices))?))
+            Ok((result, lowered.value()))
         });
         self.s.indices = indices;
         built
@@ -797,80 +752,24 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
     fn gep_indices(
         &mut self,
         o: &mut Ops<'_>,
-        source: TypeId,
-        shape: &mut Shape,
+        mut gep: Gep,
         indices: &mut Vec<(Value, u64)>,
-    ) -> BcResult<(i64, Option<&'static str>)> {
-        let mut offset = 0i64;
-        let mut current = source;
-        let mut first = true;
-        let mut unsupported = None;
+    ) -> BcResult<Gep> {
         while o.left() > 0 {
             let index = self.vt(o)?;
-            let (index_scalar, index_shape) = self.shape(index.ty);
-            if self.module.types.int_bits(index_scalar).is_none() {
-                return self.mistyped("getelementptr index must be an integer");
+            if let Err(error) = gep.index_type(&self.module.types, index.ty) {
+                return self.mistyped(error.message());
             }
-            if index_shape.is_some() {
-                if shape.is_some() && *shape != index_shape {
-                    return self
-                        .mistyped("getelementptr vector index has a wrong number of elements");
-                }
-                *shape = index_shape;
-            }
-            let constant = index.value.as_const().and_then(|id| self.index_value(id));
-            let types = &self.module.types;
-            let stride = if first {
-                first = false;
-                (!types.is_scalable(current)).then(|| types.alloc_size_of(current))
-            } else {
-                match types.kind(current) {
-                    TypeKind::Struct { fields, .. } => {
-                        let field = constant.and_then(|index| {
-                            usize::try_from(index).ok().filter(|&index| index < fields.len())
-                        });
-                        let Some(field) = field else {
-                            return self.mistyped("invalid getelementptr indices");
-                        };
-                        let field_ty = fields[field];
-                        if types.is_scalable(current) {
-                            unsupported = Some("getelementptr:scalable");
-                        } else {
-                            let at_field = types.field_offset(current, field as u32) as i64;
-                            offset = offset.wrapping_add(at_field);
-                        }
-                        current = field_ty;
-                        continue;
-                    }
-                    TypeKind::Array { elem, .. } => {
-                        current = elem;
-                        (!types.is_scalable(elem)).then(|| types.alloc_size_of(elem))
-                    }
-                    TypeKind::Vector { elem, .. } => {
-                        let stride = types.element_stride(current);
-                        if stride.is_none() {
-                            unsupported = Some("getelementptr:vector-element-not-bytes");
-                        }
-                        current = elem;
-                        stride.or(Some(0))
-                    }
-                    TypeKind::ScalableVector { elem, .. } => {
-                        current = elem;
-                        None
-                    }
-                    _ => return self.mistyped("invalid getelementptr indices"),
-                }
-            };
-            let Some(stride) = stride else {
-                unsupported = Some("getelementptr:scalable");
-                continue;
-            };
-            match constant {
-                Some(index) => offset = offset.wrapping_add(index.wrapping_mul(stride as i64)),
-                None => indices.push((index.value, stride)),
+            let module = &*self.module;
+            let constant = index
+                .value
+                .as_const()
+                .and_then(|id| gep_index_value(&module.types, &module.consts, id));
+            if let Err(error) = gep.index(&module.types, index.value, constant, indices) {
+                return self.mistyped(error.message());
             }
         }
-        Ok((offset, unsupported))
+        Ok(gep)
     }
 
     /// The rest of the record as an index path into `s.path`.
@@ -1543,10 +1442,7 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
         };
         desc.cc = cc;
         desc.tail = tail;
-        desc.noreturn = flags & FnAttrs::NORETURN != 0;
-        desc.nounwind = flags & FnAttrs::NOUNWIND != 0;
-        desc.returns_twice = flags & FnAttrs::RETURNS_TWICE != 0;
-        desc.convergent = flags & FnAttrs::CONVERGENT != 0;
+        set_call_site_flags(&mut desc, flags);
         desc.ret_attrs = ret_attrs;
         desc.arg_attrs = if any_attrs { &self.s.arg_attrs } else { &[] };
         desc.bundles = &bundle_list;

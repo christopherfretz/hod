@@ -117,9 +117,6 @@ pub(crate) fn add_function(plan: &UnitPlan<'_>, f: &FunctionInput<'_>) -> Result
     let DiNode::Subprogram(sp) = plan.debug.node(f.subprogram) else {
         return Err(unsupported(f.subprogram, LINE_TABLES_INLINED));
     };
-    if crate::call_sites::describes(&sp) {
-        return Err(unsupported(f.subprogram, crate::call_sites::DEBUG_CALL_SITES_LINE_TABLES)); // WP-113
-    }
     let typed = sp.ty.is_some_and(|t| match plan.debug.node(t) {
         DiNode::SubroutineType(t) => !t.types.is_empty(),
         _ => true,
@@ -137,9 +134,8 @@ pub(crate) fn add_function(plan: &UnitPlan<'_>, f: &FunctionInput<'_>) -> Result
 /// The flags a minimal subprogram may have; anything else is refused as
 /// `debug:subprogram-attribute`, as for a full unit.
 /// `DIFlagAllCallsDescribed` changes nothing in a function without a DIE
-/// (WP-113); one with inlined code is refused as
-/// [`crate::call_sites::DEBUG_CALL_SITES_LINE_TABLES`] (`llc` writes its
-/// call sites in minimal form, §6.19).
+/// (WP-113); one with inlined code gets its call sites in minimal form, as
+/// `llc` writes them (WP-150, §6.21).
 const MINIMAL_FLAGS: u32 = DiFlags::PROTOTYPED.0
     | DiFlags::ARTIFICIAL.0
     | DiFlags::NO_RETURN.0
@@ -173,20 +169,26 @@ impl<'a> Writer<'a> {
     /// `low_pc`, `high_pc`, then `name` (`applySubprogramAttributes` with
     /// `SkipSPAttributes`), or `DW_AT_abstract_origin` when the function
     /// also has an abstract instance (`finishSubprogramDefinition`).
+    /// `code` is the function's address index and size.
     pub(crate) fn minimal_subprogram(
         &mut self,
         plan: &UnitPlan<'a>,
         sp_id: DiId,
         sp: &DiSubprogram<'a>,
-        index: u32,
-        size: u64,
+        (index, size): (u32, u64),
+        calls: bool,
         children: bool,
     ) -> Result<(), Error> {
         let origin = plan.inline.die(sp_id);
         let name = origin.is_none() && !sp.name.is_empty();
         let mask = u32::from(name) | u32::from(origin.is_some()) << 1;
-        self.abbrev(code(fam::SUBPROGRAM_MINIMAL, mask, children));
+        // WP-150: `DW_AT_call_all_calls` (§6.21) for one that describes
+        // its calls.
+        let family = crate::call_sites::family(fam::SUBPROGRAM_MINIMAL, calls);
+        self.abbrev(code(family, mask, children));
         self.addr_attrs(index, size);
+        // With `calls`, `DW_AT_call_all_calls` is `DW_FORM_flag_present`:
+        // no bytes.
         if name {
             self.strx(sp.name)?;
         }

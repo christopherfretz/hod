@@ -209,9 +209,12 @@ pub(crate) fn call_inputs(
     if !describes {
         return Ok(());
     }
-    if module.props.dwarf_version != Some(5) {
+    // WP-150: version 4 (no flag is version 4, `spec/dwarf.md` §6.20)
+    // writes the GNU forms (§6.21).
+    if !matches!(module.props.dwarf_version, None | Some(4 | 5)) {
         return Err(CgError::unsupported(hod_dwarf::DEBUG_CALL_SITES));
     }
+    let x86_64 = module.target().arch() == hod_ir::Arch::X86_64;
     if coroutine {
         return Err(CgError::unsupported(hod_dwarf::DEBUG_CALL_SITE_INTRINSIC));
     }
@@ -227,7 +230,28 @@ pub(crate) fn call_inputs(
                 _ => continue,
             },
         };
-        out.push(CallSiteInput { offset: row.offset, origin, tail: row.tail });
+        let end = if row.tail { row.offset + tail_branch_len(x86_64, origin) } else { row.offset };
+        out.push(CallSiteInput { offset: row.offset, origin, tail: row.tail, end });
     }
     Ok(())
+}
+
+/// The length of a tail exit's branch, which DWARF 4's GNU call site
+/// names the end of (`spec/dwarf.md` §6.21): AArch64's `b`/`br` are 4
+/// bytes; x86-64's are `jmp rel32` (5, to a symbol: never shrunk, its
+/// target is relocated) and `jmp *%r` (2, 3 with a REX prefix for
+/// `r8`..`r15`, DWARF registers 8 to 15), as `hod_x64`'s `frame.rs`
+/// writes them. The tests check every such end against the disassembly.
+const fn tail_branch_len(x86_64: bool, origin: CallOrigin) -> u32 {
+    match (x86_64, origin) {
+        (false, _) => 4,
+        (true, CallOrigin::Subprogram(_)) => 5,
+        (true, CallOrigin::Register(reg)) => {
+            if reg >= 8 {
+                3
+            } else {
+                2
+            }
+        }
+    }
 }

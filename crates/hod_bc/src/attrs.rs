@@ -3,10 +3,11 @@
 //! attributes as a group's, return and parameter attributes as written in
 //! place — with the same names noted.
 
-use hod_ir::Layering;
-use hod_ir::{
-    AttrClass, AttrSyntax, FnAttrs, FnAttrsId, FnStr, ParamAttrs, ParamMem, UwTable, attr_info,
+use hod_ir::kit::{
+    AttrUse, TypedAttrError, ValueKeyword, add_typed, attr_construct, fn_keyword, string_attr,
+    value_keyword,
 };
+use hod_ir::{AttrSyntax, FnAttrs, FnAttrsId, Layering, ParamAttrs, UwTable, attr_info};
 
 use crate::error::{BcErrorKind, BcResult, fail, ir};
 
@@ -269,15 +270,8 @@ pub(crate) fn fn_group<L: Layering>(
             Attr::Str { key, value } => {
                 let key = chars(key, at)?;
                 let value = chars(value, at)?;
-                match attr_info(AttrSyntax::String, &key).map(|row| row.class) {
-                    Some(AttrClass::Dropped) => {}
-                    Some(AttrClass::Kept) => {
-                        if let Some((which, rest)) = FnStr::from_name(&key) {
-                            let value = if which == FnStr::NoBuiltin { rest } else { &value };
-                            ir(at, fa.set_string(which, value))?;
-                        }
-                    }
-                    _ => reject(String::from_utf8_lossy(&key).into_owned()),
+                if ir(at, string_attr(Some(&mut fa), &key, &value))? == AttrUse::Rejected {
+                    reject(String::from_utf8_lossy(&key).into_owned());
                 }
             }
             Attr::Keyword { kind, value, .. } => {
@@ -297,23 +291,17 @@ pub(crate) fn fn_group<L: Layering>(
                     }),
                     "alignstack" => ir(at, fa.set_stack_align(int_value(value, at)?))?,
                     "align" => align = Some(int_value(value, at)?),
-                    _ => {
-                        if let Some(flag) = FnAttrs::flag_named(name.as_bytes()) {
-                            ir(at, fa.set(flag))?;
-                            continue;
+                    _ => match ir(at, fn_keyword(&mut fa, name.as_bytes(), row.class))? {
+                        AttrUse::Kept | AttrUse::Dropped => {}
+                        AttrUse::Misplaced => {
+                            return fail(
+                                BcErrorKind::Invalid,
+                                at,
+                                format!("attribute '{name}' does not apply to functions"),
+                            );
                         }
-                        match row.class {
-                            AttrClass::Dropped => {}
-                            AttrClass::Kept => {
-                                return fail(
-                                    BcErrorKind::Invalid,
-                                    at,
-                                    format!("attribute '{name}' does not apply to functions"),
-                                );
-                            }
-                            AttrClass::Rejected => reject(name.to_owned()),
-                        }
-                    }
+                        AttrUse::Rejected => reject(name.to_owned()),
+                    },
                 }
             }
         }
@@ -340,10 +328,8 @@ pub(crate) fn param_attrs(
         let (kind, value, type_id) = match *attr {
             Attr::Str { key, .. } => {
                 let key = chars(key, at)?;
-                if attr_info(AttrSyntax::String, &key).map(|row| row.class)
-                    != Some(AttrClass::Dropped)
-                {
-                    note(format!("attr:{}", String::from_utf8_lossy(&key)));
+                if ir(at, string_attr(None, &key, &[]))? == AttrUse::Rejected {
+                    note(attr_construct(&key));
                 }
                 continue;
             }
@@ -353,100 +339,46 @@ pub(crate) fn param_attrs(
         let Some(row) = attr_info(AttrSyntax::Keyword, name.as_bytes()) else {
             return fail(BcErrorKind::Invalid, at, format!("attribute '{name}' is not known"));
         };
-        let flag = match name {
-            "zeroext" => Some(ParamAttrs::ZEROEXT),
-            "signext" => Some(ParamAttrs::SIGNEXT),
-            "inreg" => Some(ParamAttrs::INREG),
-            "nest" => Some(ParamAttrs::NEST),
-            "swiftself" => Some(ParamAttrs::SWIFT_SELF),
-            "swifterror" => Some(ParamAttrs::SWIFT_ERROR),
-            "swiftasync" => Some(ParamAttrs::SWIFT_ASYNC),
-            _ => None,
-        };
-        let mem = match name {
-            "sret" => Some(ParamMem::Sret),
-            "byval" => Some(ParamMem::ByVal),
-            "byref" => Some(ParamMem::ByRef),
-            "inalloca" => Some(ParamMem::InAlloca),
-            "preallocated" => Some(ParamMem::Preallocated),
-            "elementtype" => Some(ParamMem::ElementType),
-            _ => None,
-        };
-        if let Some(flag) = flag {
-            out = ir(at, out.with(flag))?;
-        } else if let Some(mem) = mem {
-            let Some(type_id) = type_id else {
-                return fail(
-                    BcErrorKind::Unsupported("typeless-type-attribute"),
-                    at,
-                    format!("'{name}' without its type"),
-                );
-            };
-            let ty = ty(type_id)?;
-            if out.mem() == ParamMem::None {
-                out = ir(at, out.with_mem(mem, ty))?;
-            } else if mem == ParamMem::ElementType || out.mem() == ParamMem::ElementType {
-                let other = if mem == ParamMem::ElementType { out.mem() } else { mem };
-                note(format!("attr:elementtype-with-{}", mem_keyword(other)));
-                if out.mem() == ParamMem::ElementType {
-                    out = ir(at, clear_mem(out).with_mem(mem, ty))?;
+        match value_keyword(name.as_bytes()) {
+            ValueKeyword::Flag(flag) => out = ir(at, out.with(flag))?,
+            ValueKeyword::Typed(mem) => {
+                let Some(type_id) = type_id else {
+                    return fail(
+                        BcErrorKind::Unsupported("typeless-type-attribute"),
+                        at,
+                        format!("'{name}' without its type"),
+                    );
+                };
+                let ty = ty(type_id)?;
+                match add_typed(out, mem, ty) {
+                    Ok((added, construct)) => {
+                        if let Some(construct) = construct {
+                            note(construct.to_owned());
+                        }
+                        out = added;
+                    }
+                    Err(TypedAttrError::TwoTyped) => {
+                        return fail(BcErrorKind::Invalid, at, "two typed attributes on one value");
+                    }
+                    Err(TypedAttrError::Ir(error)) => return ir(at, Err(error)),
                 }
-            } else {
-                return fail(BcErrorKind::Invalid, at, "two typed attributes on one value");
             }
-        } else if name == "align" {
-            out = ir(at, out.with_align(int_value(value, at)?))?;
-        } else if name == "alignstack" {
-            out = ir(at, out.with_stack_align(int_value(value, at)?))?;
-        } else {
-            match row.class {
-                AttrClass::Dropped => {}
-                AttrClass::Kept => {
+            ValueKeyword::Align => out = ir(at, out.with_align(int_value(value, at)?))?,
+            ValueKeyword::StackAlign => {
+                out = ir(at, out.with_stack_align(int_value(value, at)?))?;
+            }
+            ValueKeyword::Other => match AttrUse::of_class(row.class) {
+                AttrUse::Misplaced => {
                     return fail(
                         BcErrorKind::Invalid,
                         at,
                         format!("attribute '{name}' does not apply to values"),
                     );
                 }
-                AttrClass::Rejected => note(format!("attr:{name}")),
-            }
+                AttrUse::Rejected => note(format!("attr:{name}")),
+                AttrUse::Dropped | AttrUse::Kept => {}
+            },
         }
     }
     Ok(out)
-}
-
-fn mem_keyword(mem: ParamMem) -> &'static str {
-    match mem {
-        ParamMem::Sret => "sret",
-        ParamMem::ByVal => "byval",
-        ParamMem::ByRef => "byref",
-        ParamMem::InAlloca => "inalloca",
-        ParamMem::Preallocated => "preallocated",
-        _ => "elementtype",
-    }
-}
-
-/// `attrs` without its typed attribute (as `hod_ll`'s `clear_mem`).
-fn clear_mem(attrs: ParamAttrs) -> ParamAttrs {
-    let mut out = ParamAttrs::NONE;
-    for flag in [
-        ParamAttrs::ZEROEXT,
-        ParamAttrs::SIGNEXT,
-        ParamAttrs::INREG,
-        ParamAttrs::NEST,
-        ParamAttrs::SWIFT_SELF,
-        ParamAttrs::SWIFT_ERROR,
-        ParamAttrs::SWIFT_ASYNC,
-    ] {
-        if attrs.has(flag) {
-            out = out.with(flag).unwrap_or(out);
-        }
-    }
-    if let Some(bytes) = attrs.align() {
-        out = out.with_align(bytes).unwrap_or(out);
-    }
-    if let Some(bytes) = attrs.stack_align() {
-        out = out.with_stack_align(bytes).unwrap_or(out);
-    }
-    out
 }

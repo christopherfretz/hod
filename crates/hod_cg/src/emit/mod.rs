@@ -92,6 +92,10 @@ pub mod unsupported {
     /// personality LLVM does not know: `llc` gives it the personality and
     /// an LSDA of call sites hod does not record (`spec/eh.md` §1.1).
     pub const PERSONALITY_WITHOUT_PADS: &str = "eh:unknown-personality-without-pads";
+    // WP-150.
+    /// A `#dbg_declare` of a stack slot plus a constant offset, which the
+    /// targets fold into its users (`spec/dwarf.md` §6.21).
+    pub const DEBUG_DECLARE_OFFSET: &str = "debug:declare-offset";
 }
 
 /// Not in a section.

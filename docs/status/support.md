@@ -35,7 +35,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `type` | 15 | 12 | 0 | 3 | 10 | 3 | 2 |
 | `inst` | 67 | 60 | 0 | 7 | 56 | 4 | 7 |
 | `mem` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
-| `atomicrmw` | 21 | 21 | 0 | 0 | 17 | 4 | 0 |
+| `atomicrmw` | 21 | 21 | 0 | 0 | 21 | 0 | 0 |
 | `call` | 4 | 4 | 0 | 0 | 3 | 1 | 0 |
 | `tail` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `bundle` | 10 | 0 | 5 | 5 | 0 | 5 | 5 |
@@ -43,7 +43,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `operand` | 11 | 8 | 3 | 0 | 7 | 4 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 354 | 347 | 7 | 0 | 97 | 41 | 216 |
-| total | 674 | 549 | 68 | 57 | 273 | 123 | 278 |
+| total | 674 | 549 | 68 | 57 | 277 | 119 | 278 |
 
 ## `module`
 
@@ -416,16 +416,16 @@ Kinds of memory access.
 | `atomicrmw:min` | supported | supported | WP-074, WP-133 |
 | `atomicrmw:umax` | supported | supported | WP-074, WP-133 |
 | `atomicrmw:umin` | supported | supported | WP-074, WP-133 |
-| `atomicrmw:fadd` | supported | supported | WP-074, WP-133; x86-64 `half`: `x64:atomic-float-op` |
-| `atomicrmw:fsub` | supported | supported | WP-074, WP-133; x86-64 `half`: `x64:atomic-float-op` |
-| `atomicrmw:fmax` | supported | not-implemented | WP-074; x86-64: `x64:atomic-float-op` until WP-127 |
-| `atomicrmw:fmin` | supported | not-implemented | WP-074; x86-64: `x64:atomic-float-op` until WP-127 |
+| `atomicrmw:fadd` | supported | supported | WP-074, WP-133; x86-64 `half`: WP-144 |
+| `atomicrmw:fsub` | supported | supported | WP-074, WP-133; x86-64 `half`: WP-144 |
+| `atomicrmw:fmax` | supported | supported | WP-074; x86-64: WP-144 |
+| `atomicrmw:fmin` | supported | supported | WP-074; x86-64: WP-144 |
 | `atomicrmw:uinc_wrap` | supported | supported | WP-074, WP-133 |
 | `atomicrmw:udec_wrap` | supported | supported | WP-074, WP-133 |
 | `atomicrmw:usub_cond` | supported | supported | WP-074, WP-133 |
 | `atomicrmw:usub_sat` | supported | supported | WP-074, WP-133 |
-| `atomicrmw:fmaximum` | supported | not-implemented | WP-074; x86-64: `x64:atomic-float-op` until WP-127 |
-| `atomicrmw:fminimum` | supported | not-implemented | WP-074; x86-64: `x64:atomic-float-op` until WP-127 |
+| `atomicrmw:fmaximum` | supported | supported | WP-074; x86-64: WP-144 |
+| `atomicrmw:fminimum` | supported | supported | WP-074; x86-64: WP-144 |
 
 ## `call`
 

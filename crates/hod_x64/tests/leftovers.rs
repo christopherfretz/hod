@@ -6,6 +6,15 @@
 //! `hod_interp` (where it has the type) and `llc -O0 -fast-isel=0` of
 //! LLVM 22 and 19 (`common/float_gen.rs`).
 
+#![allow(
+    clippy::too_many_lines,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "tables of functions and values"
+)]
+
 #[path = "../../hod_obj/tests/common/linking.rs"]
 #[allow(dead_code, reason = "a shared helper: not every function is used here")]
 mod linking;
@@ -228,7 +237,7 @@ fn conversions_with_odd_wide_integers_agree() {
                 );
                 // In range for the type (the others are poison).
                 let max = f64::from(bits - u32::from(op == "fptosi")).exp2();
-                let mut add = |suite: &mut Suite, x: f64| {
+                let add = |suite: &mut Suite, x: f64| {
                     let fits = x.abs() < max && (op == "fptosi" || x > -1.0);
                     if !fits {
                         return;
@@ -286,6 +295,58 @@ fn half_bits(x: f64) -> u64 {
     let m = (a / f64::from(e).exp2() * 1024.0) as u64;
     let biased = if m < 1024 { 0 } else { (e + 15) as u64 };
     sign | (biased << 10) | (m & 0x3ff)
+}
+
+// ---- 4. floating-point atomicrmw ----
+
+/// §5.6.14 (4): `atomicrmw` `fadd`, `fsub`, `fmax`, `fmin`, `fmaximum`,
+/// `fminimum` of `half`, `float` and `double` (a `lock cmpxchg` loop;
+/// `half` computed in `float` with inline conversions): the old value,
+/// the new value in memory, and the new value when the result is dead.
+/// `fmaximum`/`fminimum` are LLVM 22's (`llc` 19 does not read them).
+#[test]
+fn floating_point_atomicrmw_agrees() {
+    let mut rng = Rng(1444);
+    let mut suite = Suite::default();
+    for (t, check) in [(T::F, Check::Interp), (T::D, Check::Interp), (T::H, Check::Llc)] {
+        let tl = t.ll();
+        for op in ["fadd", "fsub", "fmax", "fmin", "fmaximum", "fminimum"] {
+            for (what, ordering) in [("old", "seq_cst"), ("new", "monotonic"), ("dead", "acq_rel")]
+            {
+                let rmw = format!("atomicrmw {op} ptr %cell, {tl} %a1 {ordering}");
+                let body = match what {
+                    "old" => format!("  %r = {rmw}\n"),
+                    "new" => format!("  %o = {rmw}\n  %r = load {tl}, ptr %cell\n"),
+                    _ => format!("  {rmw}\n  %r = load {tl}, ptr %cell\n"),
+                };
+                let f = suite.add(
+                    &format!("rmw_{op}_{what}_{}", tag(t)),
+                    &[t, t],
+                    t,
+                    &format!("  %cell = alloca {tl}, align 8\n  store {tl} %a0, ptr %cell\n{body}"),
+                    // The interpreter has no `fmax` .. `fminimum`.
+                    if op.contains("max") || op.contains("min") { Check::Llc } else { check },
+                );
+                if op.starts_with("fmaximum") || op.starts_with("fminimum") {
+                    suite.funcs[f].since = 22;
+                }
+                cases(&mut suite, &mut rng, f, &[t, t], 800, 200);
+                if t == T::H && !op.starts_with("fadd") && !op.starts_with("fsub") {
+                    // `llc` computes a `half` minimum or maximum of the
+                    // operand and the old value in the other order: where
+                    // both are NaNs (the payload is open) or both zeros
+                    // (`maxnum`/`minnum` may return either) it differs.
+                    let open = |a: u64, b: u64| {
+                        (T::H.is_nan(a) && T::H.is_nan(b))
+                            || (op.ends_with("max") || op.ends_with("min"))
+                                && ((a | b) & 0x7fff).trailing_zeros() >= 15
+                    };
+                    suite.cases.retain(|c| c.func != f || !open(c.args[0], c.args[1]));
+                }
+            }
+        }
+    }
+    check("atomic-float", &suite, &MAJORS);
 }
 
 // ---- refusals ----

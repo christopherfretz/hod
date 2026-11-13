@@ -31,8 +31,9 @@
 //!   `release`, `acq_rel` (TSO gives them for free) and nothing for any
 //!   `syncscope("singlethread")` fence.
 //! - `half`, `bfloat`, `float` and `double` move as their bits through
-//!   `rax`; `fadd`/`fsub` of `float` and `double` compute in `xmm15`
-//!   inside a `lock cmpxchg` loop.
+//!   `rax`; `fadd`, `fsub`, `fmax`, `fmin`, `fmaximum`, `fminimum` of
+//!   `half`, `float` and `double` compute inside a `lock cmpxchg` loop
+//!   (`half` in `float`, converted inline; WP-144, §5.6.14).
 //!
 //! # 16 bytes
 //!
@@ -50,22 +51,22 @@
 //! [`UNALIGNED`]: an access whose alignment is below its size. [`TYPE`]:
 //! `fp128`, `x86_fp80`, vectors, an integer that is not 8, 16, 32, 64 or
 //! 128 bits wide, an operation whose type does not fit it.
-//! [`BFLOAT_OP`]: arithmetic on `bfloat` (as AArch64). [`FLOAT_OP`]:
-//! `fmax`, `fmin`, `fmaximum`, `fminimum`, and `fadd`/`fsub` of `half`
-//! (they need WP-127's NaN and conversion lowerings). [`LIBATOMIC`]:
-//! 16 bytes without `+cx16`.
+//! [`BFLOAT_OP`]: arithmetic on `bfloat` (as AArch64). [`LIBATOMIC`]:
+//! 16 bytes without `+cx16`. [`FLOAT_OP`] is no longer returned (WP-144).
 
 use hod_cg::{CgResult, Class, FnCx, FrameRef, PReg};
 use hod_ir::{
-    AtomicOrdering, FnStr, Inst, MemFlags, RmwOp, SymbolKind, SyncScope, TypeId, TypeKind, Value,
+    AtomicOrdering, FnStr, Inst, Intrinsic, MemFlags, RmwOp, SymbolKind, SyncScope, TypeId,
+    TypeKind, Value,
 };
 use hod_mc_x64 as mc;
 use hod_mc_x64::{Cond, FpSize, Inst as McInst, Mem, Reg, Size, Xmm};
 
 use crate::common::{
-    R10, XMM15, branch_cond, deferred_first, frame_inst, gp, gpr_load, put, unsupported, value_ty,
-    xm,
+    R10, R11, XMM14, XMM15, branch_cond, deferred_first, frame_inst, gp, gpr_load, put,
+    unsupported, value_ty, xm,
 };
+use crate::fpintr::min_max_reg;
 use crate::target::X64;
 
 /// The group's refusal before WP-133. Nothing is refused under it any
@@ -82,7 +83,8 @@ pub const TYPE: &str = "x64:atomic-type";
 /// (AArch64's `a64:atomic-bfloat-op`).
 pub const BFLOAT_OP: &str = "x64:atomic-bfloat-op";
 /// `atomicrmw fmax`, `fmin`, `fmaximum`, `fminimum` of any type, and
-/// `fadd`/`fsub` of `half`.
+/// `fadd`/`fsub` of `half`, before WP-144. Nothing is refused under it
+/// any more; kept for the coverage log's history.
 pub const FLOAT_OP: &str = "x64:atomic-float-op";
 /// A 16-byte atomic in a function without `+cx16`: `llc` calls
 /// libatomic's `__atomic_*_16`, which `hod_cg::RuntimeFn` does not have.
@@ -404,13 +406,8 @@ pub fn rmw<'a>(
     if op.is_float() != float_shape && !(op == RmwOp::Xchg && float_shape) {
         return unsupported(TYPE);
     }
-    if op.is_float() {
-        if shape == Shape::Float(Fp::B) {
-            return unsupported(BFLOAT_OP);
-        }
-        if !matches!(op, RmwOp::FAdd | RmwOp::FSub) || shape == Shape::Float(Fp::H) {
-            return unsupported(FLOAT_OP);
-        }
+    if op.is_float() && shape == Shape::Float(Fp::B) {
+        return unsupported(BFLOAT_OP);
     }
     if shape == Shape::Wide {
         take_rbx(cx)?;
@@ -539,8 +536,20 @@ fn rmw_int<'a>(
     }
 }
 
-/// A floating-point `atomicrmw` of `float` or `double`: `xchg` of the
-/// bits, or `fadd`/`fsub` in `xmm15` inside a `lock cmpxchg` loop.
+/// A floating-point `atomicrmw` of `half`, `float` or `double`: `xchg`
+/// of the bits, or a `lock cmpxchg` loop around the operation (§5.6.14):
+///
+/// - `fadd`/`fsub` of `float`/`double` in `xmm15`;
+/// - `fmax`/`fmin`/`fmaximum`/`fminimum` as `llvm.maxnum`/`minnum`/
+///   `maximum`/`minimum` (WP-127's [`min_max_reg`]) on a temporary,
+///   the old value's bits kept in `r11` (the sequence writes `rax`);
+/// - `half`: in `float`, as `llc` computes it (`__extendhfsf2`, the
+///   operation, `__truncsfhf2`), the two conversions inline
+///   ([`half_to_float`], [`float_to_half`]: a call cannot sit inside the
+///   loop, it displaces the registers the loop holds), the operand
+///   widened once before the loop in its own register, whose `half` bits
+///   come back after it.
+#[allow(clippy::many_single_char_names, reason = "register names")]
 fn rmw_float<'a>(
     cx: &mut FnCx<'a, X64>,
     inst: Inst<'a>,
@@ -551,27 +560,72 @@ fn rmw_float<'a>(
 ) -> CgResult<()> {
     let a = gp(cx.use_reg(ptr)?);
     let x = xm(cx.use_reg(value)?);
-    let rd = if cx.is_dead(inst) { None } else { Some(cx.def_reg(inst)?) };
+    let min_max = match op {
+        RmwOp::FMax => Some(Intrinsic::MaxNum),
+        RmwOp::FMin => Some(Intrinsic::MinNum),
+        RmwOp::FMaximum => Some(Intrinsic::Maximum),
+        RmwOp::FMinimum => Some(Intrinsic::Minimum),
+        _ => None,
+    };
+    // The operation's left operand (the old value), apart from `x`.
+    let tp = if op == RmwOp::Xchg { None } else { Some(cx.temp(Class::Fpr)?) };
+    let t = tp.map(xm);
+    // `half`: `x` holds the operand in `float` during the loop (no third
+    // vector register: the smallest pool has two), its own bits kept in
+    // `g` and put back after the loop (the lanes above a `half` are
+    // unspecified).
+    let g = if fp == Fp::H && t.is_some() {
+        let g = gp(cx.temp(Class::Gpr)?);
+        put(cx, mc::pextrw_rri(g, x, 0));
+        put(cx, mc::mov_rr(Size::D, RCX, g));
+        half_to_float(cx, x)?;
+        Some(g)
+    } else {
+        None
+    };
     let size = fp.size();
     let m = at(a);
-    if op == RmwOp::Xchg {
-        to_gpr(cx, fp, RAX, x);
-        put(cx, mc::xchg_mr(size, m, RAX));
-    } else {
+    if let Some(t) = t {
         let fsz = if fp == Fp::D { FpSize::D } else { FpSize::S };
         put(cx, gpr_load(RAX, m, bytes(size)));
         let again = cx.new_label();
         cx.bind(again)?;
-        from_gpr(cx, fp, XMM15, RAX);
-        if op == RmwOp::FAdd {
-            put(cx, mc::adds_rr(fsz, XMM15, x));
+        if fp == Fp::H {
+            put(cx, mc::mov_rr(Size::D, RCX, RAX));
+            half_to_float(cx, t)?;
         } else {
-            put(cx, mc::subs_rr(fsz, XMM15, x));
+            from_gpr(cx, fp, t, RAX);
         }
-        to_gpr(cx, fp, R10, XMM15);
+        match min_max {
+            Some(which) => {
+                put(cx, mc::mov_rr(Size::Q, R11, RAX));
+                min_max_reg(cx, which, fsz, t, x)?;
+                put(cx, mc::mov_rr(Size::Q, RAX, R11));
+            }
+            None if op == RmwOp::FAdd => put(cx, mc::adds_rr(fsz, t, x)),
+            None => put(cx, mc::subs_rr(fsz, t, x)),
+        }
+        if fp == Fp::H {
+            float_to_half(cx, R10, t)?;
+        } else {
+            to_gpr(cx, fp, R10, t);
+        }
         put(cx, locked(mc::cmpxchg_mr(size, m, R10)));
         branch_cond(cx, Cond::Ne, again)?;
+        if let Some(g) = g {
+            put(cx, mc::pinsrw_rri(x, g, 0));
+        }
+    } else {
+        to_gpr(cx, fp, RAX, x);
+        put(cx, mc::xchg_mr(size, m, RAX));
     }
+    // The result's register is asked for after the loop (it may displace
+    // a value), the temporary given back first: the smallest pool has
+    // two vector registers.
+    if let Some(tp) = tp {
+        cx.free_temp(tp);
+    }
+    let rd = if cx.is_dead(inst) { None } else { Some(cx.def_reg(inst)?) };
     match rd {
         Some(rd) => {
             from_gpr(cx, fp, xm(rd), RAX);
@@ -579,6 +633,105 @@ fn rmw_float<'a>(
         }
         None => Ok(()),
     }
+}
+
+/// `xd` = the `half` whose bits are in the low 16 bits of `rcx`, widened
+/// to `float` exactly as libgcc's `__extendhfsf2` does: a normal value or
+/// an infinity rebiased, a NaN quieted with its payload shifted up, a
+/// subnormal one through `float` arithmetic that is exact. Writes `rcx`,
+/// `rdx`, `xmm14` and the flags; `xd` is not `xmm14`.
+///
+/// # Errors
+/// What binding a label reports.
+pub fn half_to_float(cx: &mut FnCx<'_, X64>, xd: Xmm) -> CgResult<()> {
+    let d = Size::D;
+    let (special, small, done) = (cx.new_label(), cx.new_label(), cx.new_label());
+    put(cx, mc::mov_rr(d, RDX, RCX));
+    put(cx, mc::and_ri(d, RDX, 0x8000));
+    put(cx, mc::shl_ri(d, RDX, 16));
+    put(cx, mc::and_ri(d, RCX, 0x7fff));
+    put(cx, mc::shl_ri(d, RCX, 13));
+    put(cx, mc::cmp_ri(d, RCX, 0x7c00 << 13));
+    branch_cond(cx, Cond::Ae, special)?;
+    put(cx, mc::cmp_ri(d, RCX, 0x400 << 13));
+    branch_cond(cx, Cond::B, small)?;
+    // Normal: the exponent rebiased by 127 - 15.
+    put(cx, mc::add_ri(d, RCX, 0x3800_0000));
+    crate::common::branch(cx, done)?;
+    // An infinity, or a NaN quieted (libgcc's routine quiets it; an
+    // `addss` of a signalling NaN would pick another payload).
+    cx.bind(special)?;
+    put(cx, mc::add_ri(d, RCX, 0x7000_0000));
+    put(cx, mc::test_ri(d, RCX, 0x7f_ffff));
+    branch_cond(cx, Cond::E, done)?;
+    put(cx, mc::or_ri(d, RCX, 0x40_0000));
+    crate::common::branch(cx, done)?;
+    // Subnormal (or zero): `2^-14 * (1 + m/1024) - 2^-14`, exact.
+    cx.bind(small)?;
+    put(cx, mc::add_ri(d, RCX, 0x3880_0000));
+    put(cx, mc::movd_xr(d, XMM14, RCX));
+    put(cx, mc::mov_ri(d, RCX, 0x3880_0000));
+    put(cx, mc::movd_xr(d, xd, RCX));
+    put(cx, mc::subs_rr(FpSize::S, XMM14, xd));
+    put(cx, mc::movd_rx(d, RCX, XMM14));
+    cx.bind(done)?;
+    put(cx, mc::or_rr(d, RCX, RDX));
+    put(cx, mc::movd_xr(d, xd, RCX));
+    Ok(())
+}
+
+/// `rd` = the `float` in `x` narrowed to `half` (zero-extended), as
+/// `__truncsfhf2` does: rounded to nearest even, an overflow to an
+/// infinity, a subnormal result rounded by one `addss` of 0.5 (whose
+/// ulp is the subnormal `half`'s), a NaN quieted with the top of its
+/// payload. Writes `rcx`, `rdx`, `xmm14`, `xmm15` and the flags; `rd`
+/// is none of them (`x` may be `xmm15`).
+///
+/// # Errors
+/// What binding a label reports.
+pub fn float_to_half(cx: &mut FnCx<'_, X64>, rd: Reg, x: Xmm) -> CgResult<()> {
+    let d = Size::D;
+    let (nan, inf, small, done) = (cx.new_label(), cx.new_label(), cx.new_label(), cx.new_label());
+    put(cx, mc::movd_rx(d, RCX, x));
+    put(cx, mc::mov_rr(d, RDX, RCX));
+    put(cx, mc::shr_ri(d, RDX, 16));
+    put(cx, mc::and_ri(d, RDX, 0x8000));
+    put(cx, mc::and_ri(d, RCX, 0x7fff_ffff));
+    put(cx, mc::cmp_ri(d, RCX, 0x7f80_0000));
+    branch_cond(cx, Cond::A, nan)?;
+    // 65520 and above round to infinity.
+    put(cx, mc::cmp_ri(d, RCX, 0x477f_f000));
+    branch_cond(cx, Cond::Ae, inf)?;
+    put(cx, mc::cmp_ri(d, RCX, 0x3880_0000));
+    branch_cond(cx, Cond::B, small)?;
+    // Normal: add 0xfff and the kept bit's parity, rebias, shift.
+    put(cx, mc::mov_rr(d, rd, RCX));
+    put(cx, mc::shr_ri(d, rd, 13));
+    put(cx, mc::and_ri(d, rd, 1));
+    put(cx, mc::add_rr(d, RCX, rd));
+    put(cx, mc::add_ri(d, RCX, 0xfff - 0x3800_0000));
+    put(cx, mc::shr_ri(d, RCX, 13));
+    put(cx, mc::mov_rr(d, rd, RCX));
+    crate::common::branch(cx, done)?;
+    cx.bind(nan)?;
+    put(cx, mc::shr_ri(d, RCX, 13));
+    put(cx, mc::and_ri(d, RCX, 0x1ff));
+    put(cx, mc::or_ri(d, RCX, 0x7e00));
+    put(cx, mc::mov_rr(d, rd, RCX));
+    crate::common::branch(cx, done)?;
+    cx.bind(inf)?;
+    put(cx, mc::mov_ri(d, rd, 0x7c00));
+    crate::common::branch(cx, done)?;
+    cx.bind(small)?;
+    put(cx, mc::movd_xr(d, XMM14, RCX));
+    put(cx, mc::mov_ri(d, RCX, 0x3f00_0000));
+    put(cx, mc::movd_xr(d, XMM15, RCX));
+    put(cx, mc::adds_rr(FpSize::S, XMM14, XMM15));
+    put(cx, mc::movd_rx(d, rd, XMM14));
+    put(cx, mc::sub_ri(d, rd, 0x3f00_0000));
+    cx.bind(done)?;
+    put(cx, mc::or_rr(d, rd, RDX));
+    Ok(())
 }
 
 /// An `i128` `atomicrmw` as a `lock cmpxchg16b` loop: the operand in two

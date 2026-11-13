@@ -644,9 +644,8 @@ fn refused_atomics_by_name() {
         (f("%v = cmpxchg ptr %p, i64 0, i64 1 seq_cst seq_cst, align 4"), atomic::UNALIGNED),
         (f("%v = load atomic fp128, ptr %p seq_cst, align 16"), atomic::TYPE),
         (f("%v = atomicrmw fadd ptr %p, bfloat 1.0 seq_cst"), atomic::BFLOAT_OP),
-        (f("%v = atomicrmw fmax ptr %p, float 1.0 seq_cst"), atomic::FLOAT_OP),
-        (f("%v = atomicrmw fminimum ptr %p, double 1.0 seq_cst"), atomic::FLOAT_OP),
-        (f("%v = atomicrmw fadd ptr %p, half 1.0 seq_cst"), atomic::FLOAT_OP),
+        // `fmax` .. `fminimum`, `half` arithmetic: WP-144 (`tests/leftovers.rs`).
+        (f("%v = atomicrmw fmax ptr %p, bfloat 1.0 seq_cst"), atomic::BFLOAT_OP),
         (f("%v = load atomic i128, ptr %p seq_cst, align 16"), atomic::LIBATOMIC),
         (f("store atomic i128 0, ptr %p release, align 16"), atomic::LIBATOMIC),
         (f("%v = atomicrmw add ptr %p, i128 1 seq_cst, align 16"), atomic::LIBATOMIC),

@@ -1586,16 +1586,16 @@ const ATOMICRMW: [SupportRow; RmwOp::ALL.len()] = [
     row("atomicrmw:min", ON, ON, "WP-074, WP-133"),
     row("atomicrmw:umax", ON, ON, "WP-074, WP-133"),
     row("atomicrmw:umin", ON, ON, "WP-074, WP-133"),
-    row("atomicrmw:fadd", ON, ON, "WP-074, WP-133; x86-64 `half`: `x64:atomic-float-op`"),
-    row("atomicrmw:fsub", ON, ON, "WP-074, WP-133; x86-64 `half`: `x64:atomic-float-op`"),
-    row("atomicrmw:fmax", ON, todo(X64), "WP-074; x86-64: `x64:atomic-float-op` until WP-127"),
-    row("atomicrmw:fmin", ON, todo(X64), "WP-074; x86-64: `x64:atomic-float-op` until WP-127"),
+    row("atomicrmw:fadd", ON, ON, "WP-074, WP-133; x86-64 `half`: WP-144"),
+    row("atomicrmw:fsub", ON, ON, "WP-074, WP-133; x86-64 `half`: WP-144"),
+    row("atomicrmw:fmax", ON, ON, "WP-074; x86-64: WP-144"),
+    row("atomicrmw:fmin", ON, ON, "WP-074; x86-64: WP-144"),
     row("atomicrmw:uinc_wrap", ON, ON, "WP-074, WP-133"),
     row("atomicrmw:udec_wrap", ON, ON, "WP-074, WP-133"),
     row("atomicrmw:usub_cond", ON, ON, "WP-074, WP-133"),
     row("atomicrmw:usub_sat", ON, ON, "WP-074, WP-133"),
-    row("atomicrmw:fmaximum", ON, todo(X64), "WP-074; x86-64: `x64:atomic-float-op` until WP-127"),
-    row("atomicrmw:fminimum", ON, todo(X64), "WP-074; x86-64: `x64:atomic-float-op` until WP-127"),
+    row("atomicrmw:fmaximum", ON, ON, "WP-074; x86-64: WP-144"),
+    row("atomicrmw:fminimum", ON, ON, "WP-074; x86-64: WP-144"),
 ];
 
 const CALL: [SupportRow; 4] = [

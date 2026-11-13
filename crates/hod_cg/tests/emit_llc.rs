@@ -448,6 +448,20 @@ define dso_local ptr @code() {
 ",
     },
     Snippet {
+        // `cf-protection-return`: the shadow-stack property note, and no
+        // change to the code.
+        name: "cf-protection-return",
+        flags: &[],
+        ir: r#"
+@x = global i32 1
+define i32 @f() {
+  ret i32 7
+}
+!llvm.module.flags = !{!0}
+!0 = !{i32 8, !"cf-protection-return", i32 1}
+"#,
+    },
+    Snippet {
         // x86-64's own value types in data, and mergeable constants of
         // every entry size.
         name: "x86-types",

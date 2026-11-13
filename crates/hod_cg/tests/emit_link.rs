@@ -463,3 +463,83 @@ fn data_with_a_c_driver_runs_like_llc() {
         }
     }
 }
+
+/// An `available_externally` `alwaysinline` function called directly
+/// (`spec/codegen.md` §9.7.2, WP-021) on x86-64 (WP-143): its code,
+/// placed as the local copy `inl.alwaysinline`, takes the direct call
+/// (`R_X86_64_PLT32`); its address in data stays the external symbol,
+/// which the C driver defines; an `available_externally` variable is not
+/// written.
+const AVAILABLE: &str = r"
+@av = available_externally global i32 9
+@pav = global ptr @av
+define available_externally i32 @inl(i32 %x) #0 {
+  %r = add i32 %x, 100
+  ret i32 %r
+}
+define i32 @caller() {
+  %v = call i32 @inl(i32 41)
+  %r = add i32 %v, 1
+  ret i32 %r
+}
+@pinl = global ptr @inl
+attributes #0 = { alwaysinline }
+";
+
+const AVAILABLE_DRIVER: &str = r#"
+#include <stdio.h>
+int av = 9;
+int inl(int x) { return x + 1000; }
+extern int caller(void);
+extern int *pav;
+extern int (*pinl)(int);
+int main(void) {
+  printf("caller %d pinl %d pav %d\n", caller(), pinl(1), pav == &av);
+  return 0;
+}
+"#;
+
+#[test]
+fn x86_64_available_externally_copy_links_and_runs() {
+    let scratch = Scratch::new("emit-link-avail");
+    let Some(toolchain) = Toolchain::x86_64(&scratch) else {
+        assert!(!tools_required(), "no x86-64 toolchain (HOD_REQUIRE_TOOLS=1)");
+        return;
+    };
+    let majors: Vec<u32> = LLVM_MAJORS
+        .into_iter()
+        .filter(|m| Path::new(&format!("/usr/lib/llvm-{m}/bin/llc")).is_file())
+        .collect();
+    if majors.is_empty() {
+        assert!(!tools_required(), "no llc (HOD_REQUIRE_TOOLS=1)");
+        return;
+    }
+    let driver = toolchain.compile_c(&scratch, "avail-driver", AVAILABLE_DRIVER, &[]);
+    for major in majors {
+        let text = format!("{}{AVAILABLE}{FLAGS}", header(Arch::X86_64, major));
+        // `llc` writes no code for `inl`: its code is borrowed from the
+        // same module with the function made `linkonce_odr`.
+        let defined = text.replace("available_externally i32 @inl", "linkonce_odr i32 @inl");
+        let code_o = llc(&scratch, major, &format!("avail-code-{major}"), &defined);
+        let code = elfview::Elf::parse(std::fs::read(&code_o).unwrap());
+        let parsed = hod_ll::parse_module(text.as_bytes(), &hod_ll::ParseOptions::default())
+            .unwrap_or_else(|e| panic!("hod_ll: {e}"));
+        let functions: Vec<_> = parsed.functions().iter().map(|f| f.sym).collect();
+        let chunk = borrow::chunk_from(&parsed.module, &functions, &code, &|_| 16);
+        let options = Options { reloc_model: RelocModel::Pic, ..Options::default() };
+        let emitted = emit_module(&parsed.module, &options, &[chunk]).expect("emission");
+        let ours_o = linking::write(&scratch, &format!("avail-hod-{major}.o"), &emitted.object);
+        let ours = elfview::Elf::parse(std::fs::read(&ours_o).unwrap());
+        let calls = ours.relocs_of(".text");
+        assert!(
+            calls.iter().any(|(kind, name, _)| *kind == 4 && name == "inl.alwaysinline"),
+            "the direct call goes to the copy: {calls:?}"
+        );
+        assert!(ours.symbols.iter().all(|s| s.name != "av" || s.shndx == 0), "av is not written");
+        let got = link_run(&toolchain, &scratch, &format!("avail-{major}"), &[&driver, &ours_o]);
+        for output in &got {
+            assert!(output.contains("caller 142 pinl 1001 pav 1"), "{output}");
+        }
+        eprintln!("emit_link: x86-64 LLVM {major}: the available_externally copy runs");
+    }
+}

@@ -412,12 +412,12 @@ impl<'m> ModuleEmitter<'m> {
     /// bit is never written.
     fn gnu_property(&mut self) -> CgResult<()> {
         use hod_ir::BranchProtection as Bp;
+        const GNU_PROPERTY_X86_FEATURE_1_AND: u32 = 0xc000_0002;
+        const GNU_PROPERTY_X86_FEATURE_1_SHSTK: u32 = 2;
         let bits = self.module.props.branch_protection.bits();
         if self.obj.arch() != Arch::X86_64 || bits & Bp::CET_SHSTK == 0 || bits & Bp::CET_IBT != 0 {
             return Ok(());
         }
-        const GNU_PROPERTY_X86_FEATURE_1_AND: u32 = 0xc000_0002;
-        const GNU_PROPERTY_X86_FEATURE_1_SHSTK: u32 = 2;
         let note =
             self.obj.add_section(b".note.gnu.property", SectionKind::Note, 8).map_err(obj_err)?;
         // namesz, descsz, type (NT_GNU_PROPERTY_TYPE_0), "GNU"; one

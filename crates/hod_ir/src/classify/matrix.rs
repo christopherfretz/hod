@@ -433,34 +433,35 @@ const MODULE: [SupportRow; 24] = [
     row("module:sign-return-address-all", todo(LATER), never(A64_ONLY), ""),
     row("module:sign-return-address-with-bkey", todo(LATER), never(A64_ONLY), ""),
     row("module:branch-protection-pauth-lr", todo(LATER), never(A64_ONLY), ""),
-    row("module:cf-protection-branch", never(X64_ONLY), todo(X64), ""),
-    row("module:cf-protection-return", never(X64_ONLY), todo(X64), ""),
-    a64("module:asm", ASM, "module-level inline assembly an assembler must read"),
     row(
+        "module:cf-protection-branch",
+        never(X64_ONLY),
+        todo(X64),
+        "changes code: `endbr64` at every function entry an indirect branch may reach, at \
+         landing pads and after `returns_twice` calls, then the IBT property note; `llc` \
+         turns it on for any value, 0 included (WP-143)",
+    ),
+    row(
+        "module:cf-protection-return",
+        never(X64_ONLY),
+        ON,
+        "the shadow-stack bit in `.note.gnu.property`; the code does not change (WP-143)",
+    ),
+    a64("module:asm", ASM, "module-level inline assembly an assembler must read"),
+    both(
         "module:asm-symbols",
         ON,
-        todo(X64),
         "module-level assembly made only of symbol directives (`spec/ir.md` §2.3)",
     ),
-    row("module:linker-options", ON, todo(X64), "`!llvm.linker.options`"),
-    row("module:dependent-libraries", ON, todo(X64), "`!llvm.dependent-libraries`"),
-    row("module:global-ctors", ON, todo(X64), "an entry of `llvm.global_ctors`"),
-    row("module:global-dtors", ON, todo(X64), "an entry of `llvm.global_dtors`"),
+    both("module:linker-options", ON, "`!llvm.linker.options`"),
+    both("module:dependent-libraries", ON, "`!llvm.dependent-libraries`"),
+    both("module:global-ctors", ON, "an entry of `llvm.global_ctors`"),
+    both("module:global-dtors", ON, "an entry of `llvm.global_dtors`"),
 ];
 
 const STRUCTOR: [SupportRow; 2] = [
-    row(
-        "structor:priority",
-        ON,
-        todo(X64),
-        "a constructor or destructor priority other than 65535",
-    ),
-    row(
-        "structor:associated",
-        ON,
-        todo(X64),
-        "a constructor or destructor with an associated symbol",
-    ),
+    both("structor:priority", ON, "a constructor or destructor priority other than 65535"),
+    both("structor:associated", ON, "a constructor or destructor with an associated symbol"),
 ];
 
 // WP-087: debug modules reach `hod_dwarf`, which declines what it cannot
@@ -492,66 +493,68 @@ const GLOBAL: [SupportRow; 12] = [
     both("global:function-declaration", ON, "nothing is emitted for a declaration"),
     both("global:variable-declaration", ON, "nothing is emitted for a declaration"),
     both("global:function-definition", ON, "a function that gets a body"),
-    row("global:variable-definition", ON, todo(X64), "a variable with an initializer"),
-    row("global:alias", ON, todo(X64), ""),
-    row("global:alias-offset", ON, todo(X64), "an alias of a symbol plus a non-zero offset"),
+    both("global:variable-definition", ON, "a variable with an initializer"),
+    both("global:alias", ON, ""),
+    both("global:alias-offset", ON, "an alias of a symbol plus a non-zero offset"),
     a64("global:alias-absolute", LATER, "an alias of a number"),
-    row("global:ifunc", ON, todo(X64), ""),
-    row("global:section", ON, todo(X64), "a definition with an explicit section"),
-    row("global:align", ON, todo(X64), "a definition with a stated alignment"),
-    row("global:unnamed-addr", ON, todo(X64), "`unnamed_addr` on a definition: mergeable sections"),
-    row("global:used", ON, todo(X64), "a definition in `llvm.used` (`SHF_GNU_RETAIN`)"),
+    both("global:ifunc", ON, ""),
+    both("global:section", ON, "a definition with an explicit section"),
+    both("global:align", ON, "a definition with a stated alignment"),
+    both("global:unnamed-addr", ON, "`unnamed_addr` on a definition: mergeable sections"),
+    both("global:used", ON, "a definition in `llvm.used` (`SHF_GNU_RETAIN`)"),
 ];
 
 const LINKAGE: [SupportRow; Linkage::ALL.len()] = [
     both("linkage:external", ON, "by itself; a definition also meets its `global:` row"),
-    row(
+    both(
         "linkage:available_externally",
         ON,
-        todo(X64),
         "a function's body is discarded, or copied when `alwaysinline` and called directly \
          (design 0001 point 6, WP-021)",
     ),
-    row("linkage:linkonce", ON, todo(X64), ""),
-    row("linkage:linkonce_odr", ON, todo(X64), ""),
-    row("linkage:weak", ON, todo(X64), ""),
-    row("linkage:weak_odr", ON, todo(X64), ""),
+    both("linkage:linkonce", ON, ""),
+    both("linkage:linkonce_odr", ON, ""),
+    both("linkage:weak", ON, ""),
+    both("linkage:weak_odr", ON, ""),
     both(
         "linkage:appending",
         never("only LLVM's special arrays have it, and those are not symbols (§2.2)"),
         "",
     ),
     both("linkage:internal", ON, ""),
-    row("linkage:private", ON, todo(X64), ""),
-    row("linkage:extern_weak", ON, todo(X64), ""),
-    row("linkage:common", ON, todo(X64), ""),
+    both("linkage:private", ON, ""),
+    both("linkage:extern_weak", ON, ""),
+    both("linkage:common", ON, ""),
 ];
 
 const VISIBILITY: [SupportRow; 2] =
-    [row("visibility:hidden", ON, todo(X64), ""), row("visibility:protected", ON, todo(X64), "")];
+    [both("visibility:hidden", ON, ""), both("visibility:protected", ON, "")];
 
+// On x86-64 these rows are the symbol and its definition (WP-143); an
+// access is `intrinsic:llvm.threadlocal.address`, or `x64:todo:tls` in
+// `hod_x64`, until WP-134.
 const TLS_ROWS: [SupportRow; 4] = [
-    row("tls:general-dynamic", ON, todo(X64), "`thread_local`"),
-    row("tls:local-dynamic", ON, todo(X64), "`thread_local(localdynamic)`"),
-    row("tls:initial-exec", ON, todo(X64), "`thread_local(initialexec)`"),
-    row("tls:local-exec", ON, todo(X64), "`thread_local(localexec)`"),
+    both("tls:general-dynamic", ON, "`thread_local`"),
+    both("tls:local-dynamic", ON, "`thread_local(localdynamic)`"),
+    both("tls:initial-exec", ON, "`thread_local(initialexec)`"),
+    both("tls:local-exec", ON, "`thread_local(localexec)`"),
 ];
 
 const COMDAT: [SupportRow; ComdatKind::ALL.len()] = [
-    row("comdat:any", ON, todo(X64), ""),
+    both("comdat:any", ON, ""),
     both("comdat:exactmatch", never(ELF_COMDAT), ""),
     both("comdat:largest", never(ELF_COMDAT), ""),
-    row("comdat:nodeduplicate", ON, todo(X64), ""),
+    both("comdat:nodeduplicate", ON, ""),
     both("comdat:samesize", never(ELF_COMDAT), ""),
 ];
 
 const INIT: [SupportRow; 10] = [
-    row("init:data", ON, todo(X64), "any initializer: numbers, zero, `undef`, aggregates, bytes"),
-    row("init:symbol", ON, todo(X64), "a symbol's address, with or without an offset"),
+    both("init:data", ON, "any initializer: numbers, zero, `undef`, aggregates, bytes"),
+    both("init:symbol", ON, "a symbol's address, with or without an offset"),
     row("init:blockaddress", ON, todo(X64), "of a block of a function with an `indirectbr` (§9.6)"),
-    row("init:sym-diff", ON, todo(X64), "the difference of two symbol addresses"),
+    both("init:sym-diff", ON, "the difference of two symbol addresses"),
     a64("init:sym-diff-plt", LATER, "the same through `dso_local_equivalent` (relative vtables)"),
-    row("init:int-of-addr", ON, todo(X64), "an address in an integer field"),
+    both("init:int-of-addr", ON, "an address in an integer field"),
     row(
         "init:block-diff",
         ON,
@@ -561,10 +564,9 @@ const INIT: [SupportRow; 10] = [
     a64("init:dso-local-equivalent", LATER, ""),
     a64("init:no-cfi", LATER, ""),
     // WP-101.
-    row(
+    both(
         "init:neg-addr",
         never(NO_RELOCATION),
-        todo(X64),
         "a number minus an address, `sub (i64 4, i64 ptrtoint (ptr @a to i64))`, \
          in data or in an aggregate operand's image",
     ),

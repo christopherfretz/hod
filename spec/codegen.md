@@ -2119,8 +2119,8 @@ words compared with `llvm-mc`'s; the refusals; features from
   the field's offset, and the displacement written is `target - (at +
   field size)` (`hod_x64::common::patch_branch`). `unreachable` and
   `llvm.trap` are `ud2`. Functions are 16-byte aligned (the emitter
-  pads between them with `nop`, `0x90`); the padding before a data
-  island is `int3` (`0xcc`, `Target::PAD_BYTE`).
+  pads between them with `llc`'s `nop`s, §5.6.3); the padding before a
+  data island is `int3` (`0xcc`, `Target::PAD_BYTE`).
 - **Integer constants**: `mov r32, imm32` (zero-extends) for a value of
   at most 32 bits; `mov r64, simm32` for one that sign-extends;
   `movabs` otherwise.
@@ -2182,6 +2182,67 @@ Refused by name:
 travels in `ymm` under `+avx` is the argument assignment's
 (`x64:wide-vector-abi`, WP-118). `-mattr` items are checked the same
 way, by the module's target.
+
+#### 5.6.3 Data and module-level constructs (WP-143)
+
+Module emission (§9.7) is shared by both targets; on x86-64 it writes
+what `llc -O0 -fast-isel=0 -relocation-model=pic` writes (LLVM 19 and
+22), section by section, with these target rules:
+
+- **`.text`** is created 4-aligned, as on AArch64; a function raises it
+  to its own alignment (16).
+- **Padding between functions** is `X86AsmBackend::writeNopData`'s for
+  the default CPU: `nop`s of at most 10 bytes, the longest first (`66 2e
+  0f 1f 84 00 00 00 00 00`, then the 1- to 9-byte forms of the SDM's
+  table).
+- **An address in data** (an initializer, a constructor or destructor
+  entry) names the symbol itself, `dso_local` or not: x86-64 uses
+  `AsmPrinter::lowerConstant`, which calls `getSymbol`, where AArch64's
+  override reaches a `dso_local` definition of a shared object through
+  its `.L<name>$local` alias (§9.7, "local aliases"). A local symbol is
+  reached through its section symbol on both targets, unless its section
+  is mergeable with a non-zero addend or thread-local.
+- **Relocations of data.** An address field is `R_X86_64_64`, `_32`,
+  `_16` or `_8` by its width; a difference against the field's section
+  is `R_X86_64_PC64`, `_PC32`, `_PC16` or `_PC8`. `llc` writes the 32-bit and
+  narrower absolute kinds in PIC objects too; a linker refuses them in a
+  position-independent output unless the value fits, exactly as for
+  `llc`'s object. A number minus an address (`init:neg-addr`) has no
+  relocation on x86-64 either: `llc` fails ("Cannot represent a
+  difference across sections"), and the row is rejected on both
+  targets.
+- **Sections, flags and entry sizes** are the target-neutral rules of
+  §9.7 unchanged: the mergeable names (`.rodata.str<k>.<n>`,
+  `.rodata.cst<n>` for 4, 8, 16 and 32 bytes; a 2- or 64-byte constant
+  is plain `.rodata`), `SHF_GNU_RETAIN`, `.tdata`/`.tbss`, groups,
+  `.init_array.<p>`/`.fini_array.<p>`, `.linker-options` and `.deplibs`,
+  common symbols, `STT_GNU_IFUNC`, private `.L` names, aliases with
+  offsets. `x86_fp80` data is 10 bytes in a 16-byte, 16-aligned object
+  (an `unnamed_addr` constant of it is `.rodata.cst16`).
+- **Thread-local definitions** (`.tdata`, `.tbss`, `STT_TLS`) are
+  written as on AArch64; `tls:*` rows describe the symbol and are on.
+  An access is X-tls's (WP-134): `intrinsic:llvm.threadlocal.address`,
+  and `x64:todo:tls` for a direct operand.
+- **`cf-protection-return`** writes `.note.gnu.property` (`SHT_NOTE`,
+  `SHF_ALLOC`, 8-aligned, 32 bytes): `GNU_PROPERTY_X86_FEATURE_1_AND`
+  (`0xc0000002`) with the shadow-stack bit (2). The code does not
+  change, which requires every x86-64 lowering to return only to the
+  address its call pushed (no `push`/`ret` or `call`-to-get-`rip`
+  idioms). **`cf-protection-branch`** stays `todo(T-X64)`: `llc` then
+  writes `endbr64` at the entry of every function an indirect branch may
+  reach (external linkage or address taken), at landing pads and after
+  calls to `returns_twice` functions, and sets the IBT bit (1) in the
+  note. `llc` reads the flag's presence, not its value: `i32 0` turns it
+  on as well, while `hod_ir` reads 0 as off.
+- **Module assembly of symbol directives** (§9.7.1) is read with
+  x86-64's comment character, `#`.
+
+Evidence: `tests/emit_llc.rs` (every snippet on both targets, and the
+x86-64 snippets `dso-local-data`, `pie`, `narrow-fields`,
+`cf-protection-return`, `x86-types`), `tests/emit_asm.rs`, and
+`tests/emit_link.rs` (the data module with `llc`'s `main`, a data
+module whose code is a C driver, and an `available_externally` copy,
+linked by bfd, lld and mold and run under `qemu-x86_64`).
 
 ## 6. Control flow
 
@@ -3027,7 +3088,7 @@ are rebased to the section offset (AArch64 adds `$x`/`$d` mapping symbols
 at each change). A code relocation to a local function, or one reached
 through its local alias, that is not placed yet waits for `finish`, which
 writes it against the section symbol. Padding between functions is the
-target's (AArch64: `nop`s).
+target's (AArch64: `nop`s; x86-64: `llc`'s long `nop`s, §5.6.3).
 
 **COMDATs.** One group per COMDAT (`any` and `nodeduplicate`; another
 selection kind is `comdat:selection-kind`), its signature the module
@@ -3094,7 +3155,7 @@ in maps sized by their count).
 `linkage:appending` (outside the special arrays),
 `global:initializer-in-bss`, `global:alias-target`,
 `global:ifunc-resolver`, `init:sym-diff-unencodable`,
-`init:address-width` (an address in a 1-byte field),
+`init:address-width` (an address in a 1-byte field on AArch64),
 `init:dso-local-equivalent` (outside a difference),
 `init:blockaddress-unplaced`, `module:linker-option-not-a-pair` (an
 `!llvm.linker.options` entry of other than two strings: `llc` writes
@@ -3127,9 +3188,8 @@ mold and runs them):
 - `llc` replaces a load of a GOT-equivalent private constant
   (`@x = private unnamed_addr constant ptr @y`) by a `GOTPCREL` of `@y`
   in a difference; `hod` keeps the constant (both are correct).
-- x86-64: no target yet; the PC bias of a code relocation is not
-  considered in the mergeable-section addend check, and padding is
-  `0x90`.
+- x86-64 (WP-143): none beyond the above; §5.6.3 gives the target's
+  rules.
 
 #### 9.7.1 Module assembly of symbol directives (WP-075)
 

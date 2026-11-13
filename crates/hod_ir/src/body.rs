@@ -167,11 +167,24 @@ impl BlockData {
 pub struct Slot {
     size: u64,
     align_log2: u8,
+    outside_frame: bool,
 }
 
 impl Slot {
     pub(crate) fn new(size: u64, align_log2: u8) -> Slot {
-        Slot { size, align_log2 }
+        Slot { size, align_log2, outside_frame: false }
+    }
+
+    pub(crate) fn set_outside_frame(&mut self) {
+        self.outside_frame = true;
+    }
+
+    /// Whether the `alloca` carried `!coro.outside.frame`: the front end
+    /// promises that the object of a coroutine never lives across a
+    /// suspend (§5.2; `spec/xform.md`).
+    #[inline]
+    pub const fn outside_frame(self) -> bool {
+        self.outside_frame
     }
 
     /// Size in bytes. May be zero.
@@ -191,6 +204,20 @@ impl Slot {
     pub const fn align_log2(self) -> u8 {
         self.align_log2
     }
+}
+
+/// A lifetime marker (§5.2): a call of `llvm.lifetime.start` or
+/// `llvm.lifetime.end`, which generates no code and is kept beside the
+/// instructions, as debug records are. 12 bytes.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct LifetimeMarker {
+    /// The instruction the marker stands before, in the same block.
+    pub before: InstId,
+    /// The pointer argument: a slot's address, or any pointer value (an
+    /// address derived from a slot, a dynamic `alloca`). Not a use.
+    pub ptr: Value,
+    /// `llvm.lifetime.start`; `false` for `llvm.lifetime.end`.
+    pub start: bool,
 }
 
 /// A source variable that lives in a stack slot for the whole function:
@@ -449,6 +476,8 @@ pub struct Body {
     pub(crate) declares: Vec<DbgDeclare>,
     /// `#dbg_value`, `#dbg_assign` and `#dbg_label`, in position order.
     pub(crate) dbg_records: Vec<DbgRecordData>,
+    /// `llvm.lifetime.start` and `.end`, in position order.
+    pub(crate) markers: Vec<LifetimeMarker>,
     pub(crate) calls: Vec<CallData>,
     pub(crate) param_attrs: Vec<ParamAttrs>,
     pub(crate) bundles: Vec<BundleData>,
@@ -485,6 +514,7 @@ impl Body {
             slot_vars: Vec::new(),
             declares: Vec::new(),
             dbg_records: Vec::new(),
+            markers: Vec::new(),
             calls: Vec::new(),
             param_attrs: Vec::new(),
             bundles: Vec::new(),
@@ -515,6 +545,7 @@ impl Body {
         self.slot_vars.clear();
         self.declares.clear();
         self.dbg_records.clear();
+        self.markers.clear();
         self.calls.clear();
         self.param_attrs.clear();
         self.bundles.clear();
@@ -722,6 +753,16 @@ impl Body {
         })
     }
 
+    /// The lifetime markers (`llvm.lifetime.start` and `.end`) in
+    /// position order: by [`LifetimeMarker::before`], and among the
+    /// markers before one instruction in the order the producer gave them
+    /// (§5.2). They generate no code; the coroutine plan reads them
+    /// (`spec/xform.md`).
+    #[inline]
+    pub fn lifetime_markers(&self) -> &[LifetimeMarker] {
+        &self.markers
+    }
+
     /// The number of calls, `invoke`s and `callbr`s.
     #[inline]
     pub fn call_count(&self) -> usize {
@@ -764,6 +805,7 @@ impl Body {
             + bytes(&self.slot_vars)
             + bytes(&self.declares)
             + bytes(&self.dbg_records)
+            + bytes(&self.markers)
             + bytes(&self.calls)
             + bytes(&self.param_attrs)
             + bytes(&self.bundles)
@@ -790,6 +832,7 @@ impl Body {
             + bytes(&self.slot_vars)
             + bytes(&self.declares)
             + bytes(&self.dbg_records)
+            + bytes(&self.markers)
             + bytes(&self.calls)
             + bytes(&self.param_attrs)
             + bytes(&self.bundles)

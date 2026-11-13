@@ -165,7 +165,10 @@ dependencies = [
 name = "hod_xform"
 version = "0.0.0"
 dependencies = [
+ "hod_bc",
  "hod_ir",
+ "hod_ll",
+ "hod_testutil",
 ]
 
 [[package]]

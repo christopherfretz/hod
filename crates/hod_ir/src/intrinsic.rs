@@ -710,6 +710,20 @@ pub fn no_code_intrinsic(name: &str) -> Option<NoCode> {
     NO_CODE.iter().find(|(base, _)| has_dotted_prefix(name, base)).map(|&(_, rule)| rule)
 }
 
+/// Whether `name` is `llvm.lifetime.start` (`Some(true)`) or
+/// `llvm.lifetime.end` (`Some(false)`): calls [`no_code_intrinsic`] drops,
+/// which a producer records as a lifetime marker on their pointer
+/// argument (`FunctionBuilder::lifetime_marker`, §5.2).
+pub fn lifetime_intrinsic(name: &str) -> Option<bool> {
+    if has_dotted_prefix(name, "llvm.lifetime.start") {
+        Some(true)
+    } else if has_dotted_prefix(name, "llvm.lifetime.end") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -869,6 +883,15 @@ mod tests {
     }
 
     /// §5.5: the intrinsics that generate no code, and what replaces them.
+    #[test]
+    fn lifetime_names() {
+        assert_eq!(lifetime_intrinsic("llvm.lifetime.start.p0"), Some(true));
+        assert_eq!(lifetime_intrinsic("llvm.lifetime.end.p0"), Some(false));
+        assert_eq!(lifetime_intrinsic("llvm.lifetime.end"), Some(false));
+        assert_eq!(lifetime_intrinsic("llvm.lifetime.startx"), None);
+        assert_eq!(lifetime_intrinsic("llvm.invariant.start.p0"), None);
+    }
+
     #[test]
     fn no_code_rule() {
         let cases = [

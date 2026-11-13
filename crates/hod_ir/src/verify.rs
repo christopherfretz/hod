@@ -70,6 +70,7 @@ impl Body {
         }
         v.control_flow()?;
         v.side_tables()?;
+        v.lifetime_markers()?;
         v.debug_records()?;
         v.debug_ids()?;
         v.use_facts()
@@ -985,6 +986,32 @@ impl Verifier<'_> {
             ValueKind::Slot(slot) => slot.index() < body.slots.len(),
             ValueKind::Asm(_) => false,
         }
+    }
+
+    /// §5.2: lifetime markers are in position order, each before an
+    /// instruction that is not a `phi`, on a pointer of this body.
+    fn lifetime_markers(&self) -> IrResult<()> {
+        let body = self.body;
+        let mut previous = 0;
+        for (index, marker) in body.markers.iter().enumerate() {
+            let fail = |what: &str| {
+                Err(IrError::new(InvalidOperand, format!("lifetime marker {index} {what}")))
+            };
+            let before = marker.before.index();
+            match body.insts.get(before) {
+                None => return fail("stands before no instruction"),
+                Some(inst) if inst.op == Opcode::Phi => return fail("stands before a phi"),
+                Some(_) => {}
+            }
+            if before < previous {
+                return fail("is out of position order");
+            }
+            previous = before;
+            if marker.ptr.is_none() || !self.debug_value(marker.ptr) {
+                return fail("names a value that does not exist");
+            }
+        }
+        Ok(())
     }
 
     /// §6.8, the rules that need only the body: declarations and records

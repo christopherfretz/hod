@@ -638,6 +638,19 @@ and several variables can share a slot: the variables of an inlined call
 and of its caller, or the pieces of one variable, each with a fragment
 expression.
 
+Two facts about slots and their lifetimes are kept for the coroutine plan
+(`spec/xform.md` §3); neither is code, and neither is a use:
+
+- `Slot::outside_frame()`: the `alloca` carried `!coro.outside.frame`
+  (set with `FunctionBuilder::set_slot_outside_frame`).
+- `Body::lifetime_markers()`: one `LifetimeMarker { before, ptr, start }`
+  per `llvm.lifetime.start` (`start`) or `llvm.lifetime.end` call, which
+  is still not built (§5.5): `ptr` is its pointer operand and `before`
+  the instruction appended after it. `FunctionBuilder::lifetime_marker`
+  records one; `lifetime_intrinsic(name)` tells a producer which names
+  these are. The verifier checks that each stands before a non-`phi`
+  instruction, in position order, with a valid pointer.
+
 ### 5.3 Values
 
 A `Value` is 4 bytes: a 3-bit tag and a 29-bit index. Tags: instruction
@@ -799,7 +812,7 @@ and what a producer does with the call:
 
 | names | rule |
 |---|---|
-| `llvm.lifetime.start/end`, `llvm.invariant.start/end`, `llvm.assume`, `llvm.donothing`, `llvm.var.annotation`, `llvm.experimental.noalias.scope.decl` | `NoCode::Drop`: omit the call. (The `{}*` result of `invariant.start` can only be used by `invariant.end`.) |
+| `llvm.lifetime.start/end`, `llvm.invariant.start/end`, `llvm.assume`, `llvm.donothing`, `llvm.var.annotation`, `llvm.experimental.noalias.scope.decl` | `NoCode::Drop`: omit the call. (The `{}*` result of `invariant.start` can only be used by `invariant.end`.) A lifetime call is recorded as a lifetime marker (§5.2). |
 | `llvm.expect`, `llvm.expect.with.probability`, `llvm.annotation`, `llvm.ptr.annotation`, `llvm.launder.invariant.group`, `llvm.strip.invariant.group` | `NoCode::FirstArg`: omit the call and use its first argument as its result |
 | `llvm.dbg.*` | `NoCode::DebugRecord`: a debug record (§6), not a call |
 

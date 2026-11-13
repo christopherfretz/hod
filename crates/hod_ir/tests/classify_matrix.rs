@@ -847,3 +847,40 @@ fn intrinsic_rows_of_wp_128() {
     // Named registers stay with a later package.
     assert_eq!(x64.supports("intrinsic:llvm.read_register"), Some(false));
 }
+
+// WP-137: coroutine bodies and the handle operations on x86-64 (`spec/codegen.md`
+// §7.6 "x86-64"). `RICH_BODY` has none of them; the rows are checked here.
+#[test]
+fn coroutine_rows_of_wp_137() {
+    let x64 = Support::shipped(Arch::X86_64);
+    let a64 = Support::shipped(Arch::Aarch64);
+    let mut rows = vec!["attr:presplitcoroutine".to_owned(), "type:token".to_owned()];
+    for name in [
+        "id",
+        "alloc",
+        "begin",
+        "end",
+        "free",
+        "size",
+        "align",
+        "save",
+        "suspend",
+        "resume",
+        "destroy",
+        "done",
+        "promise",
+        "noop",
+        "is_in_ramp",
+        "await.suspend.void",
+        "await.suspend.bool",
+        "await.suspend.handle",
+    ] {
+        rows.push(format!("intrinsic:llvm.coro.{name}"));
+    }
+    for row in &rows {
+        assert_eq!(x64.supports(row), Some(true), "{row}");
+        assert_eq!(a64.supports(row), Some(true), "{row}");
+    }
+    // `coro.frame` is the plan's refusal on both targets.
+    assert_eq!(x64.supports("intrinsic:llvm.coro.frame"), Some(false));
+}

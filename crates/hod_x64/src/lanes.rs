@@ -27,7 +27,9 @@
 //!
 //! On an `Fpr` vector: `padd*`/`psub*` (8- to 64-bit lanes), `pand`,
 //! `por`, `pxor`, `pmullw` (16-bit lanes), `addps` .. `divpd` (`float`
-//! and `double` lanes), `fneg` as `xorps` with the sign of each lane.
+//! and `double` lanes), `fneg` as `xorps` with the sign of each lane,
+//! and a shift by a constant splat below the lane width as `psll*`,
+//! `psrl*`, `psra*` (16- to 64-bit lanes, no `psraq`).
 //!
 //! # Refusals
 //!
@@ -35,7 +37,9 @@
 //! the floating-point intrinsics are `fpintr::BFLOAT` (as the scalar);
 //! `frexp`, `is.fpclass`, `sshl.sat`/`ushl.sat` of vectors stay
 //! `intrinsic.rs`'s refusals; a reduction whose operands are not the
-//! intrinsic's is [`REDUCE`].
+//! intrinsic's is [`REDUCE`], as is a floating-point reduction of
+//! `bfloat` lanes (`half` lanes round to `half` after each step, as
+//! `llc` promotes them).
 //!
 //! # Registers
 //!

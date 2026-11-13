@@ -847,3 +847,51 @@ fn intrinsic_rows_of_wp_128() {
     // Named registers stay with a later package.
     assert_eq!(x64.supports("intrinsic:llvm.read_register"), Some(false));
 }
+
+// WP-132: vectors on x86-64. Every row AArch64 supports for vector
+// values x86-64 supports for them too; `type:vector` is on.
+#[test]
+fn vector_rows_of_wp_132() {
+    let a64 = Support::shipped(Arch::Aarch64);
+    let x64 = Support::shipped(Arch::X86_64);
+    assert_eq!(x64.supports("type:vector"), Some(true));
+    for row in [
+        "inst:add",
+        "inst:sdiv",
+        "inst:ashr",
+        "inst:fadd",
+        "inst:frem",
+        "inst:fneg",
+        "inst:icmp",
+        "inst:fcmp",
+        "inst:sext",
+        "inst:fptrunc",
+        "inst:sitofp",
+        "inst:inttoptr",
+        "inst:bitcast",
+        "inst:load",
+        "inst:store",
+        "inst:extractelement",
+        "inst:insertelement",
+        "inst:shufflevector",
+        "inst:select",
+        "inst:freeze",
+        "intrinsic:llvm.ctpop",
+        "intrinsic:llvm.usub.sat",
+        "intrinsic:llvm.fma",
+        "intrinsic:llvm.minimum",
+        "intrinsic:llvm.ldexp",
+        "intrinsic:llvm.fptoui.sat",
+        "intrinsic:llvm.ptrmask",
+        "intrinsic:llvm.vector.reduce.add",
+        "intrinsic:llvm.vector.reduce.umin",
+        "intrinsic:llvm.vector.reduce.fmul",
+    ] {
+        let vector = format!("{row}/vector");
+        assert_eq!(a64.supports(&vector), Some(true), "{vector}");
+        assert_eq!(x64.supports(&vector), Some(true), "{vector}");
+    }
+    for row in ["inst:extractelement", "inst:shufflevector", "intrinsic:llvm.vector.reduce.fmax"] {
+        assert_eq!(x64.classes(row), a64.classes(row), "{row}: the same cell");
+    }
+}

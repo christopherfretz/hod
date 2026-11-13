@@ -2928,6 +2928,86 @@ external linkage in a shared object is reached through its local alias
 
 Evidence: `hod_x64/tests/tls.rs` (WP-134 record).
 
+#### 5.6.13 Vectors (WP-132)
+
+Every fixed vector the shapes of §5.5.1 allow is lowered on x86-64 with
+SSE2 only (no `pshufb`, `pmulld`, blends, `round*`, and of `pextr`/`pinsr`
+only `pextrw`/`pinsrw`). The model is AArch64's: a vector is a value of
+class `Fpr` (64 or 128 bits, a power of two of lanes, in an `xmm`), a
+mask (`<N x i1>`, `N ≤ 64`, class `Gpr`, bit `i` = element `i`), or
+`Mem` (everything else, its bytes in a frame slot, §5.6.5).
+
+- **Shapes and refusals** (`vector.rs`). A lane is 1, 2, 4 or 8
+  addressable bytes, at most 256 lanes. Every other shape is refused by
+  the generic name AArch64 uses: `x64:mask-wide` (an operation on the
+  lanes of more than 64 `i1`), `x64:vector-odd-element` (`i4`, `i24`),
+  `x64:vector-wide-element` (`i128`, `fp128`, `x86_fp80`),
+  `x64:vector-length` (more than 256 lanes), `x64:vector-index` (an
+  index wider than 64 bits), `x64:ptradd-vector` (a `ptradd` of a
+  vector of pointers, `mem.rs`'s); a conversion to
+  `bfloat` lanes from 64-bit integers is `x64:vector-bfloat`.
+- **Images.** A lane is reached in the vector's image: a `Mem` vector's
+  own slot, or a 16-byte frame slot an `Fpr` operand is stored into
+  (`movups`). Each image is a fresh slot (the target keeps no
+  per-function vector state); after the store the operand's register
+  goes back to the pool, so a three-operand lowering fits the minimal
+  pool (4 GPRs, 2 vector registers).
+- **Element access** (`vector.rs`). `extractelement`, `insertelement`,
+  `shufflevector` through the images, index rules of §5.5.1 (a constant
+  index `≥ N` or undefined is poison; a variable one is masked with
+  `N - 1` for a power-of-two `N`, else clamped to lane 0). A constant
+  extract from an `Fpr` vector needs no memory: `pshufd` and
+  `movd`/`movq` for 4- and 8-byte lanes, `pextrw` for 1- and 2-byte
+  ones.
+- **Element-wise operations** (`lanes.rs`): one packed instruction on an
+  `Fpr` vector where SSE2 has it — `padd*`/`psub*`, `pand`/`por`/`pxor`,
+  `pmullw`, `addps`..`divpd`, `fneg` as `xorps` with the lane sign
+  bits, and a shift by a constant splat below the lane width as
+  `psll*`/`psrl*`/`psra*` (16-, 32-, 64-bit lanes; no `psraq`) — else
+  the lane loop of §7.3 (`hod_cg::lanes`) over the scalar kernels, so a
+  lane is exactly the scalar instruction's (a lane of `udiv` by zero
+  traps). The integer and floating-point intrinsics AArch64 lowers on
+  vectors are lowered the same way; the rounding functions and `fma`
+  call the library per lane (`roundf`, `fmaf`, ...), `half` lanes
+  through `__extendhfsf2` and back. A floating-point reduction of `half`
+  lanes rounds to `half` after each step, as `llc` promotes it.
+- **Masks** (`mask.rs`). The bit rules of `hod_a64::mask` (the module
+  doc of `mask.rs` has the table). `icmp` of lanes compares each pair
+  sign- or zero-extended to 64 bits; `fcmp` finds each lane's class
+  (unordered, less, equal, greater, one-hot 8/4/1/2) and tests it
+  against the predicate's code: `ucomiss`/`ucomisd` for `float` and
+  `double`, integer keys for `half` and `bfloat` (NaN when the magnitude
+  is above the infinity's, the key the magnitude negated for a set
+  sign, so `-0 == +0`). `select` on a mask, the casts between masks and
+  lanes, element access and shuffles of masks, stores (the bits above
+  `N` cleared up to the byte), and the reductions of masks
+  (`or`/`umax`/`smin` = any, `and`/`umin`/`smax`/`mul` = all,
+  `xor`/`add` = parity). An intrinsic of `i1` lanes other than a
+  reduction is `x64:vector-mask`.
+- **Calls** (`vcall.rs`, `spec/abi-x64.md` §4.3). A vector of class
+  `Fpr` or `Mem` travels as `abi::assign` places it (one or two `xmm`,
+  or memory). A mask of 2, 4, 8 or 16 elements travels as one `Lanes`
+  part: the lanes of one `xmm` (`16/N` bytes each, element `i` in lane
+  `i`). The producer writes each lane as 0 or 1 into a 16-byte slot
+  (the part's stack slot, else one of the function's own) and loads it;
+  the consumer stores the register to a slot and gathers bit 0 of each
+  lane (an `llc` producer writes all ones). Other mask lengths are
+  `x64:mask-vector`; with AVX-512 a mask is `x64:wide-vector-abi`
+  (§1.3 of `spec/abi-x64.md`, WP-140). Complex `float` is
+  `<2 x float>`, one `xmm`.
+- **Where `llc` differs.** `llc` computes most operations with packed
+  instructions after legalizing (widening odd lengths, promoting masks
+  to lanes); hod uses one instruction where SSE2 has it and a lane loop
+  otherwise, about 2.6× `llc -O0`'s text on generated vector code.
+  `llc` 19 aborts on some odd-length inserts (`INSERT_SUBVECTOR`
+  widening); hod does not.
+- **Not yet.** A constant mask other than zero as a `phi` incoming, a
+  call argument or a returned value is `x64:todo:constant`
+  (`common::materialize_gpr_const` has no mask form); `fp128` lanes
+  are `x64:vector-wide-element` (AArch64 lowers them).
+
+Evidence: `hod_x64/tests/{vector,lanes,mask,vcall}.rs` (WP-132 record).
+
 ## 6. Control flow
 
 ### 6.1 Reachability

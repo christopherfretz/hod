@@ -5,7 +5,6 @@
 ; <3 x i1> through memory: stored over a byte of ones (its padding bits
 ; are zero), and a global mask loaded and bitcast to i3.
 ;@ covers: spec/ir.md §5.4 integer
-;@ unsupported(x86_64): *
 ;@ stdout: mismatch: 8 | find: 1 2 | sum: 10 48 10 0
 ;@ stdout: fcmp: 13 4 -3 | mem: 5 2 | parity: 0 0
 

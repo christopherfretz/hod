@@ -364,7 +364,6 @@ fn sub_byte_alignment_matches_llc() {
 /// units it writes (`crates/hod_cg/src/emit/lines.rs`, `finish`,
 /// "`llc` writes nothing for a unit with neither code nor globals").
 #[test]
-#[ignore = "hod_cg writes no unit without code or globals; llc writes one with imports (WP-098)"]
 fn unit_with_only_imports_matches_llc() {
     let (Some(dwarfdump), Some(cc), Some(llc)) =
         (tool("llvm-dwarfdump"), tool("clang++-22"), tool("llc-22"))

@@ -90,10 +90,15 @@ module; several appear only in linked IR (`llvm-link`). The line writer of
 appending to the same two sections (planned: the writer today creates the
 sections, §4.6).
 
-A unit with neither globals nor code gets no debug sections at all from
-`llc` (checked with `llc` 19 by WP-053). `write_debug_info` still writes
-such a unit when asked to (it verifies clean); skipping it as `llc` does
-is the bridge's choice (§9).
+A unit without code is written by `llc` (`DwarfDebug::beginModule`)
+when it lists a global (placed or not), an enumeration, a retained type
+or an import whose scope is not a function's or a block's (a function's
+imports are its children); a unit that lists none of them gets no debug
+sections at all (checked with `llc` 19 by WP-053, and with `llc` 19 and
+22 by WP-111: a compile-only test with only `using` declarations, or
+only `-fno-eliminate-unused-debug-types` types). The bridge applies the
+same rule (`crates/hod_cg/src/emit/lines.rs`, `lists_entities`);
+`write_debug_info` itself writes whatever unit it is asked to.
 
 ### 1.3 Functions in COMDAT groups and in their own sections
 

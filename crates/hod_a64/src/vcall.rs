@@ -40,7 +40,8 @@
 //! unchanged (`hod_cg` puts it in `x16`).
 
 use hod_cg::abi::{LaneLoc, Part, PartKind};
-use hod_cg::{CgResult, FnCx, FrameRef};
+use hod_cg::error::CALL_PART_LANES;
+use hod_cg::{CgError, CgResult, FnCx, FrameRef};
 use hod_ir::{TypeKind, Value};
 use hod_mc_a64 as mc;
 use hod_mc_a64::{Elem, Load, MemSize, Reg, Size, VMemSize, VReg, VecBits};
@@ -126,10 +127,14 @@ fn vmem(bytes: u32) -> VMemSize {
 /// `Target::lanes_out`: the producer's side of a `Lanes` part.
 ///
 /// # Errors
-/// `Internal` for a part `abi::assign` does not make.
+/// `call:part-lanes` for a mask or promoted vector whose value side is a
+/// vector register; `Internal` for a part `abi::assign` does not make.
 pub fn lanes_out(cx: &mut FnCx<'_, A64>, part: &Part, from: LaneLoc, to: LaneLoc) -> CgResult<()> {
     if let Some(limb) = limb_of(cx, part)? {
         return limb_out(cx, limb, from, to);
+    }
+    if !value_side_ok(from) {
+        return Err(CgError::unsupported(CALL_PART_LANES));
     }
     let l = Lanes::of(cx, part)?;
     if l.bits != 1 {
@@ -208,10 +213,13 @@ fn promoted_out(cx: &mut FnCx<'_, A64>, l: Lanes, from: LaneLoc, to: LaneLoc) ->
 /// `Target::lanes_in`: the consumer's side of a `Lanes` part.
 ///
 /// # Errors
-/// `Internal` for a part `abi::assign` does not make.
+/// As [`lanes_out`].
 pub fn lanes_in(cx: &mut FnCx<'_, A64>, part: &Part, from: LaneLoc, to: LaneLoc) -> CgResult<()> {
     if let Some(limb) = limb_of(cx, part)? {
         return limb_in(cx, limb, from, to);
+    }
+    if !value_side_ok(to) {
+        return Err(CgError::unsupported(CALL_PART_LANES));
     }
     let l = Lanes::of(cx, part)?;
     if l.bits != 1 {
@@ -317,6 +325,18 @@ fn promoted_in(cx: &mut FnCx<'_, A64>, l: Lanes, from: LaneLoc, to: LaneLoc) -> 
     let mut at = Cursor::frame(cx, image, X16);
     store_fpr_at(cx, vmem(l.image_bytes()), v, &mut at);
     Ok(())
+}
+
+/// WP-167: whether the value side of a mask's or a promoted vector's
+/// lane move is one this module moves: a general register (a mask's
+/// bits) or a frame place. `hod_cg` hands a register value in a scratch
+/// register of its class; a vector register here is refused, never read
+/// as a general one.
+fn value_side_ok(value: LaneLoc) -> bool {
+    match value {
+        LaneLoc::Reg(r) => reg::is_gpr(r),
+        LaneLoc::Frame(_) => true,
+    }
 }
 
 /// WP-167: the limb (0 low, 1 high) a part of a lone `<1 x i128>`

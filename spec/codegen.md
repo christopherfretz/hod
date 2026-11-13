@@ -3693,7 +3693,11 @@ a register value is gathered in (or produced from) the scratch register
 of its own class: a `Gpr` mask in the general one, an `Fpr` value in
 the vector one (WP-167: AArch64's lone `<1 x i128>`, a `Q` register
 whose two 64-bit limbs travel as `Lanes { bits: 64, lane: 8, len: 2 }`
-parts, `first` the limb). The
+parts, `first` the limb). A target's hook refuses with
+`call:part-lanes` a register side of a class it does not move (x86-64:
+a value side that is not a general register, a place that is not an
+`xmm`; AArch64: a mask's or promoted vector's value side in a vector
+register), so no register is read as another class. The
 default hooks refuse with `call:part-lanes`;
 `Assignment { args, ret, ret_memory, sret_returned_in, stack_size, va,
 vector_regs_used }`. `ret_memory` is set when a return value does not fit

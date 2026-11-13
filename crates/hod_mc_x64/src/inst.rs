@@ -227,9 +227,66 @@ struct Rex {
     force: bool,
 }
 
+/// An instruction being laid out: its bytes in an integer, byte `i` in
+/// bits `8i..8i + 8`, so that laying it out is shifts and ors in
+/// registers, with no index to check and nothing to copy (WP-153). Its
+/// bytes and fields are those of the [`Inst`] it becomes.
+#[derive(Clone, Copy)]
+struct Acc {
+    bytes: u128,
+    len: u8,
+    site: u8,
+    lock_at: u8,
+    flags: u8,
+}
+
+impl Acc {
+    const EMPTY: Self = Self { bytes: 0, len: 0, site: 0, lock_at: 0, flags: 0 };
+
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    const fn push(&mut self, b: u8) {
+        self.bytes |= (b as u128) << (8 * self.len as u32);
+        self.len += 1;
+    }
+
+    /// The low `n` bytes of `v`, least significant first; `n` is 4 or less.
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    const fn push_imm(&mut self, v: u32, n: u8) {
+        let kept = if n >= 4 { v as u128 } else { v as u128 & ((1 << (8 * n as u32)) - 1) };
+        self.bytes |= kept << (8 * self.len as u32);
+        self.len += n;
+    }
+
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    const fn mark_site(&mut self, flag: u8) {
+        self.site = self.len;
+        self.flags |= flag;
+    }
+
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    const fn finish(self) -> Inst {
+        let all = self.bytes.to_le_bytes();
+        let Some(bytes) = all.first_chunk::<MAX_LEN>() else { unreachable!() };
+        Inst {
+            bytes: *bytes,
+            len: self.len,
+            site: self.site,
+            lock_at: self.lock_at,
+            flags: self.flags,
+        }
+    }
+}
+
 /// Prefixes, REX and opcode. `seg` is the memory operand's segment
-/// override.
-const fn head(out: &mut Inst, op: Op, seg: Option<crate::Seg>, rex: Rex) {
+/// override. Inlined into each encoder, so that the instruction being
+/// built stays in registers (WP-153).
+#[allow(clippy::inline_always)]
+#[inline(always)]
+const fn head(out: &mut Acc, op: Op, seg: Option<crate::Seg>, rex: Rex) {
     if let Some(seg) = seg {
         out.push(seg.prefix());
     }
@@ -256,7 +313,7 @@ const fn head(out: &mut Inst, op: Op, seg: Option<crate::Seg>, rex: Rex) {
 /// 8-bit register and `rm_byte` that a register `rm` is one. Immediate
 /// bytes are pushed by the caller.
 pub(crate) const fn modrm(op: Op, reg: u8, reg_byte: bool, rm: Rm, rm_byte: bool) -> Inst {
-    let mut out = Inst::EMPTY;
+    let mut out = Acc::EMPTY;
     let r = (reg >> 3) & 1;
     let force_reg = reg_byte && reg >= 4 && reg < 8;
     match rm {
@@ -276,7 +333,7 @@ pub(crate) const fn modrm(op: Op, reg: u8, reg_byte: bool, rm: Rm, rm_byte: bool
             mem_operand(&mut out, reg & 7, m);
         }
     }
-    out
+    out.finish()
 }
 
 /// `ModRM`, `SIB` and displacement for a memory operand: the shortest
@@ -284,14 +341,16 @@ pub(crate) const fn modrm(op: Op, reg: u8, reg_byte: bool, rm: Rm, rm_byte: bool
 /// displacement is then the instruction's site), a `SIB` byte only when
 /// the base is `rsp`/`r12`, there is an index, or there is neither base nor
 /// RIP (`spec/mc-x64.md` "Memory operands").
-const fn mem_operand(out: &mut Inst, reg: u8, m: Mem) {
+#[allow(clippy::inline_always)]
+#[inline(always)]
+const fn mem_operand(out: &mut Acc, reg: u8, m: Mem) {
     let disp = m.disp();
     let reg = reg << 3;
     match (m.get_base(), m.get_index()) {
         (Base::Rip, _) => {
             out.push(reg | 0b101);
-            out.mark_site(Fixup::Rel32);
-            out.push_imm(disp as u32 as u64, 4);
+            out.mark_site(SITE_REL32);
+            out.push_imm(disp as u32, 4);
         }
         (Base::None, index) => {
             out.push(reg | 0b100);
@@ -301,9 +360,9 @@ const fn mem_operand(out: &mut Inst, reg: u8, m: Mem) {
             };
             out.push(sib);
             if m.is_abs32() {
-                out.mark_site(Fixup::Abs32);
+                out.mark_site(SITE_ABS32);
             }
-            out.push_imm(disp as u32 as u64, 4);
+            out.push_imm(disp as u32, 4);
         }
         (Base::Reg(base), index) => {
             // mod: no displacement, disp8 or disp32. A base whose low bits
@@ -332,9 +391,9 @@ const fn mem_operand(out: &mut Inst, reg: u8, m: Mem) {
                 0b01 => out.push(disp as u8),
                 0b10 => {
                     if m.is_abs32() {
-                        out.mark_site(Fixup::Abs32);
+                        out.mark_site(SITE_ABS32);
                     }
-                    out.push_imm(disp as u32 as u64, 4);
+                    out.push_imm(disp as u32, 4);
                 }
                 _ => {}
             }
@@ -345,17 +404,17 @@ const fn mem_operand(out: &mut Inst, reg: u8, m: Mem) {
 /// An instruction whose register is in the opcode's low three bits
 /// (`B8+r`, `50+r`, `0F C8+r`, ...). `byte` says it is an 8-bit register.
 pub(crate) const fn plus_r(op: Op, r: Reg, byte: bool) -> Inst {
-    let mut out = Inst::EMPTY;
+    let mut out = Acc::EMPTY;
     let op = Op { opcode: op.opcode | r.low(), ..op };
     head(&mut out, op, None, Rex { bits: r.high(), force: byte && r.needs_rex_as_byte() });
-    out
+    out.finish()
 }
 
 /// An instruction with no register operand in its encoding.
 pub(crate) const fn plain(op: Op) -> Inst {
-    let mut out = Inst::EMPTY;
+    let mut out = Acc::EMPTY;
     head(&mut out, op, None, Rex { bits: 0, force: false });
-    out
+    out.finish()
 }
 
 /// Appends an immediate of `n` bytes.

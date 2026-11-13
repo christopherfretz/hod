@@ -13,7 +13,7 @@ use std::path::Path;
 pub const FORMAT: &str = "hod-bench 1";
 
 /// The names of a line's fields, in order.
-pub const FIELDS: [&str; 25] = [
+pub const FIELDS: [&str; 26] = [
     "status",
     "input",
     "class",
@@ -39,7 +39,12 @@ pub const FIELDS: [&str; 25] = [
     "functions_per_s",
     "phases",
     "detail",
+    "instructions",
 ];
+
+/// The fields of the files written before `instructions` was added
+/// (WP-153): read, never written.
+const FIELDS_BEFORE_INSTRUCTIONS: usize = 25;
 
 /// What a tool did with an input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -206,6 +211,10 @@ pub struct Record {
     pub phases: Vec<(String, u64)>,
     /// The reason of a decline or a fallback; what failed, for an error.
     pub detail: String,
+    /// The instructions one run executed, counted by `valgrind
+    /// --tool=callgrind` (`--instructions`): a figure the load of the
+    /// machine does not change.
+    pub instructions: Option<u64>,
 }
 
 impl Record {
@@ -235,6 +244,7 @@ impl Record {
             size_ratio: None,
             phases: Vec::new(),
             detail: String::new(),
+            instructions: None,
         }
     }
 
@@ -314,15 +324,22 @@ impl Record {
             number(self.functions_per_s()),
             escape(&phases.join(",")),
             escape(&self.detail),
+            number(self.instructions),
         ]
         .join("\t")
     }
 
     /// Reads a line written by [`Record::to_line`].
     pub fn parse(line: &str) -> Result<Self, String> {
+        Self::parse_fields(line, FIELDS.len())
+    }
+
+    /// Reads a line of `count` fields: [`FIELDS`], or the first
+    /// [`FIELDS_BEFORE_INSTRUCTIONS`] of them (a file of before WP-153).
+    fn parse_fields(line: &str, count: usize) -> Result<Self, String> {
         let fields: Vec<&str> = line.split('\t').collect();
-        if fields.len() != FIELDS.len() {
-            return Err(format!("{} fields, not {}", fields.len(), FIELDS.len()));
+        if fields.len() != count {
+            return Err(format!("{} fields, not {count}", fields.len()));
         }
         let bad = |index: usize| format!("invalid {} '{}'", FIELDS[index], fields[index]);
         let number = |index: usize| match fields[index] {
@@ -370,6 +387,7 @@ impl Record {
             size_ratio: ratio(20)?,
             phases,
             detail: unescape(fields[24]),
+            instructions: if count > FIELDS_BEFORE_INSTRUCTIONS { number(25)? } else { None },
         };
         // The two throughput fields are derived; they must be numbers.
         number(21)?;
@@ -480,6 +498,7 @@ impl Results {
             }
         }
         let mut results = Self::default();
+        let mut count = FIELDS.len();
         for (index, line) in lines {
             let at = |message: String| format!("line {}: {message}", index + 1);
             if let Some(header) = line.strip_prefix("# ") {
@@ -487,9 +506,13 @@ impl Results {
                     .split_once('\t')
                     .ok_or_else(|| at("a header line without a value".to_owned()))?;
                 if key == "fields" {
-                    if value != FIELDS.join("\t") {
+                    count = if value == FIELDS.join("\t") {
+                        FIELDS.len()
+                    } else if value == FIELDS[..FIELDS_BEFORE_INSTRUCTIONS].join("\t") {
+                        FIELDS_BEFORE_INSTRUCTIONS
+                    } else {
                         return Err(at("the fields are not this version's".to_owned()));
-                    }
+                    };
                 } else if !results.records.is_empty() {
                     return Err(at("a header line after the records".to_owned()));
                 } else if results.get(key).is_some() {
@@ -498,7 +521,7 @@ impl Results {
                     results.header.push((key.to_owned(), unescape(value)));
                 }
             } else {
-                results.records.push(Record::parse(line).map_err(at)?);
+                results.records.push(Record::parse_fields(line, count).map_err(at)?);
             }
         }
         Ok(results)
@@ -679,7 +702,7 @@ mod tests {
         assert_eq!((error.ir_bytes_per_s(), error.spread_bp()), (None, None));
     }
 
-    // "Results file": a record is 25 fields, and reads back as written.
+    // "Results file": a record is 26 fields, and reads back as written.
     #[test]
     fn record_lines_round_trip() {
         let llc = sample();
@@ -688,7 +711,7 @@ mod tests {
             line,
             "ok\tstl-heavy\tlarge\t-\tllc\t5983380\t3308\tfnv1a64:0123456789abcdef\t3\t\
              650000\t700000\t910000\t640000\t100324\t100200\t100400\t2167368\t-\t-\t-\t-\t\
-             9205200\t5089\t-\t-"
+             9205200\t5089\t-\t-\t-"
         );
         assert_eq!(line.split('\t').count(), FIELDS.len());
         assert_eq!(Record::parse(&line).unwrap(), llc);
@@ -708,7 +731,7 @@ mod tests {
         hod.set_ratios(&llc);
         let line = hod.to_line();
         assert!(line.starts_with("fallback\tstl-heavy\tlarge\tg\thod+fallback\t"), "{line}");
-        assert!(line.ends_with("\t1.0000\t1.0000\t1.0000\t1.0000\t9205200\t5089\tread=410,decide=3,total=651000\tcodegen-not-implemented"), "{line}");
+        assert!(line.ends_with("\t1.0000\t1.0000\t1.0000\t1.0000\t9205200\t5089\tread=410,decide=3,total=651000\tcodegen-not-implemented\t-"), "{line}");
         assert_eq!(Record::parse(&line).unwrap(), hod);
 
         // An error has no numbers, and its text is escaped.
@@ -720,11 +743,42 @@ mod tests {
         assert_eq!(
             line,
             "error\tsmall-c\tsmall\t-\tllc\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t\
-             llc exited with status 1:\\tbad\\nmodule \\\\ -"
+             llc exited with status 1:\\tbad\\nmodule \\\\ -\t-"
         );
         assert_eq!(Record::parse(&line).unwrap(), error);
         let dash = Record { detail: "-".to_owned(), ..error };
         assert_eq!(Record::parse(&dash.to_line()).unwrap(), dash);
+
+        // WP-153: the instructions of a counted run, last.
+        let counted = Record { instructions: Some(565_048_220), ..sample() };
+        let line = counted.to_line();
+        assert!(line.ends_with("\t-\t-\t565048220"), "{line}");
+        assert_eq!(Record::parse(&line).unwrap(), counted);
+    }
+
+    // WP-153: a file of before `instructions` (25 fields) is read, its
+    // records without instructions; it is written with 26.
+    #[test]
+    fn files_without_instructions_are_read() {
+        let mut results = Results::default();
+        results.set("machine", "m");
+        results.records.push(sample());
+        let new = results.to_text();
+        let old: String = new
+            .lines()
+            .map(|line| match line.strip_suffix("\tinstructions") {
+                Some(fields) => fields.to_owned(),
+                None if line.starts_with('#') => line.to_owned(),
+                None => line.rsplit_once('\t').unwrap().0.to_owned(),
+            })
+            .map(|line| line + "\n")
+            .collect();
+        assert_ne!(old, new);
+        assert_eq!(Results::parse(&old).unwrap(), results);
+        assert_eq!(Results::parse(&old).unwrap().to_text(), new);
+        // A 25-field record under the 26-field line is refused.
+        let mixed = new.replace(&sample().to_line(), old.lines().last().unwrap());
+        assert_eq!(Results::parse(&mixed).unwrap_err(), "line 4: 25 fields, not 26");
     }
 
     // "Results file": what is not a record is refused, with the field.
@@ -736,7 +790,7 @@ mod tests {
             fields[index] = value;
             Record::parse(&fields.join("\t")).unwrap_err()
         };
-        assert_eq!(Record::parse("ok\tx").unwrap_err(), "2 fields, not 25");
+        assert_eq!(Record::parse("ok\tx").unwrap_err(), "2 fields, not 26");
         assert_eq!(with(0, "fine"), "invalid status 'fine'");
         assert_eq!(with(2, "huge"), "invalid class 'huge'");
         assert_eq!(with(3, "yes"), "invalid debug 'yes'");
@@ -777,7 +831,7 @@ mod tests {
             ("# hod-bench 1\n# machine\n", "line 2: a header line without a value"),
             ("# hod-bench 1\n# a\t1\n# a\t2\n", "line 3: a second 'a'"),
             ("# hod-bench 1\n# fields\tstatus\n", "line 2: the fields are not this version's"),
-            ("# hod-bench 1\nok\n", "line 2: 1 fields, not 25"),
+            ("# hod-bench 1\nok\n", "line 2: 1 fields, not 26"),
         ] {
             assert_eq!(Results::parse(bad).unwrap_err(), message);
         }

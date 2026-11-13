@@ -134,3 +134,53 @@ fn one_input_end_to_end() {
         assert!(results.get("floor_us").unwrap().parse::<u64>().unwrap() > 0);
     }
 }
+
+// "Cross runs": the same tiny input for the architecture that is not this
+// machine's, produced by clang for it and built by llc and by hod for it.
+#[test]
+fn a_cross_run_builds_for_its_target() {
+    let Some(arch) = irdiff::Arch::ALL.into_iter().find(|&arch| Some(arch) != irdiff::Arch::host())
+    else {
+        return;
+    };
+    let scratch = Scratch::new("bench-real-cross");
+    let mut config = Config::new(scratch.join("ws"), scratch.join("build"));
+    if find_llvm(None, &Search::from_env()).ok().flatten().is_none() {
+        assert!(!hod_testutil::tools_required(), "required tools are missing: llc");
+        eprintln!("note: no llc found; skipping this tool-backed test");
+        return;
+    }
+    config.require_tools = hod_testutil::tools_required();
+    std::fs::create_dir_all(scratch.join("ws/bench/src")).unwrap();
+    std::fs::write(
+        scratch.join("ws/bench/manifest"),
+        "common = -O0 -S -emit-llvm\n[tiny]\nclass = small\nsource = tiny.c\nflags = -std=c17\n",
+    )
+    .unwrap();
+    std::fs::write(scratch.join("ws/bench/src/tiny.c"), SOURCE).unwrap();
+    config.hod = Some(irdiff::build_workspace_hod(&build_dir()).expect("hod builds"));
+    (config.runs, config.target) = (1, Some(arch));
+
+    let run = bench::run(&config).expect("the run can be made");
+    let summary = run.summary(false);
+    if run.results.is_none() {
+        assert!(!config.require_tools, "{summary}");
+        eprintln!("note: skipping this tool-backed test:\n{summary}");
+        return;
+    }
+    assert_eq!(run.exit_status(), 0, "{summary}");
+    let results = run.results.as_ref().unwrap();
+    assert_eq!(results.get("target"), Some(arch.triple()), "{summary}");
+    let ir =
+        scratch.join(format!("build/bench/inputs/clang{}-{}/tiny.ll", LLVM_MAJORS[0], arch.name()));
+    if let Ok(ir) = std::fs::read_to_string(&ir) {
+        assert!(ir.contains(&format!("target triple = \"{}", arch.triple())), "{ir}");
+    }
+    for input in ["tiny", "tiny-g"] {
+        let llc = results.find(input, Tool::Llc).unwrap();
+        assert_eq!(llc.status, Status::Ok, "{summary}");
+        let hod = results.find(input, Tool::Hod).unwrap();
+        assert!(matches!(hod.status, Status::Ok | Status::Declined), "{summary}");
+        assert!(results.find(input, Tool::HodFallback).unwrap().produced(), "{summary}");
+    }
+}

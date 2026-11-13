@@ -37,10 +37,14 @@ const SHORT: u32 = 2;
 /// pass only adds, and any set found is valid.
 const MAX_PASSES: u32 = 8;
 
+/// How many ranges [`Edits::index_near`] steps over before it searches.
+const STEPS: usize = 8;
+
 /// The edits of one function: byte ranges removed, in offset order, with
-/// the bytes removed before each.
-#[derive(Default)]
-struct Edits {
+/// the bytes removed before each. It lives in the worker's `Scratch`, so a
+/// warm one allocates nothing (WP-153).
+#[derive(Default, Debug)]
+pub(crate) struct Edits {
     /// `(at, len)`, ascending, disjoint.
     ranges: Vec<(u32, u32)>,
     /// `before[i]`: the bytes the ranges before `ranges[i]` remove.
@@ -78,13 +82,62 @@ impl Edits {
 
     /// Where offset `x` of the code before the edits is after them; an
     /// offset inside a removed range goes to its start.
+    #[cfg(test)]
     fn map(&self, x: u32) -> u32 {
-        let i = self.ranges.partition_point(|&(at, _)| at < x);
+        self.moved(self.ranges.partition_point(|&(at, _)| at < x), x)
+    }
+
+    /// [`Edits::map`] for offsets that come in about ascending order:
+    /// `hint` is the index the last offset found, and is moved to this
+    /// one's. The answer is the same; finding it costs a few steps from
+    /// the last one instead of a search of every range (WP-153).
+    #[inline]
+    fn map_near(&self, hint: &mut usize, x: u32) -> u32 {
+        *hint = self.index_near(*hint, x);
+        self.moved(*hint, x)
+    }
+
+    /// The first range that starts at or after `x`, looked for from
+    /// `hint`: at most [`STEPS`] ranges one by one, then a binary search
+    /// of the side that is left.
+    #[inline]
+    fn index_near(&self, hint: usize, x: u32) -> usize {
+        let r = &self.ranges;
+        let mut i = hint.min(r.len());
+        if i > 0 && r[i - 1].0 >= x {
+            // Backward: `r[i]` starts at or after `x` from here on.
+            for _ in 0..STEPS {
+                i -= 1;
+                if i == 0 || r[i - 1].0 < x {
+                    return i;
+                }
+            }
+            return r[..i].partition_point(|&(at, _)| at < x);
+        }
+        // Forward: every range before `i` starts before `x`.
+        for _ in 0..STEPS {
+            if i == r.len() || r[i].0 >= x {
+                return i;
+            }
+            i += 1;
+        }
+        i + r[i..].partition_point(|&(at, _)| at < x)
+    }
+
+    /// `x` moved by the ranges before index `i` (the first range that
+    /// starts at or after `x`).
+    #[inline]
+    fn moved(&self, i: usize, x: u32) -> u32 {
         if i == 0 {
             return x;
         }
         let (at, len) = self.ranges[i - 1];
         x - self.before[i - 1] - (x - at).min(len)
+    }
+
+    /// The bytes its tables have allocated.
+    pub(crate) fn allocated_bytes(&self) -> usize {
+        self.ranges.capacity() * size_of::<(u32, u32)>() + self.before.capacity() * size_of::<u32>()
     }
 }
 
@@ -117,16 +170,21 @@ impl<T: Target> FnCx<'_, T> {
         if self.s.cuts.is_empty() && self.s.relax.is_empty() {
             return Ok(());
         }
-        let mut edits = Edits::default();
+        let mut edits = std::mem::take(&mut self.s.edits);
         let mut chosen = std::mem::take(&mut self.s.chosen);
         chosen.clear();
         chosen.resize(self.s.relax.len(), false);
         let mut cuts = std::mem::take(&mut self.s.cuts);
         cuts.sort_unstable();
         let relax = std::mem::take(&mut self.s.relax);
+        // Whether `edits` was built from the final choice.
+        let mut current = false;
         for _ in 0..MAX_PASSES {
             edits.build(&cuts, &relax, &chosen);
             let mut changed = false;
+            // The branches are in offset order: each start is found from
+            // the last, each target from its branch.
+            let mut near = 0;
             for (r, chosen) in relax.iter().zip(chosen.iter_mut()) {
                 if *chosen {
                     continue;
@@ -138,7 +196,9 @@ impl<T: Target> FnCx<'_, T> {
                 else {
                     continue;
                 };
-                let (s, t) = (i64::from(edits.map(r.start)), i64::from(edits.map(target)));
+                let s = i64::from(edits.map_near(&mut near, r.start));
+                let mut from = near;
+                let t = i64::from(edits.map_near(&mut from, target));
                 // Forward: the target moves by what the branch itself
                 // loses, so the distance from the end of either form is
                 // the same. Backward: counted from the short form's end.
@@ -149,10 +209,13 @@ impl<T: Target> FnCx<'_, T> {
                 }
             }
             if !changed {
+                current = true;
                 break;
             }
         }
-        edits.build(&cuts, &relax, &chosen);
+        if !current {
+            edits.build(&cuts, &relax, &chosen);
+        }
 
         // The short forms: the opcode now, the field when patched below.
         let base = self.mark.code as usize;
@@ -192,12 +255,21 @@ impl<T: Target> FnCx<'_, T> {
         let mut relax = relax;
         relax.clear();
         self.s.relax = relax;
+        self.s.edits = edits;
         Ok(())
     }
 
     /// Every offset row of the function, moved by `edits` (§5.6.15).
     fn move_rows(&mut self, edits: &Edits) {
-        let map = |x: u32| edits.map(x);
+        // Each table's offsets ascend, or nearly: each is found from the
+        // last (a table's first one searches back).
+        let near = std::cell::Cell::new(0);
+        let map = |x: u32| {
+            let mut at = near.get();
+            let moved = edits.map_near(&mut at, x);
+            near.set(at);
+            moved
+        };
         self.s.labels.map_offsets(map);
         let m = self.mark;
         for row in &mut self.out.relocs[m.relocs as usize..] {
@@ -267,5 +339,38 @@ mod tests {
         edits.build(&[(4, 3)], &relax, &[false]);
         assert_eq!(edits.ranges, [(4, 3)]);
         assert_eq!(edits.map(26), 23);
+    }
+
+    /// WP-153: an offset found from any hint moves as one found by a
+    /// search of every range, in any order, and the hint becomes the
+    /// searched index.
+    #[test]
+    fn a_hint_finds_what_a_search_finds() {
+        let mut edits = Edits::default();
+        let cuts: Vec<(u32, u32)> =
+            (0..40).map(|i| (7 * i * i % 997 + 10 * i, 1 + i % 4)).collect();
+        let mut cuts = cuts;
+        cuts.sort_unstable();
+        cuts.dedup_by_key(|c| c.0);
+        let mut last = 0;
+        cuts.retain(|&(at, len)| {
+            let keep = at >= last;
+            if keep {
+                last = at + len;
+            }
+            keep
+        });
+        edits.build(&cuts, &[], &[]);
+        let mut seed = 12345u32;
+        let mut hint = 0;
+        for _ in 0..5000 {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
+            let x = (seed >> 8) % 1400;
+            let start = (seed as usize >> 4) % (edits.ranges.len() + 2);
+            let mut from = start;
+            assert_eq!(edits.map_near(&mut from, x), edits.map(x), "{x} from {start}");
+            assert_eq!(from, edits.ranges.partition_point(|&(at, _)| at < x));
+            assert_eq!(edits.map_near(&mut hint, x), edits.map(x));
+        }
     }
 }

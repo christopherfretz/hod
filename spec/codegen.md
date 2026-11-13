@@ -4481,7 +4481,7 @@ pub trait Target: Sized + Sync {
 | `dynamic_slot(cx, ptr, size, align)` | the entry code for one over-aligned slot: allocate it (§5.2) and store its address to `ptr` |
 | `lower(cx, inst)` | every instruction that is not a `phi`, including terminators and calls. One `match` on the opcode that dispatches to the target's modules, one per instruction group, so that groups are separate work packages |
 | `assign(types, sig, out)` | §7.2 |
-| `for_function(module, body)` | the target to compile `body` with, when it is not `self`: `compile_function` calls it once, before anything else, and every other member is called on the value it returns for the whole function. x86-64 returns `self` with the function's `target-cpu`/`target-features` (§5.6.9); the default, `None`, keeps `self` (AArch64: its convention does not depend on a function's features) |
+| `for_function(module, body)` | the target to compile `body` with, when it is not `self`: `compile_function` calls it once, before anything else, and every other member is called on the value it returns for the whole function. x86-64 returns `self` with the function's `target-cpu`/`target-features` (§5.6.9), and `None` for a target that is already a function's own (`X64::of_attrs`, field `own`: the driver makes one per attribute set, WP-166); the default, `None`, keeps `self` (AArch64: its convention does not depend on a function's features) |
 | `patch_branch(code, at, kind, displacement) -> bool` | §6.2; `false` when the field cannot hold the displacement |
 | constants | `TRAP` (a byte slice), the function alignment, the padding byte between functions, the stack alignment |
 

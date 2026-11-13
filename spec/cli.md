@@ -450,7 +450,12 @@ is produced, partial or otherwise:
    `-x87` to the code generator: refused only in a function with an
    `x86_fp80` value, §5.6.9): a refusal is `attr:target-feature-<class>`,
    with the item as the detail, in the function for an attribute and of
-   the module for `-mattr`.
+   the module for `-mattr`. A function's attributes are judged once per
+   attribute set (`FnAttrsId`) of the module, not once per function, and
+   on x86-64 the set's target (`hod_x64::X64::of_attrs`) is made then
+   too: every function of the set is compiled with it, and
+   `X64::for_function` keeps a target made this way (`own`). The verdict
+   and the code are those of judging each function (WP-166).
 4. Every body is compiled (`hod_cg::compile_function` with `hod_a64`),
    on the threads of "Threads", each with its own scratch state, into
    chunks of whole functions in module order. A `CgError::Unsupported`

@@ -114,6 +114,14 @@ struct Job<'a, 'io> {
     phases: &'a mut Phases,
 }
 
+/// The message of a hod started as another hod's fallback or converter.
+fn fallback_loop() -> String {
+    format!(
+        "this hod was started by another hod, as its fallback or its bitcode converter \
+         ({ENV_IN_FALLBACK} is set); those must be the real llc and the real llvm-dis"
+    )
+}
+
 impl Job<'_, '_> {
     fn diagnostic(&mut self, message: &str) {
         // A closed standard error is not something to report anywhere.
@@ -179,11 +187,7 @@ impl Job<'_, '_> {
             return self.fail(EXIT_ERROR, "usage", message);
         }
         if env.in_fallback {
-            let message = format!(
-                "this hod was started by another hod, as its fallback or its bitcode converter \
-                 ({ENV_IN_FALLBACK} is set); those must be the real llc and the real llvm-dis"
-            );
-            return self.fail(EXIT_ERROR, "fallback-loop", &message);
+            return self.fail(EXIT_ERROR, "fallback-loop", &fallback_loop());
         }
         if let Some(rejected) = &line.rejected {
             // hod cannot tell what the rest of such a command line means, so
@@ -231,7 +235,7 @@ impl Job<'_, '_> {
             let converted = convert::run(&llvm_dis, &input);
             // The bitcode is not needed again (the fallback's copy is
             // `piped`).
-            input = Cow::Borrowed(&[]);
+            drop(input);
             self.record.conversion_time = Some(started.elapsed());
             // The attempt that declined the bitcode is in this phase too.
             self.phases.end("convert");
@@ -240,7 +244,8 @@ impl Job<'_, '_> {
                     self.record.target =
                         hod::effective_triple(&text, &line.options).map(str::to_owned);
                     report = Report::default();
-                    compiled = compile(&mut Cow::Owned(text), &line.options, &settings, &mut report);
+                    compiled =
+                        compile(&mut Cow::Owned(text), &line.options, &settings, &mut report);
                 }
                 Err(failure) => {
                     if let Some(llc) = self.settings.hybrid().map(Path::to_path_buf) {
@@ -604,10 +609,11 @@ mod tests {
     #[test]
     fn threads_option_environment_and_jobserver() {
         let seen = std::cell::Cell::new(None);
-        let probe = |_: &mut Cow<'_, [u8]>, _: &Options, settings: &hod::Settings, _: &mut Report| {
-            seen.set(Some((settings.threads.max, settings.threads.tokens.is_some())));
-            Ok(OBJECT.to_vec())
-        };
+        let probe =
+            |_: &mut Cow<'_, [u8]>, _: &Options, settings: &hod::Settings, _: &mut Report| {
+                seen.set(Some((settings.threads.max, settings.threads.tokens.is_some())));
+                Ok(OBJECT.to_vec())
+            };
         let make = Some("-j8 --jobserver-auth=fifo:/nonexistent/fifo".to_owned());
         let threads = |args: &[&str], explicit: Option<usize>, makeflags: &Option<String>| {
             let env = with(&Environment::default(), |e| {
@@ -721,11 +727,13 @@ mod tests {
         assert_eq!(ran.exit, EXIT_UNSUPPORTED);
         assert_eq!(phases(), "read parse classify compile total");
         // A module hod builds reads its bodies and generates code.
-        let ran = run_with(&["-filetype=obj", "--strict"], &env, &hod::compile_releasing, DECLARATIONS);
+        let ran =
+            run_with(&["-filetype=obj", "--strict"], &env, &hod::compile_releasing, DECLARATIONS);
         assert_eq!(ran.exit, EXIT_OK);
         assert_eq!(phases(), "read parse classify bodies emission object compile write total");
         // One declined by the code generator reads its bodies too.
-        let ran = run_with(&["-filetype=obj", "--strict"], &env, &hod::compile_releasing, CG_DECLINED);
+        let ran =
+            run_with(&["-filetype=obj", "--strict"], &env, &hod::compile_releasing, CG_DECLINED);
         assert_eq!(ran.exit, EXIT_UNSUPPORTED);
         assert_eq!(phases(), "read parse classify bodies compile total");
         // A module declined before it is read has none of them.
@@ -872,10 +880,11 @@ mod tests {
     #[test]
     fn options_reach_the_code_generator() {
         let seen = std::cell::RefCell::new(None);
-        let record = |_: &mut Cow<'_, [u8]>, options: &Options, _: &hod::Settings, _: &mut Report| {
-            *seen.borrow_mut() = Some(options.clone());
-            Ok(Vec::new())
-        };
+        let record =
+            |_: &mut Cow<'_, [u8]>, options: &Options, _: &hod::Settings, _: &mut Report| {
+                *seen.borrow_mut() = Some(options.clone());
+                Ok(Vec::new())
+            };
         let ran = run_with(
             &["-O0", "-relocation-model=pic", "-filetype=obj", "-function-sections", "-o", "-"],
             &Environment::default(),
@@ -894,8 +903,13 @@ mod tests {
     /// it keeps what it was given.
     fn text_only(
         seen: &std::cell::RefCell<Vec<Vec<u8>>>,
-    ) -> impl Fn(&mut Cow<'_, [u8]>, &Options, &hod::Settings, &mut Report) -> Result<Vec<u8>, CompileError> + '_
-    {
+    ) -> impl Fn(
+        &mut Cow<'_, [u8]>,
+        &Options,
+        &hod::Settings,
+        &mut Report,
+    ) -> Result<Vec<u8>, CompileError>
+    + '_ {
         |input: &mut Cow<'_, [u8]>, _: &Options, _: &hod::Settings, _: &mut Report| {
             seen.borrow_mut().push(input.to_vec());
             match InputKind::detect(input) {
@@ -1004,15 +1018,15 @@ mod tests {
         assert_eq!(fields(&log)[1][5], "aarch64-unknown-linux-gnu");
 
         // What the text reader says of converted text is the reason.
-        let malformed =
-            |input: &mut Cow<'_, [u8]>, _: &Options, _: &hod::Settings, _: &mut Report| match InputKind::detect(
-                input,
-            ) {
-                InputKind::Bitcode => Err(Unsupported::module(Construct::BitcodeInput).into()),
-                InputKind::Text | InputKind::Module => {
-                    Err(CompileError::MalformedInput("line 2: expected type".into()))
-                }
-            };
+        let malformed = |input: &mut Cow<'_, [u8]>,
+                         _: &Options,
+                         _: &hod::Settings,
+                         _: &mut Report| match InputKind::detect(input) {
+            InputKind::Bitcode => Err(Unsupported::module(Construct::BitcodeInput).into()),
+            InputKind::Text | InputKind::Module => {
+                Err(CompileError::MalformedInput("line 2: expected type".into()))
+            }
+        };
         let ran = run_with(&["-filetype=obj"], &env, &malformed, BITCODE);
         assert_eq!(ran.exit, EXIT_ERROR);
         assert!(ran.stderr.starts_with("hod: error: malformed input: line 2"), "{}", ran.stderr);
@@ -1095,7 +1109,8 @@ mod tests {
         let env = with(&Environment::default(), |e| {
             e.coverage_log = Some(log.clone());
         });
-        let ran = run_with(&["-filetype=obj", "-o", "-"], &env, &hod::compile_releasing, CG_DECLINED);
+        let ran =
+            run_with(&["-filetype=obj", "-o", "-"], &env, &hod::compile_releasing, CG_DECLINED);
         assert_eq!(ran.exit, EXIT_UNSUPPORTED);
         assert!(ran.stdout.is_empty());
         assert_eq!(
@@ -1105,13 +1120,14 @@ mod tests {
              HOD_FALLBACK_LLC)\n"
         );
 
-        let in_function = |_: &mut Cow<'_, [u8]>, _: &Options, _: &hod::Settings, _: &mut Report| {
-            Err(Unsupported::in_function(
-                Construct::Named("x64:todo:abi".into()),
-                Some("_Z1fv".into()),
-            )
-            .into())
-        };
+        let in_function =
+            |_: &mut Cow<'_, [u8]>, _: &Options, _: &hod::Settings, _: &mut Report| {
+                Err(Unsupported::in_function(
+                    Construct::Named("x64:todo:abi".into()),
+                    Some("_Z1fv".into()),
+                )
+                .into())
+            };
         let ran = run_with(&["-filetype=obj", "--strict"], &env, &in_function, MODULE);
         assert_eq!(ran.exit, EXIT_UNSUPPORTED);
         assert_eq!(

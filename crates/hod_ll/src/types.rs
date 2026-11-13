@@ -199,13 +199,14 @@ impl<L: Layering> Parser<'_, '_, L> {
         let at = self.tok.start;
         let mut ty = match self.tok.kind {
             Tok::IntType => {
-                let ty = match self.text() {
-                    b"i8" => TypeId::I8,
-                    b"i32" => TypeId::I32,
-                    b"i64" => TypeId::I64,
-                    b"i16" => TypeId::I16,
-                    b"i1" => TypeId::I1,
-                    text => {
+                let ty = match self.tok.kw {
+                    Kw::I8 => TypeId::I8,
+                    Kw::I32 => TypeId::I32,
+                    Kw::I64 => TypeId::I64,
+                    Kw::I16 => TypeId::I16,
+                    Kw::I1 => TypeId::I1,
+                    _ => {
+                        let text = self.text();
                         let bits = parse_u32(&text[1..]).unwrap_or(u32::MAX);
                         ir(at, self.module.types.int(bits))?
                     }
@@ -263,8 +264,8 @@ impl<L: Layering> Parser<'_, '_, L> {
 
     fn word_type(&mut self) -> PResult<TypeId> {
         let at = self.tok.start;
-        let ty = match self.text() {
-            b"ptr" => {
+        let ty = match self.tok.kw {
+            Kw::Ptr => {
                 self.bump();
                 if !self.eat_word(Kw::Addrspace) {
                     return Ok(TypeId::PTR);
@@ -274,33 +275,33 @@ impl<L: Layering> Parser<'_, '_, L> {
                 self.expect(Tok::RParen, "expected ')' in an address space")?;
                 return ir(at, self.module.types.ptr(space));
             }
-            b"void" => TypeId::VOID,
-            b"half" => TypeId::HALF,
-            b"bfloat" => TypeId::BFLOAT,
-            b"float" => TypeId::FLOAT,
-            b"double" => TypeId::DOUBLE,
-            b"x86_fp80" => TypeId::X86_FP80,
-            b"fp128" => TypeId::FP128,
-            b"label" => TypeId::LABEL,
-            b"metadata" => TypeId::METADATA,
-            b"token" => TypeId::TOKEN,
-            b"ppc_fp128" => {
+            Kw::Void => TypeId::VOID,
+            Kw::Half => TypeId::HALF,
+            Kw::Bfloat => TypeId::BFLOAT,
+            Kw::Float => TypeId::FLOAT,
+            Kw::Double => TypeId::DOUBLE,
+            Kw::X86Fp80 => TypeId::X86_FP80,
+            Kw::Fp128 => TypeId::FP128,
+            Kw::Label => TypeId::LABEL,
+            Kw::Metadata => TypeId::METADATA,
+            Kw::Token => TypeId::TOKEN,
+            Kw::PpcFp128 => {
                 // Not a type of `hod_ir`: noted, and stood in for by the
                 // other 128-bit format so that the parse goes on.
                 self.note("type:ppc_fp128");
                 TypeId::FP128
             }
-            b"x86_mmx" => {
+            Kw::X86Mmx => {
                 // A type of LLVM 19 and before; LLVM 20 reads it out of
                 // old bitcode as the vector it now uses in its place.
                 self.note("type:x86_mmx");
                 ir(at, self.module.types.vector(TypeId::I64, 1))?
             }
-            b"x86_amx" => {
+            Kw::X86Amx => {
                 self.note("type:x86_amx");
                 ir(at, self.module.types.target_ext("x86_amx"))?
             }
-            b"target" => return self.target_type(),
+            Kw::Target => return self.target_type(),
             _ => return self.syntax("expected a type"),
         };
         self.bump();

@@ -15,7 +15,8 @@
 //! - The resume point of `llvm.eh.sjlj.setjmp` (`llc` takes its address
 //!   as a block's), and each coroutine entry stub (`F.resume`,
 //!   `F.destroy`: `llc` writes those as functions whose address is
-//!   taken) ([`landing`]).
+//!   taken) ([`landing`]); `__NoopCoro_ResumeDestroy` is
+//!   `NOOP_CORO_FN_MARKED` (`endbr64; ret`), as `llc` 22 writes it.
 //! - After a direct call of a function declared `returns_twice` (the
 //!   callee's declaration, not the call site, decides, as in `llc`)
 //!   ([`after_call`]): a `longjmp` may return there by an indirect jump.

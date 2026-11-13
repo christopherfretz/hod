@@ -3608,7 +3608,8 @@ result types are not LLVM's declaration is `x64:x86-intrinsic-signature`.
    `sse.rsqrt.*`, `sse2.clflush`, `sse2.maskmov.dqu`, `sse3.monitor`/
    `mwait` (no encoding in `hod_mc_x64`), the `x86_mmx` forms clang 19
    writes (`mmx.*`, `sse.cvtpi2ps`, ..., the 64-bit `ssse3.*`), and all of
-   `sse41.*` and `sse42.*`. AArch64 refuses every `llvm.x86.*` name.
+   `sse41.*` and `sse42.*` but `sse42.crc32.*` (§5.6.29). AArch64 refuses
+   every `llvm.x86.*` name.
 
 Evidence: `spec/landed/codegen/WP-173.md`.
 
@@ -3724,6 +3725,73 @@ byte-identical to what it was.
    `attr:stack-probe-size-value` (`spec/ir.md` §5.7).
 
 Evidence: `spec/landed/codegen/WP-186.md`.
+
+#### 5.6.29 x86 system and state intrinsics (WP-190)
+
+The `llvm.x86.*` calls clang 19 and 22 write at `-O0` for the functions
+of the non-vector headers: `<ia32intrin.h>`, `<fxsrintrin.h>`,
+`<xsave*intrin.h>`, `<immintrin.h>`'s `_rdrand*`/`_rdseed*`/`_readfsbase*`
+/..., `<adcintrin.h>`/`<adxintrin.h>`, `<bmiintrin.h>`, `<bmi2intrin.h>`,
+`<crc32intrin.h>`, `<clflushoptintrin.h>`, `<clwbintrin.h>`,
+`<rtmintrin.h>`, `<xtestintrin.h>`, `<pkuintrin.h>`,
+`<serializeintrin.h>`, `<cetintrin.h>`'s shadow-stack reads
+(`crates/hod_x64/src/x86/sys.rs`; 67 `hod_ir` `Intrinsic` members, matrix
+rows `never(X64_ONLY)` / `on(X86_SYS)`). A new section after §5.6.22,
+not a part of it: the lowerings share §5.6.22's signature rule
+(`x64:x86-intrinsic-signature`) and its feature rule, nothing else. A
+`{ iA, iB }` result is a `Mem`-class value (§4.1): its fields are stored
+to the result's slot.
+
+1. **Baseline** (no feature check, as `llc` builds them on any x86-64):
+   `flags.read.u64` is `pushfq; pop r`, `flags.write.u64` `push r;
+   popfq` (no red zone, and the CFA is `rbp + 16` throughout, so the
+   eight bytes below `rsp` are free and the unwind rows do not change);
+   `rdtsc` and `rdpmc` (`ecx` = the operand) leave `edx:eax`, combined by
+   `shl rdx, 32; or rax, rdx`; `rdtscp` stores that and `ecx` (the
+   `TSC_AUX`) as the pair's fields; `addcarry.32`/`.64` and
+   `subborrow.32`/`.64` make CF from the carry byte (`add cl, -1`: set
+   when it is not 0), then `adc`/`sbb`, the carry out by `setb`.
+2. **Feature-gated**, each only where the function's `target-features`
+   enable the feature clang requires for its header function (§5.6.22's
+   rule: the last item that turns it on or off decides, none is off, a
+   `target-cpu` alone does not count). Otherwise refused by `intrinsic:`
+   and its LLVM name, also where `llc` 22 would select the instruction
+   anyway (`crc32`, `xgetbv`, `xsetbv`, the BMI ones, `rdssp*`,
+   `incssp*`, `rdpkru`): hod does not write an instruction the function
+   does not declare.
+
+   | intrinsics | feature | instruction |
+   |---|---|---|
+   | `fxsave`, `fxsave64`, `fxrstor`, `fxrstor64` | `fxsr` | at the pointer |
+   | `xsave`, `xsave64`, `xrstor`, `xrstor64`, `xgetbv`, `xsetbv` | `xsave` (or `xsaveopt`/`xsavec`/`xsaves`, which imply it) | mask high in `edx`, low in `eax`; `xgetbv`/`xsetbv` index in `ecx` |
+   | `xsaveopt`, `xsaveopt64` | `xsaveopt` (off with `-xsave` too) | as `xsave` |
+   | `xsavec`, `xsavec64` | `xsavec` (as above) | as `xsave` |
+   | `xsaves`, `xsaves64`, `xrstors`, `xrstors64` | `xsaves` (as above) | as `xsave` |
+   | `rdrand.16`/`.32`/`.64` | `rdrnd` | into `rax`, then `setb`: the flag field 1 when a number was delivered (the hardware zeroes the value otherwise, which `llc`'s `cmovb` relies on) |
+   | `rdseed.16`/`.32`/`.64` | `rdseed` | as `rdrand` |
+   | `clflushopt`, `clwb` | `clflushopt`, `clwb` | at the pointer |
+   | `bmi.bextr.32`/`.64` | `bmi` | VEX, the control in `vvvv` |
+   | `bmi.bzhi.*`, `bmi.pdep.*`, `bmi.pext.*` | `bmi2` | VEX; `pdep`/`pext` the mask in `r/m` |
+   | `sse42.crc32.32.8`/`.32.16`/`.32.32`/`.64.64` | `crc32` (or `sse4.2` and every later SSE or AVX level) | `crc32` into the first operand's register |
+   | `rdfsbase.*`, `rdgsbase.*`, `wrfsbase.*`, `wrgsbase.*` | `fsgsbase` | the 32- or 64-bit form |
+   | `xbegin`, `xend`, `xabort`, `xtest` | `rtm` | `xbegin` is `mov eax, -1; xbegin` to the next instruction (an abort resumes there with the status in `eax`); `xabort` of its `immarg`; `xtest` then `setne`, zero-extended |
+   | `rdpid` | `rdpid` | the 64-bit register form, its low half |
+   | `rdpkru`, `wrpkru` | `pku` | `ecx` (and `edx`) zeroed |
+   | `serialize` | `serialize` | |
+   | `incsspd`/`q`, `rdsspd`/`q` | `shstk` | `rdssp` on the operand's register: without shadow stacks a `nop`, the result is the operand |
+3. **Refused by name** (`classify`, `spec/ir.md`): every other name the
+   headers write, among them `cmpccxadd*`, `enqcmd*`, `invpcid`,
+   `directstore*` (`_directstoreu_*`)/`movdir64b`, `monitorx`/`mwaitx`, `ptwrite*`, `aadd*`/
+   `aand*`/`aor*`/`axor*`, `rdpru`, the `uintr` ones (`senduipi`,
+   `testui`, `clui`, `stui`), `urdmsr`/`uwrmsr`, `umonitor`/`umwait`/
+   `tpause`, `wbinvd`, `wbnoinvd`, `xresldtrk`/`xsusldtrk`,
+   `clrssbsy`, `rstorssp`, `saveprevssp`, `setssbsy`, `wrss*`/`wruss*`,
+   `cldemote`, `clzero`, the `lwp` ones (`llwpcb`, `slwpcb`, `lwpins*`,
+   `lwpval*`) and `tbm.bextri.*` (clang 19 only). AArch64
+   refuses every `llvm.x86.*` name.
+
+Evidence: `spec/landed/codegen/WP-173.md` for the rules this reuses,
+`spec/landed/codegen/WP-190.md` for these.
 
 ## 6. Control flow
 

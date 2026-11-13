@@ -34,6 +34,12 @@
 //! `classify` refuses it by its name; AArch64 refuses all of them
 //! (`never`). hod writes only SSE2 instructions, whatever the features
 //! (§5.6.2).
+//!
+//! The system and state intrinsics (`<fxsrintrin.h>`, `<ia32intrin.h>`,
+//! `<xsave*intrin.h>`, `<bmi*intrin.h>`, `<crc32intrin.h>`, ...;
+//! §5.6.29, WP-190) are in [`sys`].
+
+pub mod sys;
 
 use hod_cg::{CgResult, Class, FnCx, FrameRef, PReg};
 use hod_ir::{FnStr, Inst, Intrinsic, SymbolKind, TypeKind, Value};
@@ -420,7 +426,9 @@ pub fn intrinsic<'a>(
     which: Intrinsic<'a>,
     args: &'a [Value],
 ) -> Option<CgResult<()>> {
-    let (ret, params, op) = row(which)?;
+    let Some((ret, params, op)) = row(which) else {
+        return sys::intrinsic(cx, inst, which, args);
+    };
     Some(lower(cx, inst, which, args, ret, params, op))
 }
 

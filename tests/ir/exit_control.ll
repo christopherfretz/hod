@@ -7,7 +7,6 @@
 ; the comments.
 ;@ covers: spec/ir.md §5.4 control flow, memory (call-free; WP-043)
 ;@ tier: quick
-;@ unsupported(x86_64): *
 ;@ exit: 7
 
 @n = global i32 10

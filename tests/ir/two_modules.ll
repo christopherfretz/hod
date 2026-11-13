@@ -7,7 +7,6 @@
 ; the program: its two addresses compare equal.
 ;@ covers: spec/ir.md §2.2 symbols (definitions and declarations across modules, internal linkage, linkonce_odr)
 ;@ tier: quick
-;@ unsupported(x86_64): *
 ;@ stdout: counter=7
 ;@ stdout: bump=10 counter=10
 ;@ stdout: apply=45 helper=2

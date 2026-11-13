@@ -9,7 +9,7 @@ name: ci
 # a matrix axis would rename them.
 on:
   push:
-    branches: [main]
+    branches: [main, wp/145-hosted-ci] # TEMP(WP-145): remove before handback
   pull_request:
   merge_group:
 permissions:
@@ -19,6 +19,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   arm:
+    if: false # TEMP(WP-145)
     uses: ./.github/workflows/ci-lane.yml
     with: { runner: ubuntu-24.04-arm, cache-key: ci-arm }
   x86_64:

@@ -126,6 +126,12 @@ Speed and memory are properties with tests, not goals with hopes.
 - The harness also reports time per phase (ingest, analysis, emission,
   debug info, object writing) and bytes of IR per second, so regressions
   are attributable.
+- Cold timings (a new process per compile, as a build system runs hod) are
+  taken with the binaries and inputs on a local filesystem, each binary
+  copied afresh and a byte-identical copy of the base run as a control:
+  on the workspace's bind mount, file-backed page faults of the binary's
+  first touches dominate, and the same bytes read up to 86% apart
+  (`spec/landed/ll/WP-063.md`).
 - End-to-end numbers (`kiln++ -c` with hod against `kiln++ -c` with `llc`)
   are reported in `docs/status/perf.md` for the benchmark corpus.
 

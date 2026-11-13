@@ -6,6 +6,7 @@
 
 use crate::error::{IrErrorKind, IrResult, err};
 use crate::ids::TypeId;
+use crate::intern::Layering;
 use crate::types::{TypeKind, TypeTable};
 use crate::value::Value;
 
@@ -556,7 +557,11 @@ pub(crate) const fn word(raw: u32) -> Value {
 /// `BadIndex` for an empty path, an index out of range, or a step into a
 /// type that is not a struct or an array; `InvalidType` for an aggregate
 /// that contains a scalable vector, whose offsets are not constants.
-pub fn aggregate_field(types: &TypeTable, agg: TypeId, path: &[u32]) -> IrResult<(u64, TypeId)> {
+pub fn aggregate_field<L: Layering>(
+    types: &TypeTable<L>,
+    agg: TypeId,
+    path: &[u32],
+) -> IrResult<(u64, TypeId)> {
     if path.is_empty() {
         return err(IrErrorKind::BadIndex, "an aggregate index path needs at least one index");
     }

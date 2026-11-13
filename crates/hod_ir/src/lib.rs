@@ -44,9 +44,13 @@ mod flatten;
 mod fold;
 mod ids;
 mod inst;
-mod intern;
+/// The storage of a module's tables (`spec/ir.md` §5.1): public for the
+/// [`Layering`] parameter only.
+#[doc(hidden)]
+pub mod intern;
 mod intrinsic;
 mod module;
+mod parallel;
 mod print;
 mod props;
 #[cfg(test)]
@@ -76,7 +80,9 @@ pub use constant::{Const, ConstOp, ConstPool};
 pub use error::{IrError, IrErrorKind, IrResult};
 pub use flatten::{BlockDiff, Fixup, FixupTarget, NegAddr};
 pub use ids::{AsmId, BlockId, ComdatId, ConstId, DiId, LocId, SymId, TypeId};
-pub use module::{Module, StringLists, Structor, Unsupported};
+pub use intern::{Layered, Layering, NoLayer};
+pub use module::{Delta, Mark, Module, Remap, Stamp, StringLists, Structor, Unsupported};
+pub use parallel::{BodyRead, BodySource, CHUNK_WEIGHT, ReadStats, read_bodies};
 pub use print::{Dialect, IoSink, Part, PrintError};
 pub use props::{
     BranchProtection, CodeModel, FlagBehavior, FlagClass, FlagValue, FramePointer,

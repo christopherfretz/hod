@@ -14,6 +14,7 @@
 use crate::constant::{Const, ConstOp, ConstPool};
 use crate::error::{IrErrorKind, IrResult, err};
 use crate::ids::{ConstId, SymId, TypeId};
+use crate::intern::Layering;
 use crate::types::{TypeKind, TypeTable};
 use crate::wide;
 
@@ -27,7 +28,7 @@ struct Linear {
     addend: i64,
 }
 
-impl ConstPool {
+impl<L: Layering> ConstPool<L> {
     /// Folds `getelementptr (source_ty, base, indices...)`.
     ///
     /// With constant integer indices the offset is computed from the type
@@ -46,7 +47,7 @@ impl ConstPool {
     /// pointers result type of a vector `getelementptr`.
     pub fn fold_gep(
         &mut self,
-        types: &mut TypeTable,
+        types: &mut TypeTable<L>,
         source_ty: TypeId,
         base: ConstId,
         indices: &[ConstId],
@@ -86,7 +87,7 @@ impl ConstPool {
         if !types.is_sized(source_ty) {
             return err(IrErrorKind::UnsizedType, "getelementptr source type has no size");
         }
-        let unfolded = |pool: &mut ConstPool| {
+        let unfolded = |pool: &mut Self| {
             let mut args = Vec::with_capacity(indices.len() + 1);
             args.push(base);
             args.extend_from_slice(indices);
@@ -117,7 +118,7 @@ impl ConstPool {
     /// when it is not a constant known here.
     fn gep_offset(
         &self,
-        types: &TypeTable,
+        types: &TypeTable<L>,
         source_ty: TypeId,
         indices: &[ConstId],
     ) -> IrResult<Option<i64>> {
@@ -178,7 +179,7 @@ impl ConstPool {
 
     /// The value of a `getelementptr` index: an integer constant,
     /// sign-extended or truncated to 64 bits.
-    fn index_value(&self, types: &TypeTable, index: ConstId) -> Option<i64> {
+    fn index_value(&self, types: &TypeTable<L>, index: ConstId) -> Option<i64> {
         match self.get(index) {
             Const::Int { ty, value } => Some(wide::sext64(value, types.int_bits(ty).unwrap_or(64))),
             Const::WideInt { words, .. } => Some(words[0] as i64),
@@ -207,7 +208,7 @@ impl ConstPool {
     /// when LLVM would reject the cast between these two types.
     pub fn fold_cast(
         &mut self,
-        types: &TypeTable,
+        types: &TypeTable<L>,
         op: ConstOp,
         value: ConstId,
         to: TypeId,
@@ -290,7 +291,7 @@ impl ConstPool {
     /// elements are all integers or floats (WP-095): its image as
     /// [`ConstPool::flatten`] lays it out, which is how `llc` folds a
     /// `bitcast` of it to a scalar (`<8 x i1>` packs element 0 in bit 0).
-    fn vector_bits(&self, types: &TypeTable, value: ConstId) -> Option<u128> {
+    fn vector_bits(&self, types: &TypeTable<L>, value: ConstId) -> Option<u128> {
         let plain = |c: ConstId| {
             matches!(
                 self.get(c),
@@ -317,7 +318,7 @@ impl ConstPool {
     }
 
     /// The integer or float of type `to` with this bit pattern.
-    fn bits_as(&mut self, types: &TypeTable, to: TypeId, bits: u128) -> IrResult<ConstId> {
+    fn bits_as(&mut self, types: &TypeTable<L>, to: TypeId, bits: u128) -> IrResult<ConstId> {
         if types.is_float(to) {
             self.float(types, to, bits)
         } else {
@@ -343,7 +344,7 @@ impl ConstPool {
     /// integer-vector type.
     pub fn fold_binary(
         &mut self,
-        types: &TypeTable,
+        types: &TypeTable<L>,
         op: ConstOp,
         lhs: ConstId,
         rhs: ConstId,
@@ -462,7 +463,7 @@ fn combine(l: Linear, r: Linear, subtract: bool) -> Option<Linear> {
 
 /// The scalar type of `ty` and, for a vector, its length and whether it is
 /// scalable.
-fn shape(types: &TypeTable, ty: TypeId) -> (TypeId, Option<(u32, bool)>) {
+fn shape<L: Layering>(types: &TypeTable<L>, ty: TypeId) -> (TypeId, Option<(u32, bool)>) {
     match types.kind(ty) {
         TypeKind::Vector { elem, len } => (elem, Some((len, false))),
         TypeKind::ScalableVector { elem, min_len } => (elem, Some((min_len, true))),
@@ -471,7 +472,12 @@ fn shape(types: &TypeTable, ty: TypeId) -> (TypeId, Option<(u32, bool)>) {
 }
 
 /// Checks that LLVM accepts the cast `op` from `from` to `to`.
-fn check_cast(types: &TypeTable, op: ConstOp, from: TypeId, to: TypeId) -> IrResult<()> {
+fn check_cast<L: Layering>(
+    types: &TypeTable<L>,
+    op: ConstOp,
+    from: TypeId,
+    to: TypeId,
+) -> IrResult<()> {
     let (from_scalar, from_shape) = shape(types, from);
     let (to_scalar, to_shape) = shape(types, to);
     let scalable = |s: Option<(u32, bool)>| s.is_some_and(|(_, scalable)| scalable);

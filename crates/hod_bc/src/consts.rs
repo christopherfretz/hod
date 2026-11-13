@@ -6,6 +6,7 @@
 //! by a walk with its own stack over the constants it uses, each built
 //! once; a constant that uses itself is refused.
 
+use hod_ir::Layering;
 use hod_ir::{BlockId, ConstId, ConstOp, Module, SymId, TypeId, TypeKind};
 
 use crate::codes::cst;
@@ -220,9 +221,9 @@ impl Values {
 
     /// Value `id` as a constant, built if it was not, with the notes it
     /// makes (`spec/bc.md` §5.6).
-    pub fn constant(
+    pub fn constant<L: Layering>(
         &mut self,
-        module: &mut Module,
+        module: &mut Module<L>,
         records: &[Rec],
         pool: &[u64],
         id: u64,
@@ -234,9 +235,9 @@ impl Values {
 
     /// Value `id`, of the module or of the function's layer, as a
     /// constant, built if it was not, with the notes it makes.
-    pub fn value(
+    pub fn value<L: Layering>(
         &mut self,
-        module: &mut Module,
+        module: &mut Module<L>,
         recs: Recs<'_>,
         id: u64,
         at: u64,
@@ -303,7 +304,12 @@ impl Values {
     }
 
     /// The address of global value `index`, as `hod_ll`'s `address_of`.
-    fn address(&self, module: &mut Module, index: usize, at: u64) -> BcResult<ConstId> {
+    fn address<L: Layering>(
+        &self,
+        module: &mut Module<L>,
+        index: usize,
+        at: u64,
+    ) -> BcResult<ConstId> {
         let global = self.globals[index];
         let Some(sym) = global.sym else {
             return fail(BcErrorKind::Invalid, at, "a use of one of the special arrays");
@@ -319,7 +325,12 @@ impl Values {
     }
 
     /// The built value `id`, whose constants are built.
-    fn get(&self, module: &mut Module, id: u64, at: u64) -> BcResult<(ConstId, u8)> {
+    fn get<L: Layering>(
+        &self,
+        module: &mut Module<L>,
+        id: u64,
+        at: u64,
+    ) -> BcResult<(ConstId, u8)> {
         match self.place(id) {
             Some(Place::Global(index)) => Ok((self.address(module, index, at)?, 0)),
             Some(Place::Const(c)) => match self.memo(c) {
@@ -339,9 +350,9 @@ impl Values {
 
     /// Builds constant `c`, whose operands are built.
     #[allow(clippy::too_many_lines)] // One record table, read in one place.
-    fn build(
+    fn build<L: Layering>(
         &self,
-        module: &mut Module,
+        module: &mut Module<L>,
         rec: Rec,
         ops: &[u64],
         c: usize,
@@ -350,7 +361,7 @@ impl Values {
         let (ty, mut notes, _) = self.slot(c);
         let short = || fail(BcErrorKind::Invalid, at, "a constant record cut short");
         let mut args: Vec<ConstId> = Vec::new();
-        let mut take = |module: &mut Module, id: u64, args: &mut Vec<ConstId>| -> BcResult<()> {
+        let mut take = |module: &mut Module<L>, id: u64, args: &mut Vec<ConstId>| -> BcResult<()> {
             let (built, n) = self.get(module, id, at)?;
             notes |= n;
             args.push(built);

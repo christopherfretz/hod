@@ -2,6 +2,7 @@
 //! LLVM 19 to 22, built through `hod_ir`'s folding functions so that an
 //! address always arrives in its normal form.
 
+use hod_ir::Layering;
 use std::collections::HashMap;
 
 use hod_ir::{BlockId, ConstId, ConstOp, SymId, TypeId, TypeKind};
@@ -14,7 +15,7 @@ use crate::lexer::{Lexer, Tok, Token, hex_value, unescape};
 use crate::limits::MAX_INT_LITERAL_DIGITS;
 use crate::parser::{Parser, ir};
 
-impl Parser<'_, '_> {
+impl<L: Layering> Parser<'_, '_, L> {
     /// `type value`.
     pub(crate) fn parse_typed_const(&mut self) -> PResult<ConstId> {
         let ty = self.parse_type()?;

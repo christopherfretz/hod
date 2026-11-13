@@ -47,8 +47,8 @@ use crate::common::{self, gp, put, unsupported, xm};
 use crate::features::{self, FnFeatures};
 use crate::reg::{self, R8, R9, RAX, RBX, RDI, RDX, RSI, XMM0, XMM8, XMM13, XMM14, XMM15};
 use crate::{
-    abi, aggr, atomic, barrier, call, control, coro, float, fpintr, frame, int, intrinsic, lanes,
-    mask, mem, term, tls, vector, x87,
+    abi, aggr, atomic, barrier, call, control, coro, coro_body, float, fpintr, frame, int,
+    intrinsic, lanes, mask, mem, term, tls, vector, x87,
 };
 
 /// The x86-64 Linux target (System V AMD64 psABI): constants, and what
@@ -60,12 +60,16 @@ use crate::{
 pub struct X64 {
     /// The function's features, as far as they change what hod emits.
     pub features: FnFeatures,
+    /// Whether the function is a coroutine body: `rbx` is its frame base
+    /// and not in its register pool (WP-137, `crate::coro_body`).
+    pub coro: bool,
 }
 
 /// The target for a function without `target-cpu` and
 /// `target-features` (the baseline x86-64 CPU, no AVX).
 pub const X64: X64 = X64 {
     features: FnFeatures { abi: abi::Features { avx: false, avx512: false }, no_x87: false },
+    coro: false,
 };
 
 /// What the target remembers about the function being compiled
@@ -183,6 +187,22 @@ fn lower_call<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, site: &CallSite<'a>) -
             | Intrinsic::CoroPromise
             | Intrinsic::CoroNoop),
         ) => coro::intrinsic(cx, inst, which, site.args()),
+        Some(
+            which @ (Intrinsic::CoroId
+            | Intrinsic::CoroAlloc
+            | Intrinsic::CoroBegin
+            | Intrinsic::CoroEnd
+            | Intrinsic::CoroFree
+            | Intrinsic::CoroSize
+            | Intrinsic::CoroAlign
+            | Intrinsic::CoroSave
+            | Intrinsic::CoroSuspend
+            | Intrinsic::CoroFrame
+            | Intrinsic::CoroIsInRamp
+            | Intrinsic::CoroAwaitSuspendVoid
+            | Intrinsic::CoroAwaitSuspendBool
+            | Intrinsic::CoroAwaitSuspendHandle),
+        ) => coro_body::intrinsic(cx, inst, which, site.args()),
         Some(which) if fpintr::is_fp(which) => fpintr::intrinsic(cx, inst, which, site.args()),
         Some(which) => intrinsic::intrinsic(cx, inst, which, site.args()),
     }
@@ -221,9 +241,14 @@ impl Target for X64 {
     /// `int3` before a data island: never executed.
     const PAD_BYTE: u8 = 0xcc;
     const STACK_ALIGN: u32 = 16;
+    /// `ret`: `__NoopCoro_ResumeDestroy` (WP-137, `crate::coro`).
+    const NOOP_CORO_FN: &'static [u8] = &[0xc3];
+    /// WP-137: `crate::coro_body`.
+    const CORO_BODIES: bool = true;
 
     fn reg_info(&self) -> &RegInfo {
-        &REG_INFO
+        // WP-137: a coroutine's frame base `rbx` is not in its pool.
+        coro_body::reg_info(self.coro)
     }
 
     fn class_of(&self, types: &TypeTable, ty: TypeId) -> Class {
@@ -274,7 +299,8 @@ impl Target for X64 {
         let attrs = module.fn_attrs(attrs);
         let text = |what| attrs.string(what).and_then(|s| std::str::from_utf8(s).ok());
         let features = features::of_function(text(FnStr::TargetCpu), text(FnStr::TargetFeatures));
-        Some(X64 { features })
+        let coro = attrs.has(hod_ir::FnAttrs::PRESPLIT_COROUTINE);
+        Some(X64 { features, coro })
     }
 
     fn begin_function(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()> {
@@ -512,6 +538,24 @@ impl Target for X64 {
 
     fn patch_branch(code: &mut [u8], at: u32, kind: FixupKind, displacement: i64) -> bool {
         common::patch_branch(code, at, kind, displacement)
+    }
+
+    fn coro_stubs(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()> {
+        coro_body::stubs(cx)
+    }
+
+    fn coro_dispatch(
+        &self,
+        cx: &mut FnCx<'_, Self>,
+        cond: PReg,
+        resume: Label,
+        destroy: Label,
+    ) -> CgResult<()> {
+        coro_body::dispatch(cx, cond, resume, destroy)
+    }
+
+    fn coro_transfer(&self, cx: &mut FnCx<'_, Self>, exit: Label) -> CgResult<()> {
+        coro_body::transfer(cx, exit)
     }
 }
 

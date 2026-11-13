@@ -93,6 +93,10 @@ export HOD_LIBCXX_LOGDIR="$dir/$name"
 cd "$ws/kiln"
 # shellcheck disable=SC1091
 source scripts/env.sh
+# The machine's pool, as the baseline run drew from it (kiln's env.sh
+# names kiln's own fifo, which this machine does not run).
+jsf="${HOD_JOBSERVER_FIFO:-/run/hod/jobserver.fifo}"
+if [ -p "$jsf" ]; then export MAKEFLAGS="--jobserver-auth=fifo:$jsf"; fi
 set +e
 cargo xtask libcxx --tag llvmorg-22.1.8 --compiler "$w/scripts/libcxx-x64-kiln.sh" \
     "${sel[@]}" --timeout 160 --run-timeout-long 1920 -j "${HOD_JOBS:-3}" --mem-limit 3072 \

@@ -30,7 +30,7 @@ pub const INDIRECT_RESULT: PReg = reg::X8;
 pub const NEST: PReg = reg::X15;
 
 /// Every name [`assign`] reports, in the order of §10.
-pub const UNSUPPORTED: [&str; 23] = [
+pub const UNSUPPORTED: [&str; 22] = [
     CC,
     INVALID_SIGNATURE,
     TYPE_X86_FP80,
@@ -42,7 +42,6 @@ pub const UNSUPPORTED: [&str; 23] = [
     WIDE_INT_ARRAY,
     BFLOAT_ARRAY,
     VECTOR_ARRAY,
-    ONE_LEAF_ARRAY,
     ATTRIBUTE_AFTER_EMPTY,
     INREG,
     SWIFTSELF,
@@ -72,7 +71,10 @@ pub const VECTOR_PROMOTED: &str = "abi:vector-promoted";
 const WIDE_INT_ARRAY: &str = "abi:wide-int-array";
 const BFLOAT_ARRAY: &str = "abi:bfloat-array";
 const VECTOR_ARRAY: &str = "abi:vector-array";
-const ONE_LEAF_ARRAY: &str = "abi:one-leaf-array";
+/// No longer reported (WP-182 passes a one-leaf array as the block
+/// `SelectionDAG`, the oracle, makes of it: §3.3); kept for the coverage
+/// log's history.
+pub const ONE_LEAF_ARRAY: &str = "abi:one-leaf-array";
 const ATTRIBUTE_AFTER_EMPTY: &str = "abi:attribute-after-empty-argument";
 const INREG: &str = "abi:inreg";
 const SWIFTSELF: &str = "abi:swiftself";
@@ -362,8 +364,15 @@ fn lanes_leaf(class: Class, bits: u8, len: u8) -> Leaf {
 /// registers left (an ordinary `i128`: `None` inside); several members
 /// when all fit in consecutive registers from the next one, without the
 /// even-register rule (a block). Anything else, or wider members, is
-/// [`WIDE_INT_ARRAY`].
-fn wide_int_array(state: &mut State, leaf: &Leaf, leaves: u64) -> Abi<Option<Block>> {
+/// [`WIDE_INT_ARRAY`]. One member on the stack is a block aligned to
+/// `mem_align` (§3.3's `A`) as `SelectionDAG` passes it, which is the
+/// ordinary `i128` slot unless an `alignstack` lowers it to 8 (WP-182).
+fn wide_int_array(
+    state: &mut State,
+    leaf: &Leaf,
+    leaves: u64,
+    mem_align: u64,
+) -> Abi<Option<Block>> {
     let next = u64::from(state.ngrn);
     let agreed = leaf.count == 2
         && leaf.split == 2
@@ -374,6 +383,9 @@ fn wide_int_array(state: &mut State, leaf: &Leaf, leaves: u64) -> Abi<Option<Blo
         };
     if !agreed {
         return no(WIDE_INT_ARRAY);
+    }
+    if leaves == 1 && next + 2 > u64::from(ARG_REGS) && mem_align.clamp(8, 16) != 16 {
+        return Ok(Some(state.block(Class::X, 2, mem_align)));
     }
     Ok((leaves > 1).then(|| state.block(Class::X, 2 * leaves, 16)))
 }
@@ -732,17 +744,18 @@ fn assign_value(
                 return no(BFLOAT_ARRAY);
             }
             // WP-101: the placements every configuration agrees on.
-            Class::X if leaf.split != 0 => block = wide_int_array(state, &leaf, leaves)?,
+            Class::X if leaf.split != 0 => {
+                let mem_align = stack_align.unwrap_or(types.align_of(ty));
+                block = wide_int_array(state, &leaf, leaves, mem_align)?;
+            }
             // A vector passed in several registers: LLVM's two instruction
             // selectors disagree about a block of them.
             _ if leaf.count > 1 => return no(VECTOR_ARRAY),
             class => {
+                // One leaf is a block too (WP-182): SelectionDAG aligns
+                // it on the stack to `A`, as AAPCS64 C.12/C.13 do, where
+                // GlobalISel gives it the leaf's own slot.
                 let mem_align = stack_align.unwrap_or(types.align_of(ty));
-                if leaves == 1 && class.slot() != mem_align.clamp(8, 16) {
-                    // One selector passes a block, the other a plain
-                    // value: they differ in the stack alignment.
-                    return no(ONE_LEAF_ARRAY);
-                }
                 let placed = state.block(class, leaves, mem_align);
                 if let Block::Stack { align } = placed
                     && leaf.lanes.is_none()

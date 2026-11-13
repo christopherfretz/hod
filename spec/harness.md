@@ -477,8 +477,12 @@ reason exactly as the directive spells them (`irdiff_real`'s
 | test | LLVM | reason |
 |---|---|---|
 
-None yet: the first is expected with WP-106's `gro-throws-uaf` seed,
-whose oracle crashes under poisoning (design 0005 §5.3).
+None yet. The first is expected with the `gro-throws-uaf` seed, whose
+oracle crashes under poisoning (design 0005 §5.3): its use after free
+comes from a final `await_suspend` that returns a handle, symmetric
+transfer, which hod compiles from WP-107. WP-106's `gro-throws` seed is
+the same program with direct resumption; there LLVM's split keeps the
+exception slots off the frame and its oracle is right.
 
 ### Cross runs
 

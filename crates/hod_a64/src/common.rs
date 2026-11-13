@@ -234,6 +234,8 @@ impl Cursor {
         match of {
             FrameRef::Local(at) => Cursor { base: FP, off: i64::from(at), tmp, drift: 0 },
             FrameRef::Outgoing(at) => Cursor { base: SP, off: i64::from(at), tmp, drift: 0 },
+            // WP-106: the coroutine frame, from `x19`.
+            FrameRef::Coro(at) => crate::coro_body::heap_cursor(cx, at, tmp),
             FrameRef::Incoming(at) => {
                 // `begin_function` reserves the slot for every function
                 // with stack-passed arguments (§5.5); without one this is

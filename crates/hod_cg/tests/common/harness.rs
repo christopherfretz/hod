@@ -16,10 +16,10 @@ use super::target::Tm;
 
 /// No stress, each stress option alone, and all of them.
 pub const MODES: [(&str, Stress); 5] = [
-    ("plain", Stress { min_pool: false, far: false, displace: false }),
-    ("min-pool", Stress { min_pool: true, far: false, displace: false }),
-    ("far", Stress { min_pool: false, far: true, displace: false }),
-    ("displace", Stress { min_pool: false, far: false, displace: true }),
+    ("plain", Stress { min_pool: false, far: false, displace: false, coro_frame: false }),
+    ("min-pool", Stress { min_pool: true, far: false, displace: false, coro_frame: false }),
+    ("far", Stress { min_pool: false, far: true, displace: false, coro_frame: false }),
+    ("displace", Stress { min_pool: false, far: false, displace: true, coro_frame: false }),
     ("all", Stress::ALL),
 ];
 

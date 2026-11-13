@@ -24,6 +24,10 @@ pub enum FrameRef {
     /// call lowered it for stack arguments and the call instruction
     /// (§5.3). Only the call sequence produces these.
     Outgoing(u32),
+    /// Byte `offset` of a coroutine's heap frame (WP-106, §7.6): the
+    /// target addresses it from its coroutine frame base, and reports
+    /// each access with `FnCx::coro_access`.
+    Coro(u32),
 }
 
 impl FrameRef {
@@ -34,6 +38,7 @@ impl FrameRef {
             FrameRef::Local(at) => FrameRef::Local(at + bytes),
             FrameRef::Incoming(at) => FrameRef::Incoming(at + bytes),
             FrameRef::Outgoing(at) => FrameRef::Outgoing(at + bytes),
+            FrameRef::Coro(at) => FrameRef::Coro(at + bytes),
         }
     }
 }

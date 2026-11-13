@@ -27,7 +27,7 @@ const DEFAULT: Options = Options {
     code_model: None,
     function_sections: false,
     data_sections: false,
-    stress: Stress { min_pool: false, far: false, displace: false },
+    stress: Stress { min_pool: false, far: false, displace: false, coro_frame: false },
     debug_compression: hod_obj::Compression::None,
     split_dwarf: hod_dwarf::SplitDwarf::Off,
 };
@@ -35,7 +35,13 @@ const DEFAULT: Options = Options {
 const MODES: [(&str, Options); 3] = [
     ("plain", DEFAULT),
     ("stress", Options { stress: Stress::ALL, ..DEFAULT }),
-    ("far", Options { stress: Stress { min_pool: false, far: true, displace: false }, ..DEFAULT }),
+    (
+        "far",
+        Options {
+            stress: Stress { min_pool: false, far: true, displace: false, coro_frame: false },
+            ..DEFAULT
+        },
+    ),
 ];
 
 /// xorshift64*: a fixed sequence, so that every run checks the same calls.

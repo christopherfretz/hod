@@ -652,13 +652,18 @@ impl<'m> ModuleEmitter<'m> {
         if copy {
             self.place_copy(func.sym, section, offset, len)?;
         } else {
+            // WP-106: a coroutine's symbol ends where its stubs start.
+            let size = func.coro_entries.map_or(len, |entries| u64::from(entries[0]));
             self.places[func.sym.index()] = Place {
                 section: section.index(),
                 value: offset,
-                size: len,
+                size,
                 kind: SymbolKind::Func,
                 common: false,
             };
+            if let Some(entries) = func.coro_entries {
+                self.coro_stub_symbols(func.sym, section, offset, entries)?;
+            }
         }
         if let Some(debug) = &mut self.debug {
             let lines = &chunk.lines[func.lines.start as usize..func.lines.end as usize];
@@ -668,6 +673,38 @@ impl<'m> ModuleEmitter<'m> {
         }
         let record = self.merge_rows(chunk, func, offset);
         self.funcs.push(PlacedFunc { record, section });
+        Ok(())
+    }
+
+    /// WP-106: the local `STT_FUNC` symbols `F.resume` and `F.destroy`
+    /// of a coroutine's entry stubs, so that a resume pointer symbolizes
+    /// as LLVM's clones do.
+    fn coro_stub_symbols(
+        &mut self,
+        sym: SymId,
+        section: SectionId,
+        offset: u64,
+        entries: [u32; 3],
+    ) -> CgResult<()> {
+        let names: [&[u8]; 2] = [b".resume", b".destroy"];
+        for (index, suffix) in names.into_iter().enumerate() {
+            self.name.clear();
+            self.name.extend_from_slice(self.module.symbol(sym).name());
+            self.name.extend_from_slice(suffix);
+            let name = self.obj.add_string(&self.name).map_err(|_| {
+                CgError::internal("a coroutine stub name the string table cannot hold")
+            })?;
+            let (start, end) = (entries[index], entries[index + 1]);
+            let symbol = Symbol::defined(
+                name,
+                SymbolKind::Func,
+                section,
+                offset + u64::from(start),
+                u64::from(end - start),
+            )
+            .with_binding(Binding::Local);
+            self.obj.add_symbol(symbol);
+        }
         Ok(())
     }
 
@@ -745,6 +782,7 @@ impl<'m> ModuleEmitter<'m> {
             vars: copy(&mut rows.vars, &chunk.vars, &func.vars),
             islands: copy(&mut rows.islands, &chunk.islands, &func.islands),
             block_offsets: copy(&mut rows.block_offsets, &chunk.block_offsets, &func.block_offsets),
+            coro_entries: func.coro_entries,
         }
     }
 

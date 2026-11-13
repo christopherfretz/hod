@@ -51,7 +51,7 @@ fn options() -> [(&'static str, Options); 3] {
         (
             "far",
             Options {
-                stress: Stress { min_pool: false, far: true, displace: false },
+                stress: Stress { min_pool: false, far: true, displace: false, coro_frame: false },
                 ..Options::default()
             },
         ),

@@ -350,10 +350,41 @@ pub fn pieces(bytes: u32) -> impl Iterator<Item = (u32, u32)> {
     })
 }
 
+/// The largest copy written out as moves; a larger one is `rep movsb`
+/// (`spec/codegen.md` §5.6.15).
+pub const UNROLLED_MAX: u32 = 64;
+
+/// The bytes [`rep_movsb`] pushes: `rcx`, `rsi`, `rdi`.
+const REP_PUSHED: i32 = 24;
+
+/// `rep movsb` of `bytes` bytes (§5.6.15), the addresses put in `rsi`
+/// and `rdi` by `addresses` while `rcx`, `rsi` and `rdi` are pushed
+/// (`REP_PUSHED` bytes): an argument already placed in one of them at a
+/// call site is kept. `rep movsb` copies forward and keeps the flags, as
+/// `push`, `pop`, `lea` and `mov` do.
+fn rep_movsb(cx: &mut FnCx<'_, X64>, bytes: u32, addresses: impl FnOnce(&mut FnCx<'_, X64>)) {
+    for r in [Reg::Rcx, Reg::Rsi, Reg::Rdi] {
+        put(cx, mc::push_r(r));
+    }
+    addresses(cx);
+    put(cx, mc::mov_ri(Size::D, Reg::Rcx, i64::from(bytes)));
+    put(cx, mc::rep_movs(Size::B));
+    for r in [Reg::Rdi, Reg::Rsi, Reg::Rcx] {
+        put(cx, mc::pop_r(r));
+    }
+}
+
 /// Copies `bytes` bytes between frame places: 16 at a time through
-/// `xmm15`, the rest in pieces of 8, 4, 2, 1 through `r11`. Flags are
-/// kept.
+/// `xmm15`, the rest in pieces of 8, 4, 2, 1 through `r11`; above
+/// [`UNROLLED_MAX`] bytes, `rep movsb`. Flags are kept.
 pub fn copy_frame(cx: &mut FnCx<'_, X64>, dst: FrameRef, src: FrameRef, bytes: u32) {
+    if bytes > UNROLLED_MAX {
+        rep_movsb(cx, bytes, |cx| {
+            frame_inst_shifted(cx, src, REP_PUSHED, |m| mc::lea(Size::Q, Reg::Rsi, m));
+            frame_inst_shifted(cx, dst, REP_PUSHED, |m| mc::lea(Size::Q, Reg::Rdi, m));
+        });
+        return;
+    }
     let mut at = 0;
     while bytes - at >= 16 {
         frame_inst(cx, src.offset_by(at), |m| mc::movup_rm(FpSize::S, XMM15, m));
@@ -373,9 +404,37 @@ const REBASE: u32 = 1 << 30;
 
 /// Copies `bytes` bytes from the memory at `ptr + offset` to `dst`, with
 /// `ptr` unchanged at the end: through `xmm15` and the general scratch
-/// register other than `ptr`. A displacement beyond 1 GiB moves `ptr` on
-/// with `lea` and back at the end. Flags are kept.
+/// register other than `ptr`; above [`UNROLLED_MAX`] bytes, `rep movsb`.
+/// A displacement beyond 1 GiB moves `ptr` (or `rsi`) on with `lea` and
+/// back at the end. Flags are kept.
 pub fn copy_from_ptr(cx: &mut FnCx<'_, X64>, dst: FrameRef, ptr: Reg, offset: u32, bytes: u32) {
+    if bytes > UNROLLED_MAX {
+        rep_movsb(cx, bytes, |cx| {
+            // `rdi` last unless it is `ptr`: neither `lea` clobbers the
+            // pointer the other still reads.
+            let source = |cx: &mut FnCx<'_, X64>| {
+                let first = offset.min(REBASE);
+                put(cx, mc::lea(Size::Q, Reg::Rsi, Mem::base(ptr, first as i32)));
+                let mut left = offset - first;
+                while left > 0 {
+                    let step = left.min(REBASE);
+                    put(cx, mc::lea(Size::Q, Reg::Rsi, Mem::base(Reg::Rsi, step as i32)));
+                    left -= step;
+                }
+            };
+            let target = |cx: &mut FnCx<'_, X64>| {
+                frame_inst_shifted(cx, dst, REP_PUSHED, |m| mc::lea(Size::Q, Reg::Rdi, m));
+            };
+            if ptr == Reg::Rdi {
+                source(cx);
+                target(cx);
+            } else {
+                target(cx);
+                source(cx);
+            }
+        });
+        return;
+    }
     let t = other_scratch(ptr);
     let mut moved: u64 = 0;
     let mut at: u32 = 0;

@@ -3243,6 +3243,23 @@ and the call-site, line, CFI and variable rows all move with the code.
 Relaxation keeps every branch's target, so line rows, CFI advances and
 DWARF ranges, computed from the moved offsets, stay exact.
 
+**3. Copies.** `common::copy_frame` (frame place to frame place) and
+`common::copy_from_ptr` (memory to a frame place) of more than 64 bytes
+(`UNROLLED_MAX`) are `push rcx` · `push rsi` · `push rdi` · `lea rsi,
+src` · `lea rdi, dst` · `mov ecx, n` · `rep movsb` · `pop rdi` · `pop
+rsi` · `pop rcx`; 64 bytes and fewer stay moves through `xmm15` and
+`r11`. Every instruction keeps the flags (the flags rule, §5.6), so a
+copy may sit between a compare and its reader. `rcx` never holds a value
+but may hold an argument already placed at a call site, as `rsi` and
+`rdi` may, so all three are kept. An `Outgoing` place is addressed 24
+bytes further from `rsp` while they are pushed (`frame_inst_shifted`).
+In `copy_from_ptr`, `rsi` is computed first when the pointer is in
+`rdi`, and a displacement beyond 1 GiB is added to `rsi` in steps.
+`rep movsb` copies forward, byte by byte, with the direction flag clear
+(psABI): the source and destination of these copies never overlap, and
+no volatile access goes through them (`memcpy` and `memmove`, volatile
+or not, are `intrinsic.rs`'s).
+
 ## 6. Control flow
 
 ### 6.1 Reachability

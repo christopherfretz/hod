@@ -399,7 +399,7 @@ fn pushes(insts: &[String]) -> Vec<String> {
 const SHORT_BRANCHES: bool = true;
 
 /// Whether the copy shape is checked (cut 3 of §5.6.15).
-const LOOPED_COPIES: bool = false;
+const LOOPED_COPIES: bool = true;
 
 /// A memory operand `xmmword ptr [base + disp]`: its base and
 /// displacement.
@@ -670,7 +670,6 @@ fn copy_driver() -> String {
 /// `rdi` kept; hod and `llc` agree, mixed in both directions, plainly
 /// and stressed.
 #[test]
-#[ignore = "cut 3 of WP-146"]
 fn copies_above_64_bytes_agree_with_llc() {
     let dir = Scratch::new("x64-copies");
     let Some(toolchain) = Toolchain::x86_64(&dir) else { return };

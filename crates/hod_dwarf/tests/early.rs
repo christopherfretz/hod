@@ -19,7 +19,8 @@ fn module(edits: &[(&str, &str)], extra: &str) -> String {
          \x20 ret i32 0, !dbg !30\n\
          }\n\
          !llvm.dbg.cu = !{!0}\n\
-         !llvm.module.flags = !{!90}\n\
+         !llvm.module.flags = !{!89, !90}\n\
+         !89 = !{i32 7, !\"Dwarf Version\", i32 5}\n\
          !90 = !{i32 2, !\"Debug Info Version\", i32 3}\n\
          !0 = distinct !DICompileUnit(language: DW_LANG_C_plus_plus_14, file: !1, producer: \"p\", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug, nameTableKind: None)\n\
          !1 = !DIFile(filename: \"t.cpp\", directory: \"/hod\")\n\
@@ -95,7 +96,12 @@ fn subprogram_refusals() {
         )],
         "",
     );
-    assert_eq!(check(&calls), Err((0, "debug:call-sites")));
+    // WP-150: written in versions 5 and 4 (§6.19, §6.21), refused in 3.
+    assert_eq!(check(&calls), Ok(()));
+    let v4 = calls.replace("\"Dwarf Version\", i32 5", "\"Dwarf Version\", i32 4");
+    assert_eq!(check(&v4), Ok(()));
+    let v3 = calls.replace("\"Dwarf Version\", i32 5", "\"Dwarf Version\", i32 3");
+    assert_eq!(check(&v3), Err((0, "debug:call-sites")));
     let optimized = module(
         &[("spFlags: DISPFlagDefinition", "spFlags: DISPFlagDefinition | DISPFlagOptimized")],
         "",

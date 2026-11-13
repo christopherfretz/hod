@@ -24,7 +24,13 @@
 //!   trees of the same modules at both versions: a static data member
 //!   is a `DW_TAG_member`, `DW_AT_deleted` is not written, and the
 //!   languages whose default lower bound DWARF 5 introduced have none
-//!   ([`default_lower_bound`]).
+//!   ([`default_lower_bound`]);
+//! - call sites (WP-150, §6.21): `llc`'s GNU forms
+//!   (`DwarfCompileUnit::getDwarf5OrGNUTag`/`Attr`): `DW_TAG_GNU_call_site`,
+//!   `DW_AT_GNU_all_call_sites`, the origin as `DW_AT_abstract_origin`,
+//!   `DW_AT_GNU_call_site_target_clobbered`, `DW_AT_GNU_tail_call`, and the
+//!   address as `DW_AT_low_pc` ([`at4`]), which for a tail call is the end
+//!   of the branch (the writer's, [`crate::call_sites`]).
 //!
 //! The abbreviation codes are DWARF 5's: a code's version 4 entry has the
 //! version 4 tag and forms, without the attributes version 4 drops. A DIE
@@ -52,9 +58,17 @@ use crate::{SPLIT_DWARF_4, SplitDwarf};
 /// across a branch.
 pub const DWARF_4_SHAPE: &str = "debug:dwarf-4-shape";
 
-/// The last family of the table when WP-114 compared the trees; the
+/// The last family of the table whose version 4 shape was compared
+/// with `llc`'s (WP-114 to `fam::SPLIT_COMPILE_UNIT`; WP-150 WP-113's
+/// call-site families and its own `LineTablesOnly` ones, §6.21); the
 /// families after it are refused in a DWARF 4 unit until checked.
-const LAST_CHECKED: usize = fam::SPLIT_COMPILE_UNIT;
+const LAST_CHECKED: usize = fam::SUBPROGRAM_EMPTY;
+
+// WP-150: the GNU call-site forms of version 4 (`spec/dwarf.md` §6.21).
+const DW_TAG_GNU_CALL_SITE: u16 = 0x4109;
+const DW_AT_GNU_CALL_SITE_TARGET_CLOBBERED: u16 = 0x2114;
+const DW_AT_GNU_TAIL_CALL: u16 = 0x2115;
+const DW_AT_GNU_ALL_CALL_SITES: u16 = 0x2117;
 
 const DW_FORM_STRP: u8 = 0x0e;
 const DW_OP_ADDR: u8 = 0x03;
@@ -68,11 +82,13 @@ const DW_RLE_OFFSET_PAIR: u8 = 0x04;
 /// A DWARF 5 unit header (32-bit format).
 const HEADER5: usize = 12;
 
-/// The DWARF version a unit of `module` is written in: 4 when its
-/// `Dwarf Version` flag is 4, else 5 (`hod_ir::classify` refuses the
-/// other values as `debug:dwarf-version`).
+/// The DWARF version a unit of `module` is written in: 5 when its
+/// `Dwarf Version` flag is 5, else 4: the flag 4, or no flag, for which
+/// `llc` 19 and 22 write version 4 (`dwarf::DWARF_VERSION`, WP-150,
+/// §6.20). `hod_ir::classify` refuses the other values as
+/// `debug:dwarf-version`.
 pub(crate) fn version_of(module: &Module) -> u16 {
-    if module.props.dwarf_version == Some(4) { 4 } else { 5 }
+    if module.props.dwarf_version == Some(5) { 5 } else { 4 }
 }
 
 /// `llc`'s `getDefaultLowerBound` at `version`, given DWARF 5's value
@@ -145,6 +161,22 @@ const fn keeps(at: u16) -> bool {
     !matches!(at, at::STR_OFFSETS_BASE | at::ADDR_BASE | at::RNGLISTS_BASE | at::DELETED)
 }
 
+/// A slot's version 4 attribute: DWARF 5's, or for the call sites
+/// (§6.21) the GNU attribute `llc` writes in its place
+/// (`DwarfCompileUnit::getDwarf5OrGNUAttr`): the origin is
+/// `DW_AT_abstract_origin`, a call's return address and a tail call's
+/// branch end are `DW_AT_low_pc`.
+const fn at4(at: u16) -> u16 {
+    match at {
+        at::CALL_ALL_CALLS => DW_AT_GNU_ALL_CALL_SITES,
+        at::CALL_ORIGIN => at::ABSTRACT_ORIGIN,
+        at::CALL_TARGET_CLOBBERED => DW_AT_GNU_CALL_SITE_TARGET_CLOBBERED,
+        at::CALL_TAIL_CALL => DW_AT_GNU_TAIL_CALL,
+        at::CALL_PC | at::CALL_RETURN_PC => at::LOW_PC,
+        at => at,
+    }
+}
+
 /// A slot's version 4 form.
 const fn form4(f: u8) -> u8 {
     match f {
@@ -160,6 +192,7 @@ const fn form4(f: u8) -> u8 {
 const fn tag4(family: usize) -> u16 {
     match family {
         fam::STATIC_MEMBER | fam::STATIC_VARIABLE_ANY => tag::MEMBER,
+        fam::CALL_SITE => DW_TAG_GNU_CALL_SITE, // WP-150: §6.21
         f => FAMILIES[f].tag,
     }
 }
@@ -203,7 +236,7 @@ fn write_abbrev4(used: &[u64]) -> Vec<u8> {
         for slot in FAMILIES[f].slots {
             let present = slot.bit == 0 || mask & (1 << (slot.bit - 1)) != 0;
             if present && keeps(slot.at) {
-                write_uleb(&mut out, u64::from(slot.at));
+                write_uleb(&mut out, u64::from(at4(slot.at)));
                 write_uleb(&mut out, u64::from(form4(slot.form)));
             }
         }
@@ -830,6 +863,22 @@ mod tests {
         assert_eq!(tag4(fam::STATIC_MEMBER), tag::MEMBER);
         assert_eq!(tag4(fam::STATIC_VARIABLE_ANY), tag::MEMBER);
         assert_eq!(tag4(fam::GLOBAL_VARIABLE), tag::VARIABLE);
+    }
+
+    /// WP-150: the call sites' GNU tag and attributes; every other
+    /// attribute is DWARF 5's.
+    #[test]
+    fn version_4_call_sites() {
+        assert_eq!(tag4(fam::CALL_SITE), 0x4109);
+        assert_eq!(tag4(fam::SUBPROGRAM_CALLS), tag::SUBPROGRAM);
+        assert_eq!(at4(at::CALL_ALL_CALLS), 0x2117);
+        assert_eq!(at4(at::CALL_ORIGIN), at::ABSTRACT_ORIGIN);
+        assert_eq!(at4(at::CALL_TARGET_CLOBBERED), 0x2114);
+        assert_eq!(at4(at::CALL_TAIL_CALL), 0x2115);
+        assert_eq!(at4(at::CALL_PC), at::LOW_PC);
+        assert_eq!(at4(at::CALL_RETURN_PC), at::LOW_PC);
+        assert_eq!(at4(at::NAME), at::NAME);
+        const { assert!(LAST_CHECKED >= fam::SUBPROGRAM_EMPTY) };
     }
 
     #[test]

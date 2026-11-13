@@ -37,8 +37,8 @@ use crate::abbrev::{code, fam};
 use crate::die::{Kind, NONE, UnitPlan, Writer, bad, unsupported};
 use crate::leb::write_uleb;
 
-/// Call sites `hod_dwarf` does not write: those of a unit that is not
-/// DWARF 5 (`llc` writes the GNU forms there, `DW_TAG_GNU_call_site`).
+/// Call sites `hod_dwarf` does not write: those of a unit that is neither
+/// DWARF 5 nor DWARF 4 (WP-150 writes version 4's GNU forms, §6.21).
 pub const DEBUG_CALL_SITES: &str = "debug:call-sites";
 /// A call whose callee's DIE is not one `llc` makes the same way: a
 /// definition of another unit, or one whose function the module has no
@@ -51,7 +51,8 @@ pub const DEBUG_CALL_SITE_PC: &str = "debug:call-site-pc";
 /// body's calls: `llc` describes the calls of the split functions.
 pub const DEBUG_CALL_SITE_INTRINSIC: &str = "debug:call-site-intrinsic";
 /// A `LineTablesOnly` function with inlined code that describes its
-/// calls: `llc`'s minimal call sites are not written yet.
+/// calls, refused until WP-150 wrote `llc`'s minimal call sites
+/// (§6.21); no longer returned, the name kept.
 pub const DEBUG_CALL_SITES_LINE_TABLES: &str = "debug:call-sites-line-tables";
 
 /// What a call calls.
@@ -74,6 +75,9 @@ pub struct CallSiteInput {
     pub origin: CallOrigin,
     /// Whether the call is a tail call (a branch that does not return).
     pub tail: bool,
+    /// For a tail call, the offset after its branch instruction (DWARF
+    /// 4's `DW_AT_low_pc`, §6.21); for a call, `offset`.
+    pub end: u32,
 }
 
 /// A call-site DIE's facts for the writer.
@@ -82,6 +86,7 @@ struct Site {
     die: u32,
     func: u32,
     offset: u32,
+    end: u32,
     /// The callee's DIE, or `NONE` for an indirect call.
     origin: u32,
     reg: u16,
@@ -96,12 +101,21 @@ pub(crate) struct Calls {
     /// The definitions' DIEs made early for a call, to be filled by their
     /// functions.
     early: Vec<u32>,
+    /// Those of a `LineTablesOnly` unit no function filled (its function
+    /// has no DIE): written empty, as `llc` leaves them (WP-150, §6.21).
+    /// Sorted.
+    empty: Vec<u32>,
 }
 
 impl Calls {
     fn site(&self, die: u32) -> Option<Site> {
         let i = self.sites.binary_search_by_key(&die, |s| s.die).ok()?;
         Some(self.sites[i])
+    }
+
+    /// Whether `die` is a callee's DIE written empty (WP-150).
+    pub(crate) fn is_empty(&self, die: u32) -> bool {
+        self.empty.binary_search(&die).is_ok()
     }
 }
 
@@ -111,15 +125,16 @@ pub(crate) const fn describes(sp: &DiSubprogram<'_>) -> bool {
 }
 
 /// The check before any code is generated: a definition that describes
-/// its calls in a unit that is not DWARF 5 is refused (`llc`'s GNU
-/// forms are not written).
+/// its calls in a unit that is neither DWARF 4 nor 5 is refused.
 pub(crate) fn check(dwarf_version: Option<u16>, sp: &DiSubprogram<'_>) -> Result<(), &'static str> {
     check_flags(dwarf_version, sp.flags)
 }
 
 /// [`check`] of a subprogram's `flags`.
 fn check_flags(dwarf_version: Option<u16>, flags: DiFlags) -> Result<(), &'static str> {
-    if flags.0 & DiFlags::ALL_CALLS_DESCRIBED.0 != 0 && dwarf_version != Some(5) {
+    // WP-150: version 4 (and no flag, which is 4) writes the GNU forms.
+    if flags.0 & DiFlags::ALL_CALLS_DESCRIBED.0 != 0 && !matches!(dwarf_version, None | Some(4 | 5))
+    {
         return Err(DEBUG_CALL_SITES);
     }
     Ok(())
@@ -138,6 +153,7 @@ pub(crate) const fn family(base: usize, calls: bool) -> usize {
         fam::SUBPROGRAM_SPEC_TYPED => fam::SUBPROGRAM_SPEC_TYPED_CALLS,
         fam::SUBPROGRAM_SPEC_ANY => fam::SUBPROGRAM_SPEC_ANY_CALLS,
         fam::SUBPROGRAM_OF_ABSTRACT => fam::SUBPROGRAM_OF_ABSTRACT_CALLS,
+        fam::SUBPROGRAM_MINIMAL => fam::SUBPROGRAM_MINIMAL_CALLS, // WP-150
         other => other,
     }
 }
@@ -202,8 +218,11 @@ impl UnitPlan<'_> {
             // that is the last instruction); the returning calls in code
             // order (a tail call's row keeps its place among them, while
             // its branch is at a tail exit after the body).
-            let inside =
-                if c.tail { u64::from(c.offset) < size } else { u64::from(c.offset) <= size };
+            let inside = if c.tail {
+                u64::from(c.offset) < size && c.offset < c.end && u64::from(c.end) <= size
+            } else {
+                u64::from(c.offset) <= size && c.end == c.offset
+            };
             if !inside || (!c.tail && (c.offset < last || c.offset == 0)) {
                 return Err(unsupported(sp_id, DEBUG_CALL_SITE_PC));
             }
@@ -220,6 +239,7 @@ impl UnitPlan<'_> {
                 die: entry,
                 func,
                 offset: c.offset,
+                end: c.end,
                 origin,
                 reg,
                 tail: c.tail,
@@ -253,18 +273,28 @@ impl UnitPlan<'_> {
         Ok(die)
     }
 
-    /// At sealing: every callee DIE made early has its function.
-    pub(crate) fn seal_call_sites(&self) -> Result<(), Error> {
+    /// At sealing: every callee DIE made early has its function; in a
+    /// `LineTablesOnly` unit, one whose function has no DIE (no inlined
+    /// code) stays empty, as `llc`'s does (WP-150, §6.21).
+    pub(crate) fn seal_call_sites(&mut self) -> Result<(), Error> {
         if self.calls.early.is_empty() {
             return Ok(());
         }
         let mut filled: Vec<u32> = self.funcs.iter().map(|f| f.die).collect();
         filled.sort_unstable();
-        for &die in &self.calls.early {
-            if filled.binary_search(&die).is_err() {
+        let minimal = self.cu.emission_kind == hod_ir::EmissionKind::LineTablesOnly;
+        for i in 0..self.calls.early.len() {
+            let die = self.calls.early[i];
+            if filled.binary_search(&die).is_ok() {
+                continue;
+            }
+            if !minimal {
                 return Err(unsupported(self.dies[die as usize].node, DEBUG_CALL_SITE_ORIGIN));
             }
+            self.inline.take_early(die);
+            self.calls.empty.push(die);
         }
+        self.calls.empty.sort_unstable();
         Ok(())
     }
 }
@@ -292,7 +322,10 @@ impl Writer<'_> {
             write_uleb(&mut self.info, op.len() as u64);
             self.info.extend_from_slice(&op);
         }
-        let index = self.push_addr(fd.code.symbol, fd.code.addend + i64::from(s.offset));
+        // DWARF 4's GNU tail call names the end of the branch, as its
+        // ordinary call does (`DW_AT_low_pc`, §6.21).
+        let at = if s.tail && plan.version == 4 { s.end } else { s.offset };
+        let index = self.push_addr(fd.code.symbol, fd.code.addend + i64::from(at));
         write_uleb(&mut self.info, u64::from(index));
         Ok(())
     }
@@ -332,7 +365,26 @@ mod tests {
         assert_eq!(family(fam::SUBPROGRAM_DECL, true), fam::SUBPROGRAM_DECL);
     }
 
-    /// Only DWARF 5 units describe calls; a subprogram without the flag
+    /// WP-150: the minimal subprogram's `calls` family has the flag after
+    /// the code range; the empty callee DIE has nothing.
+    #[test]
+    fn line_tables_only_families() {
+        let (base, calls) = (fam::SUBPROGRAM_MINIMAL, family(fam::SUBPROGRAM_MINIMAL, true));
+        assert_eq!(calls, fam::SUBPROGRAM_MINIMAL_CALLS);
+        let (b, c) = (&FAMILIES[base], &FAMILIES[calls]);
+        assert_eq!((b.tag, b.children, b.block), (c.tag, c.children, c.block));
+        let flag = c.slots.iter().position(|s| s.at == at::CALL_ALL_CALLS).unwrap();
+        assert_eq!(c.slots[flag - 1].at, at::HIGH_PC);
+        let mut without = c.slots.to_vec();
+        without.remove(flag);
+        assert_eq!(without.as_slice(), b.slots);
+        let empty = &FAMILIES[fam::SUBPROGRAM_EMPTY];
+        assert_eq!(empty.tag, crate::abbrev::tag::SUBPROGRAM);
+        assert!(empty.slots.is_empty() && empty.block == 1);
+        assert_eq!(empty.children, crate::abbrev::Children::No);
+    }
+
+    /// Only DWARF 4 and 5 units describe calls; a subprogram without the flag
     /// is never refused here.
     #[test]
     fn dwarf_version() {
@@ -341,8 +393,10 @@ mod tests {
             assert_eq!(check_flags(v, plain), Ok(()));
         }
         let calls = DiFlags(DiFlags::ALL_CALLS_DESCRIBED.0 | DiFlags::PROTOTYPED.0);
-        assert_eq!(check_flags(Some(5), calls), Ok(()));
-        for v in [None, Some(4)] {
+        for v in [None, Some(4), Some(5)] {
+            assert_eq!(check_flags(v, calls), Ok(()));
+        }
+        for v in [Some(2), Some(3)] {
             assert_eq!(check_flags(v, calls), Err(DEBUG_CALL_SITES));
         }
     }

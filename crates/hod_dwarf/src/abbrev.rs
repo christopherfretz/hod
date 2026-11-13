@@ -342,6 +342,11 @@ pub mod fam {
     pub const SUBPROGRAM_OF_ABSTRACT_CALLS: usize = 101;
     pub const CALL_SITE: usize = 102;
     pub const SUBPROGRAM_DECL_C: usize = 103;
+    // WP-150: call sites of `LineTablesOnly` units (`spec/dwarf.md`
+    // §6.21): the minimal subprogram with `DW_AT_call_all_calls`, and the
+    // empty DIE of a callee that has no function DIE.
+    pub const SUBPROGRAM_MINIMAL_CALLS: usize = 104;
+    pub const SUBPROGRAM_EMPTY: usize = 105;
 }
 
 /// Every family, in code order (`spec/dwarf.md` §6.1 has the same table).
@@ -1635,6 +1640,27 @@ pub const FAMILIES: &[Family] = &[
             o(4, at::NORETURN, FLAG_PRESENT),
         ],
     ),
+    // WP-150. 104: family 89 of a function that describes its calls,
+    // `DW_AT_call_all_calls` after the code range, as `llc` 22 writes it
+    // in a `LineTablesOnly` unit (same option bits).
+    fam(
+        "subprogram (line tables only, calls)",
+        tag::SUBPROGRAM,
+        Optional,
+        8,
+        "WP-150",
+        &[
+            s(at::LOW_PC, ADDRX),
+            s(at::HIGH_PC, DATA4),
+            s(at::CALL_ALL_CALLS, FLAG_PRESENT),
+            o(0, at::NAME, STRX),
+            o(1, at::ABSTRACT_ORIGIN, REF4),
+        ],
+    ),
+    // 105: the DIE `getOrCreateSubprogramDIE` makes for the callee of a
+    // call site in a `LineTablesOnly` unit when the callee's function has
+    // no DIE of its own (no inlined code): no attributes, no children.
+    fam("subprogram (empty)", tag::SUBPROGRAM, No, 1, "WP-150", &[]),
 ];
 
 /// The slots of the general static-member families (54, 55), in `llc`'s
@@ -1806,7 +1832,10 @@ mod tests {
         assert_eq!(BASES[fam::SKELETON_UNIT], 10719);
         // WP-113 appended families 96 to 103.
         assert_eq!(BASES[fam::SUBPROGRAM_CALLS], 10731);
-        assert_eq!(CODE_END, 11471);
+        // WP-150 appended families 104 and 105.
+        assert_eq!(BASES[fam::SUBPROGRAM_MINIMAL_CALLS], 11471);
+        assert_eq!(BASES[fam::SUBPROGRAM_EMPTY], 11479);
+        assert_eq!(CODE_END, 11480);
         for (index, name) in [
             (fam::CONST_TYPE, "const_type"),
             (fam::TYPEDEF, "typedef"),

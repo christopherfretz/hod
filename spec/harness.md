@@ -871,6 +871,12 @@ business, not the program's; "Test directives").
 | `half_fp128.ll` | scalar `half` (arithmetic, rounding, conversions) and `fp128` (libgcc's soft float, a subnormal, from `i128`) | |
 | `vector_arith.ll` | whole-vector integer and floating-point arithmetic at 128 bits, the min/max and saturating intrinsics, `icmp` of vectors | |
 | `x86_fp80.ll` | `target: x86_64`: `x86_fp80` arithmetic, conversions, `%Lg` through varargs | |
+| `drift_fp128_libm.ll` | drift (WP-130): the libm routine of an fp128 intrinsic and `frem` by type and target (`sinl` on AArch64, `sinf128` on x86-64) | |
+| `drift_call_widths.ll` | drift (WP-130): narrow and odd-width integers across calls with `zeroext`, `signext` and plainly, in registers and on the stack, and an `{ i7, i33 }` by value | |
+| `drift_saturation.ll` | drift (WP-130): `sadd.sat` and kin at i7 to i64, `fptosi.sat`/`fptoui.sat` with NaN, infinities and out-of-range values | |
+| `drift_dead.ll` | drift (WP-130): dead divisions by zero and dead loads through bad pointers are not executed; a frozen poison is one value | |
+| `drift_bfloat.ll` | drift (WP-130): `bfloat` through `float`, one rounding from `double` | |
+| `drift_lanes.ll` | drift (WP-130): an out-of-range variable lane index touches nothing outside the vector; a 3-lane division divides 3 lanes | |
 
 The three `exit_*.ll` programs make no call, so hod compiled them before
 it had calls (WP-043): each checks its results against values derived
@@ -886,6 +892,18 @@ and each was confirmed with `llc` 19 and 22 for AArch64 natively and for
 x86-64 under the emulator, linked by the GNU drivers with libgcc, not
 compiler-rt. `x86_fp80.ll` is the one seed for a single target: LLVM has
 no `x86_fp80` for AArch64. `indirectbr` is in `exit_control.ll`.
+
+The `drift_*.ll` seeds (WP-130) are the rules both code generators
+implement separately with the same observable result (design 0006 §8,
+risk 7) that no other seed covered; each must print the same on both
+targets. The other rules of that list are covered by `half_fp128.ll`
+(fp128 compares and conversions, `half` through `float`), `i128.ll`
+(division routines), `bit_intrinsics.ll` (`ctlz`/`cttz` of zero, funnel
+shifts), `fp_intrinsics.ll` (NaN and ±0 in min/max), `mem_intrinsics.ll`
+(memcpy lengths), `convergent.ll` and `tail_intrinsics.ll`
+(`is.constant`), `atomics.ll` (orderings) and `vector_lanes.ll` (lane
+division). "The first of duplicate switch cases wins" has no seed: LLVM
+rejects a `switch` with two equal case values.
 
 The `va_arg` instruction is not in the corpus, because it has no oracle:
 for AArch64 Linux, `llc` (19 and 22) accepts it and reads the `va_list` as

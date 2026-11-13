@@ -19,8 +19,7 @@ use hod_testutil::{Outcome, Scratch, run_with, tool};
 
 const GEN_19: &str = include_str!("../../../tests/ir/coro/gen-19.ll");
 const GEN_22: &str = include_str!("../../../tests/ir/coro/gen-22.ll");
-const POST_SYNC: &str =
-    include_str!("../../hod_xform/tests/data/seeds/llvm22/post-sync-22.ll");
+const POST_SYNC: &str = include_str!("../../hod_xform/tests/data/seeds/llvm22/post-sync-22.ll");
 
 const A64: &str = "-mtriple=aarch64-unknown-linux-gnu";
 const X64: &str = "-mtriple=x86_64-unknown-linux-gnu";
@@ -123,12 +122,7 @@ fn strict_mode_builds_or_declines_by_name() {
         lines.iter().map(|(outcome, reason)| (outcome.as_str(), reason.as_str())).collect();
     assert_eq!(
         reasons,
-        [
-            ("hod", "-"),
-            ("hod", "-"),
-            ("error", declined[0].3),
-            ("error", declined[1].3)
-        ]
+        [("hod", "-"), ("hod", "-"), ("error", declined[0].3), ("error", declined[1].3)]
     );
 }
 

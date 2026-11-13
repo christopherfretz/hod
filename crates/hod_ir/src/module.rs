@@ -133,10 +133,13 @@ pub struct Module {
 }
 
 /// [`Shared`], owned until the module is frozen (so that changing it
-/// costs no atomic operation), shared by the forks after.
+/// costs no atomic operation), shared by the forks after. Owned in place,
+/// not boxed: the one-thread reader reaches the symbol tables with no
+/// pointer to follow.
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant, reason = "one per module; a box costs every lookup a load")]
 enum Tables {
-    Own(Box<Shared>),
+    Own(Shared),
     Frozen(Arc<Shared>),
 }
 
@@ -188,7 +191,7 @@ impl Module {
             types,
             consts: ConstPool::new(),
             props: ModuleProps::default(),
-            shared: Tables::Own(Box::default()),
+            shared: Tables::Own(Shared::default()),
             asms: AsmTable::default(),
             fn_attrs: FnAttrTable::default(),
             unsupported: Vec::new(),
@@ -981,7 +984,7 @@ impl Module {
     /// before; [`Module::thaw`] undoes it once the forks are gone.
     pub fn freeze(&mut self) {
         if let Tables::Own(shared) = &mut self.shared {
-            self.shared = Tables::Frozen(Arc::new(std::mem::take(&mut **shared)));
+            self.shared = Tables::Frozen(Arc::new(std::mem::take(shared)));
         }
         self.types.freeze();
         self.consts.freeze();
@@ -996,7 +999,7 @@ impl Module {
         if let Tables::Frozen(shared) = &mut self.shared
             && let Some(shared) = Arc::get_mut(shared)
         {
-            self.shared = Tables::Own(Box::new(std::mem::take(shared)));
+            self.shared = Tables::Own(std::mem::take(shared));
         }
         self.types.thaw();
         self.consts.thaw();

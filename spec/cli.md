@@ -254,6 +254,16 @@ Measured in `spec/landed/cli/WP-043.md`: a thread costs 20-60 µs to start
 and join, and code generation about 90 ns per instruction, so two threads
 beat one from about 2-4k instructions and eight beat four from about 30k.
 
+The same threads also read the bodies (`hod_ll::parse_bodies_on`,
+`hod_bc::read_bodies_on`) when `read_threads` allows more than one: at most
+`READ_MAX_THREADS` (4), one per `READ_BYTES_PER_THREAD` (128 KiB) of body
+text (bitcode counts half its bits as bytes), and only when bodies average
+`READ_MIN_BODY_BYTES` (512) or more (measured in
+`spec/landed/ll/WP-063.md`). Reading and code generation make one request
+to the pool per compile: reading takes and holds the tokens, code
+generation takes its share of them and hands the rest back at once, and
+everything held is given back when the compile ends, also when it fails.
+
 ## Options
 
 The grammar is `llc`'s:
@@ -931,7 +941,7 @@ inherits the variable with the rest of the environment; `llc` ignores it.
 | Fallback protocol | `cli.rs`: `fallback_receives_original_arguments_and_identical_input`, `file_input`, `hod_is_not_its_own_fallback`, `real_llc_fallback_text`, `real_llc_fallback_bitcode`, and the "Bitcode conversion" tests for the original bytes after a conversion; `driver.rs`: `fallback_loop_is_refused` |
 | Strict mode | `cli.rs`: `strict_mode_fails_with_the_construct_named`; `crates/hod_cli/tests/kiln_e2e.rs` |
 | Reasons | `cli.rs`: `reasons_reach_the_log`; `driver.rs`: `malformed_input_and_invalid_options`, `internal_errors_are_not_declines` |
-| The back half, Threads | `crates/hod/tests/back.rs`: `object_is_the_same_for_every_thread_count` (1, 2, 3, 8 threads), `tokens_are_asked_for_large_modules_and_given_back`, `the_first_refusal_in_module_order_wins`, `target_features`, `x86_64_is_a_stable_refusal`, `break_even` (ignored: the measurement); `crates/hod/src/back.rs`: `threads_wanted`, `options_for_code_generation`, `errors_of_the_back_half`; `crates/hod_cli/src/jobs.rs`: `makeflags_forms`, `where_threads_come_from`, `tokens_are_taken_without_waiting_and_given_back`; `crates/hod_a64/src/features.rs` (§5.5.2); `kiln_e2e.rs`: kiln programs (calls, exceptions, containers, coroutines) through hod or its fallback, each linked under every linker and run against the LLVM build, one pinned to hod (integer code, strict) and one to the fallback (`module:asm`); `cargo xtask corpus verify --strict` (executing the corpus); `tests/ir/exit_*.ll` |
+| The back half, Threads | `crates/hod/tests/back.rs`: `object_is_the_same_for_every_thread_count` (1, 2, 3, 8 threads), `tokens_are_asked_for_large_modules_and_given_back`, `the_first_refusal_in_module_order_wins`, `target_features`, `x86_64_is_a_stable_refusal`, `break_even` (ignored: the measurement); `crates/hod/tests/read_threads.rs`: `the_reading_policy`, `reading_and_code_generation_share_one_request`; `crates/hod/src/back.rs`: `threads_wanted`, `options_for_code_generation`, `errors_of_the_back_half`; `crates/hod_cli/src/jobs.rs`: `makeflags_forms`, `where_threads_come_from`, `tokens_are_taken_without_waiting_and_given_back`; `crates/hod_a64/src/features.rs` (§5.5.2); `kiln_e2e.rs`: kiln programs (calls, exceptions, containers, coroutines) through hod or its fallback, each linked under every linker and run against the LLVM build, one pinned to hod (integer code, strict) and one to the fallback (`module:asm`); `cargo xtask corpus verify --strict` (executing the corpus); `tests/ir/exit_*.ll` |
 | Exit status | `cli.rs`: `fallback_exit_status_propagates`; `driver.rs`: `unsupported_without_fallback`, `malformed_input_and_invalid_options`, `io_errors` |
 | Coverage log | `crates/hod_cli/src/coverage.rs`: `line_format`, `free_form_fields_are_escaped`, `appends_to_an_existing_file`; `cli.rs`: `coverage_log_survives_concurrent_writers` (16 concurrent writers), `fallback_exit_status_propagates` (field 10, signal included), every test's `coverage` helper (eleven fields, their vocabulary); `xtask/src/irdiff/engine.rs`: `coverage_log_reading` (a reader under the append-only rule) |
 

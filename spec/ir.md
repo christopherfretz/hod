@@ -587,7 +587,8 @@ thread:
 - `Module::freeze` moves each of those tables into a shared base (an
   `Arc`); a table is a base and a layer of its own above it, with ids
   counted on from the base's end. A table never frozen has no layer and
-  reads as before. `thaw` folds the layers back once no fork shares the
+  reads as before: the layered access is out of line (`#[cold]`), so the
+  one-thread path pays one predictable branch and nothing else. `thaw` folds the layers back once no fork shares the
   base; the module is the same module before and after.
 - `Module::fork` of a frozen module shares every table (the symbol,
   COMDAT, flag, constructor and linker tables are always shared, behind

@@ -731,7 +731,10 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
         let Ok(number) = u32::try_from(index) else {
             return fail(BcErrorKind::Limit, self.at, "more than 2^32 instructions");
         };
-        if let Some((placeholder, used)) = self.s.forwards.remove(&number) {
+        // Most functions have no forward references: no hashing then.
+        if !self.s.forwards.is_empty()
+            && let Some((placeholder, used)) = self.s.forwards.remove(&number)
+        {
             if used != ty {
                 return self.mistyped("an instruction referred to with another type than it has");
             }

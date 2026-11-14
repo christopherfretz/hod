@@ -331,7 +331,7 @@ fn location_class(
 /// differs too:
 /// - `sret`: `llc`'s unit has `DW_AT_loclists_base` and a location list
 ///   where hod's variable is `DW_OP_fbreg N, DW_OP_deref` (the sret
-///   pointer; on x86-64 also a dynamic alloca);
+///   pointer; a dynamic alloca's until WP-221 made it a list in hod too);
 /// - `byval` (x86-64): a byval parameter `llc` places at `DW_OP_fbreg
 ///   +16` and hod at `DW_OP_fbreg N, DW_OP_deref`;
 /// - `stack protector`: in a module with `ssp`, `sspstrong` or `sspreq`,
@@ -348,7 +348,11 @@ fn location_class(
 /// - `split pubnames`: `llc`'s skeleton unit has `DW_AT_GNU_pubnames`,
 ///   hod writes no name index (§8);
 /// - `llc 19 blocks`: `llc` 19 writes no `DW_AT_abstract_origin` on a
-///   concrete block.
+///   concrete block;
+/// - `declared value` (§6.30, [`permitted_with`] only): a variable the
+///   module declares on a `phi` has hod's location list where `llc`'s
+///   DIE has no location, or a DIE (or a lexical block of only such
+///   DIEs) `llc` drops.
 pub fn permitted(
     h: &Node,
     l: &Node,
@@ -356,6 +360,62 @@ pub fn permitted(
     llc19: bool,
     protected: bool,
 ) -> Option<Vec<&'static str>> {
+    permitted_with(h, l, &Facts { is_constant, llc19, protected, declared: Vec::new() })
+}
+
+/// The class of `spec/dwarf.md` §6.30 (WP-221): a variable declared on a
+/// `phi`'s result ([`declared_on_phi`]), which hod describes by a
+/// location list and `llc`'s reference (`SelectionDAG`) drops: hod's DIE
+/// has a list where `llc`'s has no location, or `llc` has no DIE (nor
+/// the lexical block holding only such variables).
+pub const DECLARED_VALUE: &str = "declared value";
+
+fn is_declared(n: &Node, declared: &[String]) -> bool {
+    (n.tag == "DW_TAG_variable" || n.tag == "DW_TAG_formal_parameter")
+        && n.attrs.iter().any(|a| declared.contains(a))
+}
+
+/// A DIE of hod's `llc`'s reference does not have under the class
+/// [`DECLARED_VALUE`]: a declared variable, or a lexical block of them.
+fn declared_extra(n: &Node, declared: &[String]) -> bool {
+    if n.tag == "DW_TAG_lexical_block" {
+        return !n.children.is_empty() && n.children.iter().all(|c| declared_extra(c, declared));
+    }
+    is_declared(n, declared) && n.children.is_empty()
+}
+
+/// The number of hod's location lists of declared variables in `n`.
+fn declared_lists(n: &Node, declared: &[String]) -> usize {
+    usize::from(is_declared(n, declared) && n.attrs.iter().any(|a| a == "DW_AT_location list"))
+        + n.children.iter().map(|c| declared_lists(c, declared)).sum::<usize>()
+}
+
+/// The number of hod's declared variables in `n`.
+fn declared_dies(n: &Node, declared: &[String]) -> usize {
+    usize::from(is_declared(n, declared))
+        + n.children.iter().map(|c| declared_dies(c, declared)).sum::<usize>()
+}
+
+/// Removes from `ours` at most `most` of the relocations against a
+/// symbol `of` accepts that it has more of than `theirs`.
+fn drop_surplus(
+    ours: &mut Vec<(String, String)>,
+    theirs: &[(String, String)],
+    of: impl Fn(&str) -> bool,
+    most: usize,
+) {
+    let count = |r: &[(String, String)]| r.iter().filter(|(_, s)| of(s)).count();
+    let mut surplus = count(ours).saturating_sub(count(theirs)).min(most);
+    ours.retain(|(_, s)| {
+        let drop = surplus > 0 && of(s);
+        surplus -= usize::from(drop);
+        !drop
+    });
+}
+
+/// [`permitted`] with every fact of the module.
+pub fn permitted_with(h: &Node, l: &Node, facts: &Facts) -> Option<Vec<&'static str>> {
+    let Facts { is_constant, llc19, protected, .. } = *facts;
     let mut l = l.clone();
     let mut classes = Vec::new();
     // §8 (split units): hod writes no name index.
@@ -367,31 +427,44 @@ pub fn permitted(
             classes.push("split pubnames");
         }
     }
-    let mut sret = false;
-    if !h.attrs.iter().any(|a| a == "DW_AT_loclists_base")
-        && l.attrs.iter().any(|a| a == "DW_AT_loclists_base")
-    {
-        l.attrs.retain(|a| a != "DW_AT_loclists_base");
-        sret = true;
-    } else if !l.attrs.iter().any(|a| a == "DW_AT_str_offsets_base") {
+    // Whether `llc`'s unit has location lists. hod's may have its own
+    // too (WP-221: a dynamic `alloca`, a declared value), and then the
+    // unit's `loclists_base` is in both.
+    let sret = if l.attrs.iter().any(|a| a == "DW_AT_loclists_base") {
+        if !h.attrs.iter().any(|a| a == "DW_AT_loclists_base") {
+            l.attrs.retain(|a| a != "DW_AT_loclists_base");
+        }
+        true
+    } else {
         // WP-114: a DWARF 4 unit has no base attribute; its lists are
         // in `.debug_loc`, seen as a location `list` in the tree.
-        sret = has_attr(&l, "DW_AT_location list") && !has_attr(h, "DW_AT_location list");
-    }
+        !l.attrs.iter().any(|a| a == "DW_AT_str_offsets_base")
+            && has_attr(&l, "DW_AT_location list")
+    };
     let extras_ok =
         count_tag(&l, "DW_TAG_inlined_subroutine") > count_tag(h, "DW_TAG_inlined_subroutine");
-    let mut p = Permit { classes, is_constant, extras_ok, llc19, sret, protected };
+    let mut p = Permit {
+        classes,
+        is_constant,
+        extras_ok,
+        llc19,
+        sret,
+        protected,
+        declared: &facts.declared,
+    };
     p.eq(h, &l).then_some(p.classes)
 }
 
 #[expect(clippy::struct_excessive_bools, reason = "one flag per class of §6.7")]
-struct Permit {
+struct Permit<'f> {
     classes: Vec<&'static str>,
     is_constant: bool,
     extras_ok: bool,
     llc19: bool,
     sret: bool,
     protected: bool,
+    /// WP-221: [`declared_on_phi`].
+    declared: &'f [String],
 }
 
 fn is_extra(n: &Node) -> bool {
@@ -400,7 +473,19 @@ fn is_extra(n: &Node) -> bool {
         || n.tag == "DW_TAG_typedef"
 }
 
-impl Permit {
+impl Permit<'_> {
+    /// WP-221: hod's declared variable `h` with a list where `llc`'s `l`
+    /// has no location, and otherwise the same.
+    fn declared_unplaced(&self, h: &Node, l: &Node) -> bool {
+        if !is_declared(h, self.declared) || l.attrs.iter().any(|a| a.starts_with("DW_AT_location"))
+        {
+            return false;
+        }
+        let mut bare = h.clone();
+        bare.attrs.retain(|a| a != "DW_AT_location list");
+        same_attrs(&bare, l)
+    }
+
     fn note(&mut self, class: &'static str) {
         if !self.classes.contains(&class) {
             self.classes.push(class);
@@ -423,7 +508,9 @@ impl Permit {
                     a.clone_from(b);
                 }
             }
-            if self.llc19 && h.tag == "DW_TAG_lexical_block" && same_attrs(&bare, l) {
+            if self.declared_unplaced(h, l) {
+                self.note(DECLARED_VALUE);
+            } else if self.llc19 && h.tag == "DW_TAG_lexical_block" && same_attrs(&bare, l) {
                 self.note("llc 19 blocks");
             } else if !found.is_empty() && same_attrs(&placed, l) {
                 for class in found {
@@ -453,6 +540,9 @@ impl Permit {
                 j += 1;
             } else if i < hs.len() && self.is_constant && hs[i].tag == "DW_TAG_lexical_block" {
                 self.note("(b) is.constant block");
+                i += 1;
+            } else if i < hs.len() && declared_extra(&hs[i], self.declared) {
+                self.note(DECLARED_VALUE);
                 i += 1;
             } else if j < ls.len()
                 && (ls[j].tag == "DW_TAG_inlined_subroutine" || self.extras_ok && is_extra(&ls[j]))
@@ -652,7 +742,64 @@ fn one(module: &Path, tools: &Tools, major: u32, dir: &Path) -> Outcome {
         (Err(e), _) | (_, Err(e)) => return Outcome::Failed(e),
     };
     let is_constant = text.contains("@llvm.is.constant");
-    compare(&ours, &theirs, &ours_r, &theirs_r, is_constant, major == 19, protects(&text))
+    let facts = Facts {
+        is_constant,
+        llc19: major == 19,
+        protected: protects(&text),
+        declared: declared_on_phi(&text),
+    };
+    compare_with(&ours, &theirs, &ours_r, &theirs_r, &facts)
+}
+
+/// WP-221 (`spec/dwarf.md` §6.30), the condition of the class `declared
+/// value`: the names of the variables a `#dbg_declare` (or a call of
+/// `llvm.dbg.declare`) of module text `text` declares on a `phi`'s
+/// result, each as the `DW_AT_name` line of its DIE.
+pub fn declared_on_phi(text: &str) -> Vec<String> {
+    let mut nodes: Vec<&str> = Vec::new();
+    let mut phis: Vec<&str> = Vec::new();
+    for line in text.lines() {
+        let t = line.trim_start();
+        if t.starts_with("define ") {
+            phis.clear();
+        }
+        if let Some((name, rest)) = t.split_once(" = ")
+            && name.starts_with('%')
+            && rest.starts_with("phi ")
+        {
+            phis.push(name);
+        }
+        let args = t
+            .strip_prefix("#dbg_declare(ptr ")
+            .or_else(|| t.split_once("@llvm.dbg.declare(metadata ptr ").map(|(_, a)| a));
+        let Some(args) = args else { continue };
+        let mut parts = args.split(", ");
+        let (Some(address), Some(var)) = (parts.next(), parts.next()) else { continue };
+        let var = var.trim_start_matches("metadata ");
+        if phis.contains(&address) && var.starts_with('!') && !nodes.contains(&var) {
+            nodes.push(var);
+        }
+    }
+    let mut names = Vec::new();
+    for line in text.lines() {
+        let Some((node, rest)) = line.split_once(" = ") else { continue };
+        if !nodes.contains(&node) {
+            continue;
+        }
+        let Some(rest) = rest.trim_start_matches("distinct ").strip_prefix("!DILocalVariable(")
+        else {
+            continue;
+        };
+        if let Some(at) = rest.find("name: \"")
+            && let Some(len) = rest[at + 7..].find('"')
+        {
+            let name = format!("DW_AT_name (\"{}\")", &rest[at + 7..at + 7 + len]);
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    names
 }
 
 /// Whether the module text `text` names a stack-protector attribute
@@ -661,6 +808,19 @@ fn one(module: &Path, tools: &Tools, major: u32, dir: &Path) -> Outcome {
 pub fn protects(text: &str) -> bool {
     text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '"'))
         .any(|word| matches!(word, "ssp" | "sspstrong" | "sspreq"))
+}
+
+/// What the module says about the classes that depend on it.
+#[derive(Clone, Debug, Default)]
+pub struct Facts {
+    /// The module calls `llvm.is.constant`.
+    pub is_constant: bool,
+    /// The reference is `llc` 19.
+    pub llc19: bool,
+    /// A function has a stack-protector attribute ([`protects`]).
+    pub protected: bool,
+    /// [`declared_on_phi`].
+    pub declared: Vec<String>,
 }
 
 /// The outcome of a module from its trees and relocations.
@@ -673,6 +833,18 @@ pub fn compare(
     llc19: bool,
     protected: bool,
 ) -> Outcome {
+    let facts = Facts { is_constant, llc19, protected, declared: Vec::new() };
+    compare_with(ours, theirs, ours_r, theirs_r, &facts)
+}
+
+/// [`compare`] with every fact of the module.
+pub fn compare_with(
+    ours: &[Node],
+    theirs: &[Node],
+    ours_r: &[(String, String)],
+    theirs_r: &[(String, String)],
+    facts: &Facts,
+) -> Outcome {
     if ours.len() != theirs.len() {
         return Outcome::Differs(format!("{} units, llc's {}", ours.len(), theirs.len()));
     }
@@ -681,7 +853,7 @@ pub fn compare(
         if same(h, l) {
             continue;
         }
-        match permitted(h, l, is_constant, llc19, protected) {
+        match permitted_with(h, l, facts) {
             Some(found) => {
                 for class in found {
                     if !classes.contains(&class) {
@@ -696,13 +868,26 @@ pub fn compare(
     }
     // `llc`'s location lists (the `sret` class) add its relocation of
     // `DW_AT_loclists_base` against `.debug_loclists` (in DWARF 4, of each
-    // list's offset against `.debug_loc`, WP-114); every other must be
-    // equal.
+    // list's offset against `.debug_loc`, WP-114), those beyond hod's own
+    // (hod's lists of declared values, WP-221: a dynamic `alloca`); every
+    // other must be equal.
+    let lists_of = |s: &str| s == ".debug_loclists" || s == ".debug_loc";
     let mut theirs_r = theirs_r.to_vec();
     if classes.contains(&"sret") {
-        theirs_r.retain(|(_, symbol)| symbol != ".debug_loclists" && symbol != ".debug_loc");
+        drop_surplus(&mut theirs_r, ours_r, lists_of, usize::MAX);
     }
     let theirs_r = theirs_r.as_slice();
+    // WP-221: each of hod's lists of a `declared value` adds its
+    // relocation against `.debug_loclists` (`.debug_loc`), and in DWARF 4
+    // each of its DIEs `llc` does not have its name's against `.debug_str`.
+    let mut ours_r = ours_r.to_vec();
+    if classes.contains(&DECLARED_VALUE) {
+        let lists = ours.iter().map(|u| declared_lists(u, &facts.declared)).sum();
+        let dies = ours.iter().map(|u| declared_dies(u, &facts.declared)).sum();
+        drop_surplus(&mut ours_r, theirs_r, lists_of, lists);
+        drop_surplus(&mut ours_r, theirs_r, |s| s == ".debug_str", dies);
+    }
+    let ours_r = ours_r.as_slice();
     if ours_r != theirs_r {
         let only = |a: &[(String, String)], b: &[(String, String)]| {
             a.iter().find(|x| !b.contains(x)).map(|(k, s)| format!("{k} {s}"))
@@ -1074,5 +1259,88 @@ RELOCATION RECORDS FOR [.debug_line]:\n0000000000000000 R_X86_64_64 .text\n";
             "sh",
         );
         assert_eq!(fits.as_deref(), Ok("ok\n"));
+    }
+
+    /// WP-221 (`spec/dwarf.md` §6.30): the variables declared on a `phi`
+    /// (records and calls), not those on a slot or another value.
+    #[test]
+    fn variables_declared_on_a_phi() {
+        let text = "define void @f() {\n  %a = alloca i32\n  %h = phi ptr [ %p, %0 ]\n\
+                    \x20   #dbg_declare(ptr %h, !7, !DIExpression(), !9)\n\
+                    \x20   #dbg_declare(ptr %a, !8, !DIExpression(), !9)\n\
+                    \x20 call void @llvm.dbg.declare(metadata ptr %h, metadata !6, metadata !DIExpression())\n}\n\
+                    define void @g() {\n    #dbg_declare(ptr %h, !5, !DIExpression(), !9)\n}\n\
+                    !5 = !DILocalVariable(name: \"other\", scope: !1)\n\
+                    !6 = !DILocalVariable(name: \"old\", scope: !1)\n\
+                    !7 = !DILocalVariable(name: \"__promise\", scope: !1)\n\
+                    !8 = !DILocalVariable(name: \"slot\", scope: !1)\n";
+        assert_eq!(
+            declared_on_phi(text),
+            ["DW_AT_name (\"old\")", "DW_AT_name (\"__promise\")"].map(str::to_owned)
+        );
+    }
+
+    /// WP-221: hod's list where `llc` has no location, hod's DIE (and a
+    /// block of them) where `llc` has none, and their relocations, only
+    /// for the declared variables.
+    #[test]
+    fn declared_values_are_permitted_by_name() {
+        let var = |name: &str, list: bool| Node {
+            tag: "DW_TAG_variable".into(),
+            attrs: [
+                list.then(|| "DW_AT_location list".to_owned()),
+                Some(format!("DW_AT_name (\"{name}\")")),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+            children: vec![],
+        };
+        let block = |children: Vec<Node>| Node {
+            tag: "DW_TAG_lexical_block".into(),
+            attrs: vec!["DW_AT_low_pc".into(), "DW_AT_high_pc".into()],
+            children,
+        };
+        let unit = |children: Vec<Node>| Node {
+            tag: "DW_TAG_compile_unit".into(),
+            attrs: vec!["DW_AT_str_offsets_base".into()],
+            children: vec![Node { tag: "DW_TAG_subprogram".into(), attrs: vec![], children }],
+        };
+        let ours = unit(vec![
+            var("__coro_frame", true),
+            var("__promise", true),
+            block(vec![var("x", true)]),
+        ]);
+        let theirs = unit(vec![var("__coro_frame", false)]);
+        let lists = vec![("R_AARCH64_ABS32".to_owned(), ".debug_loclists".to_owned()); 3];
+        let names = ["__coro_frame", "__promise", "x"].map(|n| format!("DW_AT_name (\"{n}\")"));
+        let facts = Facts { declared: names.to_vec(), ..Facts::default() };
+        let (h, l) = (std::slice::from_ref(&ours), std::slice::from_ref(&theirs));
+        assert_eq!(
+            compare_with(h, l, &lists, &[], &facts),
+            Outcome::Permitted(vec![DECLARED_VALUE])
+        );
+        // Not declared on a `phi`: a difference.
+        let some = Facts { declared: names[..2].to_vec(), ..Facts::default() };
+        assert!(matches!(compare_with(h, l, &lists, &[], &some), Outcome::Differs(_)));
+        // A relocation more than the lists: a difference.
+        let more = vec![("R_AARCH64_ABS32".to_owned(), ".debug_loclists".to_owned()); 4];
+        assert!(matches!(compare_with(h, l, &more, &[], &facts), Outcome::Differs(_)));
+        // `llc` placing the variable another way is not `llc` dropping it.
+        let placed = unit(vec![
+            var("__coro_frame", false),
+            Node {
+                tag: "DW_TAG_variable".into(),
+                attrs: vec![
+                    "DW_AT_location DW_OP_fbreg".into(),
+                    "DW_AT_name (\"__promise\")".into(),
+                ],
+                children: vec![],
+            },
+        ]);
+        assert!(matches!(
+            compare_with(&[ours], &[placed], &lists, &[], &facts),
+            Outcome::Differs(_)
+        ));
     }
 }

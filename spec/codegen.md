@@ -188,9 +188,13 @@ alike, read as follows; the policy is only sound with these readings:
 - "The next instruction" (§4.6) is the next instruction of the same block
   and is not a `phi`; a use by a `phi` never qualifies.
 - A `#dbg_declare` that names a value which is not a stack slot (an `sret`
-  argument, a dynamic `alloca`) is not a use, but makes the value a home
-  value, so that the variable has one location for the whole function
-  (§9.5). This is the only way debug information changes the code.
+  argument, a dynamic `alloca`, a `phi`) is not a use, but makes the value a
+  home value, so that the variable can be found through its home: for the
+  whole function when the value is an argument, from its definition
+  over the blocks it dominates otherwise (§9.5, `spec/dwarf.md` §6.30).
+  This, and `#dbg_value` records or such declarations turning block slots
+  off in their function (§5.1), are the only ways debug information
+  changes the code.
 
 A home slot is assigned on the first mention of the value, definition or
 use, so blocks may be laid out in any order. A home slot is never reused
@@ -5982,19 +5986,20 @@ Recorded only when the module has debug information.
   the target cannot reach by a fixed offset is `Refused("debug:frame-place")`.
   `hod_dwarf` composes the location with the expression. Several rows
   may name one slot (structured bindings do), each with its own
-  expression. A `#dbg_declare` of a `phi` has no row (WP-111): `llc
-  -O0`'s `SelectionDAGBuilder` describes a declared address that is not
-  a static `alloca` or an argument in memory only through the node the
-  address has in the declaration's block, and a `phi` has none until an
-  instruction of the block uses it, so `llc` drops the declaration (a
-  `CoroSplit` ramp declares the frame's variables right after the frame
-  pointer's `phi`). `hod_ir`'s declarations have no position, so the two
-  other cases `llc` tells apart by position stay as they are: a value
-  from another block (`llc` drops it) and a value declared after its
-  definition in its own block (`llc` writes a location list from there);
-  hod writes the value's home for the whole function. No front end emits
-  either at `-O0` (`crates/hod_a64/tests/dies_followups.rs`, two
-  ignored tests). At `-O0` a row's location holds for the whole function. The
+  expression. A `#dbg_declare` of an instruction result (a `phi`, a
+  `getelementptr`, a call's result) has no `Frame`/`FrameIndirect` row
+  (WP-221, `spec/dwarf.md` §6.30): it gets `VarPlace::Value` rows with
+  `ValueAt::HomeAddress(home)`, rewritten to `ValueAt::Address(off)`
+  once the frame is final, over the code its home holds the value: from
+  the end of the definition's code (a `phi`'s: the end of its block's
+  `phi` loads) to its block's end, and every reachable block the
+  definition dominates, each up to a `ret` or other non-branch
+  terminator. A result never computed (dead, or a terminator's) has no
+  rows. A variable also declared on a slot or described by `#dbg_value`
+  records keeps those. In a coroutine body hod lowers itself a `phi`'s
+  declaration still has no row (WP-111). An argument's declaration keeps
+  `FrameIndirect` for the whole function. Otherwise at `-O0` a row's
+  location holds for the whole function. The
   body is dropped after its function is compiled, so everything
   `hod_dwarf` needs from it is copied here.
 - `#dbg_value` records are rows of `vars` too (WP-162, `spec/dwarf.md`

@@ -42,6 +42,22 @@
 //! of one instance into a location list. Every offset goes through the
 //! same mapping as the line table when x86-64 code shrinks
 //! ([`FnCx::map_value_ranges`], `spec/codegen.md` §5.6.15).
+//!
+//! WP-221 (`spec/dwarf.md` §6.30): a `#dbg_declare` whose address is an
+//! instruction result (a `phi`, a `getelementptr`, a call's result), not
+//! a slot or an argument, outside a coroutine body hod lowers, gives
+//! rows of the same kind. The result's home holds the address from its
+//! definition on and is never written again, so the variable is at the
+//! address stored there ([`ValueAt::HomeAddress`], then
+//! [`ValueAt::Address`]) over every reachable block the definition
+//! dominates: in the definition's own block from the end of its code (a
+//! `phi`'s: from the end of the block's `phi` loads), in each other from
+//! the block's first byte; each range ends as a value record's does. A
+//! result hod never computes (dead, or a terminator's) has no range, and
+//! a variable without one has no row (`llc` writes no DIE; a retained
+//! one has its DIE without a location, §6.18). A
+//! variable declared both on a slot and on a value, or also described
+//! by value records, keeps its other place (`llc` keeps the slot).
 
 use hod_ir::{
     BlockId, Const, DbgRecord, DiId, ExprId, Inst, InstId, LocId, Opcode, TailKind, TypeKind,
@@ -83,6 +99,12 @@ pub enum ValueAt {
     },
     /// Nowhere hod can prove (`<optimized out>`).
     None,
+    /// At the address stored in this frame slot (a declared value's
+    /// home, WP-221), while the frame grows.
+    HomeAddress(FrameRef),
+    /// At the address stored this many bytes from the function's DWARF
+    /// frame base (WP-221).
+    Address(i64),
 }
 
 /// One range of a variable described by value records: code offsets
@@ -109,11 +131,25 @@ struct Pending {
     ia: LocId,
 }
 
+/// A `#dbg_declare` of an instruction result (WP-221, module doc).
+#[derive(Clone, Copy, Debug)]
+struct Declared {
+    def: InstId,
+    var: DiId,
+    loc: LocId,
+    expr: ExprId,
+    ia: LocId,
+}
+
 /// The per-function state (part of [`crate::Scratch`]), reset by
 /// [`FnCx::value_records`].
 #[derive(Debug, Default)]
 pub(crate) struct ValueScratch {
     records: Vec<Pending>,
+    /// WP-221: the declarations of instruction results, in record order.
+    declared: Vec<Declared>,
+    /// Whether no instruction of the block being emitted has been yet.
+    fresh: bool,
     /// The ranges not closed: variable, instance, index in `Chunk::vars`.
     open: Vec<(DiId, LocId, u32)>,
     /// The block being emitted, as `BlockId` raw + 1 (0: none yet).
@@ -139,6 +175,7 @@ impl ValueScratch {
             v.capacity() * size_of::<T>()
         }
         bytes(&self.records)
+            + bytes(&self.declared)
             + bytes(&self.open)
             + bytes(&self.block_of)
             + bytes(&self.idom)
@@ -185,12 +222,52 @@ impl<'a, T: Target> FnCx<'a, T> {
                 ia,
             });
         }
+        self.s.dbg_values.declared.clear();
+        if !coroutine {
+            self.declared_values();
+        }
     }
 
-    /// Whether the function has value records to place.
+    /// WP-221: the declarations of instruction results whose rows are
+    /// ranges (module doc).
+    fn declared_values(&mut self) {
+        let debug = &self.module.debug;
+        let ia = |loc: LocId| debug.location(loc).map_or(LocId::NONE, |l| l.inlined_at);
+        for d in self.body.declares() {
+            let Some(def) = d.address.as_inst().filter(|&def| !self.offsets_a_slot(def)) else {
+                continue;
+            };
+            let instance = (d.var, ia(d.loc));
+            let elsewhere = self.body.slot_vars().iter().any(|s| (s.var, ia(s.loc)) == instance)
+                || self.s.dbg_values.records.iter().any(|r| (r.var, r.ia) == instance);
+            if elsewhere {
+                continue;
+            }
+            self.s.dbg_values.declared.push(Declared {
+                def,
+                var: d.var,
+                loc: d.loc,
+                expr: d.expr,
+                ia: instance.1,
+            });
+        }
+    }
+
+    /// Whether `declare`'s address is an instruction result whose rows
+    /// are ranges (WP-221) or which has its other place: `finish_vars`
+    /// writes no row of it. A slot plus a constant offset is not one: it
+    /// stays refused (`debug:declare-offset`, or `debug:declare-address`
+    /// when it is never computed; WP-150).
+    pub(crate) fn declares_by_range(&self, declare: &hod_ir::DbgDeclare) -> bool {
+        self.coro.is_none()
+            && declare.address.as_inst().is_some_and(|def| !self.offsets_a_slot(def))
+    }
+
+    /// Whether the function has value records, or declarations of
+    /// instruction results, to place.
     #[inline]
     pub(crate) fn has_value_records(&self) -> bool {
-        !self.s.dbg_values.records.is_empty()
+        !self.s.dbg_values.records.is_empty() || !self.s.dbg_values.declared.is_empty()
     }
 
     /// At the start of instruction `inst`'s code: the ranges its records
@@ -207,6 +284,7 @@ impl<'a, T: Target> FnCx<'a, T> {
             self.close_all(None);
             self.s.dbg_values.block = block;
             self.s.dbg_values.head = OPEN;
+            self.s.dbg_values.fresh = true;
         }
         let head = std::mem::replace(&mut self.s.dbg_values.head, OPEN);
         // A branch keeps the frame and writes no home (its edges write
@@ -257,6 +335,59 @@ impl<'a, T: Target> FnCx<'a, T> {
                 self.s.dbg_values.open.push((r.var, r.ia, row));
             }
         }
+        let fresh = std::mem::replace(&mut self.s.dbg_values.fresh, false);
+        if !ends && !self.s.dbg_values.declared.is_empty() {
+            self.open_declared(inst, fresh, if head == OPEN { offset } else { head })?;
+        }
+        Ok(())
+    }
+
+    /// WP-221: at the start of `inst`'s code, the ranges of the declared
+    /// values whose homes hold them from here on: on the block's first
+    /// instruction (`fresh`), those of its `phi`s (from here) and of the
+    /// blocks dominating it (from `head`, the block's first byte); on any
+    /// instruction, those of the instruction just before it.
+    fn open_declared(&mut self, inst: Inst<'a>, fresh: bool, head: u32) -> CgResult<()> {
+        let offset = self.offset();
+        let raw = inst.id().raw();
+        let range = self.body.block(self.block).inst_range();
+        // Reversed: `llc`'s order of the variables of one instruction.
+        for k in (0..self.s.dbg_values.declared.len()).rev() {
+            let d = self.s.dbg_values.declared[k];
+            let def = self.body.inst(d.def);
+            let start = if range.contains(&d.def.raw()) {
+                let phi = def.opcode() == Opcode::Phi;
+                if (phi && fresh) || (!phi && d.def.raw() + 1 == raw) {
+                    offset
+                } else {
+                    continue;
+                }
+            } else if fresh && self.home_written(d.def, inst.id()) {
+                head
+            } else {
+                continue;
+            };
+            let computed = def.opcode() == Opcode::Phi
+                || !(def.ty() == hod_ir::TypeId::VOID
+                    || def.uses().is_unused() && crate::driver::has_no_effect(def));
+            if def.is_terminator() || !computed {
+                continue;
+            }
+            let state = self.state(Key::inst(d.def.raw()))?;
+            let (Kind::Home, Loc::Frame(home)) = (state.kind, state.loc) else { continue };
+            let row = self.out.vars.len() as u32;
+            self.out.vars.push(VarRow {
+                var: d.var,
+                loc: d.loc,
+                expr: d.expr,
+                place: VarPlace::Value(ValueRange {
+                    start,
+                    end: OPEN,
+                    at: ValueAt::HomeAddress(home),
+                }),
+            });
+            self.s.dbg_values.open.push((d.var, d.ia, row));
+        }
         Ok(())
     }
 
@@ -267,6 +398,7 @@ impl<'a, T: Target> FnCx<'a, T> {
         self.close_all(None);
         self.s.dbg_values.block = self.block.raw() + 1;
         self.s.dbg_values.head = if self.block == self.body.entry() { OPEN } else { self.offset() };
+        self.s.dbg_values.fresh = true;
     }
 
     /// Whether `value` is a `phi` of the block being emitted.
@@ -474,14 +606,16 @@ impl<'a, T: Target> FnCx<'a, T> {
         let t = self.target;
         let desc = self.frame_desc;
         for row in self.out.vars.get_mut(start..).unwrap_or_default() {
-            if let VarPlace::Value(r) = &mut row.place
-                && let ValueAt::Home(home, size) = r.at
-            {
-                r.at = match t.frame_base_offset(&desc, home) {
-                    Some(offset) => ValueAt::Frame(offset, size),
-                    None => ValueAt::None,
-                };
-            }
+            let VarPlace::Value(r) = &mut row.place else { continue };
+            r.at = match r.at {
+                ValueAt::Home(home, size) => t
+                    .frame_base_offset(&desc, home)
+                    .map_or(ValueAt::None, |offset| ValueAt::Frame(offset, size)),
+                ValueAt::HomeAddress(home) => {
+                    t.frame_base_offset(&desc, home).map_or(ValueAt::None, ValueAt::Address)
+                }
+                at => at,
+            };
         }
     }
 
@@ -528,7 +662,10 @@ pub(crate) fn local_place(r: ValueRange) -> hod_dwarf::LocalPlace {
         ValueAt::Frame(offset, size) => ValueLoc::Frame { offset, size },
         ValueAt::Const { bits, width } => ValueLoc::Const { bits, width },
         ValueAt::None => ValueLoc::None,
-        ValueAt::Home(..) => return LocalPlace::Refused(crate::error::DEBUG_FRAME_PLACE),
+        ValueAt::Address(offset) => ValueLoc::Address { offset },
+        ValueAt::Home(..) | ValueAt::HomeAddress(_) => {
+            return LocalPlace::Refused(crate::error::DEBUG_FRAME_PLACE);
+        }
     };
     LocalPlace::Value { start: r.start, end: r.end, at }
 }

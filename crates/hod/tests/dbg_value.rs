@@ -331,14 +331,16 @@ fn ops_of(entries: &[(u64, u64, String)]) -> Vec<String> {
 /// a trailing `DW_OP_deref`, no entry for a narrow value under an
 /// operation whose low bits depend on the high ones (`DW_OP_shr`), a
 /// signed constant by `DW_OP_consts` only for a base type that is signed
-/// itself (not through a typedef, as `llc`).
+/// itself (not through a typedef, as `llc`). DWARF 4 writes the same
+/// entries in `.debug_loc` (WP-221, §6.30).
 #[test]
 fn expressions_are_written() {
     let Some(dwarfdump) = tool("llvm-dwarfdump") else { return };
     let dir = Scratch::new("dbg-value-expr");
-    for triple in TRIPLES {
-        let arch = triple.split('-').next().unwrap_or(triple);
-        let object = dir.write(&format!("{arch}.o"), compile(&expressions(triple, 5, ""), None));
+    for (triple, version) in TRIPLES.iter().flat_map(|t| [(*t, 5), (*t, 4)]) {
+        let arch = format!("{}-v{version}", triple.split('-').next().unwrap_or(triple));
+        let object =
+            dir.write(&format!("{arch}.o"), compile(&expressions(triple, version, ""), None));
         let verify = output(Command::new(&dwarfdump).arg("--verify").arg(&object));
         assert!(verify.contains("No errors."), "{arch}: {verify}");
         let ops = |name: &str| ops_of(&entries(&dwarfdump, &object, name));
@@ -371,8 +373,8 @@ fn declined(text: &str) -> String {
     }
 }
 
-/// Each refusal of §6.23, in the module above with that one construct;
-/// and DWARF 4, whose transcoder has no location-list form (§6.20).
+/// Each refusal of §6.23, in the module above with that one construct.
+/// (DWARF 4 was one until WP-221 wrote `.debug_loc`, §6.30.)
 #[test]
 fn refusals_are_named() {
     let cases = [
@@ -397,6 +399,5 @@ fn refusals_are_named() {
         for (name, record) in cases {
             assert_eq!(declined(&expressions(triple, 5, record)), name, "{triple}: {record}");
         }
-        assert_eq!(declined(&expressions(triple, 4, "")), hod_dwarf::DWARF_4_SHAPE, "{triple}");
     }
 }

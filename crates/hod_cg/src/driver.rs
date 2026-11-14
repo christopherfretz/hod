@@ -136,7 +136,7 @@ fn takes(body: &Body, succ: BlockId, from: BlockId, value: Value) -> bool {
         .any(|phi| matches!(phi.kind(), InstKind::Phi(list) if list.value_for(from) == Some(value)))
 }
 
-fn has_no_effect(inst: Inst<'_>) -> bool {
+pub(crate) fn has_no_effect(inst: Inst<'_>) -> bool {
     let op = inst.opcode();
     if op.is_binary() || op.is_cast() {
         return true;
@@ -880,12 +880,15 @@ impl<'a, T: Target> FnCx<'a, T> {
         let body = self.body;
         for declare in body.declares() {
             if declare.address == Value::NONE
-                || declares_a_phi(body, declare.address)
+                || (self.coro.is_some() && declares_a_phi(body, declare.address))
                 || declares_undef(self.module, declare.address)
+                || self.declares_by_range(declare)
             {
-                // The address was dropped, is a `phi`, or is `undef` or
-                // `poison`: no row, as `llc` writes none (§9.5, WP-111,
-                // WP-156).
+                // The address was dropped, is `undef` or `poison` (no
+                // row, as `llc` writes none: §9.5, WP-156), or is an
+                // instruction result, whose rows are ranges
+                // (`dbg_value`, WP-221); in a coroutine body hod lowers,
+                // a `phi`'s declaration is dropped (WP-111).
                 continue;
             }
             // §4.1: a declared value has a home for the whole function.

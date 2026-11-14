@@ -164,14 +164,18 @@ impl<'a, T: Target> FnCx<'a, T> {
     /// address into its users and never gives it the home the
     /// declaration needs. `llc` describes it as the slot plus the offset.
     fn check_declared(&self, id: InstId) -> CgResult<()> {
-        let inst = self.body.inst(id);
-        if let InstKind::PtrAdd(add) = inst.kind()
-            && add.index_count() == 0
-            && matches!(add.base.kind(), ValueKind::Slot(_))
-        {
+        if self.offsets_a_slot(id) {
             return Err(CgError::unsupported(crate::emit::unsupported::DEBUG_DECLARE_OFFSET));
         }
         Ok(())
+    }
+
+    /// Whether `id` is a stack slot plus a constant offset, the address
+    /// [`Self::check_declared`] refuses a declaration of (and which the
+    /// declared-value ranges of WP-221 leave to it).
+    pub(crate) fn offsets_a_slot(&self, id: InstId) -> bool {
+        matches!(self.body.inst(id).kind(), InstKind::PtrAdd(add)
+            if add.index_count() == 0 && matches!(add.base.kind(), ValueKind::Slot(_)))
     }
 
     /// The bytes of a home or incoming slot of a value of `class` and

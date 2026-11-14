@@ -16,6 +16,9 @@
 //!   a unit whose code is one range is the base of its blocks' lists,
 //!   whose entries are then offsets from it without relocations; in a
 //!   unit with several ranges every entry is a relocated address;
+//! - location lists (WP-221, §6.30): `.debug_loc` by `DW_FORM_sec_offset`
+//!   and no `DW_AT_loclists_base`, the addresses as range lists' are,
+//!   each expression after a two-byte length (DWARF 4 §2.6.2);
 //! - files are counted from 1, so `DW_AT_decl_file` and `DW_AT_call_file`
 //!   are DWARF 5's index plus one, and the line table is version 4's
 //!   ([`write_line_header`]: the directories and files inline, no
@@ -78,6 +81,9 @@ const fn checked_later(family: usize, mask: u32) -> bool {
         || (mask == 0
             && (family == fam::FORMAL_PARAMETER_OF_ABSTRACT_LIST
                 || family == fam::VARIABLE_OF_ABSTRACT_LIST))
+        // WP-221 (§6.30): every location-list family, its list in
+        // `.debug_loc`.
+        || (family >= fam::FORMAL_PARAMETER_LIST && family <= fam::VARIABLE_OF_ABSTRACT_LIST)
 }
 
 // WP-150: the GNU call-site forms of version 4 (`spec/dwarf.md` §6.21).
@@ -97,6 +103,9 @@ const DW_RLE_END_OF_LIST: u8 = 0x00;
 const DW_RLE_BASE_ADDRESSX: u8 = 0x01;
 const DW_RLE_STARTX_LENGTH: u8 = 0x03;
 const DW_RLE_OFFSET_PAIR: u8 = 0x04;
+const DW_LLE_END_OF_LIST: u8 = 0x00;
+const DW_LLE_BASE_ADDRESSX: u8 = 0x01;
+const DW_LLE_OFFSET_PAIR: u8 = 0x04;
 /// A DWARF 5 unit header (32-bit format).
 const HEADER5: usize = 12;
 
@@ -357,6 +366,9 @@ struct Out {
     ranges: Vec<u8>,
     /// `.debug_ranges`'s relocations: offset, symbol, addend.
     range_relocs: Vec<(usize, SymbolId, i64)>,
+    /// WP-221: `.debug_loc`, and its relocations as `range_relocs`.
+    locs: Vec<u8>,
+    loc_relocs: Vec<(usize, SymbolId, i64)>,
     used: Vec<u64>,
     // Per unit, reused.
     /// The unit's `.debug_info` relocations of DWARF 5, by unit offset.
@@ -425,6 +437,66 @@ impl Out {
         }
         self.ranges.extend_from_slice(&[0; 16]);
         self.reloc(Target::Rnglists, at as i64);
+        self.info.extend_from_slice(&[0; 4]);
+        Ok(())
+    }
+
+    /// WP-221 (§6.30): the DWARF 5 location list at `offset` of `w`'s
+    /// `.debug_loclists` (as `loclists::value_location` writes it: a base
+    /// address, offset pairs, the end) appended to `.debug_loc` in
+    /// version 4's form (DWARF 4 §2.6.2: address pairs, as offsets from
+    /// `base`, the unit's one range, or else relocated addresses; a
+    /// two-byte expression length; two zero addresses at the end), and
+    /// its offset written into `.debug_info`.
+    fn loc_list(&mut self, cx: &Src<'_, '_>, offset: i64) -> Result<(), Error> {
+        let bad = || shape(cx.unit);
+        let b = &cx.w.loclists;
+        let addr = |index: u64| cx.w.addrs.get(usize::try_from(index).ok()?).copied();
+        let mut p = usize::try_from(offset).map_err(|_| bad())?;
+        let at = self.locs.len();
+        let mut base = None;
+        loop {
+            let op = *b.get(p).ok_or_else(bad)?;
+            p += 1;
+            match op {
+                DW_LLE_END_OF_LIST => break,
+                DW_LLE_BASE_ADDRESSX => {
+                    base = Some(read_uleb(b, &mut p).and_then(addr).ok_or_else(bad)?);
+                }
+                DW_LLE_OFFSET_PAIR => {
+                    let (symbol, from) = base.ok_or_else(bad)?;
+                    let start = from + read_uleb(b, &mut p).ok_or_else(bad)? as i64;
+                    let end = from + read_uleb(b, &mut p).ok_or_else(bad)? as i64;
+                    let len = read_uleb(b, &mut p).ok_or_else(bad)?;
+                    let expr = usize::try_from(len)
+                        .ok()
+                        .and_then(|l| b.get(p..p.checked_add(l)?))
+                        .ok_or_else(bad)?;
+                    p += expr.len();
+                    match cx.base {
+                        Some((s, o)) => {
+                            if s != symbol || start < o || end < start {
+                                return Err(bad());
+                            }
+                            self.locs.extend_from_slice(&((start - o) as u64).to_le_bytes());
+                            self.locs.extend_from_slice(&((end - o) as u64).to_le_bytes());
+                        }
+                        None => {
+                            for addend in [start, end] {
+                                self.loc_relocs.push((self.locs.len(), symbol, addend));
+                                self.locs.extend_from_slice(&[0; 8]);
+                            }
+                        }
+                    }
+                    let len = u16::try_from(expr.len()).map_err(|_| bad())?;
+                    self.locs.extend_from_slice(&len.to_le_bytes());
+                    self.locs.extend_from_slice(expr);
+                }
+                _ => return Err(bad()),
+            }
+        }
+        self.locs.extend_from_slice(&[0; 16]);
+        self.reloc(Target::Loclists, at as i64);
         self.info.extend_from_slice(&[0; 4]);
         Ok(())
     }
@@ -550,6 +622,8 @@ impl Out {
                         self.reloc(Target::Line, old.addend);
                         self.info.extend_from_slice(&[0; 4]);
                     }
+                    // WP-221: a location list (§6.30).
+                    Target::Loclists => self.loc_list(cx, old.addend)?,
                     _ => return Err(bad()),
                 }
             }
@@ -703,6 +777,8 @@ pub struct Dwarf4Sections {
     /// `.debug_ranges`, when a unit's code or a block's is in several
     /// ranges.
     pub ranges: Option<SectionId>,
+    /// `.debug_loc`, when a variable's location is a list (WP-221).
+    pub locs: Option<SectionId>,
 }
 
 fn not_dwarf4(u: &UnitInput<'_, '_>) -> Error {
@@ -805,6 +881,8 @@ pub fn write_debug_info4(
         relocs: Vec::with_capacity(8 + dies * 2),
         ranges: Vec::new(),
         range_relocs: Vec::new(),
+        locs: Vec::new(),
+        loc_relocs: Vec::new(),
         used: vec![0; (CODE_END as usize).div_ceil(64)],
         old: Vec::new(),
         map: Vec::new(),
@@ -821,19 +899,38 @@ pub fn write_debug_info4(
         w.str_offsets.clear();
         w.addr.clear();
         w.rnglists.clear();
+        w.loclists.clear();
         w.unit(u, symbols)?;
         out.unit(&w, u.plan, 0, 0)?;
     }
     let abbrev = write_abbrev4(&out.used);
-    if u32::try_from(out.info.len()).is_err() || u32::try_from(out.ranges.len()).is_err() {
+    if u32::try_from(out.info.len()).is_err()
+        || u32::try_from(out.ranges.len()).is_err()
+        || u32::try_from(out.locs.len()).is_err()
+    {
         return Err(Error::TooLarge);
     }
-    if obj.section_count() >= u32::MAX - 5 {
+    if obj.section_count() >= u32::MAX - 6 {
         return Err(Error::Object(hod_obj::Error::TooLarge(hod_obj::Limit::Sections)));
     }
+    emit_sections(obj, line, out, abbrev, w.strings.into_data())
+}
 
-    // Only now touch the object, in `llc`'s order of the sections.
+/// [`write_debug_info4`]'s sections, made and filled only now that every
+/// unit was written, in `llc`'s order of the sections.
+fn emit_sections(
+    obj: &mut Object,
+    line: SectionId,
+    out: Out,
+    abbrev: Vec<u8>,
+    strings: Vec<u8>,
+) -> Result<Dwarf4Sections, Error> {
     let target = crate::target::for_arch(obj.arch());
+    let locs = if out.locs.is_empty() {
+        None
+    } else {
+        Some(obj.add_section(b".debug_loc", SectionKind::Debug, 1)?)
+    };
     let abbrev_sec = obj.add_section(b".debug_abbrev", SectionKind::Debug, 1)?;
     let info = obj.add_section(b".debug_info", SectionKind::Debug, 1)?;
     let ranges = if out.ranges.is_empty() {
@@ -847,25 +944,28 @@ pub fn write_debug_info4(
         sh_entsize: 1,
     };
     let str_sec = obj.add_section(b".debug_str", str_kind, 1)?;
+    if let Some(l) = locs {
+        obj.append_owned(l, out.locs);
+    }
     obj.append_owned(abbrev_sec, abbrev);
     obj.append_owned(info, out.info);
     if let Some(r) = ranges {
         obj.append_owned(r, out.ranges);
     }
-    obj.append_owned(str_sec, w.strings.into_data());
+    obj.append_owned(str_sec, strings);
     let sym_abbrev = obj.section_symbol(abbrev_sec);
     let sym_str = obj.section_symbol(str_sec);
     let sym_line = obj.section_symbol(line);
     let sym_ranges = ranges.map(|r| obj.section_symbol(r));
-    obj.reserve(0, 0, out.relocs.len() + out.range_relocs.len(), 0);
+    let sym_locs = locs.map(|l| obj.section_symbol(l));
+    obj.reserve(0, 0, out.relocs.len() + out.range_relocs.len() + out.loc_relocs.len(), 0);
     for r in &out.relocs {
         let (symbol, wide) = match r.target {
             // `StrOffsets` and `Addr` are not made by `Out`: DWARF 5's
-            // sections are not written. WP-162: nor `Loclists`, a
-            // location list's family being past `LAST_CHECKED`.
-            Target::Abbrev | Target::StrOffsets | Target::Addr | Target::Loclists => {
-                (sym_abbrev, false)
-            }
+            // sections are not written.
+            Target::Abbrev | Target::StrOffsets | Target::Addr => (sym_abbrev, false),
+            // WP-221: `.debug_loc` (§6.30).
+            Target::Loclists => (sym_locs.unwrap_or(sym_abbrev), false),
             Target::Str => (sym_str, false),
             Target::Line => (sym_line, false),
             Target::Rnglists => (sym_ranges.unwrap_or(sym_abbrev), false),
@@ -879,7 +979,12 @@ pub fn write_debug_info4(
             obj.add_relocation(r, offset as u64, target.address_reloc, symbol, addend);
         }
     }
-    Ok(Dwarf4Sections { abbrev: abbrev_sec, info, str: str_sec, ranges })
+    if let Some(l) = locs {
+        for &(offset, symbol, addend) in &out.loc_relocs {
+            obj.add_relocation(l, offset as u64, target.address_reloc, symbol, addend);
+        }
+    }
+    Ok(Dwarf4Sections { abbrev: abbrev_sec, info, str: str_sec, ranges, locs })
 }
 
 #[cfg(test)]

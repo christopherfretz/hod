@@ -404,6 +404,24 @@ define ptr @forced_sym_plt() {
   ret ptr %r
 }
 
+; `Ws` (WP-199, `spec/asm.md` §13): a symbol plus a constant offset,
+; printed bare under `p`, `c` and `P`. protobuf's `port.h` names a type's
+; default instance with `.reloc ., BFD_RELOC_NONE, ${0:p}`: an
+; `R_X86_64_NONE` relocation and no bytes.
+@asm_pair = global [2 x i64] [i64 5, i64 6], align 8
+
+define void @ws_reloc() {
+  call void asm sideeffect ".reloc ., BFD_RELOC_NONE, ${0:p}", "Ws,~{dirflag},~{fpsr},~{flags}"(ptr @asm_cell)
+  call void asm sideeffect ".reloc ., BFD_RELOC_NONE, ${0:c}", "^Ws,~{dirflag},~{fpsr},~{flags}"(ptr getelementptr inbounds (i8, ptr @asm_pair, i64 8))
+  call void asm sideeffect "nop\0A\09.reloc ., R_X86_64_NONE, ${0:P}", "Ws,~{dirflag},~{fpsr},~{flags}"(ptr @asm_fn)
+  ret void
+}
+
+define ptr @forced_ws_address() {
+  %r = call ptr asm "leaq ${1:p}(%rip), $0", "={rax},Ws,~{dirflag},~{fpsr},~{flags}"(ptr getelementptr inbounds (i8, ptr @asm_pair, i64 8))
+  ret ptr %r
+}
+
 define void @forced_fwait() {
   call void asm sideeffect "fwait", "~{dirflag},~{fpsr},~{flags}"()
   call void asm sideeffect "wait", "~{dirflag},~{fpsr},~{flags}"()

@@ -203,7 +203,7 @@ fn symbol_relocs(objdump: &std::path::Path, object: &std::path::Path) -> Vec<Str
         .filter_map(|l| {
             let mut words = l.split_whitespace().skip(1);
             let (kind, value) = (words.next()?, words.next()?);
-            let named = ["asm_tls", "asm_cell", "asm_fn"].iter().any(|s| {
+            let named = ["asm_tls", "asm_cell", "asm_fn", "asm_pair"].iter().any(|s| {
                 value.strip_prefix(s).is_some_and(|r| r.is_empty() || r.starts_with(['+', '-']))
             });
             named.then(|| format!("{kind} {value}"))
@@ -222,7 +222,7 @@ fn symbol_fields_are_llcs_relocations() {
         let Some(objdump) = tool(&format!("llvm-objdump-{major}")) else { continue };
         let Some(theirs) = llc(&dir, major, &format!("llc-{major}"), &text) else { continue };
         let (a, b) = (symbol_relocs(&objdump, &ours), symbol_relocs(&objdump, &theirs));
-        assert!(a.len() >= 9, "{a:?}");
+        assert!(a.len() >= 13, "{a:?}");
         assert_eq!(a, b, "llc {major}");
         println!("llc {major}: {} template relocations, hod's", a.len());
     }
@@ -260,6 +260,16 @@ fn what_is_not_assembled_is_refused_by_name() {
         (one("void", "call void asm \"nop\", \"i\"(i32 %x)"), "asm:constraint/i"),
         (one("void", "call void asm \"nop\", \"I\"(i32 99)"), "asm:constraint/range"),
         (one("void", "call void asm \"nop\", \"i\"(ptr @f)"), "asm:operand/symbol"),
+        (one("void", "call void asm \"nop\", \"Ws\"(i32 %x)"), "asm:constraint/s"),
+        (one("void", "call void asm \"# $0\", \"Ws\"(ptr %p)"), "asm:constraint/s"),
+        (one("void", "call void asm \"# ${0:a}\", \"Ws\"(ptr @f)"), "asm:modifier/a"),
+        (
+            format!(
+                "{}@q = private global i32 0\ndefine void @f() {{\n  call void asm \"# $0\", \"Ws\"(ptr @q)\n  ret void\n}}\n",
+                ll_header()
+            ),
+            "asm:operand/symbol",
+        ),
         (one("void", "call void asm \"frob $0\", \"r\"(i32 %x)"), "asm:mnemonic/frob"),
         (one("void", "call void asm \"vzeroupper\", \"\"()"), "asm:mnemonic/vzeroupper"),
         (one("void", "call void asm \"movb ${0:h}, %al\", \"r\"(i32 %x)"), "asm:modifier/h"),

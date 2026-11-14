@@ -51,6 +51,9 @@ int64_t asm_fn(void);
 int64_t forced_sym_tpoff(void), forced_sym_fs_load(void), forced_sym_gottpoff(void);
 int64_t sym_tpoff_r(void), forced_sym_pc32_load(void);
 void *tls_address(void), *forced_sym_pc32(void), *forced_sym_gotpcrel(void);
+extern int64_t asm_pair[2];
+void ws_reloc(void);
+void *forced_ws_address(void);
 void *forced_sym_plt(void);
 void forced_fwait(void);
 
@@ -160,6 +163,8 @@ int main(void) {
   CHECK(sym_tpoff_r() == forced_sym_tpoff());
   CHECK(tls_address() == (void *)&asm_tls);
   CHECK(forced_sym_pc32() == (void *)&asm_cell);
+  ws_reloc();
+  CHECK(forced_ws_address() == (void *)&asm_pair[1]);
   CHECK(forced_sym_pc32_load() == 1234);
   CHECK(forced_sym_gotpcrel() == (void *)&asm_cell);
   CHECK(forced_sym_plt() == (void *)asm_fn);

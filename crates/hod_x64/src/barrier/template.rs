@@ -131,6 +131,7 @@ const IMM_L: u32 = 1 << 13; // L: 0xff, 0xffff, 0xffffffff
 const IMM_M: u32 = 1 << 14; // M: 0..3
 const IMM_N: u32 = 1 << 15; // N: 0..255
 const IMM_O: u32 = 1 << 16; // O: 0..127
+const SYM: u32 = 1 << 17; // Ws (^Ws), s: a symbol plus a constant offset
 
 /// The immediate codes.
 const IMMS: [u32; 10] = [IMM_ANY, IMM_E, IMM_Z, IMM_I, IMM_J, IMM_K, IMM_L, IMM_M, IMM_N, IMM_O];
@@ -169,6 +170,8 @@ enum Place {
     Imm(i64),
     /// A flag output.
     Flag(Cond),
+    /// A symbol and a byte offset (`Ws`, `s`), printed by its name.
+    Sym(SymId, i64),
 }
 
 /// The register a name denotes, for an operand (`Ok(None)`: not one hod
@@ -204,7 +207,17 @@ impl ConstraintSyntax for X64Syntax {
     type Cond = Cond;
 
     fn letters(&self, code: &[u8], _output: bool) -> Option<(u32, usize)> {
+        // `Ws` as clang writes it (`^Ws`) and as LLVM reads it unmarked
+        // (`W`, then the generic `s`): a symbol reference (`spec/asm.md`
+        // §13).
+        if code.starts_with(b"^Ws") {
+            return Some((SYM, 3));
+        }
+        if code.starts_with(b"Ws") {
+            return Some((SYM, 2));
+        }
         let bits = match code.first()? {
+            b's' => SYM,
             b'r' | b'l' | b'q' => R,
             b'Q' => ABCD,
             b'R' => LEGACY,
@@ -462,6 +475,9 @@ fn first_place(
     if alt.codes & TIED != 0 && op.kind == Kind::Input {
         return Ok(None);
     }
+    if alt.codes & SYM != 0 {
+        return symbol_place(cx, direct_value).map(Some);
+    }
     let imm_codes = alt.codes & (ANY_IMM | XX);
     if imm_codes != 0
         && let Some(c) = direct_value.and_then(|v| const_int(cx, v))
@@ -495,6 +511,31 @@ fn first_place(
         return Err(refused(reason::constraint("i")));
     }
     Err(refused(reason::constraint(if alt.codes & M != 0 { "m" } else { "other" })))
+}
+
+/// The place of a `Ws` or `s` operand: a symbol of the module, or one
+/// plus a constant offset (a constant `getelementptr`), whose name the
+/// assembler reads back. A private symbol (`.L` to LLVM), an anonymous
+/// or a quoted one is `asm:operand/symbol`; another value is
+/// `asm:constraint/s`, an `llc` error.
+fn symbol_place(cx: &FnCx<'_, X64>, value: Option<Value>) -> CgResult<Place> {
+    let Some(value) = value else { return Err(refused(reason::constraint("s"))) };
+    let (sym, addend) = match value.kind() {
+        ValueKind::Sym(sym) => (sym, 0),
+        ValueKind::Const(id) => match cx.module.consts.get(id) {
+            Const::Addr { sym, addend } => (sym, addend),
+            _ => return Err(refused(reason::constraint("s"))),
+        },
+        _ => return Err(refused(reason::constraint("s"))),
+    };
+    let symbol = cx.module.symbol(sym);
+    let name = symbol.name();
+    let plain = name.first().is_some_and(|&b| hod_asm::expr::is_name_start(b))
+        && name.iter().all(|&b| hod_asm::expr::is_name_char(b));
+    if !plain || symbol.linkage() == hod_ir::Linkage::Private {
+        return Err(refused(Refusal(reason::operand::SYMBOL)));
+    }
+    Ok(Place::Sym(sym, addend))
 }
 
 #[allow(clippy::too_many_lines, reason = "the choice of the module documentation, in order")]
@@ -605,7 +646,7 @@ fn decide(cx: &FnCx<'_, X64>, inst: Inst<'_>, ops: &Ops) -> CgResult<Plan> {
                     return unsupported(OPERAND_TYPE);
                 }
             }
-            Some(Place::Imm(_)) => {}
+            Some(Place::Imm(_) | Place::Sym(..)) => {}
             None => return cx.bug("an inline-assembly operand without a place"),
         }
     }
@@ -675,6 +716,7 @@ pub fn call<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>) -> CgResult<()> {
             asm::RefKind::TpOff32 => X64Reloc::TpOff32,
             asm::RefKind::DtpOff32 => X64Reloc::DtpOff32,
             asm::RefKind::Abs32S => X64Reloc::Abs32S,
+            asm::RefKind::None => X64Reloc::None,
         };
         fields.push((r.offset, kind, sym, r.addend));
     }
@@ -705,6 +747,12 @@ fn substitute(
             Some(Place::Reg(p)) => Arg::Xmm(reg::number(p)),
             Some(Place::Mem(p)) => Arg::Mem(reg::number(p)),
             Some(Place::Imm(v)) => Arg::Imm(v),
+            Some(Place::Sym(sym, addend)) => {
+                let name = cx.module.symbol(sym).name();
+                let name =
+                    std::str::from_utf8(name).map_err(|_| Refusal(reason::operand::SYMBOL))?;
+                return asm::print_symbol(name, addend, r.modifier, out);
+            }
             // `llc` cannot print a flag output.
             Some(Place::Flag(_)) | None => return Err(Refusal(reason::other::TEMPLATE)),
         };

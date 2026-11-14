@@ -25,7 +25,6 @@
 mod linking;
 
 #[path = "common/aggr_gen.rs"]
-#[allow(dead_code, reason = "a shared helper: not every function is used here")]
 mod aggr_gen;
 
 use std::collections::{BTreeMap, BTreeSet};

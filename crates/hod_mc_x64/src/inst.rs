@@ -313,6 +313,27 @@ const fn head(out: &mut Acc, op: Op, seg: Option<crate::Seg>, rex: Rex) {
 /// 8-bit register and `rm_byte` that a register `rm` is one. Immediate
 /// bytes are pushed by the caller.
 pub(crate) const fn modrm(op: Op, reg: u8, reg_byte: bool, rm: Rm, rm_byte: bool) -> Inst {
+    modrm_after(op, None, reg, reg_byte, rm, rm_byte)
+}
+
+/// [`modrm`] for an opcode of the three-byte maps: `op` is `0F` and the
+/// escape byte (`38` or `3A`), `opcode` the byte after it.
+pub(crate) const fn modrm3(op: Op, opcode: u8, reg: u8, rm: Rm) -> Inst {
+    modrm_after(op, Some(opcode), reg, false, rm, false)
+}
+
+/// [`modrm`] with, when `second` is given, a second opcode byte after
+/// the first. Inlined, so that [`modrm`] keeps no test of `second`.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+const fn modrm_after(
+    op: Op,
+    second: Option<u8>,
+    reg: u8,
+    reg_byte: bool,
+    rm: Rm,
+    rm_byte: bool,
+) -> Inst {
     let mut out = Acc::EMPTY;
     let r = (reg >> 3) & 1;
     let force_reg = reg_byte && reg >= 4 && reg < 8;
@@ -320,6 +341,9 @@ pub(crate) const fn modrm(op: Op, reg: u8, reg_byte: bool, rm: Rm, rm_byte: bool
         Rm::Reg(rm) => {
             let force = force_reg || (rm_byte && rm.needs_rex_as_byte());
             head(&mut out, op, None, Rex { bits: r << 2 | rm.high(), force });
+            if let Some(second) = second {
+                out.push(second);
+            }
             out.push(0xc0 | (reg & 7) << 3 | rm.low());
         }
         Rm::Mem(m) => {
@@ -330,9 +354,77 @@ pub(crate) const fn modrm(op: Op, reg: u8, reg_byte: bool, rm: Rm, rm_byte: bool
                 (None, _) => (0, 0),
             };
             head(&mut out, op, m.seg(), Rex { bits: r << 2 | x << 1 | b, force: force_reg });
+            if let Some(second) = second {
+                out.push(second);
+            }
             mem_operand(&mut out, reg & 7, m);
         }
     }
+    out.finish()
+}
+
+/// The fields of a VEX-encoded opcode (`spec/mc-x64.md` "VEX"): the
+/// opcode map (1 `0F`, 2 `0F38`, 3 `0F3A`), the implied prefix `pp` (0
+/// none, 1 `66`, 2 `F3`, 3 `F2`), `VEX.W`, `VEX.L` (256 bits) and the
+/// opcode byte.
+#[derive(Clone, Copy)]
+pub(crate) struct VexOp {
+    pub map: u8,
+    pub pp: u8,
+    pub w: bool,
+    pub l: bool,
+    pub opcode: u8,
+}
+
+/// A VEX-encoded instruction: `reg` the `ModRM.reg` field (a register
+/// number or a `/digit`), `vvvv` the extra source register's number (0
+/// when the form has none: the field is then `1111`), `rm` the
+/// register-or-memory operand. The two-byte prefix `C5` where it can
+/// express the instruction (map `0F`, `W` 0, no `X` or `B` bit), as
+/// LLVM's assembler chooses; `C4` otherwise.
+pub(crate) const fn vex(op: VexOp, reg: u8, vvvv: u8, rm: Rm) -> Inst {
+    let mut out = Acc::EMPTY;
+    let r = (reg >> 3) & 1;
+    let (x, b, seg) = match rm {
+        Rm::Reg(rm) => (0, rm.high(), None),
+        Rm::Mem(m) => {
+            let (x, b) = match (m.get_index(), m.get_base()) {
+                (Some((i, _)), Base::Reg(base)) => (i.reg().high(), base.high()),
+                (Some((i, _)), _) => (i.reg().high(), 0),
+                (None, Base::Reg(base)) => (0, base.high()),
+                (None, _) => (0, 0),
+            };
+            (x, b, m.seg())
+        }
+    };
+    if let Some(seg) = seg {
+        out.push(seg.prefix());
+    }
+    out.lock_at = out.len;
+    let tail = (!vvvv & 15) << 3 | if op.l { 4 } else { 0 } | op.pp;
+    if op.map == 1 && !op.w && x == 0 && b == 0 {
+        out.push(0xc5);
+        out.push((r ^ 1) << 7 | tail);
+    } else {
+        out.push(0xc4);
+        out.push((r ^ 1) << 7 | (x ^ 1) << 6 | (b ^ 1) << 5 | op.map);
+        out.push(if op.w { 0x80 } else { 0 } | tail);
+    }
+    out.push(op.opcode);
+    match rm {
+        Rm::Reg(rm) => out.push(0xc0 | (reg & 7) << 3 | rm.low()),
+        Rm::Mem(m) => mem_operand(&mut out, reg & 7, m),
+    }
+    out.finish()
+}
+
+/// A VEX-encoded instruction without operands (`VZEROUPPER`): the
+/// two-byte prefix, `vvvv` 1111, and the opcode.
+pub(crate) const fn vex_bare(op: VexOp) -> Inst {
+    let mut out = Acc::EMPTY;
+    out.push(0xc5);
+    out.push(0x80 | 0x78 | if op.l { 4 } else { 0 } | op.pp);
+    out.push(op.opcode);
     out.finish()
 }
 

@@ -118,6 +118,7 @@ macro_rules! family {
 
 pub mod alu;
 pub mod atomic;
+pub mod avx;
 pub mod bits;
 pub mod branch;
 pub mod bt;
@@ -129,12 +130,14 @@ pub mod packed;
 pub mod reg;
 pub mod shift;
 pub mod sse;
+pub mod sse4;
 pub mod state;
 pub mod system;
 pub mod tls;
 
 pub use alu::*;
 pub use atomic::*;
+pub use avx::*;
 pub use bits::*;
 pub use branch::*;
 pub use bt::*;
@@ -146,6 +149,7 @@ pub use packed::*;
 pub use reg::{Base, Cond, FpCmp, FpSize, Index, Mem, Reg, Scale, Seg, Size, Xmm};
 pub use shift::*;
 pub use sse::*;
+pub use sse4::*;
 pub use state::*;
 pub use system::*;
 pub use tls::*;

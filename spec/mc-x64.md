@@ -829,6 +829,51 @@ which). Each is checked against `llvm-mc` 19 and 22 like the rest
 | `crc32_rr(size, dst, src)` | `F2 [66] [REX] 0F 38 F0 /r` (`src` a byte register; `REX` for `spl`..`dil`), `F1 /r` otherwise; `dst` 32 bits, 64 with `REX.W` for `Q` | |
 | `bmi_rrr(op: Bmi, size, dst, x, y)` | three-byte VEX (`C4`, map `0F38`, `L` 0, `W` for `Q`): `BEXTR` `F7`, `BZHI` `F5` (`x` in `ModRM.rm`, `y` in `vvvv`); `PDEP` `F2.F5`, `PEXT` `F3.F5` (`x` in `vvvv`, `y` in `ModRM.rm`); operands in Intel's order | `size` `D` or `Q` |
 
+## SSE4 and the extensions of the `0F38`/`0F3A` maps
+
+The legacy-encoded instructions of the three-byte maps that the x86
+target intrinsics past SSSE3 use (WP-202, `src/sse4.rs`;
+`spec/codegen.md` §5.6.33 says which function may use which), on
+`xmm` operands, the memory operand 128 bits but where a row says
+otherwise. Swept against `llvm-mc` 19 and 22 (`tests/l1/avx.rs`,
+group `three-byte-maps`).
+
+| constructor | encodes |
+|---|---|
+| `ext_rr(op: Ext, dst, src)`, `ext_rm(op, dst, m)` | `[66] [REX] 0F 38 op /r`: `PACKUSDW` `2B`, `PTEST` `17`, `PHMINPOSUW` `41`, `PMULDQ` `28`, `AESENC` `DC`, `AESENCLAST` `DD`, `AESDEC` `DE`, `AESDECLAST` `DF`, `AESIMC` `DB`, `GF2P8MULB` `CF` (all `66`); `SHA1NEXTE` `C8`, `SHA1MSG1` `C9`, `SHA1MSG2` `CA`, `SHA256RNDS2` `CB` (third operand `xmm0`), `SHA256MSG1` `CC`, `SHA256MSG2` `CD` (no prefix) |
+| `ext_rri(op: ExtImm, dst, src, imm8)`, `ext_rmi(op, dst, m, imm8)` | `[66] [REX] 0F 3A op /r ib`: `ROUNDPS` `08`, `ROUNDPD` `09`, `ROUNDSS` `0A` (m32), `ROUNDSD` `0B` (m64), `INSERTPS` `21` (m32), `DPPS` `40`, `DPPD` `41`, `MPSADBW` `42`, `PCLMULQDQ` `44`, `PCMPESTRM` `60`, `PCMPESTRI` `61`, `PCMPISTRM` `62`, `PCMPISTRI` `63` (lengths in `eax`/`edx`, index to `ecx`, mask to `xmm0`), `AESKEYGENASSIST` `DF`, `GF2P8AFFINEQB` `CE`, `GF2P8AFFINEINVQB` `CF` (all `66`); `SHA1RNDS4` `CC` (no prefix) |
+
+## VEX
+
+The VEX-encoded instructions (WP-202, `src/avx.rs`): AVX, AVX2, FMA,
+F16C and the VEX forms of GFNI and PCLMULQDQ, at 128 bits (`xmm`,
+`VEX.L` 0) or 256 (`ymm`, `VEX.L` 1), the width a [`Width`] operand
+(`X`, `Y`); a vector register is an `Xmm`, its number. The prefix is the
+two-byte `C5` when the instruction is in map `0F`, has `VEX.W` 0 and no
+`X` or `B` bit; the three-byte `C4` otherwise (`R`, `X`, `B` and `vvvv`
+inverted, `vvvv` 1111 when unused). That is the prefix LLVM's assembler
+chooses for the same operands, with two exceptions where it changes the
+instruction to reach `C5` and hod does not: it writes `vmovdqu x, x8..x15`
+as the store form (`7F`), and it swaps the sources of a commutable
+instruction whose second source is `xmm8`..`xmm15` and first is not.
+Both encodings are the same instruction; the sweeps leave those operand
+combinations out (`tests/l1/avx.rs`, group `vex`).
+
+| constructor | encodes | precondition |
+|---|---|---|
+| `v3_rrr(op: V3, width, dst, a, b)`, `v3_rrm(.., m)` | `op dst, a, b/m` (`a` in `vvvv`): map `0F38` `66`: `VPSHUFB` `00`, `VPHADDW`/`D`/`SW` `01`–`03`, `VPMADDUBSW` `04`, `VPHSUBW`/`D`/`SW` `05`–`07`, `VPSIGNB`/`W`/`D` `08`–`0A`, `VPMULHRSW` `0B`, `VPERMILPS`/`PD` `0C`/`0D`, `VPERMPS` `16`, `VPMULDQ` `28`, `VPACKUSDW` `2B`, `VPERMD` `36`, `VPSRLVD`/`Q` `45` (W0/W1), `VPSRAVD` `46`, `VPSLLVD`/`Q` `47`, `VGF2P8MULB` `CF`; map `0F` `66`: `VPACKSSWB` `63`, `VPACKUSWB` `67`, `VPACKSSDW` `6B`, `VPSRLW`/`D`/`Q` `D1`–`D3`, `VPAVGB` `E0`, `VPSRAW`/`D` `E1`/`E2`, `VPAVGW` `E3`, `VPMULHUW` `E4`, `VPMULHW` `E5`, `VPSLLW`/`D`/`Q` `F1`–`F3` (the shifts' `b` is an `xmm` or m128 at both widths), `VPMADDWD` `F5`, `VPSADBW` `F6`; `VMINPS`/`PD` `5D`, `VMAXPS`/`PD` `5F` (none/`66`); `VHADDPD`/`PS` `7C`, `VHSUBPD`/`PS` `7D`, `VADDSUBPD`/`PS` `D0` (`66`/`F2`) | `VPERMD`, `VPERMPS` 256 bits only |
+| `v3_rrri(op: V3Imm, width, dst, a, b, imm8)`, `v3_rrmi` | map `0F3A` `66`: `VPERM2F128` `06`, `VDPPS` `40`, `VDPPD` `41`, `VMPSADBW` `42`, `VPCLMULQDQ` `44`, `VPERM2I128` `46`, `VGF2P8AFFINEQB` `CE` (W1), `VGF2P8AFFINEINVQB` `CF` (W1); `VCMPPS`/`PD` `0F C2` (the predicate 0–31 the immediate) | `VPERM2F128`, `VPERM2I128` 256 only; `VDPPD` 128 only |
+| `v2_rr(op: V2, width, dst, src)`, `v2_rm` | `op dst, src/m` (`vvvv` 1111): `VPTEST` `0F38 17`, `VTESTPS`/`PD` `0F38 0E`/`0F`, `VCVTPH2PS` `0F38 13` (source `xmm` or m64/m128), `VRSQRTPS` `52`, `VRCPPS` `53`, `VCVTPD2PS` `66 5A`, `VCVTPS2DQ` `66 5B`, `VCVTTPS2DQ` `F3 5B`, `VCVTTPD2DQ` `66 E6`, `VCVTPD2DQ` `F2 E6` (the three from `pd` write an `xmm`), `VMOVDQU` `F3 6F` (load) | |
+| `v2_rri(op: V2Imm, width, dst, src, imm8)`, `v2_rmi` | `VPERMQ` `0F3A 00` W1, `VPERMPD` `01` W1, `VROUNDPS` `08`, `VROUNDPD` `09` | `VPERMQ`, `VPERMPD` 256 only |
+| `vblend_rrrr(op: VBlend, width, dst, a, b, mask)`, `vblend_rrmr` | `VBLENDVPS` `0F3A 4A`, `VBLENDVPD` `4B`, `VPBLENDVB` `4C`, the mask register in `imm8[7:4]` | |
+| `fma_rrr(op: Fma, width, dst, a, b)`, `fma_rrm` | `VFMADDSUB213PS`/`PD` `0F38 A6` (W0/W1), `VFMSUBADD213PS`/`PD` `A7` | |
+| `vmask_load(op: VMask, width, dst, mask, m)`, `vmask_store(op, width, m, mask, src)` | `VMASKMOVPS` `0F38 2C`/`2E`, `VMASKMOVPD` `2D`/`2F`, `VPMASKMOVD`/`Q` `8C`/`8E` (W0/W1) | |
+| `vshift_rri(op: VShift, width, dst, src, imm8)` | `66 0F 71`/`72`/`73 /digit ib`, `dst` in `vvvv`: `VPSRLW` `/2`, `VPSRAW` `/4`, `VPSLLW` `/6` (`71`); `D` the same (`72`); `VPSRLQ` `/2`, `VPSRLDQ` `/3`, `VPSLLQ` `/6`, `VPSLLDQ` `/7` (`73`) | |
+| `vmovdqu_mr(width, m, src)` | `VMOVDQU` store `F3 0F 7F` | |
+| `vpmovmskb_rr(width, r32, src)`, `vmovmskp_rr(double, width, r32, src)` | `66 0F D7`, `0F 50` / `66 0F 50` | |
+| `vcvtps2ph_rri(width, dst, src, imm8)` | `66 0F3A 1D /r ib`, `dst` (an `xmm`) in `ModRM.rm` | |
+| `vzeroupper()` | `C5 F8 77` | |
+
 ## Not provided
 
 By decision of the scope so far: the high-byte registers `ah`..`bh`; the
@@ -842,9 +887,11 @@ immediates" (an `imm32` of an ALU instruction, for one); the `-fno-plt` general-
 the GOT (`data16 rex64 call [rip + __tls_get_addr@GOTPCREL]`) and the
 descriptor call `call [rax]`, whose `R_X86_64_TLSDESC_CALL` marks an
 instruction rather than a field; the SSE instructions not listed in
-"Scalar floating point" or "Packed SSE2" (SSE3 and later: `rounds`,
-`pshufb`, ...); MMX; and everything VEX- or EVEX-encoded (AVX, APX) but the four BMI
-operations. Adding an instruction is a constructor, a
+"Scalar floating point", "Packed SSE2" and the two sections above
+(SSSE3's `pshufb` and the other legacy SSSE3 forms, ...); MMX; the
+VEX-encoded instructions not listed under "VEX" (the gathers, `vzeroall`,
+...) but the four BMI operations; and everything EVEX-encoded (AVX-512,
+APX). Adding an instruction is a constructor, a
 row here, a row in `tests/l1/table.rs` and a sweep.
 
 ## Test method

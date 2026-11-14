@@ -611,7 +611,9 @@ impl UnitPlan<'_> {
             tail.sort_unstable();
             let mut done = vec![false; tail.len()];
             for v in f.vars {
-                if matches!(v.place, crate::func::LocalPlace::Value { .. }) != value {
+                if matches!(v.place, crate::func::LocalPlace::ValueArg(_))
+                    || matches!(v.place, crate::func::LocalPlace::Value { .. }) != value
+                {
                     continue;
                 }
                 let node = v.node.raw();

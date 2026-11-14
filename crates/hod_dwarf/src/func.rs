@@ -65,6 +65,10 @@ pub enum LocalPlace {
         /// Where the variable is in it.
         at: ValueLoc,
     },
+    /// One value of a `DIArgList` (WP-230, §6.32): a `Value` row whose
+    /// `at` is [`ValueLoc::Args`] is followed by that many of these, in
+    /// `DW_OP_LLVM_arg` order. Never a variable's row by itself.
+    ValueArg(ValueLoc),
     /// The code generator could not describe the row: the function is
     /// refused under this stable name.
     Refused(&'static str),
@@ -519,6 +523,10 @@ impl<'a> UnitPlan<'a> {
         // A variable or label whose scope has no code is dropped, as
         // `llc` drops it.
         for (row, v) in f.vars.iter().enumerate() {
+            // WP-230: a value of the `DIArgList` row before it.
+            if let LocalPlace::ValueArg(_) = v.place {
+                continue;
+            }
             let label = matches!(v.place, LocalPlace::Label(_));
             if let LocalPlace::Refused(name) = v.place {
                 return Err(unsupported(v.node, name));
@@ -548,8 +556,14 @@ impl<'a> UnitPlan<'a> {
                         return Err(unsupported(v.node, name));
                     }
                     if let LocalPlace::Value { at, .. } = v.place
-                        && !matches!(at, ValueLoc::Address { .. })
-                        && let Err(name) = crate::loclists::check_value_expr(self.debug, v.expr)
+                        && let Err(name) = match at {
+                            ValueLoc::Address { .. } => Ok(()),
+                            // WP-230 (§6.32).
+                            ValueLoc::Args { count } => {
+                                crate::loclists::check_arglist_expr(self.debug, v.expr, count)
+                            }
+                            _ => crate::loclists::check_value_expr(self.debug, v.expr),
+                        }
                     {
                         return Err(unsupported(v.node, name));
                     }
@@ -751,6 +765,9 @@ impl<'a> UnitPlan<'a> {
                 }
                 LocalPlace::Coro(place) => LocalWhat::CoroVar { place, expr: v.expr },
                 LocalPlace::Value { .. } => self.value_list(f.vars, &s.groups, row),
+                LocalPlace::ValueArg(_) => {
+                    unreachable!("a `DIArgList` value is not an entity (collect_entities)")
+                }
                 LocalPlace::Refused(RETAINED) => LocalWhat::Retained,
                 LocalPlace::Refused(name) => return Err(unsupported(v.node, name)),
             };

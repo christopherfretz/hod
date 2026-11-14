@@ -2752,9 +2752,11 @@ hod refused such a module as `debug:declare-address` on x86-64 only
 (`containers`, `exceptions` and `stl_heavy` of `bench/src` at `-g`).
 
 `debug:declare-address` keeps its meaning for every other address that
-has no home: another constant (a null pointer, a symbol), or a value
-the policy keeps in a register. No producer of the corpus, the `-g` set
-or the benchmark inputs writes one at `-O0` on either target.
+has no home: a value the policy keeps in a register. No producer of the
+corpus, the `-g` set or the benchmark inputs writes one at `-O0` on
+either target. Since WP-230 every other constant address (a null
+pointer, a symbol, a constant expression on one) is dropped as `undef`
+is (§6.32).
 
 Evidence: `crates/hod/tests/declare_undef.rs` (both spellings, both
 targets, trees equal to `llc` 22's), `tests/debug/empty_tag_inlined.cpp`
@@ -2796,7 +2798,7 @@ one:
 Ranges are code offsets: `move_rows` (`shrink.rs`) moves them with the
 other tables when branches shrink (`crates/hod/tests/dbg_value.rs`
 `ranges_follow_the_final_code` compares them with the final line rows
-on x86-64). A record with a `DIArgList` is `debug:dbg-value-arglist`;
+on x86-64). A record with a `DIArgList` is written since WP-230 (§6.32);
 a value record in a coroutine body is `debug:dbg-value-coroutine`.
 
 **Entries** (`crates/hod_dwarf/src/loclists.rs`). Each list is
@@ -3212,9 +3214,9 @@ with base types as errors (the base types are missing from its
 conversion chains on a home and on constants, booleans, composed
 fragments with gaps, a poison fragment, the legacy forms) and
 `refusals_are_named`; sessions `tests/debug/dbg_value_pieces.c`,
-`dbg_value_convert_pieces.c` and `dbg_value_fragments.c` (`-O1`). Still
-refused: `debug:dbg-value-arglist` (§6.23), and a fragment in a
-declaration (`debug:fragment`). Evidence: `spec/landed/dwarf/WP-225.md`.
+`dbg_value_convert_pieces.c` and `dbg_value_fragments.c` (`-O1`).
+Argument lists followed in §6.32 (WP-230). Evidence:
+`spec/landed/dwarf/WP-225.md`.
 
 ### 6.30 Two differences real runs found (implemented, WP-221)
 
@@ -3288,7 +3290,7 @@ no row: no DIE, as `llc` writes none, unless it is retained (§6.4). A
 variable also declared on a slot, or also described by value records,
 keeps that place and gets no rows from the result. Arguments keep
 `DW_OP_fbreg o, DW_OP_deref` for the whole function (§9.5); a symbol's or
-constant's address is still `debug:declare-address`, and a slot plus a
+constant's address has no row since WP-230 (§6.32), and a slot plus a
 constant offset still `debug:declare-offset` (§6.21; or
 `debug:declare-address` when it is never computed). In a coroutine body
 hod lowers itself (§6.16) nothing changes: its declarations are its own.
@@ -3327,6 +3329,85 @@ same `llc`), `crates/hod_a64/tests/dies_followups.rs`
 and the session test `tests/debug/coroutine_split.cpp` (clang's split
 coroutine, stopped in the resumed body: the promise, a member, a frame
 variable; gdb and lldb on both targets, x86-64 through qemu).
+
+### 6.32 Value records of optimized modules, second part (implemented, WP-230)
+
+Optimized code salvages a dropped computation into the record of the
+variable it set: `#dbg_value(!DIArgList(ptr %p, i64 %i), !v,
+!DIExpression(DW_OP_LLVM_arg, 0, DW_OP_LLVM_arg, 1, DW_OP_constu, 8,
+DW_OP_mul, DW_OP_plus, DW_OP_stack_value))`. Measured on hand-written
+modules with `llc` 19 and 22, both targets: SelectionDAG (this
+document's reference, §6.30) writes each value where `DW_OP_LLVM_arg`
+names it, as a single record's value is written, and the rest of the
+expression around them; FastISel and GlobalISel (the default `-O0`
+selectors) drop every record with a `DIArgList`. 19 and 22 differ only
+in the `i1` constant (as §6.31).
+
+**Rows** (`crates/hod_cg/src/dbg_value.rs`). A record whose values are a
+`DIArgList`, or whose expression names its one value by
+`DW_OP_LLVM_arg`, opens and closes ranges as any record (§6.23, §6.31:
+its fragment's bits); its row's place is `ValueAt::Args(n)`, and it is
+followed by `n` rows `VarPlace::ValueArg`, each value's place by
+§6.23's rule (a home written before the range, a constant, or nothing).
+`hod_dwarf` reads them as `LocalPlace::ValueArg` after a
+`ValueLoc::Args` row; they are never a variable's row by themselves.
+
+**Entries** (`crates/hod_dwarf/src/loclists.rs`). The range has an entry
+when every value the expression names has a place and the expression
+computes right on them: a value under 64 bits is pushed zero-extended
+(`DW_OP_fbreg o, DW_OP_deref_size k`), so the stack is followed entry by
+entry and a narrow entry may meet only operations whose low bits
+depend on their operands' low bits (§6.23's list), a conversion no
+wider than its bits, and no dereference; a fragment needs a result at
+least as wide (§6.31). Otherwise the range has no entry, as where `llc`
+has no location for a value (a value it does not keep live, `poison`,
+`undef`, a symbol's address: `llc` drops the entry then). The entry is
+the expression with each `DW_OP_LLVM_arg k` replaced by value `k`'s
+push: a home's `DW_OP_fbreg o, DW_OP_deref` (`DW_OP_deref_size k` under
+8 bytes, where `llc` writes `DW_OP_deref` of its 8-byte spill slot), a
+constant's §6.23 push (not folded with the conversions after it: `llc`
+folds only a single constant). Fragments compose with the variable's
+other records (§6.31); conversions take the unit's base types, or the
+legacy form in a split unit (§6.31). An expression that is not a
+computed value (it does not end in `DW_OP_stack_value`) or names a value
+the list does not have stays `debug:dbg-value-arglist`; an operation
+§6.31 refuses stays `debug:dbg-value-expr` (in the census: conversions
+to 128 bits).
+
+**Constants of every value record**, measured on single records and on
+argument lists alike (19 and 22, SelectionDAG): `llc` keeps an integer
+constant as its sign extension to 64 bits (`getSExtValue`) and writes it
+by the variable's type, `DW_OP_consts` for a signed one and
+`DwarfExpression::emitConstu` for any other, so the `i32 -1` of an
+`unsigned long` is all ones and the `i8 -56` of one is
+`0xffffffffffffffc8` (hod zero-extended both before WP-230; a constant
+as wide as its variable reads the same either way). `emitConstu` also
+writes the expression's own `DW_OP_constu`: under 32 as `DW_OP_litN`,
+all ones as `DW_OP_lit0, DW_OP_not`; hod writes every value-record
+entry so (hod wrote `DW_OP_constu 1` before). Declarations written as
+a single location (§6.4) are unchanged.
+
+**A declaration of a constant address** (`crates/hod_cg/src/driver.rs`
+`declares_constant`). `#dbg_declare(ptr null, ...)`, `ptr @G`, or a
+constant expression on `@G` (`getelementptr (i8, ptr @G, i64 4)`):
+measured with `llc` 19 and 22 on both targets, in all three selectors,
+the declaration has no location, so the variable has no DIE, or a DIE
+without a location when it is retained (§6.4). hod drops it as it drops
+`undef` and `poison` (§6.22): every address whose `ValueKind` is a
+constant or a symbol has no row. Optimized modules write these for a
+local whose storage clang promoted to a constant global
+(`#dbg_declare(ptr @__const.f.a, ...)`, 144 records in the census).
+`debug:declare-address` stays for an address the policy keeps in a
+register.
+
+**Tests.** `crates/hod/tests/dbg_value.rs` `arglists_are_written` (both
+targets, plain and split: a scaled index, a narrow difference, `shra`
+on narrow values left out, a conversion of a narrow value, constants,
+`poison`, a fragment beside a single record's, a single value named by
+`DW_OP_LLVM_arg`, one value named twice) and `refusals_are_named`;
+session `tests/debug/dbg_value_arglist.c` (clang `-O1`: a pointer and a
+difference described by argument lists). Evidence:
+`spec/landed/dwarf/WP-230.md`.
 
 ## 7. Speed and memory
 

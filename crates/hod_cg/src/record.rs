@@ -157,6 +157,10 @@ pub enum VarPlace {
     /// One range of a variable described by `#dbg_value` records
     /// (WP-162, `dbg_value`, `spec/dwarf.md` §6.23).
     Value(crate::dbg_value::ValueRange),
+    /// One value of a `DIArgList` (WP-230, `spec/dwarf.md` §6.32): a
+    /// `Value` row whose place is [`crate::ValueAt::Args`] is followed by
+    /// that many of these, in `DW_OP_LLVM_arg` order.
+    ValueArg(crate::dbg_value::ValueAt),
     /// The row's variable or label cannot be described exactly: a full
     /// debug unit refuses the function under this stable name, a unit
     /// that writes no variables ignores it.

@@ -6192,11 +6192,12 @@ Recorded only when the module has debug information.
   the instruction that follows it.
 - a record hod cannot describe exactly is a `VarPlace::Refused(name)`
   row; a `FullDebug` unit then refuses the function under that name:
-  `debug:dbg-value-arglist` (a `#dbg_value` of a `DIArgList`) and
-  `debug:dbg-value-coroutine` (one in a coroutine body), `debug:dbg-assign`, `debug:declare-address` (a `#dbg_declare` of a
-  constant, a symbol, or a value that never got a home; a declaration of
-  `undef` or `poison` gets no row at all, as `llc` drops it, WP-156,
-  `spec/dwarf.md` §6.22).
+  `debug:dbg-value-arglist` (a `#dbg_value` of a `DIArgList` hod cannot
+  write, `spec/dwarf.md` §6.32) and
+  `debug:dbg-value-coroutine` (one in a coroutine body), `debug:dbg-assign`, `debug:declare-address` (a `#dbg_declare` of
+  a value that never got a home; a declaration of a constant or a
+  symbol, `undef` and `poison` included, gets no row at all, as `llc`
+  drops it, WP-156, WP-230, `spec/dwarf.md` §6.22, §6.32).
 - `debug_calls` (`DebugCallRow`, WP-113, `spec/dwarf.md` §6.19): in a
   function whose subprogram has `DIFlagAllCallsDescribed`, one row per
   call instruction an IR `call` or `invoke` became, in lowering order:

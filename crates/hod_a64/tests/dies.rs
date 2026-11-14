@@ -221,11 +221,12 @@ fn refusals_are_named() {
     compile_to_object(&module, &bodies, &Options::default()).expect("the base case");
 
     let cases: [(&str, String, &str); 4] = [
-        // WP-162 writes `#dbg_value` (§6.23); an argument list is refused.
+        // WP-162 writes `#dbg_value` (§6.23), WP-230 an argument list
+        // whose expression computes a value (§6.32); another is refused.
         (
             "debug:dbg-value-arglist",
             one_function(
-                "    #dbg_value(!DIArgList(i32 %v, i32 %v), !14, !DIExpression(DW_OP_LLVM_arg, 0, DW_OP_LLVM_arg, 1, DW_OP_plus, DW_OP_stack_value), !15)",
+                "    #dbg_value(!DIArgList(ptr %a, i32 %v), !14, !DIExpression(DW_OP_LLVM_arg, 0, DW_OP_LLVM_arg, 1, DW_OP_plus, DW_OP_deref), !15)",
                 PLAIN_SP,
             ),
             "#dbg_value with a DIArgList",

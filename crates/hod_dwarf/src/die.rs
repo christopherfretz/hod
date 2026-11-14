@@ -165,6 +165,9 @@ pub struct UnitPlan<'a> {
     /// WP-225: what each range holds, by `Range::pieces` (one piece, or
     /// the fragments of a variable described in pieces, §6.31).
     pub(crate) value_pieces: Vec<crate::loclists::Piece>,
+    /// WP-230: the places of the `DIArgList` values the pieces name
+    /// (`Piece::args`, §6.32).
+    pub(crate) value_args: Vec<crate::loclists::ValueLoc>,
     /// WP-225: the base types the located expressions convert to
     /// (`DW_OP_convert`), in first use: `(bits, DW_ATE_*)`.
     pub(crate) base_types: Vec<(u8, u8)>,
@@ -330,6 +333,7 @@ impl<'a> UnitPlan<'a> {
             ranges: Vec::new(),
             value_ranges: Vec::new(),
             value_pieces: Vec::new(),
+            value_args: Vec::new(),
             base_types: Vec::new(),
             piece_scratch: crate::loclists::PieceScratch::default(),
             code_addrs: 0,

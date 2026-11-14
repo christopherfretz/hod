@@ -8,7 +8,10 @@ use hod_asm::Refusal;
 use hod_asm::a64::{Code, Features, RefKind, assemble, assemble_at};
 use hod_testutil::{Scratch, run, tool};
 
-const ALL: Features = Features { lse: true, crc: true, fp: true, rand: true };
+const ALL: Features = Features::ALL;
+
+/// The `-mattr` of `llvm-mc` for [`ALL`] (`neon` is the default).
+const MATTR_ALL: &str = "-mattr=+lse,+crc,+fp-armv8,+aes,+fullfp16";
 
 /// Bodies the assembler accepts. Each is assembled alone by hod; LLVM
 /// assembles them all in one file. A body's numeric labels are its own.
@@ -442,6 +445,202 @@ const ACCEPTED: &[&str] = &[
     "\tadd x0, x0, #1 ; sub x0, x0, #1",
 ];
 
+/// §20: the Advanced SIMD bodies, the census's forms first, then the
+/// forms that share their encoding class.
+const NEON: &[&str] = &[
+    // The census (Eigen, highway, OpenCV, xxhash, abseil).
+    "fmla v8.4s, v9.4s, v10.s[0]",
+    "fcvtzs v8.4s, v9.4s",
+    "fcvtzs v8.2d, v9.2d",
+    "fcvtzs v8.4h, v9.4h",
+    "fcvtzs v8.8h, v9.8h",
+    "fcvtzu v8.4s, v9.4s",
+    "fcvtzu v8.2d, v9.2d",
+    "fcvtzu v8.4h, v9.4h",
+    "fcvtzu v8.8h, v9.8h",
+    "fcmeq v8.8h, v9.8h, v9.8h",
+    "fcmeq v8.4s, v9.4s, v9.4s",
+    "fcmeq v8.2d, v9.2d, v9.2d",
+    "fcvtns v8.4s, v9.4s",
+    "umlal v8.2d, v9.2s, v10.2s",
+    "pmull v8.1q, v9.1d, v10.1d",
+    "pmull2 v8.1q, v9.2d, v10.2d",
+    "FMLA V8.4S, V9.4S, V10.S[0]",
+    // By element: `fmla`, `fmls`, `fmul`, `fmulx`.
+    "fmla v0.2s, v1.2s, v31.s[3]",
+    "fmla v0.4s, v1.4s, v17.s[1]",
+    "fmla v0.4s, v1.4s, v2.s[2]",
+    "fmla v31.2d, v30.2d, v29.d[1]",
+    "fmla v0.2d, v1.2d, v2.d[0]",
+    "fmla v0.4h, v1.4h, v15.h[7]",
+    "fmla v0.8h, v1.8h, v2.h[0]",
+    "fmla v0.8h, v1.8h, v3.h[5]",
+    "fmla v0.8h, v1.8h, v3.h[2]",
+    "fmls v0.4s, v1.4s, v2.s[3]",
+    "fmls v0.2d, v1.2d, v2.d[1]",
+    "fmls v0.8h, v1.8h, v2.h[6]",
+    "fmul v0.4s, v1.4s, v2.s[1]",
+    "fmul v0.2d, v1.2d, v18.d[1]",
+    "fmul v0.4h, v1.4h, v2.h[3]",
+    "fmulx v0.2s, v1.2s, v2.s[2]",
+    "fmulx v0.2d, v1.2d, v2.d[1]",
+    "fmulx v0.8h, v1.8h, v2.h[1]",
+    // Three same: the multiply-adds and compares.
+    "fmla v0.2s, v1.2s, v2.2s",
+    "fmla v0.4s, v1.4s, v2.4s",
+    "fmla v0.2d, v1.2d, v2.2d",
+    "fmla v0.4h, v1.4h, v2.4h",
+    "fmla v0.8h, v1.8h, v2.8h",
+    "fmls v0.4s, v1.4s, v2.4s",
+    "fmls v0.8h, v1.8h, v2.8h",
+    "fcmeq v0.2s, v1.2s, v2.2s",
+    "fcmeq v0.4h, v1.4h, v2.4h",
+    "fcmge v0.4s, v1.4s, v2.4s",
+    "fcmge v0.8h, v1.8h, v2.8h",
+    "fcmgt v0.2d, v1.2d, v2.2d",
+    "fcmgt v0.4h, v1.4h, v2.4h",
+    "fcmle v0.4s, v1.4s, v2.4s",
+    "fcmlt v0.2d, v1.2d, v2.2d",
+    "fcmlt v0.8h, v1.8h, v2.8h",
+    // Compares with zero.
+    "fcmeq v0.4s, v1.4s, #0.0",
+    "fcmeq v0.2d, v1.2d, #0",
+    "fcmeq v0.8h, v1.8h, #0.0",
+    "fcmge v0.2s, v1.2s, #0.0",
+    "fcmgt v0.4s, v1.4s, #0.0",
+    "fcmle v0.2d, v1.2d, #0.0",
+    "fcmlt v0.4h, v1.4h, #0.0",
+    // Three same, `hod_mc_a64::neon::Fp3`.
+    "fadd v0.4s, v1.4s, v2.4s",
+    "fadd v0.8h, v1.8h, v2.8h",
+    "fsub v0.2d, v1.2d, v2.2d",
+    "fmul v0.2s, v1.2s, v2.2s",
+    "fdiv v0.4h, v1.4h, v2.4h",
+    "fmax v0.4s, v1.4s, v2.4s",
+    "fmin v0.2d, v1.2d, v2.2d",
+    "fmaxnm v0.8h, v1.8h, v2.8h",
+    "fminnm v0.2s, v1.2s, v2.2s",
+    "fmulx v0.4s, v1.4s, v2.4s",
+    "frecps v0.2d, v1.2d, v2.2d",
+    "frsqrts v0.4h, v1.4h, v2.4h",
+    "fabd v0.4s, v1.4s, v2.4s",
+    "facge v0.2d, v1.2d, v2.2d",
+    "facgt v0.8h, v1.8h, v2.8h",
+    "faddp v0.4s, v1.4s, v2.4s",
+    "fmaxp v0.2s, v1.2s, v2.2s",
+    "fminp v0.2d, v1.2d, v2.2d",
+    "fmaxnmp v0.4h, v1.4h, v2.4h",
+    "fminnmp v0.4s, v1.4s, v2.4s",
+    // Two-register miscellaneous, `hod_mc_a64::neon::Fp2`.
+    "fcvtns v0.2d, v1.2d",
+    "fcvtns v0.8h, v1.8h",
+    "fcvtnu v0.4s, v1.4s",
+    "fcvtms v0.2s, v1.2s",
+    "fcvtmu v0.2d, v1.2d",
+    "fcvtas v0.4h, v1.4h",
+    "fcvtau v0.4s, v1.4s",
+    "fcvtps v0.2d, v1.2d",
+    "fcvtpu v0.8h, v1.8h",
+    "fcvtzs v0.2s, v1.2s",
+    "fcvtzu v31.2s, v0.2s",
+    "scvtf v0.4s, v1.4s",
+    "ucvtf v0.2d, v1.2d",
+    "scvtf v0.8h, v1.8h",
+    "frecpe v0.4s, v1.4s",
+    "frsqrte v0.2d, v1.2d",
+    "fabs v0.4s, v1.4s",
+    "fneg v0.8h, v1.8h",
+    "fsqrt v0.2d, v1.2d",
+    "frintn v0.4s, v1.4s",
+    "frintm v0.2d, v1.2d",
+    "frintp v0.4h, v1.4h",
+    "frintz v0.2s, v1.2s",
+    "frinta v0.4s, v1.4s",
+    "frintx v0.2d, v1.2d",
+    "frinti v0.8h, v1.8h",
+    // Their scalar forms.
+    "fcvtzs h0, h1",
+    "fcvtzu h31, h30",
+    "fcvtns s0, s1",
+    "fcvtnu d0, d1",
+    "fcvtms s0, s1",
+    "fcvtmu h0, h1",
+    "fcvtas d0, d1",
+    "fcvtau s0, s1",
+    "fcvtps d0, d1",
+    "fcvtpu s0, s1",
+    "scvtf s0, s1",
+    "ucvtf d0, d1",
+    "scvtf h0, h1",
+    "frecpe s0, s1",
+    "frsqrte d0, d1",
+    // Three different, and the `2` forms.
+    "umlal2 v8.2d, v9.4s, v10.4s",
+    "umlal v0.8h, v1.8b, v2.8b",
+    "umlal2 v0.4s, v1.8h, v2.8h",
+    "smlal v0.4s, v1.4h, v2.4h",
+    "smlal2 v0.8h, v1.16b, v2.16b",
+    "umlsl v0.2d, v1.2s, v2.2s",
+    "smlsl2 v0.2d, v1.4s, v2.4s",
+    "umull v0.2d, v1.2s, v2.2s",
+    "smull2 v0.8h, v1.16b, v2.16b",
+    "saddl v0.4s, v1.4h, v2.4h",
+    "uaddl2 v0.2d, v1.4s, v2.4s",
+    "ssubl v0.8h, v1.8b, v2.8b",
+    "usubl2 v0.4s, v1.8h, v2.8h",
+    "sabal v0.2d, v1.2s, v2.2s",
+    "uabal2 v0.8h, v1.16b, v2.16b",
+    "sabdl v0.4s, v1.4h, v2.4h",
+    "uabdl2 v0.2d, v1.4s, v2.4s",
+    "sqdmlal v0.4s, v1.4h, v2.4h",
+    "sqdmlsl2 v0.2d, v1.4s, v2.4s",
+    "sqdmull v0.2d, v1.2s, v2.2s",
+    "addhn v0.8b, v1.8h, v2.8h",
+    "raddhn2 v0.16b, v1.8h, v2.8h",
+    "subhn v0.4h, v1.4s, v2.4s",
+    "rsubhn2 v0.4s, v1.2d, v2.2d",
+    "pmull v0.8h, v1.8b, v2.8b",
+    "pmull2 v0.8h, v1.16b, v2.16b",
+    "pmull v31.1q, v0.1d, v31.1d",
+    // Structure loads and stores.
+    "ld1 {v0.16b}, [x0]",
+    "ld1 {v0.8b}, [sp]",
+    "ld1 {v0.1d}, [x0]",
+    "ld1 {v0.4s, v1.4s}, [x1]",
+    "ld1 {v0.2d, v1.2d, v2.2d}, [x2]",
+    "ld1 {v28.8h, v29.8h, v30.8h, v31.8h}, [x3]",
+    "ld1 {v30.4h-v1.4h}, [x3]",
+    "ld1 { v0.2s - v3.2s }, [x0]",
+    "ld1 {v0.16b}, [x0], #16",
+    "ld1 {v0.8b, v1.8b}, [x0], #16",
+    "ld1 {v0.4s-v3.4s}, [x0], #64",
+    "ld1 {v0.16b}, [x0], x2",
+    "ld2 {v0.4s, v1.4s}, [x0]",
+    "ld3 {v0.8b, v1.8b, v2.8b}, [x0], #24",
+    "ld4 {v0.2d, v1.2d, v2.2d, v3.2d}, [x0], x5",
+    "st1 {v0.16b}, [x0]",
+    "st1 {v0.1d, v1.1d}, [x0], #16",
+    "st1 {v4.4s-v7.4s}, [sp]",
+    "st2 {v0.8h, v1.8h}, [x0], #32",
+    "st3 {v0.4h, v1.4h, v2.4h}, [x0]",
+    "st4 {v0.16b, v1.16b, v2.16b, v3.16b}, [x0], x1",
+    "ld1 {v0.b}[15], [x0]",
+    "ld1 {v0.h}[7], [x0], #2",
+    "ld1 {v0.s}[3], [x0], x9",
+    "ld1 {v0.d}[1], [x0]",
+    "ld2 {v0.s, v1.s}[1], [x0], #8",
+    "ld3 {v0.h, v1.h, v2.h}[5], [x0]",
+    "ld4 {v0.d, v1.d, v2.d, v3.d}[0], [x0], #32",
+    "st1 {v0.s}[2], [x0]",
+    "st2 {v0.b, v1.b}[9], [x0], #2",
+    "st4 {v0.h, v1.h, v2.h, v3.h}[3], [sp]",
+    "ld1r {v0.4s}, [x0]",
+    "ld1r {v0.8b}, [x0], #1",
+    "ld2r {v0.2d, v1.2d}, [x0], #16",
+    "ld3r {v0.4h, v1.4h, v2.4h}, [x0], x3",
+    "ld4r {v0.1d, v1.1d, v2.1d, v3.1d}, [x0]",
+];
+
 /// Bodies refused, with the refusal.
 const REFUSED: &[(&str, &str)] = &[
     ("frob x0", "asm:mnemonic/frob"),
@@ -474,8 +673,8 @@ const REFUSED: &[(&str, &str)] = &[
     ("bics sp, x1, #1", "asm:operand/register"),
     ("xpaclri x0", "asm:operand/form"),
     ("add v0.4s, v1.4s, v2.4s", "asm:operand/register"),
-    ("fadd v0.4s, v1.4s, v2.4s", "asm:operand/vector"),
-    ("ld1 {v0.16b}, [x0]", "asm:mnemonic/ld1"),
+    ("fadd v0.4s, v1.4s, v2.2s", "asm:operand/vector"),
+    ("ld1 {v0.16b}, [x0, #16]", "asm:operand/form"),
     ("ldr x0, =0x1234", "asm:operand/literal-pool"),
     ("add x0, x1, #:lo12:sym", "asm:operand/specifier"),
     ("adrp x0, sym", "asm:mnemonic/adrp"),
@@ -506,11 +705,53 @@ const REFUSED: &[(&str, &str)] = &[
     ("fcmeq d0, s1, s2", "asm:operand/register"),
     ("fcmeq h0, h1, h2", "asm:operand/register"),
     ("fcmeq x0, d1, d2", "asm:operand/register"),
-    ("fcmeq v0.4s, v1.4s, v2.4s", "asm:operand/vector"),
+    ("fcmeq v0.4s, v1.4s, v2.2d", "asm:operand/vector"),
     ("fcvtzs d0, s1", "asm:operand/register"),
-    ("fcvtzs h0, h1", "asm:operand/register"),
     ("fcvtzs d0, d1, #3", "asm:operand/form"),
-    ("fcvtzu v0.2d, v1.2d", "asm:operand/vector"),
+    ("fcvtzu v0.1d, v1.1d", "asm:operand/vector"),
+    // §20.
+    ("fmla v0.4s, v1.4s, v2.s[4]", "asm:operand/range"),
+    ("fmla v0.2d, v1.2d, v2.d[2]", "asm:operand/range"),
+    ("fmla v0.8h, v1.8h, v16.h[0]", "asm:operand/register"),
+    ("fmla v0.4s, v1.4s, v2.d[0]", "asm:operand/vector"),
+    ("fmla v0.4s, v1.2s, v2.4s", "asm:operand/vector"),
+    ("fmla v0.1d, v1.1d, v2.1d", "asm:operand/vector"),
+    ("fmla v0.16b, v1.16b, v2.16b", "asm:operand/vector"),
+    ("fmla s0, s1, v2.s[1]", "asm:operand/register"),
+    ("fmla v0.4s, v1.4s", "asm:operand/form"),
+    ("fmla v0.4s, v1.4s, v2", "asm:operand/vector"),
+    ("fmla v0.4s, v1.4s, v2.3s", "asm:operand/vector"),
+    ("fcvtzs v0.4s, v1.4s, #3", "asm:operand/form"),
+    ("fcvtzs v0.4s, v1.2d", "asm:operand/vector"),
+    ("fcvtzs x0, v1.2d", "asm:operand/register"),
+    ("fcmeq v0.4s, v1.4s, #1.0", "asm:operand/fp-immediate"),
+    ("fcmeq v0.4s, v1.4s, #1", "asm:operand/fp-immediate"),
+    ("umlal v0.2d, v1.4s, v2.4s", "asm:operand/vector"),
+    ("umlal2 v0.2d, v1.2s, v2.2s", "asm:operand/vector"),
+    ("umlal v0.4s, v1.2s, v2.2s", "asm:operand/vector"),
+    ("umlal v0.2d, v1.2s, v2.4h", "asm:operand/vector"),
+    ("umlal v0.1q, v1.1d, v2.1d", "asm:operand/vector"),
+    ("pmull v0.4s, v1.4h, v2.4h", "asm:operand/vector"),
+    ("addhn v0.8b, v1.8b, v2.8b", "asm:operand/vector"),
+    ("umlal x0, x1, x2", "asm:operand/form"),
+    ("ld1 {v0.16b}, [x0], #8", "asm:operand/range"),
+    ("ld1 {v0.16b}, [x0], xzr", "asm:operand/register"),
+    ("ld1 {v0.16b}, [x0], w1", "asm:operand/register"),
+    ("ld1 {v0.16b}, [x0, #16]!", "asm:operand/form"),
+    ("ld1 {v0.16b}, [w0]", "asm:operand/register"),
+    ("ld1 {v0.16b}, x0", "asm:operand/form"),
+    ("ld2 {v0.1d, v1.1d}, [x0]", "asm:operand/vector"),
+    ("ld2 {v0.4s}, [x0]", "asm:operand/vector"),
+    ("ld1 {v0.s}[4], [x0]", "asm:operand/range"),
+    ("ld1 {v0.q}[0], [x0]", "asm:operand/vector"),
+    ("ld1r {v0.s}[0], [x0]", "asm:operand/vector"),
+    ("ld1 {v0.16b-v4.16b}, [x0]", "asm:operand/vector"),
+    ("ld1 {v0.16b, v2.16b}, [x0]", "asm:operand/vector"),
+    ("ld1 {v0.16b, v1.8b}, [x0]", "asm:operand/vector"),
+    ("frint32z v0.4s, v1.4s", "asm:mnemonic/frint32z"),
+    ("frecpx v0.4s, v1.4s", "asm:mnemonic/frecpx"),
+    ("mov v0.16b, v1.16b", "asm:operand/register"),
+    ("ld5 {v0.16b}, [x0]", "asm:mnemonic/ld5"),
     (".balign 3", "asm:operand/range"),
     (".p2align 17", "asm:operand/range"),
     (".p2align -1", "asm:operand/range"),
@@ -633,6 +874,16 @@ fn llvm(major: u32, source: &str, scratch: &Scratch) -> Option<Vec<u32>> {
 
 /// As [`llvm`], with `llvm-mc`'s error text when it refuses `source`.
 fn llvm_try(major: u32, source: &str, scratch: &Scratch) -> Option<Result<Vec<u32>, String>> {
+    llvm_with(major, source, MATTR_ALL, scratch)
+}
+
+/// As [`llvm_try`], under `mattr` (`-mattr=...`).
+fn llvm_with(
+    major: u32,
+    source: &str,
+    mattr: &str,
+    scratch: &Scratch,
+) -> Option<Result<Vec<u32>, String>> {
     let mc = tool(&format!("llvm-mc-{major}"))?;
     let objcopy = tool(&format!("llvm-objcopy-{major}"))?;
     let src = scratch.write(&format!("all-{major}.s"), source);
@@ -642,7 +893,7 @@ fn llvm_try(major: u32, source: &str, scratch: &Scratch) -> Option<Result<Vec<u3
         &mc,
         [
             "--triple=aarch64-unknown-linux-gnu".as_ref(),
-            "-mattr=+lse,+crc,+fp-armv8".as_ref(),
+            mattr.as_ref(),
             "-filetype=obj".as_ref(),
             "-o".as_ref(),
             obj.as_os_str(),
@@ -707,17 +958,28 @@ fn prfm_of_a_symbol_is_a_literal_reference() {
 
 #[test]
 fn accepted_bodies_match_llvm_mc() {
+    bodies_match_llvm_mc(ACCEPTED, "hod-asm-mc");
+}
+
+/// §20: the Advanced SIMD forms on vector operands, and the scalar SIMD
+/// forms of the two-register class.
+#[test]
+fn neon_bodies_match_llvm_mc() {
+    bodies_match_llvm_mc(NEON, "hod-asm-mc-neon");
+}
+
+fn bodies_match_llvm_mc(bodies: &[&str], label: &str) {
     let mut ours = Vec::new();
     let mut spans = Vec::new();
     let mut source = String::new();
-    for body in ACCEPTED {
+    for body in bodies {
         let words = hod(body, ALL).unwrap_or_else(|e| panic!("{body:?} refused: {e}"));
         spans.push((body, ours.len(), words.len()));
         ours.extend(words);
         source.push_str(body);
         source.push('\n');
     }
-    let scratch = Scratch::new("hod-asm-mc");
+    let scratch = Scratch::new(label);
     for major in [22, 19] {
         let Some(theirs) = llvm(major, &source, &scratch) else { continue };
         let mut report = String::new();
@@ -733,7 +995,7 @@ fn accepted_bodies_match_llvm_mc() {
             ours.len(),
             theirs.len()
         );
-        println!("hod_asm: {} bodies, {} words equal llvm-mc-{major}'s", spans.len(), ours.len());
+        println!("{}: {} bodies, {} words equal llvm-mc-{major}'s", label, spans.len(), ours.len());
     }
 }
 
@@ -747,9 +1009,100 @@ fn refused_bodies_are_named() {
 /// The LSE atomics, `crc32` and floating point need their feature.
 #[test]
 fn features_gate_instructions() {
-    let base = Features { lse: false, crc: false, fp: false, rand: false };
-    for body in ["cas x0, x1, [x2]", "ldaddal w0, w1, [x2]", "crc32b w0, w1, w2", "fadd d0, d1, d2"]
-    {
+    let base = Features {
+        lse: false,
+        crc: false,
+        fp: false,
+        rand: false,
+        neon: false,
+        aes: false,
+        fp16: false,
+    };
+    for body in [
+        "cas x0, x1, [x2]",
+        "ldaddal w0, w1, [x2]",
+        "crc32b w0, w1, w2",
+        "fadd d0, d1, d2",
+        // §20.
+        "fmla v0.4s, v1.4s, v2.s[1]",
+        "fcvtzs d0, d1",
+        "fcmeq d0, d1, d2",
+        "ld1 {v0.16b}, [x0]",
+        "umlal v0.2d, v1.2s, v2.2s",
+    ] {
         assert_eq!(hod(body, base).err().map(|r| r.0), Some("asm:feature"), "{body}");
     }
+}
+
+/// §20: an Advanced SIMD body is accepted under a `target-features`
+/// value exactly when `llvm-mc` 22 and 19 accept it under the same
+/// `-mattr` (the order of the items and LLVM's implications among
+/// `fp-armv8`, `neon`, `aes`, `crypto`, `fullfp16`, `fp16fml`, `sve`);
+/// hod's refusal is `asm:feature`.
+#[test]
+fn neon_features_are_llvm_s() {
+    const BODIES: &[&str] = &[
+        "pmull v0.1q, v1.1d, v2.1d",
+        "pmull2 v0.1q, v1.2d, v2.2d",
+        "pmull v0.8h, v1.8b, v2.8b",
+        "fmla v0.4s, v1.4s, v2.s[1]",
+        "fcmeq v0.8h, v1.8h, v2.8h",
+        "fcvtzs v0.4h, v1.4h",
+        "fmla v0.8h, v1.8h, v2.h[7]",
+        "fcvtzs d0, d1",
+        "fcvtzs h0, h1",
+        "fcmeq s0, s1, #0.0",
+        "fadd d0, d1, d2",
+        "ld1 {v0.16b}, [x0]",
+        "umlal v0.2d, v1.2s, v2.2s",
+    ];
+    const ATTRS: &[&str] = &[
+        "",
+        "+aes",
+        "+crypto",
+        "+aes,-neon",
+        "-neon,+aes",
+        "-neon",
+        "-fp-armv8",
+        "-fp-armv8,+neon",
+        "+fullfp16",
+        "+fullfp16,-neon",
+        "-neon,+fullfp16",
+        "+fullfp16,-fp-armv8",
+        "+fp16fml",
+        "+sve",
+        "+v8.2a,+crypto",
+        "+v8.2a",
+        "+v9a",
+        "+sha2",
+    ];
+    let scratch = Scratch::new("hod-asm-mc-features");
+    let (mut cells, mut accepted) = (0, 0);
+    let mut report = String::new();
+    for attrs in ATTRS {
+        let features = Features::from_attribute(attrs);
+        for body in BODIES {
+            let ours = hod(body, features);
+            if let Err(e) = &ours {
+                assert_eq!(e.0, "asm:feature", "{body:?} under {attrs:?}");
+            }
+            for major in [22, 19] {
+                let Some(theirs) = llvm_with(major, body, &format!("-mattr={attrs}"), &scratch)
+                else {
+                    continue;
+                };
+                cells += 1;
+                accepted += usize::from(theirs.is_ok());
+                if theirs.is_ok() != ours.is_ok() {
+                    writeln!(
+                        report,
+                        "  {body:?} [{attrs}]: hod {ours:?}, llvm-mc-{major} {theirs:?}"
+                    )
+                    .unwrap();
+                }
+            }
+        }
+    }
+    assert!(report.is_empty(), "the features differ from llvm-mc's:\n{report}");
+    println!("neon features: {cells} cells agree with llvm-mc ({accepted} accepted)");
 }

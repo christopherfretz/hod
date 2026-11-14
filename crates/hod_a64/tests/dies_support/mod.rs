@@ -277,6 +277,72 @@ pub fn count(n: &Node) -> usize {
     1 + n.children.iter().map(count).sum::<usize>()
 }
 
+/// `n` without the variables named `names` (and the lexical blocks left
+/// empty) and without `DW_AT_loclists_base`: the class `declared value`
+/// of `spec/dwarf.md` §6.7 and §6.30 (WP-221), where hod describes a
+/// variable declared on a `phi` by a location list and `llc -O0`
+/// (`SelectionDAG`) drops it. Applied to both trees, the rest compares.
+pub fn without_declared(n: &Node, names: &[String]) -> Node {
+    let declared = |c: &Node| {
+        c.tag == "DW_TAG_variable"
+            && names.iter().any(|v| c.attrs.contains(&format!("DW_AT_name (\"{v}\")")))
+    };
+    let children = n
+        .children
+        .iter()
+        .filter(|c| !declared(c))
+        .map(|c| without_declared(c, names))
+        .filter(|c| !(c.tag == "DW_TAG_lexical_block" && c.children.is_empty()))
+        .collect();
+    let attrs = n.attrs.iter().filter(|a| *a != "DW_AT_loclists_base").cloned().collect();
+    Node { tag: n.tag.clone(), attrs, children }
+}
+
+/// The names of the variables `text` declares on a `phi` (as
+/// `cargo xtask debug trees` finds them, `declared_on_phi`).
+pub fn declared_on_phi(text: &str) -> Vec<String> {
+    let mut nodes: Vec<&str> = Vec::new();
+    let mut phis: Vec<&str> = Vec::new();
+    for line in text.lines() {
+        let t = line.trim_start();
+        if t.starts_with("define ") {
+            phis.clear();
+        }
+        if let Some((name, rest)) = t.split_once(" = ")
+            && name.starts_with('%')
+            && rest.starts_with("phi ")
+        {
+            phis.push(name);
+        }
+        let Some(args) = t.strip_prefix("#dbg_declare(ptr ") else { continue };
+        let mut parts = args.split(", ");
+        if let (Some(address), Some(var)) = (parts.next(), parts.next())
+            && phis.contains(&address)
+            && !nodes.contains(&var)
+        {
+            nodes.push(var);
+        }
+    }
+    let mut names = Vec::new();
+    for line in text.lines() {
+        let Some((node, rest)) = line.split_once(" = ") else { continue };
+        let Some(rest) = rest.trim_start_matches("distinct ").strip_prefix("!DILocalVariable(")
+        else {
+            continue;
+        };
+        if nodes.contains(&node)
+            && let Some(at) = rest.find("name: \"")
+            && let Some(len) = rest[at + 7..].find('"')
+        {
+            let name = rest[at + 7..at + 7 + len].to_owned();
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    names
+}
+
 /// The DIEs of a tree with a tag.
 pub fn count_tag(n: &Node, tag: &str) -> usize {
     usize::from(n.tag == tag) + n.children.iter().map(|c| count_tag(c, tag)).sum::<usize>()

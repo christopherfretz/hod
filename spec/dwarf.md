@@ -1028,9 +1028,13 @@ its own scope when that scope has code (else none), after the scope's
 declared variables (a parameter in its number's place), its type made
 after the function's other variables' (`llc`'s `collectEntityInfo`
 makes the retained nodes' entities last). A `CoroSplit` ramp retains
-`__coro_frame` and declares it only on a `phi`, which neither `llc` nor
-hod describes (`spec/codegen.md` §9.5): gdb prints `<optimized out>`,
-lldb `<no location, value may have been optimized out>`, under both. A
+`__coro_frame` and declares it only on a `phi`. `llc`'s reference
+selector (SelectionDAG, `-global-isel=0 -fast-isel=0`) drops that
+declaration, so its `__coro_frame` has no location (gdb prints
+`<optimized out>`, lldb `<no location, value may have been optimized
+out>`); `llc`'s default `-O0` selectors (FastISel on x86-64, GlobalISel
+on AArch64) and hod (§6.30) describe it by a location list from the
+`phi` on. A
 retained label without a record is not written (no producer emits one
 at `-O0`); a function with an abstract instance and retained nodes is
 refused (`debug:retained-nodes`, §6.9), except a function only inlined
@@ -1097,7 +1101,7 @@ reports a `debug:*` name as itself and §6.5's unnamed shapes as
 | `debug:specification-type` | a definition whose return type differs from its declaration's |
 | `debug:foreign-scope` | a variable or row in another function's scope |
 | `debug:fragment` | a `DW_OP_LLVM_fragment` in a declared variable's expression |
-| `debug:dbg-value-fragment`, `debug:dbg-value-expr` | a value record's expression with a fragment, or one §6.23 does not write (WP-162) |
+| `debug:dbg-value-fragment`, `debug:dbg-value-expr` | a value record's expression with a fragment that is not byte aligned, or one §6.23 and §6.31 do not write (WP-162, WP-225) |
 | `debug:dbg-value-arglist`, `debug:dbg-value-coroutine` | a value record with a `DIArgList`; one in a coroutine body (`hod_cg`, §6.23) |
 | `debug:expression` | any other op that is not a plain DWARF op |
 | `debug:variable-without-type` | as named |
@@ -1340,6 +1344,21 @@ is the whole list of permitted differences:
   non-empty run of `llc`'s that is not a marker; the rest equal). Never
   the reverse, and never a different value. A debugger user sees fewer
   variables (`info locals`) under hod outside the proven ranges.
+- **declared value** (WP-221, §6.30; `xtask/src/debug/trees.rs`
+  `DECLARED_VALUE`): a variable a `#dbg_declare` (or `llvm.dbg.declare`)
+  of the module declares on a `phi`'s result, by name
+  (`declared_on_phi`). hod describes it by a location list; the
+  reference `llc` (SelectionDAG) drops the declaration. Permitted: hod's
+  DIE with `DW_AT_location` a list where `llc`'s has no location (a
+  retained variable), otherwise equal; hod's DIE where `llc` has none,
+  and hod's lexical block whose only children are such DIEs (`llc`
+  writes no block without variables); hod's relocations of those lists
+  against `.debug_loclists` (`.debug_loc`) and, in DWARF 4, of those
+  DIEs' names against `.debug_str`, beyond `llc`'s count. A debugger user
+  stopped in a `CoroSplit` ramp after the frame is allocated sees
+  `__coro_frame`, `__promise` and the frame's variables under hod, and
+  `<optimized out>` or no such variable under `llc`; elsewhere both print
+  the same.
 
 The relocations of `.debug_info`, `.debug_str_offsets` (by the string
 each one points at) and `.debug_addr` must name the same targets.
@@ -1912,7 +1931,7 @@ writer's (`tests/early.rs`):
 | `debug:call-sites-line-tables` | `DIFlagAllCallsDescribed` with inlined code (WP-113, §6.19) |
 | `debug:variable-without-type`, `debug:variable-alignment` | a variable record's variable (§6.4, §6.12) |
 | `debug:fragment`, `debug:expression` | a variable record's expression |
-| `debug:dbg-value-fragment`, `debug:dbg-value-expr` | a value record's expression (WP-162, §6.23) |
+| `debug:dbg-value-fragment`, `debug:dbg-value-expr` | a value record's expression (WP-162, §6.23; narrowed by WP-225, §6.31) |
 | `debug:label-attribute` | no longer refused (WP-098, §6.14) |
 | `debug:import-scope`, `debug:import` | a function's import with no scope, or scoped in a block file or another function; one in its own scope of a shape hod does not write |
 | `debug:subprogram-twice` | two bodies with one subprogram |
@@ -2257,7 +2276,8 @@ is `DW_OP_reg6`, as `llc`'s.
 (`frame::base_offset`: a local at `slot - 8n - FRAME`, below the `n`
 saved registers and the frame, `codegen.md` §5.6.15; an incoming memory argument at `16 + n`);
 one whose address is in a slot is `DW_OP_fbreg o, DW_OP_deref` (the sret
-pointer, a dynamic alloca's address, a byval argument's, an over-aligned
+pointer, a dynamic alloca's address (a list from the `alloca` on since
+§6.30), a byval argument's, an over-aligned
 slot's, which hod_x64 aligns dynamically instead of realigning `rsp`).
 Memory arguments (the seventh integer and ninth floating argument on)
 are copied into slots by hod and described there; `llc` describes them
@@ -2338,9 +2358,10 @@ recognised by `cargo xtask debug trees`, `spec/harness.md` "debug",
 "Trees", each shown equal under the debuggers by
 `tests/debug/x64_places.c`):
 
-- `sret` also covers a dynamic alloca (a variable-length array): `llc`
-  writes a location list of the saved address, hod `DW_OP_fbreg o,
-  DW_OP_deref`; the array's `DW_AT_count` names the artificial
+- `sret` also covered a dynamic alloca (a variable-length array) until
+  WP-221: `llc` writes a location list of the saved address, hod wrote
+  `DW_OP_fbreg o, DW_OP_deref`; since §6.30 hod writes a list too (from
+  the `alloca` on), so the trees are equal there; the array's `DW_AT_count` names the artificial
   `__vla_expr` variable in both;
 - `byval`: a byval parameter `llc` places at its argument area
   (`DW_OP_fbreg +16`) and hod by the pointer to it hod saved
@@ -2389,9 +2410,10 @@ Evidence: `xtask/tests/debug_x64.rs`, `tests/debug/x64_places.c`,
 - **A unit without code** is written when it lists globals,
   enumerations, retained types or imports not scoped in a function
   (§1.2; `crates/hod_cg/src/emit/lines.rs` `lists_entities`).
-- **A `#dbg_declare` of a `phi`** has no row and its variable no
-  location (`spec/codegen.md` §9.5); a retained variable without a row
-  gets a DIE without a location (§6.4 "Retained variables").
+- **A `#dbg_declare` of a `phi`** had no row and its variable no
+  location; since WP-221 it is a location list (§6.30), except in a
+  coroutine body hod lowers itself (§6.16); a retained variable without
+  a row gets a DIE without a location (§6.4 "Retained variables").
 - **`debug:variable-twice`** (clang 22's coroutine ramp): its second
   declaration of the parameter was the frame pointer's `phi`, now
   dropped, so the ramp's tree equals `llc`'s (clang 19 and 22, `llc` 19
@@ -2717,7 +2739,7 @@ node, which gets a DIE without a location (§6.4 "Retained variables").
 That is what `llc` 19 and 22 write at `-O0` on both targets:
 `SelectionDAGBuilder::visitDbgDeclare` drops the declaration of an
 `UndefValue` address, and no other record names the variable. It is
-the same decision as for a dropped address (`!{}`) and a `phi` (§6.18).
+the same decision as for a dropped address (`!{}`).
 
 Where it comes from: the SysV x86-64 ABI passes no argument for an
 empty record, so an empty-class parameter of an `always_inline` callee
@@ -2788,11 +2810,17 @@ The expression of a record is checked before code generation:
 - allowed: the empty expression, one ending in `DW_OP_stack_value`, or
   one ending in `DW_OP_deref` (a memory location: the value is the
   address, and the final deref is dropped), with the plain DWARF ops
-  the `#dbg_declare` path writes in between;
-- `debug:dbg-value-fragment`: a `DW_OP_LLVM_fragment`;
-- `debug:dbg-value-expr`: any other op (`DW_OP_LLVM_convert`,
-  `DW_OP_LLVM_arg`, entry values, `DW_OP_LLVM_tag_offset`, ...), an op
-  after `DW_OP_stack_value`, or another last op.
+  the `#dbg_declare` path writes in between; since WP-225 also
+  `DW_OP_LLVM_convert` to a signed or unsigned integer of 1 to 64 bits
+  (not before a final `DW_OP_deref`) and a final byte-aligned
+  `DW_OP_LLVM_fragment` (§6.31);
+- `debug:dbg-value-fragment`: a `DW_OP_LLVM_fragment` whose offset or
+  size is not a whole number of bytes, or of size 0 (none in the
+  census of §6.31);
+- `debug:dbg-value-expr`: any other op (a convert to another encoding
+  or a wider integer, `DW_OP_LLVM_arg`, entry values,
+  `DW_OP_LLVM_tag_offset`, ...), an op after `DW_OP_stack_value`, or
+  another last op.
 
 A home with the empty expression is `DW_OP_fbreg n`; otherwise
 `DW_OP_fbreg n`, `DW_OP_deref` (`DW_OP_deref_size k` for a value under
@@ -2816,9 +2844,9 @@ order of `llc`'s `collectVariableInfo`. hod always writes a list
 where `llc` may write a single location or `DW_AT_const_value`; the
 DIE trees differ there (§6.7).
 
-**DWARF 4**: the list families are past `LAST_CHECKED` (§6.20), so a
-version 4 unit with a located value variable is `debug:dwarf-4-shape`.
-`.debug_loc` is a follow-up.
+**DWARF 4**: written in `.debug_loc` since WP-221 (§6.30); until then
+the list families were past `LAST_CHECKED` (§6.20) and a version 4 unit
+with a located value variable was `debug:dwarf-4-shape`.
 
 **Sessions**: `tests/debug/dbg_value.c` (`-O1`) prints variables inside
 and outside their ranges on both targets. The harness class
@@ -3112,7 +3140,193 @@ a block, a slot named by a record, a label; inlined only, and with the
 function's code before and after its caller; DWARF 5 and 4; both
 targets; tree equal to `llc` 22's). The libc++ module itself is then
 refused for `debug:dbg-value-expr` (a value record's expression,
-outside this package).
+outside this package; built since WP-225, §6.31).
+
+### 6.31 Value records with fragments and conversions (implemented, WP-225)
+
+Optimized code describes a variable in pieces (`DW_OP_LLVM_fragment`:
+SROA splits an aggregate, or a value is narrowed) and through integer
+conversions (`DW_OP_LLVM_convert`: a truncation or an extension the
+optimizer folded into the record). Before this package §6.23 refused
+both; a census of 886 `-O1`/`-O2 -g` modules (libc++ tests through
+kiln, both targets) counted 200 refused for `debug:dbg-value-fragment`
+and 68 for `debug:dbg-value-expr`. hod writes them as `llc` 22 does,
+measured shape by shape against `llc` 19 and 22.
+
+**Checks** (`check_value_expr`, §6.23): a fragment must be the last op,
+byte aligned and of nonzero size (all 389,019 fragments of the census
+are); a convert must be to `DW_ATE_signed` or `DW_ATE_unsigned` of 1 to
+64 bits, and an expression with a convert may not end in
+`DW_OP_deref`. Anything else keeps its refusal name.
+
+**Rows** (`crates/hod_cg/src/dbg_value.rs`). A record now closes only
+the open ranges of its `(variable, inlinedAt)` whose bits overlap its
+own fragment (a record without a fragment overlaps all), as `llc`'s
+`DbgEntityHistoryCalculator` does; so one fragment's new value leaves
+the other fragments' ranges open.
+
+**Entries** (`crates/hod_dwarf/src/loclists.rs`). A variable whose
+records have a fragment gets its list by composition (`compose`): the
+ranges' bounds cut the code into stretches; over each, the pieces that
+hold there (a later record replaces the earlier ones whose bits it
+overlaps), sorted by offset, are one entry (`llc`'s `DebugLocEntry`).
+A stretch without a piece has no entry; adjacent stretches with the
+same pieces are merged. An entry is, per piece, a `DW_OP_piece` of the
+gap before it when there is one (an empty piece), the piece's location
+(§6.23's ops, without the fragment) and `DW_OP_piece size/8`; a gap
+after the last piece is not written. A piece whose value is narrower
+than its fragment (an `i32` home for a 64-bit fragment) is not
+located.
+
+**Conversions.** `DW_OP_convert` names a `DW_TAG_base_type` DIE of the
+unit (`DW_AT_name` `DW_ATE_signed_N` or `DW_ATE_unsigned_N`,
+`DW_AT_encoding`, `DW_AT_byte_size` `ceil(N/8)`; the existing
+`BASE_TYPE` family, no new one): they are the compile unit's first
+children, in the order the unit's lists first use them, and the operand
+is the DIE's unit offset as a ULEB128 padded to 4 bytes, as `llc`
+writes it. A constant's leading converts are folded into it
+(`DIExpression::constantFold` in `llc`'s instruction selection: a
+narrowing keeps the low bits, a signed widening extends the sign), and
+only the converts after it are written. On a home, a value under 64
+bits accepts only low-bit ops before the first convert, and that
+convert may not be wider than the value. In a split unit (§6.15)
+`llc`'s gdb tuning writes the legacy form (`DwarfExpression`'s
+`emitLegacySExt` / `emitLegacyZExt`: a widening pair becomes the shift
+and multiply sequence or a mask, a narrowing is dropped) and hod does
+the same; `llc` also uses the legacy form for lldb tuning on ELF, which
+hod does not distinguish (`-debugger-tune` is parsed and ignored): a
+follow-up.
+
+**Constants** follow LLVM 22, where 19 differs: an `i1` true is 1 (19
+wrote all ones), and a nonzero constant of a `DW_ATE_boolean` variable
+is `DW_OP_lit1`. A variable of a signed type (`DW_ATE_signed`,
+`DW_ATE_signed_char`) gets `DW_OP_consts`, sign-extended from the
+constant's width when it is wider than one bit.
+
+**Verification.** `llvm-dwarfdump --verify` reports `llc`'s own objects
+with base types as errors (the base types are missing from its
+`.debug_names`); hod writes no name index and its objects verify clean.
+
+**Tests.** `crates/hod/tests/dbg_value.rs` `pieces_and_conversions`
+(both targets, plain and split: base types first and in use order,
+conversion chains on a home and on constants, booleans, composed
+fragments with gaps, a poison fragment, the legacy forms) and
+`refusals_are_named`; sessions `tests/debug/dbg_value_pieces.c`,
+`dbg_value_convert_pieces.c` and `dbg_value_fragments.c` (`-O1`). Still
+refused: `debug:dbg-value-arglist` (§6.23), and a fragment in a
+declaration (`debug:fragment`). Evidence: `spec/landed/dwarf/WP-225.md`.
+
+### 6.30 Two differences real runs found (implemented, WP-221)
+
+**The recorded command line** (`crates/hod_dwarf/src/producer.rs`).
+With `-grecord-command-line` (clang) or `-grecord-gcc-switches` (kiln,
+clang's alias) the front end records its command line as the compile
+unit's `flags:` (both readers keep it: `hod_ll` and `hod_bc`, the
+field `flags` of `DICompileUnit`). `llc` 19 and 22
+(`DwarfDebug::constructDwarfCompileUnit`, off Apple targets, which hod
+does not write for) write `DW_AT_producer` as the producer, one space
+and the flags, wherever the unit's producer is written: the ordinary
+unit (versions 5 and 4), the split unit of `.debug_info.dwo`, and the
+skeleton that stands alone (a unit with no split unit, §6.15); a
+skeleton with a split unit has no producer. With empty flags the
+producer is unchanged (an empty producer stays `""`); an empty producer
+with flags gives `" <flags>"`. `DW_AT_APPLE_flags` is not written (it is
+`llc`'s attribute for Apple targets only). The string is made once per
+unit plan (`UnitPlan::producer`, borrowed when there are no flags);
+modules without flags write the bytes they wrote before. Test:
+`crates/hod/tests/dwarf_producer.rs` (four unit shapes, four
+producer/flags combinations, both targets, against `llc` 19 and 22; the
+bitcode of `llvm-as` 19 and 22; clang 19 and 22 with
+`-grecord-command-line`, C and C++, split and not).
+
+**A declaration of an instruction result** (`crates/hod_cg/src/dbg_value.rs`
+`declared_values`, `open_declared`; `spec/codegen.md` §9.5). A
+`#dbg_declare` (or `llvm.dbg.declare`) whose address is an instruction
+result and not a slot: the frame pointer's `phi` of a `CoroSplit` ramp
+(`__coro_frame` with `DIExpression()`, `__promise` and the frame's
+variables with `DW_OP_plus_uconst N`), a `getelementptr`, a call's
+result, with any expression a slot's declaration may have (§6.4: no
+fragment, no LLVM operation). What `llc` 19 and 22 write depends on
+the selector, measured on clang 19's and 22's ramps, kiln++'s saved
+libc++ ramp (`fullexpr-dtor.pass.cpp`, kiln++ 21b9110a4) and
+hand-written IR, both targets:
+
+- SelectionDAG (`-global-isel=0 -fast-isel=0`, this document's
+  reference): a declaration is described only through the node its address has
+  in the declaration's block; a `phi` has none there, so the
+  declaration is dropped (no DIE, a retained variable's DIE without a
+  location); a `getelementptr` of the block has one, giving a list
+  `DW_OP_bregN` of the register over the few instructions it lives in.
+- The default `-O0` selectors (FastISel on x86-64, GlobalISel on
+  AArch64): a list from the definition on, first the register
+  (`DW_OP_breg9 W9+0`, `DW_OP_breg0 RAX+0`), then the spill slot
+  (`DW_OP_breg29 W29-64, DW_OP_deref, DW_OP_plus_uconst 0x10`,
+  `DW_OP_breg7 RSP+120, DW_OP_deref`), carried by `LiveDebugValues`
+  to the end of the function or of the variable's scope; the variables
+  of one instruction in reverse record order. A variable declared on
+  both a slot and a value (clang's ramp declares the parameter on its
+  slot and on its frame copy) keeps the slot.
+
+hod's rule, by its `-O0` model (`spec/codegen.md` §4.1, §4.5: a declared
+result has a home, written once at its definition, a `phi`'s by its
+block's `phi` loads, and never again; a dynamic `alloca`'s too, so a
+variable-length array, which `llc` also lists, is one): the variable is at the address
+the home holds, `DW_OP_fbreg o, DW_OP_deref`, then the declaration's
+expression whole, over these ranges, and nowhere else:
+
+1. in the definition's block, from the end of the definition's code (a
+   `phi`: from the end of the block's `phi` loads);
+2. in every other reachable block the definition's block dominates,
+   from the block's first byte;
+3. each range ending at its block's end, or at the start of a `ret`, a
+   `musttail` call or any terminator that is not a branch (as §6.23's);
+   adjacent ranges are merged.
+
+A result hod never computes (dead: no use and no effect; a terminator's,
+such as an `invoke`'s) has no range, and a variable without a range has
+no row: no DIE, as `llc` writes none, unless it is retained (§6.4). A
+variable also declared on a slot, or also described by value records,
+keeps that place and gets no rows from the result. Arguments keep
+`DW_OP_fbreg o, DW_OP_deref` for the whole function (§9.5); a symbol's or
+constant's address is still `debug:declare-address`, and a slot plus a
+constant offset still `debug:declare-offset` (§6.21; or
+`debug:declare-address` when it is never computed). In a coroutine body
+hod lowers itself (§6.16) nothing changes: its declarations are its own.
+The variables of one instruction are placed in reverse record order, as
+`llc`'s default selectors place them.
+
+Where hod's ranges differ from `llc`'s: under SelectionDAG `llc` has
+none for a `phi` (the class `declared value`, §6.7, which `debug trees`
+permits by name) and only the register's few instructions for a value of
+the block (both are lists, equal in the tree); under the default
+selectors `llc` starts one instruction earlier (the register, before the
+store hod waits for) and reaches past the blocks the definition
+dominates where its spill slot still holds the value. hod never claims
+a byte before its home is written nor a block the definition does not
+dominate. Earlier, hod dropped a `phi`'s declaration and described any
+other result's home for the whole function, prologue included, and also
+for a dead result whose home is never written.
+
+The rows are `VarPlace::Value` rows (§6.23) with `ValueAt::HomeAddress`,
+then `ValueAt::Address` once the frame is final; `hod_dwarf` writes them
+as `ValueLoc::Address` entries of the variable's list, in
+`.debug_loclists` (DWARF 5; `.debug_loclists.dwo` when split, §6.15)
+and, new here, in `.debug_loc` for DWARF 4 (`dwarf4.rs` `loc_list`:
+version 4's address pairs, offsets from the unit's one range or else
+relocated addresses, as `.debug_ranges`; a two-byte expression length;
+the location-list families are now checked for version 4, so §6.23's
+value lists are written in DWARF 4 too). No abbreviation family is
+added. Tests: `crates/hod/tests/dwarf_declared_value.rs` (every kind of
+declaration on both targets, DWARF 5, 4 and split, each list never
+covering the prologue nor past the code, the variables with lists those
+of `llc -O0 -fast-isel=1` 19 and 22; clang 19's and 22's ramps of
+`tests/debug/coroutine.cpp`, both targets, DWARF 5 and 4, against the
+same `llc`), `crates/hod_a64/tests/dies_followups.rs`
+`coroutine_ramps_match_llc`, `xtask/src/debug/trees.rs`
+`variables_declared_on_a_phi` and `declared_values_are_permitted_by_name`,
+and the session test `tests/debug/coroutine_split.cpp` (clang's split
+coroutine, stopped in the resumed body: the promise, a member, a frame
+variable; gdb and lldb on both targets, x86-64 through qemu).
 
 ## 7. Speed and memory
 

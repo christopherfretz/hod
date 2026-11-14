@@ -10,7 +10,7 @@
 //!   (x86-64 under `qemu-x86_64`), with every linker.
 //! - `-grecord-gcc-switches`: kiln writes the command line into the
 //!   compile unit's `flags:`; `llc` appends it to `DW_AT_producer` (off
-//!   Apple targets), hod writes the producer alone (ignored test below).
+//!   Apple targets), and so does hod (WP-221).
 //!
 //! `-mtls-dialect=gnu2` makes kiln pass `-enable-tlsdesc` to its back
 //! end; hod does not know that option yet and declines the module (kiln
@@ -150,10 +150,8 @@ fn stack_clash_protection_from_kiln_runs() {
 /// `-grecord-gcc-switches`: `llc` writes `DW_AT_producer` as the
 /// producer, a space and the compile unit's `flags:` (LLVM
 /// `DwarfDebug::constructDwarfCompileUnit`, off Apple targets); hod
-/// writes the producer alone (`crates/hod_dwarf/src/die.rs:859`,
-/// `crates/hod_dwarf/src/split.rs:299` and `:640`).
+/// writes the same (WP-221, `spec/dwarf.md` 6.30).
 #[test]
-#[ignore = "hod drops DICompileUnit flags: from DW_AT_producer (follow-up of WP-214)"]
 fn recorded_command_line_is_in_the_producer() {
     let scratch = Scratch::new("hod-wp214-flags");
     let Some(kiln) = kiln() else { return };

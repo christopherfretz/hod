@@ -1280,7 +1280,7 @@ use AttrClass::{Dropped, Kept, Rejected};
 /// Keyword rows first, each group ordered by name. A name with no row is
 /// [`AttrClass::Rejected`]; the `Rejected` rows are the names LLVM defines
 /// that were looked at and deliberately left there.
-pub const ATTRIBUTES: [AttrInfo; 141] = [
+pub const ATTRIBUTES: [AttrInfo; 142] = [
     kw("align", Kept),
     kw("alignstack", Kept),
     kw("allocalign", Dropped),
@@ -1383,6 +1383,7 @@ pub const ATTRIBUTES: [AttrInfo; 141] = [
     kw("writable", Dropped),
     kw("writeonly", Dropped),
     kw("zeroext", Kept),
+    st("alloc-family", Dropped),
     st("allow_direct_access_in_hot_patch_function", Rejected),
     st("approx-func-fp-math", Dropped),
     st("branch-protection-pauth-lr", Kept),

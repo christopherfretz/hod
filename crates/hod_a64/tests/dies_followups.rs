@@ -22,7 +22,10 @@ use std::process::Command;
 use std::time::Duration;
 
 use hod_testutil::{Scratch, run_with, tool};
-use support::{Node, count, count_tag, first_difference, hod_object, llc_object, trees};
+use support::{
+    Node, count, count_tag, declared_on_phi, first_difference, hod_object, llc_object, trees,
+    without_declared,
+};
 
 fn data_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/dies_followups")
@@ -275,32 +278,48 @@ fn move_declare(text: &str, func: &str, address: &str, after: &str, before: &str
     format!("{}{}{}", &text[..start], out.trim_end_matches('\n'), &text[end..])
 }
 
-/// `spec/codegen.md` §9.5: a `#dbg_declare` of a `phi` is dropped, as
-/// `llc -O0` drops it (`SelectionDAGBuilder` has no node for the `phi` in
-/// the declaration's block): no DIE for the variable.
+/// `spec/dwarf.md` §6.30: a `#dbg_declare` of a `phi` is a location list
+/// from the `phi` on (WP-221); `llc -O0` (`SelectionDAG`) drops it
+/// (`SelectionDAGBuilder` has no node for the `phi` in the declaration's
+/// block): no DIE for the variable, the class `declared value` (§6.7).
+/// Without the variable the trees are equal.
 #[test]
 fn declaration_of_a_phi_matches_llc() {
     if !cfg!(target_arch = "aarch64") {
         return;
     }
+    let Some(dwarfdump) = tool("llvm-dwarfdump") else { return };
     let scratch = Scratch::new("dies-followups-phi");
     let mut compared = 0;
-    for (cc, llc) in PAIRS {
-        let Some(compiler) = tool(cc) else { continue };
-        let name = format!("phi-{cc}-{llc}");
+    for (cc, llc_name) in PAIRS {
+        let (Some(compiler), Some(llc)) = (tool(cc), tool(llc_name)) else { continue };
+        let name = format!("phi-{cc}-{llc_name}");
         let text = ir(&compiler, &scratch, &name, "declare.cpp", &[]);
         let text =
             move_declare(&text, "phi", "%p9", "7:", "  %p9 = phi ptr [ %2, %5 ], [ %2, %0 ]\n");
-        let Some(unit) = compare(&scratch, llc, &name, &text) else { continue };
-        assert!(vars(subprogram(&unit, "phi"), "p").is_empty(), "{name}");
+        let hod_o = hod_object(&scratch, &format!("{name}-hod"), &text);
+        let llc_o = llc_object(&scratch, &llc, &format!("{name}-llc"), &text);
+        support::verify(&dwarfdump, &hod_o);
+        support::verify(&dwarfdump, &llc_o);
+        let (th, tl) = (trees(&dwarfdump, &hod_o), trees(&dwarfdump, &llc_o));
+        assert_eq!((th.len(), tl.len()), (1, 1), "{name}: one unit each");
+        let ours = vars(subprogram(&th[0], "phi"), "p");
+        assert_eq!(ours.len(), 1, "{name}");
+        assert!(has(ours[0], "DW_AT_location"), "{name}: {:?}", ours[0]);
+        assert!(vars(subprogram(&tl[0], "phi"), "p").is_empty(), "{name}");
+        let declared = ["p".to_owned()];
+        let pruned = (without_declared(&th[0], &declared), without_declared(&tl[0], &declared));
+        if let Some(d) = first_difference(&pruned.0, &pruned.1) {
+            panic!("{name}: hod's tree, then llc's: {d}");
+        }
         compared += 1;
     }
     eprintln!("declaration_of_a_phi_matches_llc: {compared} trees equal to llc's");
 }
 
 /// A `#dbg_declare` of a value defined in another block: `llc -O0` drops
-/// it as it drops a `phi`'s, hod writes the value's home for the whole
-/// function. `hod_ir`'s declarations have no position (`spec/ir.md`), so
+/// it as it drops a `phi`'s, hod writes a list from the definition over
+/// the blocks it dominates (`spec/dwarf.md` §6.30). `hod_ir`'s declarations have no position (`spec/ir.md`), so
 /// the code generator cannot tell this from a declaration in the value's
 /// own block, where `llc` writes a location list from the definition on.
 /// No front end emits either at `-O0`.
@@ -335,22 +354,49 @@ fn declaration_of_a_slot_offset_matches_llc() {
 /// A `CoroSplit` ramp (`-O0` IR, which clang has already split): the
 /// frame's variables are declared on the frame pointer's `phi`, and
 /// clang 22 declares the coroutine's parameter twice, on its slot and on
-/// its frame copy. `llc -O0` drops the `phi`'s declarations, so the
-/// parameter has its slot and `__promise` no DIE, and writes the retained
-/// `__coro_frame` without a location (`collectEntityInfo`); so does hod.
+/// its frame copy. `llc -O0` (`SelectionDAG`) drops the `phi`'s
+/// declarations, so the parameter has its slot and `__promise` no DIE,
+/// and writes the retained `__coro_frame` without a location
+/// (`collectEntityInfo`). hod (WP-221, `spec/dwarf.md` §6.30) keeps the
+/// parameter's slot and describes `__coro_frame` and `__promise` by
+/// location lists from the `phi` on, as `llc`'s default `-O0` selectors
+/// do; `crates/hod/tests/dwarf_declared_value.rs` has the rest.
 #[test]
 fn coroutine_ramps_match_llc() {
+    if !cfg!(target_arch = "aarch64") {
+        return;
+    }
+    let Some(dwarfdump) = tool("llvm-dwarfdump") else { return };
+    let scratch = Scratch::new("dies-followups-ramp");
     let mut ramps = 0;
-    each_tree("ramp", "../dies_label/coro.cpp", &[], |name, unit| {
-        let ramp = subprogram(unit, "_Z5evensi");
-        assert_eq!(vars(ramp, "n").len(), 1, "{name}: one parameter");
-        assert!(vars(ramp, "__promise").is_empty(), "{name}");
-        let frame = vars(ramp, "__coro_frame");
-        assert_eq!(frame.len(), 1, "{name}");
+    for (cc, llc_name) in PAIRS {
+        let (Some(compiler), Some(llc)) = (tool(cc), tool(llc_name)) else { continue };
+        let name = format!("ramp-{cc}-{llc_name}");
+        let text = ir(&compiler, &scratch, &name, "../dies_label/coro.cpp", &[]);
+        let h = hod_object(&scratch, &format!("{name}-hod"), &text);
+        let l = llc_object(&scratch, &llc, &format!("{name}-llc"), &text);
+        support::verify(&dwarfdump, &h);
+        support::verify(&dwarfdump, &l);
+        let (th, tl) = (trees(&dwarfdump, &h), trees(&dwarfdump, &l));
+        let (ours, theirs) = (subprogram(&th[0], "_Z5evensi"), subprogram(&tl[0], "_Z5evensi"));
+        assert_eq!(vars(ours, "n").len(), 1, "{name}: one parameter");
+        assert_eq!(vars(ours, "n"), vars(theirs, "n"), "{name}: the parameter's slot");
+        assert!(vars(theirs, "__promise").is_empty(), "{name}");
+        for var in ["__coro_frame", "__promise"] {
+            let found = vars(ours, var);
+            assert_eq!(found.len(), 1, "{name}: {var}");
+            assert!(has(found[0], "DW_AT_location"), "{name}: {:?}", found[0]);
+        }
+        let frame = vars(theirs, "__coro_frame");
         assert!(!has(frame[0], "DW_AT_location"), "{name}: {:?}", frame[0]);
+        let declared = declared_on_phi(&text);
+        let pruned = (without_declared(&th[0], &declared), without_declared(&tl[0], &declared));
+        if let Some(d) = first_difference(&pruned.0, &pruned.1) {
+            panic!("{name}: hod's tree, then llc's, without {declared:?}: {d}");
+        }
         ramps += 1;
-    });
-    eprintln!("coroutine_ramps_match_llc: {ramps} trees equal to llc's");
+    }
+    eprintln!("coroutine_ramps_match_llc: {ramps} ramps");
 }
 
 /// kiln++'s ramp: the same, but kiln++ writes the frame type's `void *`

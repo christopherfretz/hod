@@ -397,7 +397,7 @@ impl<'m> ModuleEmitter<'m> {
             return Err(CgError::unsupported(unsupported::LINKER_OPTION));
         }
         emitter.declare()?;
-        emitter.debug = DebugLines::new(module, arch)?;
+        emitter.debug = DebugLines::new(module, arch, emitter.options.split_dwarf)?;
         // `.text` exists in every object `llc` writes.
         let text = emitter.arch().text_align();
         let mut name = std::mem::take(&mut emitter.name);
@@ -1124,7 +1124,6 @@ impl<'m> ModuleEmitter<'m> {
     /// functions are placed.
     fn debug_tables(&mut self) -> CgResult<()> {
         let Some(mut debug) = self.debug.take() else { return Ok(()) };
-        debug.split = self.options.split_dwarf; // WP-062: §6.15
         let module = self.module;
         let places = &self.places;
         debug.finish(module, &mut self.obj, |obj, sym| {

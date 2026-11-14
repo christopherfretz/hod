@@ -167,7 +167,13 @@ impl UnitPlan<'_> {
         chain: &mut Vec<DiId>,
     ) -> Result<(), Error> {
         let kind = self.debug.find_kind(entity).ok_or(bad(ie, "entity"))?;
-        if self.slot[entity.index()] != NONE {
+        // WP-230 (§6.35): a subprogram with an abstract instance is
+        // imported as it (`getAbstractScopeDIEs().lookup(SP)`), whether
+        // or not it also has code. Imports are sealed after every
+        // function is added, so every abstract instance exists.
+        if self.slot[entity.index()] != NONE
+            || (kind == DiKind::Subprogram && self.inline.die(entity).is_some())
+        {
             return Ok(());
         }
         match (kind, self.debug.node(entity)) {
@@ -215,7 +221,13 @@ impl<'a> Writer<'a> {
             self.abbrev(code(fam::IMPORTED_DECLARATION, mask, false));
         }
         self.decl(decl);
-        self.ref_to(plan, node, e.entity.unwrap_or(DiId::NONE))?;
+        let entity = e.entity.unwrap_or(DiId::NONE);
+        match plan.inline.die(entity) {
+            // WP-230 (§6.35): the abstract instance, also over a
+            // concrete DIE (`constructImportedEntityDIE`).
+            Some(die) => self.ref4(die),
+            None => self.ref_to(plan, node, entity)?,
+        }
         self.opt_name(e.name)?;
         Ok(())
     }

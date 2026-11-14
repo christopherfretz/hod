@@ -175,6 +175,9 @@ pub struct UnitPlan<'a> {
     /// WP-225: the base types the located expressions convert to
     /// (`DW_OP_convert`), in first use: `(bits, DW_ATE_*)`.
     pub(crate) base_types: Vec<(u8, u8)>,
+    /// WP-230: the unit is written split, so its conversions take
+    /// `llc`'s legacy form (§6.31, §6.34; [`UnitPlan::set_split`]).
+    pub(crate) legacy_converts: bool,
     pub(crate) piece_scratch: crate::loclists::PieceScratch,
     /// The `.debug_addr` entries the functions' DIEs take.
     pub(crate) code_addrs: u32,
@@ -245,6 +248,14 @@ impl<'a> UnitPlan<'a> {
         let mut plan = Self::for_functions(module, unit)?;
         plan.seal()?;
         Ok(plan)
+    }
+
+    /// Says the unit will be written split (`SplitDwarf` not `Off`),
+    /// before any function is added: a split unit writes conversions in
+    /// `llc`'s legacy form, which has no location for a sign extension
+    /// to 128 bits (`spec/dwarf.md` §6.34).
+    pub fn set_split(&mut self, split: bool) {
+        self.legacy_converts = split;
     }
 
     /// The plan of [`UnitPlan::of_module`], open: the code generator adds
@@ -340,6 +351,7 @@ impl<'a> UnitPlan<'a> {
             value_args: Vec::new(),
             frame_pieces: Vec::new(),
             base_types: Vec::new(),
+            legacy_converts: false,
             piece_scratch: crate::loclists::PieceScratch::default(),
             code_addrs: 0,
             fn_scratch: crate::func::FnScratch::default(),

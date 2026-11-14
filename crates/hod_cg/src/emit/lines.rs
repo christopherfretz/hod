@@ -135,7 +135,11 @@ impl<'m> DebugLines<'m> {
     /// [`unsupported::DEBUG_DIE`], a `debug:*` name of the plan;
     /// [`unsupported::DEBUG_MALFORMED`] for a unit the tables do not
     /// describe.
-    pub(super) fn new(module: &'m Module, arch: Arch) -> CgResult<Option<Box<DebugLines<'m>>>> {
+    pub(super) fn new(
+        module: &'m Module,
+        arch: Arch,
+        split: hod_dwarf::SplitDwarf,
+    ) -> CgResult<Option<Box<DebugLines<'m>>>> {
         let debug = &module.debug;
         let mut units = Vec::new();
         for &unit in debug.compile_units() {
@@ -148,7 +152,9 @@ impl<'m> DebugLines<'m> {
             // `LineTablesOnly` and `DebugDirectivesOnly` (WP-061,
             // `spec/dwarf.md` §6.10): the plan refuses what they cannot
             // describe; the second gets no DIEs at all.
-            let plan = UnitPlan::for_functions(module, unit).map_err(|e| dwarf_err(debug, e))?;
+            let mut plan =
+                UnitPlan::for_functions(module, unit).map_err(|e| dwarf_err(debug, e))?;
+            plan.set_split(split != hod_dwarf::SplitDwarf::Off); // WP-230: §6.34
             let mut globals = cu.globals.to_vec();
             globals.sort_unstable();
             let dies = has_dies(cu.emission_kind);
@@ -168,7 +174,7 @@ impl<'m> DebugLines<'m> {
             scopes: Vec::new(),
             locals: Vec::new(),
             calls: Vec::new(),
-            split: hod_dwarf::SplitDwarf::Off,
+            split,
             prev_span: None,
         })))
     }

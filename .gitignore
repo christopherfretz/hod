@@ -2,3 +2,4 @@
 /.build/
 /.toolchain/
 /.worktrees/
+__pycache__/

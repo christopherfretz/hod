@@ -6,7 +6,7 @@ end, with the header group and the feature of the header functions that
 emit it, how many header functions emit it, and what `hod --strict`
 answered for those functions.
 
-Usage: table.py <rows19.tsv> <rows22.tsv> > census.tsv
+Usage: python3 -B table.py <rows19.tsv> <rows22.tsv> > census.tsv
 
 Columns: `name  kind  group  feature  functions  built  refused  answer`.
 `functions` counts the distinct header functions (of either clang) that

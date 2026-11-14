@@ -16,7 +16,7 @@ feature (clang names it), with that feature added to the wrapper's
 `target`; one that never compiles is counted as such.
 
 Usage:
-  census.py <work dir> <clang> [--hod <hod>] > rows.tsv
+  python3 -B census.py <work dir> <clang> [--hod <hod>] > rows.tsv
 
 Writes into <work dir> (temporary: delete it after) and prints one row
 per wrapper: `header  function  feature  group  names  instructions

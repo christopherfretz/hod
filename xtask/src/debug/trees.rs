@@ -293,8 +293,15 @@ const SP_RELATIVE: &str = "DW_AT_location DW_OP_breg31";
 
 /// The class that permits hod's location `h` where `llc` writes `l` in
 /// a DIE tagged `tag` (`spec/dwarf.md` §6.7 and §6.17), if any. `lists`:
-/// `llc`'s unit has location lists.
-fn location_class(tag: &str, h: &str, l: &str, lists: bool) -> Option<&'static str> {
+/// `llc`'s unit has location lists; `protected`: the module has a
+/// function with `ssp`, `sspstrong` or `sspreq`.
+fn location_class(
+    tag: &str,
+    h: &str,
+    l: &str,
+    lists: bool,
+    protected: bool,
+) -> Option<&'static str> {
     let variable = tag == "DW_TAG_variable" || tag == "DW_TAG_formal_parameter";
     match (h, l) {
         _ if !variable => None,
@@ -302,6 +309,10 @@ fn location_class(tag: &str, h: &str, l: &str, lists: bool) -> Option<&'static s
         // x86-64 byval: `llc` names the argument area (`DW_OP_fbreg
         // +16`), hod the pointer to it it saved.
         (SRET_HOD, IN_SLOT) if tag == "DW_TAG_formal_parameter" => Some("byval"),
+        // WP-183 (`spec/codegen.md` §5.6.24): a slot of a protected
+        // function's guarded block, which hod reaches through its pointer
+        // slot and `llc` names directly.
+        (SRET_HOD, IN_SLOT) if protected => Some("stack protector"),
         (SRET_HOD | IN_SLOT, RSP_RELATIVE | SP_RELATIVE) => Some("realigned frame"),
         _ => None,
     }
@@ -315,6 +326,10 @@ fn location_class(tag: &str, h: &str, l: &str, lists: bool) -> Option<&'static s
 ///   pointer; on x86-64 also a dynamic alloca);
 /// - `byval` (x86-64): a byval parameter `llc` places at `DW_OP_fbreg
 ///   +16` and hod at `DW_OP_fbreg N, DW_OP_deref`;
+/// - `stack protector`: in a module with `ssp`, `sspstrong` or `sspreq`,
+///   a variable or parameter hod places at `DW_OP_fbreg N, DW_OP_deref`
+///   (a slot of a guarded block, through its pointer slot) and `llc` at
+///   `DW_OP_fbreg N`;
 /// - `realigned frame`: `llc` realigned the stack and places variables
 ///   by `DW_OP_breg7` (`rsp`, x86-64) or `DW_OP_breg31` (`sp`, AArch64,
 ///   WP-150), hod by `DW_OP_fbreg`;
@@ -326,7 +341,13 @@ fn location_class(tag: &str, h: &str, l: &str, lists: bool) -> Option<&'static s
 ///   hod writes no name index (§8);
 /// - `llc 19 blocks`: `llc` 19 writes no `DW_AT_abstract_origin` on a
 ///   concrete block.
-pub fn permitted(h: &Node, l: &Node, is_constant: bool, llc19: bool) -> Option<Vec<&'static str>> {
+pub fn permitted(
+    h: &Node,
+    l: &Node,
+    is_constant: bool,
+    llc19: bool,
+    protected: bool,
+) -> Option<Vec<&'static str>> {
     let mut l = l.clone();
     let mut classes = Vec::new();
     // §8 (split units): hod writes no name index.
@@ -351,7 +372,7 @@ pub fn permitted(h: &Node, l: &Node, is_constant: bool, llc19: bool) -> Option<V
     }
     let extras_ok =
         count_tag(&l, "DW_TAG_inlined_subroutine") > count_tag(h, "DW_TAG_inlined_subroutine");
-    let mut p = Permit { classes, is_constant, extras_ok, llc19, sret };
+    let mut p = Permit { classes, is_constant, extras_ok, llc19, sret, protected };
     p.eq(h, &l).then_some(p.classes)
 }
 
@@ -362,6 +383,7 @@ struct Permit {
     extras_ok: bool,
     llc19: bool,
     sret: bool,
+    protected: bool,
 }
 
 fn is_extra(n: &Node) -> bool {
@@ -388,7 +410,7 @@ impl Permit {
             let mut placed = h.clone();
             let mut found = Vec::new();
             for (a, b) in placed.attrs.iter_mut().zip(&l.attrs) {
-                if let Some(class) = location_class(&h.tag, a, b, self.sret) {
+                if let Some(class) = location_class(&h.tag, a, b, self.sret, self.protected) {
                     found.push(class);
                     a.clone_from(b);
                 }
@@ -604,7 +626,16 @@ fn one(module: &Path, tools: &Tools, major: u32, dir: &Path) -> Outcome {
         (Ok(a), Ok(b)) => (a, b),
         (Err(e), _) | (_, Err(e)) => return Outcome::Failed(e),
     };
-    compare(&ours, &theirs, &ours_r, &theirs_r, text.contains("@llvm.is.constant"), major == 19)
+    let is_constant = text.contains("@llvm.is.constant");
+    compare(&ours, &theirs, &ours_r, &theirs_r, is_constant, major == 19, protects(&text))
+}
+
+/// Whether the module text `text` names a stack-protector attribute
+/// (`ssp`, `sspstrong`, `sspreq` as a word), the condition of the class
+/// `stack protector`.
+pub fn protects(text: &str) -> bool {
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '"'))
+        .any(|word| matches!(word, "ssp" | "sspstrong" | "sspreq"))
 }
 
 /// The outcome of a module from its trees and relocations.
@@ -615,6 +646,7 @@ pub fn compare(
     theirs_r: &[(String, String)],
     is_constant: bool,
     llc19: bool,
+    protected: bool,
 ) -> Outcome {
     if ours.len() != theirs.len() {
         return Outcome::Differs(format!("{} units, llc's {}", ours.len(), theirs.len()));
@@ -624,7 +656,7 @@ pub fn compare(
         if same(h, l) {
             continue;
         }
-        match permitted(h, l, is_constant, llc19) {
+        match permitted(h, l, is_constant, llc19, protected) {
             Some(found) => {
                 for class in found {
                     if !classes.contains(&class) {
@@ -876,12 +908,28 @@ mod tests {
         };
         let (h, l) = (unit(false, SRET_HOD), unit(true, SRET_LLC));
         assert_eq!(
-            compare(std::slice::from_ref(&h), std::slice::from_ref(&l), &[], &[], false, false),
+            compare(
+                std::slice::from_ref(&h),
+                std::slice::from_ref(&l),
+                &[],
+                &[],
+                false,
+                false,
+                false
+            ),
             { Outcome::Permitted(vec!["sret"]) }
         );
         // Without llc's location lists, a list is a difference.
         assert!(matches!(
-            compare(std::slice::from_ref(&h), &[unit(false, SRET_LLC)], &[], &[], false, false),
+            compare(
+                std::slice::from_ref(&h),
+                &[unit(false, SRET_LLC)],
+                &[],
+                &[],
+                false,
+                false,
+                false
+            ),
             Outcome::Differs(_)
         ));
         // DWARF 4: no base attribute; `llc`'s list is relocated against
@@ -893,13 +941,39 @@ mod tests {
         };
         let loc = [("R_X86_64_32".to_owned(), ".debug_loc".to_owned())];
         assert_eq!(
-            compare(&[v4(SRET_HOD)], &[v4(SRET_LLC)], &[], &loc, false, false),
+            compare(&[v4(SRET_HOD)], &[v4(SRET_LLC)], &[], &loc, false, false, false),
             Outcome::Permitted(vec!["sret"])
         );
         assert!(matches!(
-            compare(&[v4(SRET_HOD)], &[v4(IN_SLOT)], &[], &[], false, false),
+            compare(&[v4(SRET_HOD)], &[v4(IN_SLOT)], &[], &[], false, false, false),
             Outcome::Differs(_)
         ));
+    }
+
+    /// WP-183: a guarded slot reached through its pointer slot is the
+    /// class `stack protector`, and only in a protected module.
+    #[test]
+    fn a_guarded_slot_is_permitted_only_when_protected() {
+        let var = |at: &str| Node {
+            tag: "DW_TAG_compile_unit".into(),
+            attrs: vec!["DW_AT_str_offsets_base".into()],
+            children: vec![Node {
+                tag: "DW_TAG_variable".into(),
+                attrs: vec![at.into()],
+                children: vec![],
+            }],
+        };
+        assert_eq!(
+            compare(&[var(SRET_HOD)], &[var(IN_SLOT)], &[], &[], false, false, true),
+            Outcome::Permitted(vec!["stack protector"])
+        );
+        assert!(matches!(
+            compare(&[var(SRET_HOD)], &[var(IN_SLOT)], &[], &[], false, false, false),
+            Outcome::Differs(_)
+        ));
+        assert!(protects("define void @f() #0\nattributes #0 = { sspstrong noinline }"));
+        assert!(protects("attributes #1 = { ssp }"));
+        assert!(!protects("define void @sspstrong_name() {\n}\n; nossp"));
     }
 
     /// WP-150: `llc`'s places in a realigned frame are `sp`-relative on
@@ -910,12 +984,15 @@ mod tests {
         for tag in ["DW_TAG_variable", "DW_TAG_formal_parameter"] {
             for h in [IN_SLOT, SRET_HOD] {
                 for l in [RSP_RELATIVE, SP_RELATIVE] {
-                    assert_eq!(location_class(tag, h, l, false), Some("realigned frame"));
+                    assert_eq!(location_class(tag, h, l, false, false), Some("realigned frame"));
                 }
             }
-            assert_eq!(location_class(tag, IN_SLOT, "DW_AT_location DW_OP_breg29", false), None);
+            assert_eq!(
+                location_class(tag, IN_SLOT, "DW_AT_location DW_OP_breg29", false, false),
+                None
+            );
         }
-        assert_eq!(location_class("DW_TAG_member", IN_SLOT, SP_RELATIVE, false), None);
+        assert_eq!(location_class("DW_TAG_member", IN_SLOT, SP_RELATIVE, false, false), None);
     }
 
     #[test]
@@ -930,7 +1007,10 @@ RELOCATION RECORDS FOR [.debug_line]:\n0000000000000000 R_X86_64_64 .text\n";
         assert!(ours.contains(&("R_X86_64_64".into(), ".text".into())));
         let wrong = info_relocations(&listing.replace("R_X86_64_DTPOFF64", "R_X86_64_64      "));
         let tree = parse_tree(X64);
-        assert_eq!(compare(&tree, &tree, &ours, &ours, false, false), Outcome::Same(3));
-        assert!(matches!(compare(&tree, &tree, &wrong, &ours, false, false), Outcome::Differs(_)));
+        assert_eq!(compare(&tree, &tree, &ours, &ours, false, false, false), Outcome::Same(3));
+        assert!(matches!(
+            compare(&tree, &tree, &wrong, &ours, false, false, false),
+            Outcome::Differs(_)
+        ));
     }
 }

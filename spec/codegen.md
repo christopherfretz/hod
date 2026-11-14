@@ -3694,19 +3694,27 @@ are target-neutral (`hod_cg::guard`); each target emits the code
    matters (never weaker than `llc`), and costs one guard more in
    functions `llc` leaves alone. `"stack-protector-buffer-size"` is read
    with the attribute and changes nothing. A protected presplit
-   coroutine is refused, `ssp:coroutine` (its resume stubs enter the
-   body past the entry code); a target without the hook,
-   `ssp:target`.
+   coroutine is built (rule 6: its resume and destroy stubs repeat the
+   entry code); one that would need the low guard (rule 4) is refused,
+   `ssp:coroutine`, a shape the coroutine plan already refuses (dynamic
+   `alloca`s and over-aligned machine-stack slots, §7.6). A target
+   without the hook, `ssp:target`.
 2. **Which slots move.** A slot **escapes** when its address is used
    other than as the pointer operand of a `load` or `store` whose access
    lies inside the slot (a `getelementptr`, a call argument, a stored
    value, a `phi`, a cast, ...). Only an escaping slot can be written out
    of bounds. The escaping slots of a protected function whose alignment
-   is at most the stack alignment form the **guarded block**, in body
-   order, each at its alignment from the block's start; the **guard
-   word** (8 bytes) follows the last slot at once, unaligned if need be,
-   so that a one-byte overflow of the last slot reaches it (`llc` may
-   leave padding there; hod never detects later than `llc`). The block is
+   is at most the stack alignment, and not in a coroutine's heap frame
+   (§7.6), form the **guarded block**, from its top down by decreasing
+   size, ties in body order, each at its alignment; the **guard word**
+   (8 bytes) follows the top slot at once, unaligned if need be, so that
+   a one-byte overflow of it reaches the guard (`llc` may leave padding
+   there). `llc` puts arrays nearest its guard, then the other
+   address-taken locals, the first in body order nearest; hod keeps no
+   slot types, and size is what tells a buffer from the small objects
+   whose address C++ takes (a `this`, an awaiter). With several slots,
+   an overflow of a lower one reaches the guard after the slots above
+   it, in both builds. The block is
    rounded up to 16. Each slot of the block is addressed through a
    pointer slot (`SlotPlace::Indirect`, as an over-aligned slot, §5.1);
    the pointer slots are the first slots after `begin_function`'s. Its
@@ -3752,7 +3760,15 @@ are target-neutral (`hod_cg::guard`); each target emits the code
    (§5.6) whose displacement `end_function` writes before biasing; on
    AArch64 the guard word's address is made by `add x16, x29, #lo12` ·
    `add x16, x16, #hi12, lsl #12`, patched in `end_function`, and each
-   slot's address is `x16` less its distance from the guard.
+   slot's address is `x16` less its distance from the guard. A
+   coroutine's resume and destroy stubs (§7.6) rebuild a machine frame
+   and jump into the body past this code, so each stub repeats it
+   (`guard::stub_enter` of each target, after the frame word's store), with the
+   final offsets, which are known by then: x86-64 `mov r10, fs:[0x28]` ·
+   `mov [rbp + guard], r10` · per slot `lea r10, [rbp + slot]` · `mov
+   [rbp + pointer], r10`; AArch64 the same through `x16`/`x17`. Every
+   activation of the coroutine body then has a fresh guard and checks it
+   at its exit (rule 7), as `llc` does in each function CoroSplit makes.
 7. **The check** starts every exit sequence (the epilogue and every tail
    exit, so a `musttail` call is checked before its jump; a `noreturn`
    call and `unreachable` have none; unwinding through a protected frame
@@ -4864,7 +4880,8 @@ islands; local `STT_FUNC` symbols `F.resume` and `F.destroy` (F's own
 symbol's size ends at the first stub). Each builds the same machine frame
 as F's prologue (same CFI rows: first the entry state, then the
 prologue's, then x19's), sets x19 := x0, mode := 1, the frame word := x0,
-`w0` := 0 (resume) or 1 (destroy), loads the index and branches to that
+in a protected function the guard word and the pointer slots (§5.6.24
+rule 6), `w0` := 0 (resume) or 1 (destroy), loads the index and branches to that
 suspend's re-entry label (`cmp` / `b.eq` per suspend), and ends in
 `brk #1`. Entering after the suspend with `w0` as its result, the
 switch takes the 0 or 1 edge.
@@ -5014,7 +5031,8 @@ with (awaiter, frame), C convention.
 after F's code. Each states the entry CFI (CFA = `rsp + 8`, `rbp` and
 the save set restored), then builds F's machine frame with F's rows
 (`push rbp`, `mov rbp, rsp`, the save set's pushes, `sub rsp, FRAME`),
-then `mov rbx, rdi`, mode := 1, the frame word := `rdi`
+then `mov rbx, rdi`, mode := 1, the frame word := `rdi`, in a protected
+function the guard word and the pointer slots (§5.6.24 rule 6)
 (`coro_stub_ready` here), `mov eax, 0 | 1`, one `cmp dword [rbx +
 index], k` / `je` per suspend, and `ud2`. Their displacements are the
 final ones (`frame::base_offset`): they are emitted after the frame's

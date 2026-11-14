@@ -27,7 +27,7 @@ use hod_mc_x64 as mc;
 use hod_mc_x64::{Cond, Mem, Seg, Size};
 use hod_obj::X64Reloc;
 
-use crate::common::{INCOMING_BASE, R10, R11, branch_cond, frame_inst, put, put_reloc};
+use crate::common::{INCOMING_BASE, R10, R11, RBP, branch_cond, frame_inst, put, put_reloc};
 use crate::reg::DWARF_RBP;
 use crate::target::X64;
 
@@ -92,6 +92,43 @@ pub fn enter(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
         let (pointer, offset) = cx.stack_guard().pointers()[index];
         put(cx, mc::lea(Size::Q, R10, Mem::base(R11, offset as i32)));
         frame_inst(cx, pointer, |m| mc::mov_mr(Size::Q, m, R10));
+    }
+    Ok(())
+}
+
+/// In each coroutine stub (`coro_body::stubs`, §7.6), once the machine
+/// frame is rebuilt: the entry code again, after `end_function`, so with
+/// the final displacements. A resumed activation is a new frame: its
+/// guard word and pointer slots are written as the ramp's were.
+///
+/// # Errors
+/// `Internal` for a displacement outside the local area.
+pub fn stub_enter(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
+    let Some(guard) = cx.state.guard.guard else { return Ok(()) };
+    if cx.stack_guard().low() {
+        return cx.bug("a coroutine with the low guard");
+    }
+    let desc = cx.state.frame.desc;
+    let local = |at: u32| match crate::frame::base_offset(&desc, FrameRef::Local(at)) {
+        Some(disp) => i32::try_from(disp).ok().map(|disp| Mem::base(RBP, disp)),
+        None => None,
+    };
+    let block = guard - cx.stack_guard().guard_offset();
+    let Some(word) = local(guard) else {
+        return cx.bug("the guard word outside the local area");
+    };
+    put(cx, mc::mov_rm(Size::Q, R10, guard_value()));
+    put(cx, mc::mov_mr(Size::Q, word, R10));
+    for index in 0..cx.stack_guard().pointers().len() {
+        let (pointer, offset) = cx.stack_guard().pointers()[index];
+        let FrameRef::Local(at) = pointer else {
+            return cx.bug("a guarded slot's pointer outside the local area");
+        };
+        let (Some(slot), Some(pointer)) = (local(block + offset), local(at)) else {
+            return cx.bug("a guarded slot outside the local area");
+        };
+        put(cx, mc::lea(Size::Q, R10, slot));
+        put(cx, mc::mov_mr(Size::Q, pointer, R10));
     }
     Ok(())
 }

@@ -83,17 +83,47 @@ pub fn enter(cx: &mut FnCx<'_, A64>) -> CgResult<()> {
     if !cx.stack_guard().is_on() {
         return cx.bug("guard entry code for a function without a guard");
     }
-    guard_value(cx, X17);
-    cx.state.guard.patch = Some(cx.offset());
-    for word in guard_address(0) {
-        put(cx, word);
-    }
-    put(cx, mc::str_off(MemSize::X, X17.zr(), X16.sp(), 0));
+    // The guard word's offset is written by `place`.
+    cx.state.guard.patch = Some(store(cx, 0));
     if cx.stack_guard().low() {
         put(cx, mc::sub_imm(Size::X, SP, SP, 16));
         put(cx, mc::str_off(MemSize::X, X17.zr(), SP, 0));
         cx.state.frame.dynamic = true;
     }
+    pointers(cx)
+}
+
+/// In each coroutine stub (`coro_body::stubs`, §7.6), once the machine
+/// frame is rebuilt: the entry code again, with the guard word's final
+/// offset. A resumed activation is a new frame: its guard word and
+/// pointer slots are written as the ramp's were.
+///
+/// # Errors
+/// `limit:frame-size`, as [`enter`].
+pub fn stub_enter(cx: &mut FnCx<'_, A64>) -> CgResult<()> {
+    let Some(guard) = cx.state.guard.guard else { return Ok(()) };
+    if cx.stack_guard().low() {
+        return cx.bug("a coroutine with the low guard");
+    }
+    store(cx, guard);
+    pointers(cx)
+}
+
+/// The guard value into `x17`, the guard word's address (`x29 + guard`)
+/// into `x16`, the store; returns the offset of the two `add`s.
+fn store(cx: &mut FnCx<'_, A64>, guard: u32) -> u32 {
+    guard_value(cx, X17);
+    let at = cx.offset();
+    for word in guard_address(guard) {
+        put(cx, word);
+    }
+    put(cx, mc::str_off(MemSize::X, X17.zr(), X16.sp(), 0));
+    at
+}
+
+/// Each slot of the block: its address (from `x16`, the guard word's) in
+/// its pointer slot.
+fn pointers(cx: &mut FnCx<'_, A64>) -> CgResult<()> {
     let guard = i64::from(cx.stack_guard().guard_offset());
     for index in 0..cx.stack_guard().pointers().len() {
         let (pointer, offset) = cx.stack_guard().pointers()[index];

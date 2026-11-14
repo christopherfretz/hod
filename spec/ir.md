@@ -2411,7 +2411,10 @@ LLVM's reader makes to IR of older versions (renamed or removed
 intrinsics), except the branch-protection upgrade (`BranchUpgrade`).
 The readers' byte equality is therefore between the text and the
 bitcode of the same module, the bitcode written by the `llvm-as` of the
-text's version (`bc.md` §9.2, WP-172).
+text's version (`bc.md` §9.2, WP-172). It is equality of content, not of
+numbering: the two readers give one metadata node different `DiId`s,
+so no consumer may let an id's value or the order of ids into what it
+writes (`bc.md` §9.2, WP-192).
 
 Cost: no boxing and no allocation per call on the body path (the index
 list of a `getelementptr` is the caller's scratch vector); the body-path

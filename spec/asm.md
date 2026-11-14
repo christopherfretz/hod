@@ -385,7 +385,8 @@ refuses it as ambiguous. Families:
 - `set<cc>`, `cmov<cc>`, `jmp` and `j<cc>` to a numeric local label;
 - SSE: `adds/subs/muls/divs/sqrts/mins/maxs` `s`/`d`, `andp andnp orp
   xorp ucomis comis` `s`/`d`, `movss movsd movaps movapd movups movupd
-  movdqa movdqu movd movq cvtss2sd cvtsd2ss`.
+  movdqa movdqu movd movq cvtss2sd cvtsd2ss`;
+- the instructions of the census, §13.
 
 Where LLVM chooses among encodings of one written form (`xchg` with
 `%rax`, the short immediate forms, `movq $imm` as `movabs`), hod's
@@ -397,8 +398,10 @@ constructor makes the same choice. Another mnemonic is
 - **Prefixes**: `lock` before an instruction `hod_mc_x64` marks
   lockable (a read-modify-write of memory), in the same statement (`F0` after an
   operand-size `66`, as LLVM writes it) or alone (`F0` first). `rep`
-  (`repe`, `repz`) before `movs[bwlq]`, `stos[bwlq]` or `nop`
-  (`pause`). Any other pairing, or a prefix last, is `asm:operand/form`.
+  (`repe`, `repz`; `F3`) and `repne` (`repnz`; `F2`) before a string
+  instruction without operands or `nop` (§13), joined or alone: the
+  prefix byte first either way. Any other pairing, or a prefix last, is
+  `asm:operand/form`.
 - **Data**: `.byte`, `.short`/`.value`/`.word`/`.2byte`,
   `.long`/`.int`/`.4byte`, `.quad`/`.8byte` of constants that fit the
   field, signed or unsigned (`asm:operand/range`).
@@ -437,3 +440,82 @@ The lowering is `spec/codegen.md` §5.6.28. In short:
   `x64:inline-asm`; a bundle `x64:inline-asm-bundle`.
 
 Tests: `crates/hod_x64/tests/inline_asm.rs` (§5.6.28).
+
+## 12. Real-project system-register reads; `callbr` results on AArch64 (WP-196)
+
+- The system-register reads kiln writes for real projects on AArch64
+  (abseil's `UnscaledCycleClock::Now`/`Frequency`: `mrs $0, cntvct_el0`
+  and `mrs $0, cntfrq_el0` in a `sideeffect` template with one `=r`
+  output; `crc_internal::GetCpuType`: `mrs $0, MIDR_EL1`, upper case,
+  without `sideeffect`; `optnone` functions with
+  `+fp-armv8,+neon,+outline-atomics,+v8a,-fmv`) are §5.4's and compile
+  strict; the template's word is `llc`'s up to the general register the
+  allocator chose. Test: `crates/hod_a64/tests/sysreg_asm.rs`
+  `kiln_shapes_compile_with_llc_s_words`.
+- A `callbr` result defined again on an indirect edge (§6,
+  `spec/codegen.md` §5.5.3) is released after that edge's `phi` copies:
+  a register result whose only uses were on another edge (a loop
+  header's `phi`) no longer stays in a register at the end of the block.
+  Test: `crates/hod_a64/tests/callbr_phi.rs` (`loop_reg`, built by hod
+  plain and stressed and by `llc` 19 and 22, linked and run).
+
+## 13. The x86-64 census (WP-199)
+
+The mnemonics and operand forms of §10 were chosen from the templates
+real code writes: the x86-64 real-project lane's modules (each `call asm`
+of `.build/corpus-x64` and the lane's saved findings) and the templates
+of widely used sources (the C library's and the compilers' headers,
+abseil, protobuf, the sanitizer and OpenMP runtimes, LLVM's own). The
+census is `crates/hod_asm/tests/census_x64.rs`: each body as it reads
+once its operands are substituted, where it is written, how many
+templates of that shape were found, and what hod does with it; every
+accepted body is `llvm-mc` 22's and 19's bytes. The record
+(`spec/landed/codegen/WP-199.md`) has the table.
+
+**Added** (each encoded as `llvm-mc` encodes it, `tests/llvm_mc_x64.rs`):
+
+- the prefetches `prefetchnta`, `prefetcht0`..`t2`, `prefetch`,
+  `prefetchw`, `prefetchwt1`; the flushes `clflush`, `clflushopt`,
+  `clwb`; `fxsave`/`xsave` and their family (`..64` forms);
+- `nop{w,l,q}` with a register or memory operand (`nop` with a register
+  takes its size from it; with memory and no suffix it is
+  `asm:operand/form`, ambiguous to LLVM too);
+- without operands: `rdmsr`, `wrmsr`, `rdpmc`, `xsetbv`, `xend`,
+  `xtest`, `rdpkru`, `wrpkru`, `serialize`, `endbr64`, `enclu`,
+  `encls`, `enclv`, `pconfig`, `fnclex`, `fninit`, `clc`, `stc`, `cmc`,
+  `lahf`, `sahf`, `cli`, `sti`; `hreset $imm`;
+- `fnstsw` (no operand, `%ax`, memory), `fnstenv`, `fldenv`, `fnsave`,
+  `frstor`, `stmxcsr`, `ldmxcsr`; the waiting forms `fstcw`, `fstsw`,
+  `fstenv`, `fsave`, `fclex`, `finit`, each `9B` and the form without
+  the wait (LLVM writes two instructions; the bytes are the same);
+- `in`/`out` of `al`/`ax`/`eax` with `%dx` or an 8-bit port;
+- `crc32{b,w,l,q}` of registers, the byte source into a 64-bit
+  destination included (a memory source is `asm:operand/form`);
+- `addp subp mulp divp sqrtp minp maxp unpcklp unpckhp` `s`/`d`;
+- `rdrand`, `rdseed`, `rdpid`, `rd`/`wr` `fs`/`gs` `base`;
+- the string instructions `movs stos lods scas cmps` `b`/`w`/`l`/`q`
+  without operands (and `movsd` as `movsl`; `stosd`, `lodsd`, `scasd`,
+  `cmpsd` are not their names to LLVM), alone or after `rep`/`repe`/
+  `repz`/`repne`/`repnz`.
+
+**CPU features.** `llc`'s assembler takes every mnemonic whatever the
+function's `target-features` (it assembles `prefetchw`, `crc32b`,
+`clwb`, `rdrand` with none), so hod checks no feature for a template.
+
+**Stays refused**, with the census's count of templates that need it:
+
+| form | refusal | templates |
+|---|---|---|
+| `.cfi_*` in a body (valgrind's `CALL_FN_*`) | `asm:directive/cfi_remember_state` | 15 |
+| a call or branch to a symbol (`call __bolt_fini_trampoline`) | `asm:mnemonic/call` | 3 |
+| the control registers (`mov %cr3, %rax`) | `asm:operand/register` | 2 |
+| AVX (`vdivpd`) | `asm:mnemonic/v*` | 2 |
+| an indirect branch or call (`jmpq *%rdx`, `call *%rax`) | `asm:operand/form` | 2 |
+| a symbol in an immediate (`movabsq $__hot_end, %rcx`) | `asm:operand/symbol` | 1 |
+| a difference of labels in data (`.long 1f-1b-6`) | `asm:operand/expression` | 1 |
+| `lea` with `@gotpcrel` (LLVM 19 and 22 differ) | `asm:operand/specifier` | 0 |
+| `inteldialect` | `x64:inline-asm-intel` | 0 |
+
+The x87 register operands (`fsqrt` with `=t`, `fpatan` with `{st}`,
+found in 4 templates) are refused before the body is read, as
+`asm:constraint/t`, `asm:constraint/st` (§11).

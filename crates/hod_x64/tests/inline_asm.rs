@@ -27,6 +27,9 @@ use linking::{Toolchain, exit_code};
 
 const FUNCTIONS: &str = include_str!("data/inline_asm/functions.ll");
 const DRIVER: &str = include_str!("data/inline_asm/driver.c");
+/// The instructions of the census (WP-199, `spec/asm.md` §13).
+const CENSUS: &str = include_str!("data/inline_asm/census.ll");
+const CENSUS_DRIVER: &str = include_str!("data/inline_asm/census.c");
 
 fn hod_object(text: &str, stress: Stress) -> Vec<u8> {
     let (m, bodies) = parse(text);
@@ -37,8 +40,20 @@ fn hod_object(text: &str, stress: Stress) -> Vec<u8> {
 /// dynamically and statically linked.
 #[test]
 fn templates_run_as_llc_builds_them() {
-    let dir = Scratch::new("x64-inline-asm");
-    let text = format!("{}{FUNCTIONS}", ll_header());
+    run_as_llc_builds_them("x64-inline-asm", FUNCTIONS, DRIVER, None);
+}
+
+/// The census's instructions run as `llc` builds them, on an emulated CPU
+/// with the extensions some of them need (SSE4.2's `crc32`, `rdtscp`,
+/// `lahf` in 64-bit mode).
+#[test]
+fn census_templates_run_as_llc_builds_them() {
+    run_as_llc_builds_them("x64-inline-asm-census", CENSUS, CENSUS_DRIVER, Some("max"));
+}
+
+fn run_as_llc_builds_them(name: &str, functions: &str, driver: &str, cpu: Option<&str>) {
+    let dir = Scratch::new(name);
+    let text = format!("{}{functions}", ll_header());
     let mut objects: Vec<(String, PathBuf)> = Vec::new();
     for (who, stress) in [("hod", Stress::default()), ("stress", Stress::ALL)] {
         objects.push((who.to_string(), dir.write(&format!("{who}.o"), hod_object(&text, stress))));
@@ -49,7 +64,11 @@ fn templates_run_as_llc_builds_them() {
         }
     }
     let Some(toolchain) = Toolchain::x86_64(&dir) else { return };
-    let driver = toolchain.compile_c(&dir, "driver", DRIVER, &[]);
+    let toolchain = match cpu {
+        Some(cpu) => toolchain.with_emulated_cpu(cpu),
+        None => toolchain,
+    };
+    let driver = toolchain.compile_c(&dir, "driver", driver, &[]);
     let linker = &toolchain.linkers[0];
     for (who, object) in &objects {
         for (how, flags) in [("dynamic", &[][..]), ("static", &["-static"][..])] {
@@ -137,8 +156,18 @@ fn assembled(dir: &Scratch, major: u32, name: &str, source: &str) -> Option<Vec<
 /// object are the bytes `llc` writes for it.
 #[test]
 fn forced_templates_are_llcs_bytes() {
-    let dir = Scratch::new("x64-inline-asm-bytes");
-    let text = format!("{}{FUNCTIONS}", ll_header());
+    forced_bytes("x64-inline-asm-bytes", FUNCTIONS, 12);
+}
+
+/// Every census template's bytes are `llc`'s.
+#[test]
+fn forced_census_templates_are_llcs_bytes() {
+    forced_bytes("x64-inline-asm-census-bytes", CENSUS, 21);
+}
+
+fn forced_bytes(name: &str, functions: &str, at_least: usize) {
+    let dir = Scratch::new(name);
+    let text = format!("{}{functions}", ll_header());
     let ours = hod_object(&text, Stress::default());
     let input = dir.write("functions.ll", &text);
     for major in LLVM_MAJORS {
@@ -151,7 +180,7 @@ fn forced_templates_are_llcs_bytes() {
         let ran = run_with(&mut command, &[], Duration::from_mins(5));
         assert!(ran.success(), "llc {major}: {}", ran.stderr_text());
         let blocks = forced_blocks(&ran.stdout_text());
-        assert!(blocks.len() >= 12, "llc {major}: {} blocks", blocks.len());
+        assert!(blocks.len() >= at_least, "llc {major}: {} blocks", blocks.len());
         for (n, (function, block)) in blocks.iter().enumerate() {
             let Some(bytes) = assembled(&dir, major, &format!("b{major}-{n}"), block) else {
                 return;
@@ -309,10 +338,12 @@ fn a_callbr_with_a_template_stays_refused() {
 /// pipeline hands them to the target.
 #[test]
 fn classify_accepts_every_template() {
-    let (m, bodies) = parse(&format!("{}{FUNCTIONS}", ll_header()));
-    let classifier = hod_ir::Classifier::new(hod_ir::Support::shipped(hod_ir::Arch::X86_64));
-    classifier.module(&m).unwrap_or_else(|r| panic!("module: {}", r.construct));
-    for body in &bodies {
-        classifier.body(&m, body).unwrap_or_else(|r| panic!("body: {}", r.construct));
+    for functions in [FUNCTIONS, CENSUS] {
+        let (m, bodies) = parse(&format!("{}{functions}", ll_header()));
+        let classifier = hod_ir::Classifier::new(hod_ir::Support::shipped(hod_ir::Arch::X86_64));
+        classifier.module(&m).unwrap_or_else(|r| panic!("module: {}", r.construct));
+        for body in &bodies {
+            classifier.body(&m, body).unwrap_or_else(|r| panic!("body: {}", r.construct));
+        }
     }
 }

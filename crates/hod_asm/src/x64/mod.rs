@@ -297,38 +297,53 @@ fn split_mnemonic(stmt: &str) -> (&str, &str) {
     }
 }
 
-/// A prefix statement: `lock`, or `rep` and its synonyms.
+/// A prefix statement: `lock`, or `rep` and `repne` and their synonyms.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Prefix {
     Lock,
+    /// `rep`, `repe`, `repz`: `F3`.
     Rep,
+    /// `repne`, `repnz`: `F2`.
+    Repne,
 }
 
 fn prefix(name: &str) -> Option<Prefix> {
     match name {
         "lock" => Some(Prefix::Lock),
         "rep" | "repe" | "repz" => Some(Prefix::Rep),
+        "repne" | "repnz" => Some(Prefix::Repne),
         _ => None,
     }
 }
 
-/// The string instruction `rep` takes: `movs` or `stos` of a size.
-fn string_op(name: &str) -> Option<mc::Inst> {
-    let (op, size): (fn(Size) -> mc::Inst, u8) = match name.strip_prefix("movs") {
-        Some(rest) => (mc::rep_movs, *rest.as_bytes().first()?),
-        None => (mc::rep_stos, *name.strip_prefix("stos")?.as_bytes().first()?),
-    };
-    if name.len() != 5 {
-        return None;
-    }
-    let size = match size {
-        b'b' => Size::B,
-        b'w' => Size::W,
-        b'l' | b'd' => Size::D,
-        b'q' => Size::Q,
+/// The x87 waiting forms: each is `wait` (`9B`) and then the form that
+/// does not wait, two instructions to LLVM's assembler.
+fn waiting(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "fstcw" => "fnstcw",
+        "fstsw" => "fnstsw",
+        "fstenv" => "fnstenv",
+        "fsave" => "fnsave",
+        "fclex" => "fnclex",
+        "finit" => "fninit",
         _ => return None,
+    })
+}
+
+/// A repeat prefix and its instruction, an instruction of its own to
+/// LLVM's assembler, joined or not: its byte (into `bytes`), then the
+/// string instruction's (`F3 66 A5` for `rep movsw`).
+fn repeated(p: Prefix, name: &str, rest: &str, bytes: &mut Vec<u8>) -> Result<mc::Inst, Refusal> {
+    if !rest.is_empty() {
+        return Err(Refusal(op_reason::FORM));
+    }
+    let inst = if name == "nop" {
+        mc::nop(1)
+    } else {
+        encode::string_op(name).ok_or_else(|| reason::mnemonic(name))?
     };
-    Some(op(size))
+    bytes.push(if p == Prefix::Rep { 0xf3 } else { 0xf2 });
+    Ok(inst)
 }
 
 /// The data directives: their field size.
@@ -427,17 +442,17 @@ pub fn assemble(
         }
         let separate = pending.take();
         let prefix = joined.or(separate);
+        let at = bytes.len();
         let inst = match prefix {
-            Some(Prefix::Rep) => {
-                if !rest.is_empty() {
-                    return Err(Refusal(op_reason::FORM));
-                }
-                match name.as_str() {
-                    "nop" => mc::pause(),
-                    _ => string_op(&name).ok_or_else(|| reason::mnemonic(&name))?,
-                }
-            }
+            Some(p @ (Prefix::Rep | Prefix::Repne)) => repeated(p, &name, rest, &mut bytes)?,
             Some(Prefix::Lock) | None => {
+                if let Some(form) = waiting(&name) {
+                    if prefix.is_some() {
+                        return Err(Refusal(op_reason::FORM));
+                    }
+                    bytes.push(0x9b);
+                    name = form.to_owned();
+                }
                 let ops = operand::parse(rest)?;
                 match encode::encode(&name, &ops)? {
                     Encoded::Inst(inst) => {
@@ -462,7 +477,6 @@ pub fn assemble(
                 }
             }
         };
-        let at = bytes.len() - usize::from(separate == Some(Prefix::Lock));
         bytes.extend_from_slice(inst.bytes());
         items.push(Item::Bytes { at, len: bytes.len() - at });
     }
@@ -711,7 +725,17 @@ mod tests {
         assert_eq!(asm("lock").err(), Some(Refusal(op_reason::FORM)));
         assert_eq!(asm("lock movl %eax, (%rdi)").err(), Some(Refusal(op_reason::FORM)));
         assert_eq!(asm(".byte 256").err(), Some(Refusal(op_reason::RANGE)));
-        assert_eq!(asm("rep cmpsb").err(), Some(reason::mnemonic("cmpsb")));
+        assert_eq!(asm("rep stosd").err(), Some(reason::mnemonic("stosd")));
+        assert_eq!(asm("rep movsl %eax").err(), Some(Refusal(op_reason::FORM)));
+        // §13: the repeat prefixes of every string instruction, the
+        // waiting x87 forms.
+        assert_eq!(asm("repe cmpsb").unwrap(), [0xf3, 0xa6]);
+        assert_eq!(asm("repne; scasw").unwrap(), [0xf2, 0x66, 0xaf]);
+        assert_eq!(asm("rep movsw").unwrap(), [0xf3, 0x66, 0xa5]);
+        assert_eq!(asm("rep movsd").unwrap(), [0xf3, 0xa5]);
+        assert_eq!(asm("fstcw (%rax)").unwrap(), [0x9b, 0xd9, 0x38]);
+        assert_eq!(asm("fstsw").unwrap(), [0x9b, 0xdf, 0xe0]);
+        assert_eq!(asm("lock fstsw").err(), Some(Refusal(op_reason::FORM)));
     }
 
     #[test]

@@ -14,18 +14,27 @@
 //! FRAME + 1024 <= P     sub sp, sp, #lo12 · sub sp, sp, #hi12        (as unprobed)
 //! otherwise             str xzr, [sp, #-16]!                          cfa sp + 16
 //!   k <= 4              (sub sp, sp, #P · str xzr, [sp]) k times      cfa sp + 16 + iP
-//!   k > 4               sub x17, sp, #kP                              cfa x17 + 16 + kP
+//!   [sub sp, sp, #r lo12 · #r hi12]                                   cfa sp + FRAME
+//! k > 4                 stp x29, x30, [sp, #-16]!                     cfa sp + 16, x29/x30 at -16/-8
+//!                       mov x29, sp                                   cfa x29 + 16
+//!                       sub x17, sp, #kP
 //!                       1: sub sp, sp, #P · str xzr, [sp] · cmp sp, x17 · b.ne 1b
-//!                                                                     cfa register sp
-//!                       [sub sp, sp, #r lo12 · #r hi12]               cfa sp + FRAME
+//!                       [sub sp, sp, #r lo12 · #r hi12]
+//!                       ldr x29, [x29]                                cfa sp + FRAME
 //! then                  stp x29, x30, [sp] · mov x29, sp
 //! ```
 //!
 //! with `k = (FRAME - 16) / P`, `r = (FRAME - 16) % P`, 4 being `llc`'s
 //! unroll limit (`StackProbeMaxLoopUnroll`). The loop's bound is in `x17`
 //! (`x16` holds the incoming base; neither is preserved by any
-//! convention), and the CFA is computed from it while the stack pointer
-//! moves, so an asynchronous signal in the loop unwinds.
+//! convention). The loop runs under a temporary frame record at the top of
+//! the frame, its `stp` being the top touch, so the CFA is `x29 + 16`
+//! while the stack pointer moves: an asynchronous signal unwinds, and so
+//! does a debugger that emulates frame 0 rather than reading its rows
+//! (lldb). `ldr x29, [x29]` gives the caller's `x29` back (`x30` was never
+//! written) before the usual record is saved; the temporary record's
+//! rules hold until then, and nothing reads it after, so the local area's
+//! top 16 bytes, which it overlaps, need not be reserved.
 //!
 //! A dynamic `alloca` or over-aligned slot ([`set_sp`]) lowers the stack
 //! pointer to `x16` through `llc`'s loop: `1: sub sp, sp, #P · cmp sp, x16
@@ -36,10 +45,10 @@
 use hod_cg::{CfiOp, FnCx};
 use hod_ir::SymbolKind;
 use hod_mc_a64 as mc;
-use hod_mc_a64::{Cond, Load, MemSize, RegZr, Size};
+use hod_mc_a64::{Cond, Load, MemSize, Reg, RegZr, Size};
 
-use crate::common::{SP, X16, X17, put};
-use crate::frame::DWARF_SP;
+use crate::common::{FP, SP, X16, X17, put};
+use crate::frame::{DWARF_FP, DWARF_LR, DWARF_SP};
 use crate::target::A64;
 
 /// LLVM's bound on the stack a caller leaves unprobed at a call.
@@ -50,11 +59,8 @@ pub const UNROLL: u32 = 4;
 
 /// The bytes the prologue of a probed function reserves beyond an
 /// unprobed one's two `sub`s: the longest [`allocation`] (`str`, four
-/// unrolled probes, two `sub`s: 44 bytes) less those 8.
+/// unrolled probes, two `sub`s: 44 bytes; the loop is 40) less those 8.
 pub const RESERVE: u32 = 4 * (1 + 2 * UNROLL + 2) - 8;
-
-/// The DWARF number of `x17`, the loop's CFA register.
-const DWARF_X17: u16 = 17;
 
 /// The probe size of the function being compiled; 0 when it does not
 /// probe (`hod_ir::StackProbe`; `classify` refused the other values).
@@ -75,27 +81,42 @@ pub const fn probes(frame: u32, probe: u32) -> bool {
 pub fn allocation(frame: u32, probe: u32) -> (Vec<u32>, Vec<(usize, CfiOp)>) {
     let mut words = Vec::with_capacity(11);
     let mut rows = Vec::with_capacity(8);
-    words.push(mc::str_pre(MemSize::X, RegZr::ZR, SP, -16));
-    rows.push((1, CfiOp::DefCfaOffset(16)));
     let (k, r) = ((frame - 16) / probe, (frame - 16) % probe);
     let page = u64::from(probe);
-    if k <= UNROLL {
-        for i in 1..=k {
-            words.push(mc::sub_imm(Size::X, SP, SP, page));
-            rows.push((words.len(), CfiOp::DefCfaOffset((16 + i * probe) as i32)));
-            words.push(mc::str_off(MemSize::X, RegZr::ZR, SP, 0));
-        }
-    } else {
-        let bound = 16 + k * probe;
+    let (lo, hi) = (r & 0xfff, r & 0xff_f000);
+    if k > UNROLL {
+        // The temporary frame record: the CFA is `x29 + 16` while the
+        // stack pointer moves, a rule an unwinder that emulates frame 0
+        // keeps through the loop.
+        words.push(mc::stp_pre(Size::X, Reg::X29.zr(), Reg::X30.zr(), SP, -16));
+        rows.push((1, CfiOp::DefCfaOffset(16)));
+        rows.push((1, CfiOp::Offset { reg: DWARF_FP, cfa_offset: -16 }));
+        rows.push((1, CfiOp::Offset { reg: DWARF_LR, cfa_offset: -8 }));
+        words.push(mc::mov_sp(Size::X, FP, SP));
+        rows.push((2, CfiOp::DefCfaRegister(DWARF_FP)));
         words.push(mc::sub_imm(Size::X, X17.sp(), SP, u64::from(k * probe)));
-        rows.push((words.len(), CfiOp::DefCfa { reg: DWARF_X17, offset: bound as i32 }));
         words.push(mc::sub_imm(Size::X, SP, SP, page));
         words.push(mc::str_off(MemSize::X, RegZr::ZR, SP, 0));
         words.push(mc::cmp_ext(Size::X, SP, X17.zr(), mc::Extend::Uxtx, 0));
         words.push(mc::b_cond(Cond::Ne, -12));
-        rows.push((words.len(), CfiOp::DefCfaRegister(DWARF_SP)));
+        for part in [lo, hi] {
+            if part != 0 {
+                words.push(mc::sub_imm(Size::X, SP, SP, u64::from(part)));
+            }
+        }
+        // The caller's `x29` back; `x30` was not written. The record's
+        // rules hold until the prologue's `stp` saves the pair again.
+        words.push(mc::ldr_off(Load::X, Reg::X29.zr(), FP, 0));
+        rows.push((words.len(), CfiOp::DefCfa { reg: DWARF_SP, offset: frame as i32 }));
+        return (words, rows);
     }
-    let (lo, hi) = (r & 0xfff, r & 0xff_f000);
+    words.push(mc::str_pre(MemSize::X, RegZr::ZR, SP, -16));
+    rows.push((1, CfiOp::DefCfaOffset(16)));
+    for i in 1..=k {
+        words.push(mc::sub_imm(Size::X, SP, SP, page));
+        rows.push((words.len(), CfiOp::DefCfaOffset((16 + i * probe) as i32)));
+        words.push(mc::str_off(MemSize::X, RegZr::ZR, SP, 0));
+    }
     if lo != 0 {
         words.push(mc::sub_imm(Size::X, SP, SP, u64::from(lo)));
         rows.push((words.len(), CfiOp::DefCfaOffset((frame - r + lo) as i32)));
@@ -196,6 +217,9 @@ mod tests {
                         CfiOp::DefCfaOffset(o) => cfa.1 = o,
                         CfiOp::DefCfa { reg, offset } => cfa = (reg, offset),
                         CfiOp::DefCfaRegister(reg) => cfa.0 = reg,
+                        // The looped shape's temporary frame record.
+                        CfiOp::Offset { reg: DWARF_FP, cfa_offset: -16 }
+                        | CfiOp::Offset { reg: DWARF_LR, cfa_offset: -8 } => {}
                         _ => unreachable!("a probe row that is not the CFA's"),
                     }
                 }

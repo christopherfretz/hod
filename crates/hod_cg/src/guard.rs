@@ -15,17 +15,20 @@
 //! The slots that can be overflowed are those whose address is used other
 //! than as the pointer of a `load` or `store` that stays inside the slot
 //! (an escaping slot: a `getelementptr`, a call argument, a stored
-//! pointer, ...). They go into the guarded block in body order, each
-//! addressed through a pointer slot ([`SlotPlace::Indirect`]); the guard
-//! word ends the block. Every other slot cannot be written out of bounds
+//! pointer, ...). They go into the guarded block, the largest at its
+//! top (ties in body order), each addressed through a pointer slot
+//! ([`SlotPlace::Indirect`]); the guard word follows the top one. Every other slot cannot be written out of bounds
 //! and stays where §5.1 puts it, below the block.
 
 use hod_ir::{Body, FnAttrs, InstKind, Module, Opcode};
 
 use crate::frame::FrameRef;
 
-/// A protected presplit coroutine: its resume stubs enter the body past
-/// the entry code that sets the guard (§7.6).
+/// A protected presplit coroutine whose frame would need the low guard
+/// (§7.6 refuses its dynamic areas first, so no such body reaches the
+/// code generator today): the stubs rebuild the machine frame, not the
+/// dynamic area. Any other protected coroutine is built: its ramp sets
+/// the guard in the entry code, each stub again (WP-183 follow-up).
 pub const SSP_COROUTINE: &str = "ssp:coroutine";
 
 /// A target without stack-protector code (`Target::enter_guard`'s
@@ -108,16 +111,19 @@ impl GuardPlan {
     /// Decides whether the function `body` (function flags `flags`) is
     /// protected and lays out its block. `stack_align` is the target's:
     /// a slot aligned beyond it is dynamic (§5.1) and is not in the
-    /// block.
+    /// block. `heap(index)`: body slot `index` lives in a coroutine's heap
+    /// frame (§7.6), not on the machine stack, and is not in the block.
     ///
     /// # Errors
-    /// [`SSP_COROUTINE`] for a protected presplit coroutine.
+    /// [`SSP_COROUTINE`] for a protected presplit coroutine that would
+    /// need the low guard.
     pub(crate) fn plan(
         &mut self,
         module: &Module,
         body: &Body,
         flags: u32,
         stack_align: u32,
+        heap: impl Fn(usize) -> bool,
     ) -> Result<(), &'static str> {
         self.reset();
         let any = FnAttrs::SSP | FnAttrs::SSP_STRONG | FnAttrs::SSP_REQ;
@@ -126,15 +132,18 @@ impl GuardPlan {
         }
         let slots = body.slots();
         let dynamic = body.insts().any(|inst| inst.opcode() == Opcode::Alloca);
-        let over_aligned = slots.iter().any(|slot| slot.align() > u64::from(stack_align));
+        // A coroutine's heap slot is in its heap frame, whatever its
+        // alignment.
+        let over_aligned = (slots.iter().enumerate())
+            .any(|(index, slot)| slot.align() > u64::from(stack_align) && !heap(index));
         if flags & FnAttrs::SSP_REQ == 0 && slots.is_empty() && !dynamic {
             return Ok(());
         }
-        if flags & FnAttrs::PRESPLIT_COROUTINE != 0 {
-            return Err(SSP_COROUTINE);
-        }
         self.on = true;
         self.low = dynamic || over_aligned;
+        if self.low && flags & FnAttrs::PRESPLIT_COROUTINE != 0 {
+            return Err(SSP_COROUTINE);
+        }
         self.in_block.resize(slots.len(), 0);
         // 1: the slot escapes; layout below turns it into an offset.
         for inst in body.insts() {
@@ -167,17 +176,30 @@ impl GuardPlan {
                 }
             }
         }
-        let mut end = 0u64;
-        for (mark, slot) in self.in_block.iter_mut().zip(slots) {
-            if *mark == 0 || slot.align() > u64::from(stack_align) {
+        // The block's slots from its top down: the larger first, ties in
+        // body order, so that the first of the largest ends at the guard.
+        // `llc` puts arrays nearest its guard, then other address-taken
+        // locals, the first in body order nearest (§5.6.24); hod keeps no
+        // slot types, and size is what tells a buffer from the small
+        // objects whose address C++ takes (a `this`, an awaiter).
+        let mut order: Vec<usize> = Vec::new();
+        for (index, (mark, slot)) in self.in_block.iter_mut().zip(slots).enumerate() {
+            if *mark == 0 || slot.align() > u64::from(stack_align) || heap(index) {
                 *mark = 0;
-                continue;
+            } else {
+                order.push(index);
             }
+        }
+        order.sort_by_key(|&index| std::cmp::Reverse(slots[index].size()));
+        let mut end = 0u64;
+        for &index in order.iter().rev() {
+            let slot = &slots[index];
             let at = end.next_multiple_of(slot.align().max(1));
             end = at + slot.size();
-            *mark = u32::try_from(at + 1).map_err(|_| crate::error::LIMIT_FRAME_SIZE)?;
+            self.in_block[index] =
+                u32::try_from(at + 1).map_err(|_| crate::error::LIMIT_FRAME_SIZE)?;
         }
-        // The guard right after the last slot, unaligned if need be, so
+        // The guard right after the top slot, unaligned if need be, so
         // that an overflow of one byte reaches it; above it only padding
         // to the block's end, then what the frame saves.
         let guard = end;

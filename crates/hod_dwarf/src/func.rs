@@ -481,7 +481,16 @@ impl<'a> UnitPlan<'a> {
         let die = match self.slot[sp_id.index()] {
             NONE => {
                 let parent = self.subprogram_parent(sp_id, sp)?;
-                self.push(sp_id, parent, Kind::Subprogram)
+                // WP-195 (§6.25): the declaration's class reached a type
+                // local to this function, which made its DIE (as
+                // `getOrCreateSubprogramDIE` looks again).
+                match self.slot[sp_id.index()] {
+                    NONE => self.push(sp_id, parent, Kind::Subprogram),
+                    made => {
+                        self.inline.take_early(made);
+                        made
+                    }
+                }
             }
             // Made for a local type its own inlined code reached
             // (WP-094, §6.13): the function's from now on.
@@ -576,8 +585,16 @@ impl<'a> UnitPlan<'a> {
             {
                 continue;
             }
-            if ia != LocId::NONE && !s.inl.first_of(v.node, ia) {
-                return Err(unsupported(v.node, "debug:variable-twice"));
+            // WP-195 (§6.25): a variable several `#dbg_declare`s of
+            // slots name in one instance of its scope is one entry of
+            // `llc`'s frame table, which keeps the first record's slot
+            // (`addFrameIndexExpr` keys its set by fragment, and these
+            // have none); any other repetition is refused.
+            let frame = matches!(v.place, LocalPlace::Frame(_));
+            match s.inl.first_of(v.node, ia, frame) {
+                None => {}
+                Some(true) if frame => continue,
+                Some(_) => return Err(unsupported(v.node, "debug:variable-twice")),
             }
             s.ents.push((index, class, key, row as u32));
             self.abstract_entity(&mut s.inl, v.node, scope, class, key);

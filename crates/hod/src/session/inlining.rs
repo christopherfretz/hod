@@ -19,12 +19,18 @@
 //! - A body whose meaning depends on being inlined (its frame, its return
 //!   address, a stack pointer or a local address that outlives it)
 //!   declines the module when a direct call to it is one LLVM's
-//!   always-inliner inlines ([`inlined`], WP-188): [`reason`].
+//!   always-inliner inlines ([`inlined`], WP-188): [`reason`]. Except
+//!   (WP-197) a local body whose only such constructs are
+//!   `llvm.returnaddress` and `llvm.frameaddress` and that runs only
+//!   where LLVM inlines it, always at the same number `b` of frames
+//!   below the frame LLVM's inlined code runs in: the depth of each is
+//!   raised by `b`, which names the same frame, since every hod function
+//!   has its frame record ([`frame_bias`]).
 //! - Everything else (`llvm.is.constant`, `llvm.objectsize`, `musttail`,
 //!   dynamic `alloca`, and every body LLVM does not inline: variadic,
-//!   recursive, `returns_twice` calls, `indirectbr`, `llvm.localescape`,
-//!   `llvm.va_start`) is correct out of line; the reasons are in the
-//!   spec.
+//!   recursive, a `call` that may return twice in a body that is not
+//!   `returns_twice`, `indirectbr`, `llvm.localescape`, `llvm.va_start`)
+//!   is correct out of line; the reasons are in the spec.
 //!
 //! The work is one scan of a body's call sites and returns when it is
 //! accepted, and one pass over every accepted body's call sites at the
@@ -32,8 +38,8 @@
 //! [`reason`].
 
 use hod_ir::{
-    Body, CallSite, Callee, FnAttrs, FnAttrsId, InstKind, Linkage, Module, Opcode, SymId,
-    SymbolKind, TypeKind, Value, ValueKind,
+    Body, CallSite, Callee, Const, FnAttrs, FnAttrsId, InstKind, Linkage, Module, Opcode, SymId,
+    SymbolKind, TailKind, TypeKind, Value, ValueKind,
 };
 
 use crate::front::symbol_name;
@@ -54,10 +60,10 @@ pub mod reason {
     /// `llvm.stackrestore` in the same body: inlined, it is the caller's
     /// stack pointer.
     pub const STACKSAVE: &str = "alwaysinline:stacksave-escapes";
-    /// A call to a `returns_twice` function (`setjmp`, `vfork`) in a
-    /// body that is otherwise inlined. Not reached since WP-188: LLVM
-    /// does not inline such a body, so its call is kept, as `opt`
-    /// keeps it. The name stays stable.
+    /// A call that may return twice (`setjmp`, `vfork`) in a body LLVM
+    /// inlines: an `invoke` of it, or a `call` in a `returns_twice` body
+    /// (WP-197). A `call` in any other body keeps the body out of line,
+    /// as `opt` keeps it (WP-188).
     pub const RETURNS_TWICE: &str = "alwaysinline:returns-twice";
     /// A return of the address of a stack slot (an `alloca` of the entry
     /// block): inlined, `llc -O0` keeps the slot alive for the whole
@@ -87,7 +93,7 @@ pub(crate) struct Inlining {
     held: Vec<Body>,
     /// The accepted bodies whose meaning depends on being inlined, with
     /// the reason.
-    sensitive: Vec<(SymId, &'static str)>,
+    sensitive: Vec<(SymId, Sensitive)>,
 }
 
 /// The function attributes of `sym`, if it is a function.
@@ -117,37 +123,83 @@ fn inlined(module: &Module, site: &CallSite<'_>, callee: SymId) -> bool {
         && (site.is_always_inline() || has_flag(module, callee, FnAttrs::ALWAYS_INLINE))
 }
 
+/// Whether LLVM's always-inliner can inline a body at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Viable {
+    Yes,
+    No,
+    /// A block of the body has its address taken: LLVM inlines it only
+    /// when every use is a `callbr`, which hod does not tell apart.
+    Unsure,
+}
+
+/// Whether the call `site` may return twice (LLVM's `canReturnTwice`):
+/// `returns_twice` on the call or on its direct callee.
+fn returns_twice(module: &Module, site: &CallSite<'_>) -> bool {
+    site.returns_twice()
+        || direct_callee(site.callee()).is_some_and(|callee| {
+            callee.index() < module.symbol_count()
+                && has_flag(module, callee, FnAttrs::RETURNS_TWICE)
+        })
+}
+
 /// Whether LLVM's always-inliner can inline `body` at all (its
 /// `isInlineViable` and the always-inliner's own checks, measured with
 /// `opt` 19 and 22): not variadic, not a pre-split coroutine, no call to
-/// itself, no `returns_twice` call, no `indirectbr`, no
-/// `llvm.localescape` or `llvm.va_start`.
-fn inline_viable(module: &Module, body: &Body) -> bool {
+/// itself, no `indirectbr`, no `llvm.localescape` or `llvm.va_start`, and
+/// no `call` (not `invoke`) that may return twice unless the function is
+/// `returns_twice` itself (WP-197: `opt` inlines an `invoke` of `setjmp`,
+/// and a `returns_twice` body's `setjmp`). A block address of the body
+/// leaves it [`Viable::Unsure`].
+fn inline_viable(module: &Module, body: &Body) -> Viable {
     let sym = body.symbol();
     if matches!(module.types.kind(body.fn_type()), TypeKind::Function { variadic: true, .. })
         || has_flag(module, sym, FnAttrs::PRESPLIT_COROUTINE)
     {
-        return false;
+        return Viable::No;
     }
     if body.blocks().any(|block| block.terminator().opcode() == Opcode::IndirectBr) {
-        return false;
+        return Viable::No;
     }
-    !body.calls().any(|site| {
-        site.returns_twice()
+    let twice_ok = has_flag(module, sym, FnAttrs::RETURNS_TWICE);
+    let refused = body.calls().any(|site| {
+        (!twice_ok && site.opcode() == Opcode::Call && returns_twice(module, &site))
             || match site.callee() {
                 Callee::Intrinsic(intrinsic) => {
                     matches!(intrinsic.name(), "llvm.localescape" | "llvm.va_start")
                 }
-                Callee::Value(value) => match value.kind() {
-                    ValueKind::Sym(callee) => {
-                        callee == sym
-                            || (callee.index() < module.symbol_count()
-                                && has_flag(module, callee, FnAttrs::RETURNS_TWICE))
-                    }
-                    _ => false,
-                },
+                Callee::Value(value) => {
+                    matches!(value.kind(), ValueKind::Sym(callee) if callee == sym)
+                }
             }
-    })
+    });
+    if refused {
+        Viable::No
+    } else if module.consts.has_address_taken_block(sym) {
+        Viable::Unsure
+    } else {
+        Viable::Yes
+    }
+}
+
+/// Whether LLVM certainly inlines the call `site` in `caller` of the body
+/// `callee`, which [`inlined`] and [`inline_viable`] accept: no reason of
+/// `InlineFunction`'s to refuse (a `callbr`, an operand bundle, a call
+/// made with another function type, another personality) and none of
+/// hod's to doubt the frame the inlined code runs in (a `musttail` call,
+/// a coroutine caller).
+fn surely_inlined(module: &Module, from: &Body, site: &CallSite<'_>, callee: &Body) -> bool {
+    let personality = |sym: SymId| match module.symbol(sym).kind() {
+        SymbolKind::Function { personality, .. } => personality,
+        _ => None,
+    };
+    let (theirs, ours) = (personality(callee.symbol()), personality(from.symbol()));
+    site.opcode() != Opcode::CallBr
+        && site.bundle_count() == 0
+        && site.fn_type() == callee.fn_type()
+        && site.tail() != TailKind::MustTail
+        && !has_flag(module, from.symbol(), FnAttrs::PRESPLIT_COROUTINE)
+        && (theirs.is_none() || ours.is_none() || theirs == ours)
 }
 
 /// The direct callee of a call site, if it is a symbol.
@@ -218,12 +270,19 @@ fn stacksave_escapes(body: &Body, saved: Value) -> bool {
 
 /// The first reason `body`'s meaning depends on being inlined, if any.
 pub(crate) fn sensitivity(module: &Module, body: &Body) -> Option<&'static str> {
+    scan(module, body, false)
+}
+
+/// [`sensitivity`], passing over `llvm.returnaddress` and
+/// `llvm.frameaddress` when `depth_ok` (they can be given a deeper frame).
+fn scan(module: &Module, body: &Body, depth_ok: bool) -> Option<&'static str> {
     for site in body.calls() {
-        if site.returns_twice() {
+        if returns_twice(module, &site) {
             return Some(reason::RETURNS_TWICE);
         }
         if let Some(intrinsic) = site.intrinsic() {
             match intrinsic.name() {
+                "llvm.frameaddress" | "llvm.returnaddress" if depth_ok => {}
                 "llvm.frameaddress" | "llvm.sponentry" | "llvm.localaddress"
                 | "llvm.eh.dwarf.cfa" => return Some(reason::FRAME_ADDRESS),
                 "llvm.returnaddress" | "llvm.addressofreturnaddress" => {
@@ -247,23 +306,13 @@ pub(crate) fn sensitivity(module: &Module, body: &Body) -> Option<&'static str> 
             }
             continue;
         }
-        match site.callee() {
-            Callee::Value(value) => match value.kind() {
-                ValueKind::Sym(sym)
-                    if sym.index() < module.symbol_count()
-                        && has_flag(module, sym, FnAttrs::RETURNS_TWICE) =>
-                {
-                    return Some(reason::RETURNS_TWICE);
-                }
-                ValueKind::Asm(asm) => {
-                    let asm = module.asm(asm);
-                    if names_frame_register(asm.template) || names_frame_register(asm.constraints) {
-                        return Some(reason::FRAME_REGISTER_ASM);
-                    }
-                }
-                _ => {}
-            },
-            Callee::Intrinsic(_) => {}
+        if let Callee::Value(value) = site.callee()
+            && let ValueKind::Asm(asm) = value.kind()
+        {
+            let asm = module.asm(asm);
+            if names_frame_register(asm.template) || names_frame_register(asm.constraints) {
+                return Some(reason::FRAME_REGISTER_ASM);
+            }
         }
     }
     if !body.slots().is_empty() {
@@ -278,10 +327,26 @@ pub(crate) fn sensitivity(module: &Module, body: &Body) -> Option<&'static str> 
     None
 }
 
+/// Why a body that LLVM can inline declines a call LLVM inlines.
+#[derive(Clone, Copy, Debug)]
+struct Sensitive {
+    /// The reason ([`sensitivity`]).
+    why: &'static str,
+    /// Whether its only constructs of a reason are `llvm.returnaddress`
+    /// and `llvm.frameaddress`, so a frame bias can give it the inlined
+    /// meaning ([`frame_bias`]).
+    biasable: bool,
+}
+
 /// The reason `body` declines a call LLVM inlines: its [`sensitivity`],
-/// when LLVM can inline it at all ([`inline_viable`]).
-fn inline_sensitivity(module: &Module, body: &Body) -> Option<&'static str> {
-    sensitivity(module, body).filter(|_| inline_viable(module, body))
+/// when LLVM may inline it at all ([`inline_viable`]).
+fn inline_sensitivity(module: &Module, body: &Body) -> Option<Sensitive> {
+    let why = sensitivity(module, body)?;
+    match inline_viable(module, body) {
+        Viable::No => None,
+        Viable::Unsure => Some(Sensitive { why, biasable: false }),
+        Viable::Yes => Some(Sensitive { why, biasable: scan(module, body, true).is_none() }),
+    }
 }
 
 fn decline(module: &Module, sym: SymId, why: &'static str) -> CompileError {
@@ -317,21 +382,23 @@ impl Inlining {
 
     /// Notes an accepted body whose meaning depends on being inlined.
     pub(crate) fn note(&mut self, module: &Module, body: &Body) {
-        if let Some(why) = inline_sensitivity(module, body) {
-            self.sensitive.push((body.symbol(), why));
+        if let Some(sensitive) = inline_sensitivity(module, body) {
+            self.sensitive.push((body.symbol(), sensitive));
         }
     }
 
     /// The end of the module: the copies to compile (each still to be
     /// judged), or the decline of a body whose meaning depends on being
-    /// inlined and that a direct call may have inlined.
+    /// inlined and that a direct call may have inlined. A body a frame
+    /// bias gives its inlined meaning ([`frame_bias`]) is rewritten in
+    /// place, in `bodies` or in a copy.
     ///
     /// # Errors
     /// The decline, named in the called function.
     pub(crate) fn conclude(
         &mut self,
-        module: &Module,
-        bodies: &[Body],
+        module: &mut Module,
+        bodies: &mut [Body],
     ) -> Result<Vec<Body>, CompileError> {
         if self.held.is_empty() && self.sensitive.is_empty() {
             return Ok(Vec::new());
@@ -341,43 +408,76 @@ impl Inlining {
         let mut reached = vec![false; self.held.len()];
         // Per held copy: its reason, judged once, at its first inlined
         // call.
-        let mut judged: Vec<Option<Option<&'static str>>> = vec![None; self.held.len()];
+        let mut judged: Vec<Option<Option<Sensitive>>> = vec![None; self.held.len()];
+        // The bodies a frame bias may give their inlined meaning.
+        let mut biased: Vec<(At, &'static str)> = Vec::new();
         let mut work: Vec<usize> = Vec::new();
-        let mut visit = |body: &Body, work: &mut Vec<usize>| -> Result<(), CompileError> {
-            for site in body.calls() {
-                let Some(callee) = direct_callee(site.callee()) else { continue };
-                let inlined = inlined(module, &site, callee);
-                if inlined
-                    && let Ok(at) =
-                        self.sensitive.binary_search_by_key(&callee.index(), |&(s, _)| s.index())
-                {
-                    return Err(decline(module, callee, self.sensitive[at].1));
-                }
-                if let Ok(at) =
-                    self.held.binary_search_by_key(&callee.index(), |b| b.symbol().index())
-                {
-                    // A copy stands for an inlined body where the call is
-                    // inlined; a kept call (`noinline` site, a body LLVM
-                    // cannot inline) means it out of line.
+        {
+            let module = &*module;
+            let mut visit = |body: &Body,
+                             work: &mut Vec<usize>,
+                             biased: &mut Vec<(At, &'static str)>|
+             -> Result<(), CompileError> {
+                for site in body.calls() {
+                    let Some(callee) = direct_callee(site.callee()) else { continue };
+                    let inlined = inlined(module, &site, callee);
                     if inlined
-                        && let Some(why) = *judged[at]
-                            .get_or_insert_with(|| inline_sensitivity(module, &self.held[at]))
+                        && let Ok(at) = self
+                            .sensitive
+                            .binary_search_by_key(&callee.index(), |&(s, _)| s.index())
                     {
-                        return Err(decline(module, callee, why));
+                        let sensitive = self.sensitive[at].1;
+                        if !sensitive.biasable {
+                            return Err(decline(module, callee, sensitive.why));
+                        }
+                        biased.push((At::Accepted(callee), sensitive.why));
                     }
-                    if !reached[at] {
-                        reached[at] = true;
-                        work.push(at);
+                    if let Ok(at) =
+                        self.held.binary_search_by_key(&callee.index(), |b| b.symbol().index())
+                    {
+                        // A copy stands for an inlined body where the call
+                        // is inlined; a kept call (`noinline` site, a body
+                        // LLVM cannot inline) means it out of line.
+                        if inlined
+                            && let Some(sensitive) = *judged[at]
+                                .get_or_insert_with(|| inline_sensitivity(module, &self.held[at]))
+                        {
+                            if !sensitive.biasable {
+                                return Err(decline(module, callee, sensitive.why));
+                            }
+                            biased.push((At::Held(at), sensitive.why));
+                        }
+                        if !reached[at] {
+                            reached[at] = true;
+                            work.push(at);
+                        }
                     }
                 }
+                Ok(())
+            };
+            for body in bodies.iter() {
+                visit(body, &mut work, &mut biased)?;
             }
-            Ok(())
-        };
-        for body in bodies {
-            visit(body, &mut work)?;
+            while let Some(at) = work.pop() {
+                visit(&self.held[at], &mut work, &mut biased)?;
+            }
         }
-        while let Some(at) = work.pop() {
-            visit(&self.held[at], &mut work)?;
+        if !biased.is_empty() {
+            biased.sort_unstable_by_key(|&(at, _)| at);
+            biased.dedup_by_key(|&mut (at, _)| at);
+            let found = frame_bias(module, bodies, &self.held, &reached, &biased)?;
+            for (at, bias) in found {
+                let body = match at {
+                    At::Accepted(sym) => {
+                        let Some(body) = bodies.iter_mut().find(|body| body.symbol() == sym) else {
+                            continue;
+                        };
+                        body
+                    }
+                    At::Held(at) => &mut self.held[at],
+                };
+                deepen(module, body, bias)?;
+            }
         }
         let held = std::mem::take(&mut self.held);
         Ok(held
@@ -386,4 +486,210 @@ impl Inlining {
             .filter_map(|(body, reached)| reached.then_some(body))
             .collect())
     }
+}
+
+/// A body of [`frame_bias`]: an accepted one by its symbol, or a held
+/// `available_externally` copy by its position.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum At {
+    Accepted(SymId),
+    Held(usize),
+}
+
+/// The deepest frame bias [`frame_bias`] follows; a chain of inlined
+/// calls longer than this (or a cycle of them) is not given one.
+const MAX_BIAS: u32 = 31;
+
+/// The frames a body may run in, relative to the frame LLVM's inlined
+/// code would run in: bit `b` of `bits` is "`b` frames below it" (0: its
+/// own frame, the body runs out of line there too); `unsure` when hod
+/// cannot tell.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Biases {
+    bits: u32,
+    unsure: bool,
+}
+
+/// The symbols a reference other than the callee of a direct call names
+/// (an operand of code, a constant, a structor, a personality, a
+/// retained symbol): such a body may run out of line.
+fn escaping(module: &Module, bodies: &[Body], held: &[Body], reached: &[bool]) -> Vec<bool> {
+    let mut escapes = vec![false; module.symbol_count()];
+    let mut mark = |sym: SymId| {
+        if let Some(escape) = escapes.get_mut(sym.index()) {
+            *escape = true;
+        }
+    };
+    let live_held = held.iter().zip(reached).filter_map(|(body, &reached)| reached.then_some(body));
+    for body in bodies.iter().chain(live_held) {
+        for inst in body.insts() {
+            let operands = inst.operands();
+            let operands =
+                if inst.call().is_some() { operands.get(1..).unwrap_or(&[]) } else { operands };
+            for value in operands {
+                if let ValueKind::Sym(sym) = value.kind() {
+                    mark(sym);
+                }
+            }
+        }
+    }
+    for id in 0..module.consts.len() {
+        match module.consts.get(hod_ir::ConstId::new(id as u32)) {
+            Const::Addr { sym, .. } | Const::DsoLocalEquivalent(sym) | Const::NoCfi(sym) => {
+                mark(sym);
+            }
+            Const::SymDiff { a, b, .. } => {
+                mark(a);
+                mark(b);
+            }
+            _ => {}
+        }
+    }
+    for structor in module.ctors().iter().chain(module.dtors()) {
+        mark(structor.func);
+    }
+    for (index, symbol) in module.symbols().enumerate() {
+        if symbol.is_retained() {
+            mark(SymId::new(index as u32));
+        }
+        if let SymbolKind::Function { personality: Some(personality), .. } = symbol.kind() {
+            mark(personality);
+        }
+    }
+    escapes
+}
+
+/// WP-197 (`spec/cli.md` "Always-inline"): the frame bias of each body of
+/// `biased`, or the decline of one that has none.
+///
+/// Inlined, `llvm.returnaddress(n)` and `llvm.frameaddress(n)` speak of
+/// the frame the inlined code runs in. Out of line, a body that LLVM
+/// would have inlined runs one frame below its caller; through a chain
+/// of such calls, `b` frames below the frame LLVM's code runs in. Every
+/// hod function has a frame record (`spec/codegen.md` §5.4, §5.6), so
+/// depth `n + b` names that frame: the bias is `b`. A body has one when
+/// every way it runs gives the same `b >= 1`: it is local (or a held
+/// copy, which only direct calls reach), nothing but direct calls names
+/// it, and each of those is one LLVM certainly inlines ([`inlined`],
+/// [`inline_viable`], [`surely_inlined`]) from a body that itself has
+/// one bias.
+///
+/// # Errors
+/// The decline of a body with no bias, by its reason.
+fn frame_bias(
+    module: &Module,
+    bodies: &[Body],
+    held: &[Body],
+    reached: &[bool],
+    biased: &[(At, &'static str)],
+) -> Result<Vec<(At, u32)>, CompileError> {
+    // The graph: every accepted body and every reached copy.
+    let mut nodes: Vec<(At, &Body)> =
+        bodies.iter().map(|body| (At::Accepted(body.symbol()), body)).collect();
+    nodes.extend(
+        held.iter()
+            .enumerate()
+            .filter(|&(at, _)| reached[at])
+            .map(|(at, body)| (At::Held(at), body)),
+    );
+    let mut node_of = vec![u32::MAX; module.symbol_count()];
+    for (index, (_, body)) in nodes.iter().enumerate() {
+        if let Some(slot) = node_of.get_mut(body.symbol().index()) {
+            *slot = index as u32;
+        }
+    }
+    let escapes = escaping(module, bodies, held, reached);
+    let mut sets = vec![Biases::default(); nodes.len()];
+    for (set, &(at, body)) in sets.iter_mut().zip(&nodes) {
+        let sym = body.symbol();
+        if let At::Accepted(_) = at
+            && (!module.symbol(sym).linkage().is_local() || escapes[sym.index()])
+        {
+            set.bits |= 1;
+        }
+    }
+    let mut edges: Vec<(u32, u32)> = Vec::new();
+    for (from, &(_, caller)) in nodes.iter().enumerate() {
+        for site in caller.calls() {
+            let Some(callee) = direct_callee(site.callee()) else { continue };
+            let Some(&to) = node_of.get(callee.index()).filter(|&&to| to != u32::MAX) else {
+                continue;
+            };
+            let target = nodes[to as usize].1;
+            if !inlined(module, &site, callee) {
+                sets[to as usize].bits |= 1;
+                continue;
+            }
+            match inline_viable(module, target) {
+                Viable::No => sets[to as usize].bits |= 1,
+                Viable::Yes if surely_inlined(module, caller, &site, target) => {
+                    edges.push((from as u32, to));
+                }
+                Viable::Yes | Viable::Unsure => sets[to as usize].unsure = true,
+            }
+        }
+    }
+    // A union of shifted sets, to the fixed point (each pass only adds
+    // bits, of which there are 32 per body).
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for &(from, to) in &edges {
+            let from = sets[from as usize];
+            let set = &mut sets[to as usize];
+            let next = Biases {
+                bits: set.bits | (from.bits << 1),
+                unsure: set.unsure || from.unsure || from.bits >> MAX_BIAS != 0,
+            };
+            if next != *set {
+                *set = next;
+                changed = true;
+            }
+        }
+    }
+    let mut found = Vec::with_capacity(biased.len());
+    for &(at, why) in biased {
+        let index = nodes.iter().position(|&(node, _)| node == at);
+        let set = index.map_or(Biases { bits: 0, unsure: true }, |index| sets[index]);
+        let sym = index.map_or_else(|| SymId::new(0), |index| nodes[index].1.symbol());
+        if set.unsure || set.bits.count_ones() != 1 || set.bits == 1 {
+            return Err(decline(module, sym, why));
+        }
+        found.push((at, set.bits.trailing_zeros()));
+    }
+    Ok(found)
+}
+
+/// Raises the depth of every `llvm.returnaddress` and `llvm.frameaddress`
+/// of `body` by `bias` ([`frame_bias`]).
+///
+/// # Errors
+/// A constant the module has no room for.
+fn deepen(module: &mut Module, body: &mut Body, bias: u32) -> Result<(), CompileError> {
+    let sites: Vec<(hod_ir::InstId, Value)> = body
+        .calls()
+        .filter(|site| {
+            site.intrinsic()
+                .is_some_and(|i| matches!(i.name(), "llvm.returnaddress" | "llvm.frameaddress"))
+        })
+        .filter_map(|site| site.args().first().map(|&depth| (site.inst(), depth)))
+        .collect();
+    let internal = |error: hod_ir::IrError| CompileError::Internal(format!("frame bias: {error}"));
+    for (inst, depth) in sites {
+        let ValueKind::Const(id) = depth.kind() else {
+            return Err(CompileError::Internal(
+                "frame bias: a depth that is not a constant".into(),
+            ));
+        };
+        let ty = module.consts.ty(id);
+        let deeper = module.consts.int_value(id).unwrap_or(0).saturating_add(u64::from(bias));
+        let deeper = module
+            .consts
+            .int(&module.types, ty, deeper.min(u64::from(u32::MAX)))
+            .map_err(internal)?;
+        if !body.set_call_arg(inst, 0, Value::constant(deeper).map_err(internal)?) {
+            return Err(CompileError::Internal("frame bias: no depth argument".into()));
+        }
+    }
+    Ok(())
 }

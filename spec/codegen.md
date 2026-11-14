@@ -3694,19 +3694,27 @@ are target-neutral (`hod_cg::guard`); each target emits the code
    matters (never weaker than `llc`), and costs one guard more in
    functions `llc` leaves alone. `"stack-protector-buffer-size"` is read
    with the attribute and changes nothing. A protected presplit
-   coroutine is refused, `ssp:coroutine` (its resume stubs enter the
-   body past the entry code); a target without the hook,
-   `ssp:target`.
+   coroutine is built (rule 6: its resume and destroy stubs repeat the
+   entry code); one that would need the low guard (rule 4) is refused,
+   `ssp:coroutine`, a shape the coroutine plan already refuses (dynamic
+   `alloca`s and over-aligned machine-stack slots, §7.6). A target
+   without the hook, `ssp:target`.
 2. **Which slots move.** A slot **escapes** when its address is used
    other than as the pointer operand of a `load` or `store` whose access
    lies inside the slot (a `getelementptr`, a call argument, a stored
    value, a `phi`, a cast, ...). Only an escaping slot can be written out
    of bounds. The escaping slots of a protected function whose alignment
-   is at most the stack alignment form the **guarded block**, in body
-   order, each at its alignment from the block's start; the **guard
-   word** (8 bytes) follows the last slot at once, unaligned if need be,
-   so that a one-byte overflow of the last slot reaches it (`llc` may
-   leave padding there; hod never detects later than `llc`). The block is
+   is at most the stack alignment, and not in a coroutine's heap frame
+   (§7.6), form the **guarded block**, from its top down by decreasing
+   size, ties in body order, each at its alignment; the **guard word**
+   (8 bytes) follows the top slot at once, unaligned if need be, so that
+   a one-byte overflow of it reaches the guard (`llc` may leave padding
+   there). `llc` puts arrays nearest its guard, then the other
+   address-taken locals, the first in body order nearest; hod keeps no
+   slot types, and size is what tells a buffer from the small objects
+   whose address C++ takes (a `this`, an awaiter). With several slots,
+   an overflow of a lower one reaches the guard after the slots above
+   it, in both builds. The block is
    rounded up to 16. Each slot of the block is addressed through a
    pointer slot (`SlotPlace::Indirect`, as an over-aligned slot, §5.1);
    the pointer slots are the first slots after `begin_function`'s. Its
@@ -3752,7 +3760,15 @@ are target-neutral (`hod_cg::guard`); each target emits the code
    (§5.6) whose displacement `end_function` writes before biasing; on
    AArch64 the guard word's address is made by `add x16, x29, #lo12` ·
    `add x16, x16, #hi12, lsl #12`, patched in `end_function`, and each
-   slot's address is `x16` less its distance from the guard.
+   slot's address is `x16` less its distance from the guard. A
+   coroutine's resume and destroy stubs (§7.6) rebuild a machine frame
+   and jump into the body past this code, so each stub repeats it
+   (`guard::stub_enter` of each target, after the frame word's store), with the
+   final offsets, which are known by then: x86-64 `mov r10, fs:[0x28]` ·
+   `mov [rbp + guard], r10` · per slot `lea r10, [rbp + slot]` · `mov
+   [rbp + pointer], r10`; AArch64 the same through `x16`/`x17`. Every
+   activation of the coroutine body then has a fresh guard and checks it
+   at its exit (rule 7), as `llc` does in each function CoroSplit makes.
 7. **The check** starts every exit sequence (the epilogue and every tail
    exit, so a `musttail` call is checked before its jump; a `noreturn`
    call and `unreachable` have none; unwinding through a protected frame
@@ -3919,14 +3935,24 @@ byte-identical to what it was.
    the bottom of the frame (§5.5), so its `stp` is the touch of the
    bottom page and the top is touched first. A `FRAME` with `FRAME + 1024
    <= P` is the unprobed prologue. Otherwise, with `k = (FRAME - 16) / P`
-   and `r = (FRAME - 16) % P`: `str xzr, [sp, #-16]!` (CFA `sp + 16`),
-   then for `k <= 4` (`llc`'s unroll limit) `k` times `sub sp, sp, #P` ·
-   `str xzr, [sp]` (CFA `sp + 16 + iP` after each `sub`), for `k > 4`
-   `sub x17, sp, #kP` (CFA `x17 + 16 + kP`) · `1: sub sp, sp, #P` · `str
-   xzr, [sp]` · `cmp sp, x17` · `b.ne 1b` (CFA register `sp`), then `r`
-   in one or two `sub`s (CFA `sp + FRAME`), then `stp x29, x30, [sp]` as
-   always. `x17` because `x16` may hold the incoming base and `x9`..`x15`
-   are `preserve_most`'s. The prologue reserves 36 bytes more. A dynamic
+   and `r = (FRAME - 16) % P`: for `k <= 4` (`llc`'s unroll limit) `str
+   xzr, [sp, #-16]!` (CFA `sp + 16`), `k` times `sub sp, sp, #P` · `str
+   xzr, [sp]` (CFA `sp + 16 + iP` after each `sub`), then `r` in one or
+   two `sub`s (CFA `sp + FRAME`). For `k > 4` the loop runs under a
+   temporary frame record (WP-194): `stp x29, x30, [sp, #-16]!` (the top
+   touch; CFA `sp + 16`, `x29` and `x30` at CFA `- 16` and `- 8`) · `mov
+   x29, sp` (CFA `x29 + 16`) · `sub x17, sp, #kP` · `1: sub sp, sp, #P` ·
+   `str xzr, [sp]` · `cmp sp, x17` · `b.ne 1b` · `r` in one or two `sub`s
+   (no row: the CFA does not follow `sp`) · `ldr x29, [x29]` (the
+   caller's `x29` back; CFA `sp + FRAME`). Either way `stp x29, x30,
+   [sp]` follows as always, and from it the usual rows. With the CFA on
+   `x29` an unwinder that emulates frame 0 instead of reading its rows
+   (lldb) follows the loop; with it on `sp` or `x17` it lost one page per
+   pass. Nothing reads the temporary record after the usual `stp`, so the
+   local area's top 16 bytes, which it overlaps, are not reserved;
+   nothing is written below `sp`. `x17` because `x16` may hold the
+   incoming base and `x9`..`x15` are `preserve_most`'s. The prologue
+   reserves 36 bytes more. A dynamic
    allocation: `1: sub sp, sp, #P` · `cmp sp, x16` · `b.ls 2f` · `str
    xzr, [sp]` · `b 1b` · `2: mov sp, x16` · `ldr xzr, [sp]`, `llc`'s loop.
    An outgoing argument area of more than 1024 bytes: `sub sp, sp, #c` ·
@@ -4080,6 +4106,50 @@ to the result's slot.
 
 Evidence: `spec/landed/codegen/WP-173.md` for the rules this reuses,
 `spec/landed/codegen/WP-190.md` for these.
+
+#### 5.6.30 The hardening pieces together (WP-194)
+
+Stack protectors (§5.6.24), branch tracking or protection (§5.6.25,
+§5.6.26) and stack probing (§5.6.27) compose with each other, with a
+dynamic area, `byval` and stack arguments, `nest`, `musttail`,
+`returns_twice`, `invoke` and varargs, and on x86-64 with
+`preserve_most`/`preserve_all`. Each piece keeps its own place and its
+own registers, so no combination is refused for being one.
+
+1. **x86-64 prologue:** `endbr64` (`cet::entry`, first) · `push rbp` ·
+   `mov rbp, rsp` · the pushes of the preserved set (§5.6.23) · the save
+   area and `sub rsp, FRAME`, written in `end` as the probed allocation
+   (its 105 reserved bytes cut with the rest) · the guard's entry store
+   and the low guard (`guard::reserve`, `Local(0)`) · the `xmm` saves of
+   `preserve_all`. Epilogue: the guard check · the `xmm` reloads · `lea
+   rsp, [rbp - 8n]` · the pops · `ret`. Registers: the guard's entry
+   uses `r10` and `r11`, its check `r10`; the probe loop and the dynamic
+   loop use `r11`. None of them is preserved by any convention, and the
+   preserved set is saved before any of them is written.
+2. **AArch64 prologue:** `bti c` or `paciasp`/`pacibsp` at offset 0
+   (`protect::entry`; its rows, `B key` at 0 and the negated RA state
+   after the signing instruction, are written first in `end`) · `[mov
+   x16, sp]` (the incoming base) · the allocation (§5.6.27 item 2: two
+   `sub`s, or the probes, or the looped shape under its temporary
+   record) · `stp x29, x30, [sp]` · `mov x29, sp` · the saves of
+   `preserve_most` and the coroutine's `x19` · the incoming base and
+   result slots · the guard's entry store. `guard::place` makes the
+   guard block last in the local area, at its top; the low guard of a
+   dynamic area is at `x29 - 16`. Epilogue: the guard check · `[mov sp,
+   x29]` · `ldp x29, x30, [sp]` · `add sp` · `autiasp`/`autibsp` (the
+   stack pointer is the entry's again) · `ret`, or the tail branch.
+   Registers: `x16` (the incoming base, the dynamic loop's bound), `x17`
+   (the probe loop's bound, the guard's scratch); the guard check saves
+   `x16` with `str x16, [sp, #-16]!` (a tail branch through `x16`
+   needs it), compares through both and reloads it, after the body and
+   before anything is restored. `x30` is signed
+   before the temporary record stores it, so the CFA the unwinder
+   authenticates it against is the entry stack pointer in every row.
+3. **Property notes:** the GNU property note is written from the module
+   flags as alone (BTI, PAC, GCS on AArch64; IBT, SHSTK on x86-64), and
+   is the same as `llc`'s for every flag set measured.
+
+Evidence: `spec/landed/codegen/WP-194.md`.
 
 ## 6. Control flow
 
@@ -4864,7 +4934,8 @@ islands; local `STT_FUNC` symbols `F.resume` and `F.destroy` (F's own
 symbol's size ends at the first stub). Each builds the same machine frame
 as F's prologue (same CFI rows: first the entry state, then the
 prologue's, then x19's), sets x19 := x0, mode := 1, the frame word := x0,
-`w0` := 0 (resume) or 1 (destroy), loads the index and branches to that
+in a protected function the guard word and the pointer slots (§5.6.24
+rule 6), `w0` := 0 (resume) or 1 (destroy), loads the index and branches to that
 suspend's re-entry label (`cmp` / `b.eq` per suspend), and ends in
 `brk #1`. Entering after the suspend with `w0` as its result, the
 switch takes the 0 or 1 edge.
@@ -5014,7 +5085,8 @@ with (awaiter, frame), C convention.
 after F's code. Each states the entry CFI (CFA = `rsp + 8`, `rbp` and
 the save set restored), then builds F's machine frame with F's rows
 (`push rbp`, `mov rbp, rsp`, the save set's pushes, `sub rsp, FRAME`),
-then `mov rbx, rdi`, mode := 1, the frame word := `rdi`
+then `mov rbx, rdi`, mode := 1, the frame word := `rdi`, in a protected
+function the guard word and the pointer slots (§5.6.24 rule 6)
 (`coro_stub_ready` here), `mov eax, 0 | 1`, one `cmp dword [rbx +
 index], k` / `je` per suspend, and `ud2`. Their displacements are the
 final ones (`frame::base_offset`): they are emitted after the frame's

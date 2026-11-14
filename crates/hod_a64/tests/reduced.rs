@@ -287,6 +287,10 @@ fn refused(text: &str) -> Option<CgError> {
     let (module, bodies) = parse(text);
     match compile_to_object(&module, &bodies, &Options::default()) {
         Ok(_) => None,
+        // A `debug:` refusal carries its node's detail (WP-195).
+        Err(ModuleError::Emit(CgError::UnsupportedDetail { construct, .. })) => {
+            Some(CgError::unsupported(construct))
+        }
         Err(ModuleError::Emit(e)) => Some(e),
         Err(e) => panic!("{e}"),
     }

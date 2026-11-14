@@ -94,6 +94,7 @@ const DRIVER: &str = r#"
 int32_t loop_home(int32_t, int32_t);
 int32_t to_indirect(int32_t);
 int64_t twice(int64_t);
+int32_t loop_reg(int32_t, int32_t);
 static int failures;
 #define CHECK(e, want) do { long long g_ = (e), w_ = (want); \
   if (g_ != w_) { printf("FAIL %s = %lld, not %lld\n", #e, g_, w_); failures++; } } while (0)
@@ -103,6 +104,8 @@ int main(void) {
     CHECK(loop_home(x, 0), 0);
     CHECK(to_indirect(x), x == -1 ? 2000 : x + 1 + 1000);
     CHECK(twice(x), 3 * x);
+    CHECK(loop_reg(x, 4), 4 * x);
+    CHECK(loop_reg(x, 0), 0);
   }
   printf("checked, %d failures\n", failures);
   return failures != 0;
@@ -114,7 +117,8 @@ fn llc(dir: &Scratch, major: u32) -> Option<PathBuf> {
     if !llc.is_file() {
         return None;
     }
-    let input = dir.write(&format!("llc-{major}.ll"), format!("{}{FUNCTIONS}", ll_header(major)));
+    let input =
+        dir.write(&format!("llc-{major}.ll"), format!("{}{FUNCTIONS}{LOOP_REG}", ll_header(major)));
     let output = dir.join(format!("llc-{major}.o"));
     let mut command = Command::new(llc);
     command
@@ -130,7 +134,7 @@ fn llc(dir: &Scratch, major: u32) -> Option<PathBuf> {
 #[test]
 fn callbr_results_reach_their_phis() {
     let dir = Scratch::new("a64-callbr-phi");
-    let (m, bodies) = parse(&format!("{}{FUNCTIONS}", ll_header(22)));
+    let (m, bodies) = parse(&format!("{}{FUNCTIONS}{LOOP_REG}", ll_header(22)));
     let mut objects = Vec::new();
     for (name, options) in [
         ("plain", Options::default()),
@@ -167,11 +171,11 @@ fn callbr_results_reach_their_phis() {
 
 /// The loop of [`FUNCTIONS`] with a result whose only use is the
 /// header's `phi`: AArch64's `callbr` defines the result again on each
-/// indirect edge (`crates/hod_a64/src/inline_asm.rs:838`), after the
-/// fallthrough's `phi` released it, and a destination that does not use
-/// it leaves the register held ("ends with a value in a register").
+/// indirect edge, after the fallthrough's `phi` released it. Before
+/// WP-196 a destination that did not use it left the register held and
+/// the block ended with an internal error ("ends with a value in a
+/// register"); the edge now lets the result go after its `phi`s.
 #[test]
-#[ignore = "hod_a64 inline_asm.rs:838 redefines a released callbr result on an indirect edge"]
 fn a_result_only_a_phi_takes() {
     let (m, bodies) = parse(&format!("{}{LOOP_REG}", ll_header(22)));
     for options in [Options::default(), Options { stress: Stress::ALL, ..Options::default() }] {

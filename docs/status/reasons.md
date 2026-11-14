@@ -8,11 +8,11 @@ Every module of the captured corpus (`docs/status/corpus.md`), given to hod in s
 
 | reason | LLVM 22 | LLVM 19 |
 |---|---:|---:|
-| `(compiled)` | 3477 | 3435 |
+| `(compiled)` | 3480 | 3438 |
 | `cc:win64cc` | 1 | 1 |
-| `debug:dbg-value` | 1 | 1 |
+| `debug:dbg-value-arglist` | 1 | 1 |
 | `intrinsic:llvm.aarch64.ldxr.p0` | 1 | 1 |
-| all | 3480 | 3438 |
+| all | 3483 | 3441 |
 
 ## Every reason (census)
 
@@ -21,7 +21,7 @@ Every module of the captured corpus (`docs/status/corpus.md`), given to hod in s
 | `attr:elementtype` | 1 | 1 |
 | `cc:aarch64_vector_pcs` | 1 | 1 |
 | `cc:win64cc` | 1 | 1 |
-| `debug:dbg-value` | 1 | 1 |
+| `debug:dbg-value-arglist` | 1 | 1 |
 | `intrinsic:llvm.aarch64.clrex` | 1 | 1 |
 | `intrinsic:llvm.aarch64.ldaxp` | 1 | 1 |
 | `intrinsic:llvm.aarch64.ldaxr.p0` | 1 | 1 |
@@ -36,8 +36,8 @@ Modules whose outcome and first reason are the same by two routes, and whose cen
 
 | LLVM | modules | text = native | native = `llvm-dis` | census: text = native | census: native = `llvm-dis` | census in the same order |
 |---|---:|---:|---:|---:|---:|---:|
-| 22 | 3480 | 3480 | 3479 | 3480 | 3479 | 3479 |
-| 19 | 3438 | 3438 | 3437 | 3438 | 3437 | 3437 |
+| 22 | 3483 | 3483 | 3482 | 3483 | 3482 | 3482 |
+| 19 | 3441 | 3441 | 3440 | 3441 | 3440 | 3440 |
 
 The modules that differ (at most 20):
 
@@ -50,13 +50,13 @@ Coverage-log field 7 (from the process's start to the decline) of the first-refu
 
 | LLVM | route | median | p99 | worst | share of `llc`: median | p99 | worst |
 |---|---|---:|---:|---:|---:|---:|---:|
-| 22 | text | 11957 | 29730 | 252161 | 68.6% | 176.5% | 291.1% |
-| 22 | bitcode, native | 11424 | 28816 | 178287 | 65.0% | 173.4% | 414.5% |
-| 22 | bitcode, `llvm-dis` | 19904 | 43416 | 596431 | 112.8% | 252.3% | 678.1% |
-| 22 | `llc -O0` | 17588 | 39741 | 3554211 | | | |
-| 22 | the `convert` of the `llvm-dis` route | 9072 | 21681 | 372309 | | | |
-| 19 | text | 12953 | 31192 | 232981 | 71.5% | 167.2% | 560.4% |
-| 19 | bitcode, native | 12152 | 30978 | 175677 | 67.4% | 163.5% | 507.9% |
-| 19 | bitcode, `llvm-dis` | 23032 | 45744 | 662899 | 127.8% | 235.8% | 1355.6% |
-| 19 | `llc -O0` | 17872 | 38950 | 3456055 | | | |
-| 19 | the `convert` of the `llvm-dis` route | 10114 | 21552 | 441885 | | | |
+| 22 | text | 12293 | 34851 | 242451 | 28.8% | 72.2% | 438.6% |
+| 22 | bitcode, native | 11878 | 31901 | 183540 | 27.8% | 68.3% | 355.4% |
+| 22 | bitcode, `llvm-dis` | 42780 | 101389 | 578413 | 100.9% | 204.4% | 371.2% |
+| 22 | `llc -O0` | 39922 | 91943 | 3589236 | | | |
+| 22 | the `convert` of the `llvm-dis` route | 31442 | 71811 | 383278 | | | |
+| 19 | text | 10553 | 31806 | 227740 | 26.2% | 66.1% | 425.2% |
+| 19 | bitcode, native | 10192 | 29388 | 121427 | 25.3% | 66.9% | 211.0% |
+| 19 | bitcode, `llvm-dis` | 38631 | 89888 | 716406 | 95.9% | 202.4% | 382.4% |
+| 19 | `llc -O0` | 39182 | 81895 | 3315804 | | | |
+| 19 | the `convert` of the `llvm-dis` route | 30015 | 72302 | 520866 | | | |

@@ -99,9 +99,13 @@ pub(super) struct Placed<'c> {
 fn dwarf_err(debug: &DebugInfo, error: hod_dwarf::Error) -> CgError {
     match error {
         // `spec/dwarf.md` §6.4: what the function DIEs refuse has a
-        // stable name of its own.
+        // stable name of its own; WP-195: its detail names the node and
+        // its function (§6.25).
         hod_dwarf::Error::Unsupported { what, .. } if what.starts_with("debug:") => {
-            CgError::unsupported(what)
+            CgError::UnsupportedDetail {
+                construct: what,
+                detail: error.detail(debug).unwrap_or_default(),
+            }
         }
         // WP-189: the detail names the node's kind and tag.
         hod_dwarf::Error::Unsupported { .. } => CgError::UnsupportedDetail {

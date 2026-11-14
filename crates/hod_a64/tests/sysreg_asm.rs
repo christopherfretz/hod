@@ -95,3 +95,69 @@ fn seeds_run_as_llc_builds_them() {
         }
     }
 }
+
+/// The shapes kiln writes for abseil's `UnscaledCycleClock::Now` and
+/// `Frequency` and `crc_internal::GetCpuType` (WP-196): `optnone`
+/// functions with kiln's AArch64 `target-features`, the counter read
+/// through a `sideeffect` template, `MIDR_EL1` in upper case through one
+/// without. They compile, and their system-register words are `llc`'s.
+/// (kiln writes `"frame-pointer"="non-leaf-no-reserve"`, which LLVM 19
+/// does not read; `non-leaf` stands in for it.)
+const KILN_SHAPES: &str = r#"
+define dso_local noundef i64 @now() #0 {
+  %1 = alloca i64, align 8
+  %2 = call i64 asm sideeffect "mrs $0, cntvct_el0", "=r"() #1
+  store i64 %2, ptr %1, align 8
+  %3 = load i64, ptr %1, align 8
+  ret i64 %3
+}
+
+define dso_local noundef double @frequency() #0 {
+  %1 = alloca i64, align 8
+  %2 = call i64 asm sideeffect "mrs $0, cntfrq_el0", "=r"() #1
+  store i64 %2, ptr %1, align 8
+  %3 = load i64, ptr %1, align 8
+  %4 = uitofp i64 %3 to double
+  ret double %4
+}
+
+define dso_local i32 @cpu_part() #0 {
+  %1 = call i64 asm "mrs $0, MIDR_EL1", "=r"() #2
+  %2 = lshr i64 %1, 4
+  %3 = and i64 %2, 4095
+  %4 = trunc i64 %3 to i32
+  ret i32 %4
+}
+
+attributes #0 = { mustprogress noinline nounwind optnone uwtable "frame-pointer"="non-leaf" "target-cpu"="generic" "target-features"="+fp-armv8,+neon,+outline-atomics,+v8a,-fmv" }
+attributes #1 = { nounwind }
+attributes #2 = { nounwind memory(none) }
+"#;
+
+#[test]
+fn kiln_shapes_compile_with_llc_s_words() {
+    let dir = Scratch::new("a64-sysreg-kiln");
+    let (m, bodies) = parse(&format!("{}{KILN_SHAPES}", ll_header(22)));
+    let ours = sorted(code_words(&m, &bodies, &Options::default()).into_iter());
+    assert_eq!(ours.len(), 3, "{ours:08x?}");
+    for major in LLVM_MAJORS {
+        let llc = PathBuf::from(format!("/usr/lib/llvm-{major}/bin/llc"));
+        if !llc.is_file() {
+            continue;
+        }
+        let input =
+            dir.write(&format!("llc-{major}.ll"), format!("{}{KILN_SHAPES}", ll_header(major)));
+        let output = dir.join(format!("llc-{major}.o"));
+        let mut command = Command::new(llc);
+        command
+            .args(["-O0", "-global-isel=0", "-fast-isel=0", "-filetype=obj"])
+            .arg(&input)
+            .arg("-o")
+            .arg(&output);
+        let outcome = run_with(&mut command, &[], Duration::from_mins(2));
+        assert!(outcome.success(), "llc-{major}: {}", outcome.stderr_text());
+        if let Some(words) = sysreg_words(&dir, &output, major) {
+            assert_eq!(ours, words, "the system-register words of llc-{major}");
+        }
+    }
+}

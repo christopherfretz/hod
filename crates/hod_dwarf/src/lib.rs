@@ -305,16 +305,124 @@ impl Error {
         let kind = debug.find_kind(id).map_or("(no node)", hod_ir::DiKind::llvm_name);
         let tag = if debug.contains(id) { debug.tag(id) } else { 0 };
         // A kind without a tag field (`DISubprogram`) has tag 0.
-        Some(match (tag, hod_ir::dw_tag_name(tag)) {
-            (0, _) => format!("{kind} (node {node}): {what}"),
-            (_, Some(tag)) => format!("{kind} {tag} (node {node}): {what}"),
-            (_, None) => format!("{kind} tag {tag:#x} (node {node}): {what}"),
-        })
+        let mut out = match (tag, hod_ir::dw_tag_name(tag)) {
+            (0, _) => format!("{kind} (node {node})"),
+            (_, Some(tag)) => format!("{kind} {tag} (node {node})"),
+            (_, None) => format!("{kind} tag {tag:#x} (node {node})"),
+        };
+        // WP-195: the node's name and the function it is in.
+        if debug.contains(id) {
+            use std::fmt::Write as _;
+            let (name, _) = name_and_scope(debug, id);
+            if let Some(name) = name {
+                let _ = write!(out, " '{}'", String::from_utf8_lossy(name));
+            }
+            if let Some(f) = enclosing_function(debug, id) {
+                let (name, linkage) = function_names(debug, f);
+                if let Some(name) = linkage.or(name) {
+                    let _ = write!(out, " in function '{}'", String::from_utf8_lossy(name));
+                }
+            }
+        }
+        // A stable name says itself; the words of the others follow.
+        if !what.starts_with("debug:") {
+            out.push_str(": ");
+            out.push_str(what);
+        }
+        Some(out)
     }
+}
+
+/// A node's `name:` and `scope:` fields.
+fn name_and_scope(
+    debug: &hod_ir::DebugInfo,
+    id: hod_ir::DiId,
+) -> (Option<&[u8]>, Option<hod_ir::DiId>) {
+    let (mut name, mut scope) = (None, None);
+    debug.node(id).each_field(&mut |field, value| match (field, value) {
+        ("name", hod_ir::DiFieldOut::Str(s)) => name = Some(s),
+        ("scope", hod_ir::DiFieldOut::Node(n)) => scope = Some(n),
+        _ => {}
+    });
+    (name, scope)
+}
+
+/// A subprogram's `name:` and `linkageName:`.
+fn function_names(debug: &hod_ir::DebugInfo, id: hod_ir::DiId) -> (Option<&[u8]>, Option<&[u8]>) {
+    let (mut name, mut linkage) = (None, None);
+    debug.node(id).each_field(&mut |field, value| match (field, value) {
+        ("name", hod_ir::DiFieldOut::Str(s)) => name = Some(s),
+        ("linkageName", hod_ir::DiFieldOut::Str(s)) => linkage = Some(s),
+        _ => {}
+    });
+    (name, linkage)
+}
+
+/// The subprogram a node is, or is scoped in through its blocks; `None`
+/// for a node outside every function. Bounded by the table's size.
+fn enclosing_function(debug: &hod_ir::DebugInfo, mut id: hod_ir::DiId) -> Option<hod_ir::DiId> {
+    for _ in 0..64 {
+        match debug.find_kind(id)? {
+            hod_ir::DiKind::Subprogram => return Some(id),
+            hod_ir::DiKind::LocalVariable
+            | hod_ir::DiKind::Label
+            | hod_ir::DiKind::LexicalBlock
+            | hod_ir::DiKind::LexicalBlockFile
+            | hod_ir::DiKind::GlobalVariable
+            | hod_ir::DiKind::ImportedEntity
+            | hod_ir::DiKind::CompositeType
+            | hod_ir::DiKind::DerivedType => id = name_and_scope(debug, id).1?,
+            _ => return None,
+        }
+        if !debug.contains(id) {
+            return None;
+        }
+    }
+    None
 }
 
 impl From<hod_obj::Error> for Error {
     fn from(e: hod_obj::Error) -> Self {
         Self::Object(e)
+    }
+}
+
+#[cfg(test)]
+mod detail_tests {
+    use super::*;
+
+    // WP-195 (`spec/dwarf.md` §6.25): a refusal's detail names the node
+    // and its function.
+    #[test]
+    fn detail_names_the_variable_and_its_function() {
+        let text = br#"target triple = "aarch64-unknown-linux-gnu"
+define void @_Z1fv() !dbg !3 {
+  ret void
+}
+!llvm.dbg.cu = !{!0}
+!llvm.module.flags = !{!9}
+!0 = distinct !DICompileUnit(language: DW_LANG_C_plus_plus_14, file: !1, emissionKind: FullDebug)
+!1 = !DIFile(filename: "a.cpp", directory: "/")
+!3 = distinct !DISubprogram(name: "f", linkageName: "_Z1fv", scope: !1, file: !1, line: 1, type: !4, spFlags: DISPFlagDefinition, unit: !0)
+!4 = !DISubroutineType(types: !5)
+!5 = !{null}
+!6 = !DILexicalBlock(scope: !3, file: !1, line: 2)
+!7 = !DILocalVariable(name: "x", scope: !6, file: !1, line: 2, type: !8)
+!8 = !DIBasicType(name: "int", size: 32, encoding: DW_ATE_signed)
+!9 = !{i32 2, !"Debug Info Version", i32 3}
+"#;
+        let parsed = hod_ll::parse_module(text, &hod_ll::ParseOptions::default()).expect("parses");
+        let debug = &parsed.module.debug;
+        let var = (0..debug.node_count() as u32)
+            .map(hod_ir::DiId::new)
+            .find(|&id| debug.find_kind(id) == Some(hod_ir::DiKind::LocalVariable))
+            .expect("the variable");
+        let e = Error::Unsupported { node: var.raw(), what: "debug:variable-twice" };
+        let detail = e.detail(debug).expect("a detail");
+        assert!(detail.starts_with("DILocalVariable (node "), "{detail}");
+        assert!(detail.ends_with(") 'x' in function '_Z1fv'"), "{detail}");
+        let e = Error::Unsupported { node: var.raw(), what: "a variable of this shape" };
+        let detail = e.detail(debug).expect("a detail");
+        assert!(detail.ends_with("'_Z1fv': a variable of this shape"), "{detail}");
     }
 }

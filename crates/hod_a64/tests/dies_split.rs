@@ -137,8 +137,36 @@ fn llc_split(llc: &Path, dir: &Path, stem: &str, name: &str, separate: bool) -> 
 /// `DW_AT_abstract_origin`, a bare offset, is compared by its target's
 /// tag, or dropped with `strip` (hod's against `llc` 19, which writes
 /// none, §6.7; as `dies_inline.rs` does).
-fn trees(file: &Path, dir: &Path, strip: bool) -> Vec<Node> {
+///
+/// A split unit's `DW_AT_decl_file` is an index into the skeleton's line
+/// table, which `llvm-dwarfdump` of the `.dwo` cannot see; it is written
+/// as that table's file name (`lines` is the object holding it), since
+/// hod's file order is not `llc`'s (`spec/dwarf.md` §4.4, WP-192).
+fn trees(file: &Path, dir: &Path, strip: bool, lines: &Path) -> Vec<Node> {
     let text = ok(Command::new(dwarfdump()).arg("--debug-info").arg(file));
+    let names = file_names(lines);
+    let text = text
+        .lines()
+        .map(|line| {
+            let t = line.trim_start();
+            let index = t
+                .strip_prefix("DW_AT_decl_file")
+                .map(str::trim)
+                .and_then(|v| v.strip_prefix('('))
+                .and_then(|v| v.strip_suffix(')'))
+                // `DW_FORM_data1` prints in hexadecimal, `udata` in decimal.
+                .and_then(|v| match v.strip_prefix("0x") {
+                    Some(h) => usize::from_str_radix(h, 16).ok(),
+                    None => v.parse().ok(),
+                });
+            match index.and_then(|i| names.get(i)) {
+                Some(name) => {
+                    format!("{}DW_AT_decl_file\t(\"{name}\")\n", &line[..line.len() - t.len()])
+                }
+                None => format!("{line}\n"),
+            }
+        })
+        .collect::<String>();
     let text = text.replace(&dir.display().to_string(), "DIR");
     let mut tag_at = std::collections::HashMap::new();
     for line in text.lines() {
@@ -178,6 +206,36 @@ fn trees(file: &Path, dir: &Path, strip: bool) -> Vec<Node> {
     let mut units = support::parse_tree(&out);
     units.iter_mut().for_each(code_as_one);
     units
+}
+
+/// The files of the first line table of `object`, by index: each name
+/// joined to its directory unless absolute.
+fn file_names(object: &Path) -> Vec<String> {
+    let text = ok(Command::new(dwarfdump()).arg("--debug-line").arg(object));
+    let unquote = |v: &str| v.trim().trim_matches('"').to_owned();
+    let (mut dirs, mut files) = (Vec::new(), Vec::new());
+    let mut name = None;
+    for line in text.lines().map(str::trim) {
+        if line.starts_with("Address") || (line.starts_with("debug_line[") && !dirs.is_empty()) {
+            break;
+        }
+        if let Some((_, v)) =
+            line.split_once("include_directories[").and_then(|(_, r)| r.split_once("] = "))
+        {
+            dirs.push(unquote(v));
+        } else if let Some(v) = line.strip_prefix("name:") {
+            name = Some(unquote(v));
+        } else if let Some(v) = line.strip_prefix("dir_index:")
+            && let Some(n) = name.take()
+        {
+            let d = v.trim().parse::<usize>().ok().and_then(|d| dirs.get(d));
+            files.push(match d {
+                Some(d) if !n.starts_with('/') => format!("{d}/{n}"),
+                _ => n,
+            });
+        }
+    }
+    files
 }
 
 fn code_as_one(n: &mut Node) {
@@ -255,8 +313,8 @@ fn one(
         verify(&dd, f);
     }
     let strip = major < 21;
-    let (hs, ls) = (trees(&ho, &hd, strip), trees(&lo, &ld, false));
-    let (hu, lu) = (trees(&hdwo, &hd, strip), trees(&ldwo, &ld, false));
+    let (hs, ls) = (trees(&ho, &hd, strip, &ho), trees(&lo, &ld, false, &lo));
+    let (hu, lu) = (trees(&hdwo, &hd, strip, &ho), trees(&ldwo, &ld, false, &lo));
     assert_eq!((hs.len(), hu.len()), (1, 1), "{tag}: hod's units");
     assert_eq!((ls.len(), lu.len()), (1, 1), "{tag}: llc's units");
     assert_eq!(hs[0].tag, "DW_TAG_skeleton_unit", "{tag}");
@@ -281,7 +339,7 @@ fn one(
     std::fs::write(ld.join("single.ll"), &llc_text).unwrap();
     let (lso, _) = llc_split(&llc, &ld, "single", &name, false);
     verify(&dd, &hso);
-    let (h, l) = (trees(&hso, &hd, strip), trees(&lso, &ld, false));
+    let (h, l) = (trees(&hso, &hd, strip, &hso), trees(&lso, &ld, false, &lso));
     assert_eq!((h.len(), l.len()), (2, 2), "{tag}: single units");
     same(&format!("{tag}: single skeleton"), &h[0], &l[0]);
     same(&format!("{tag}: single split unit"), &h[1], &l[1]);
@@ -354,7 +412,7 @@ fn a_line_table_unit_has_no_split_unit() {
         let (ho, hdwo) = hod_split(&hd, "vars", &text, SplitDwarf::Separate);
         let (lo, _) = llc_split(&llc, &ld, "vars", "vars.dwo", true);
         verify(&dwarfdump(), &ho);
-        let (h, l) = (trees(&ho, &hd, false), trees(&lo, &ld, false));
+        let (h, l) = (trees(&ho, &hd, false, &ho), trees(&lo, &ld, false, &lo));
         assert_eq!(h.len(), 1);
         assert_eq!(h[0].tag, "DW_TAG_skeleton_unit");
         assert!(h[0].children.is_empty());
@@ -400,13 +458,13 @@ fn a_block_list_goes_to_the_dwo() {
         let strip = major < 21;
         same(
             &format!("hand, llc {major}: skeleton"),
-            &trees(&ho, &hd, strip)[0],
-            &trees(&lo, &ld, false)[0],
+            &trees(&ho, &hd, strip, &ho)[0],
+            &trees(&lo, &ld, false, &lo)[0],
         );
         same(
             &format!("hand, llc {major}: split unit"),
-            &trees(&hdwo, &hd, strip)[0],
-            &trees(&ldwo, &ld, false)[0],
+            &trees(&hdwo, &hd, strip, &ho)[0],
+            &trees(&ldwo, &ld, false, &lo)[0],
         );
         compared += 1;
     }
@@ -451,7 +509,10 @@ fn refusal(text: &str, split: SplitDwarf) -> Result<(), &'static str> {
     let (module, bodies) = parse(text);
     match compile_module(&module, &bodies, &options(split)) {
         Ok(_) => Ok(()),
-        Err(ModuleError::Emit(CgError::Unsupported { construct })) => Err(construct),
+        // A `debug:` refusal carries its node's detail (WP-195).
+        Err(ModuleError::Emit(
+            CgError::Unsupported { construct } | CgError::UnsupportedDetail { construct, .. },
+        )) => Err(construct),
         Err(e) => panic!("{e}"),
     }
 }

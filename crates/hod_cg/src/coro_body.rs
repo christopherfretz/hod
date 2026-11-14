@@ -224,6 +224,17 @@ fn body_intrinsic(inst: Inst<'_>) -> Option<Intrinsic<'_>> {
 impl<'a, T: Target> FnCx<'a, T> {
     // ---- for the driver ----
 
+    /// Whether the plan puts body slot `index` in the heap frame (the
+    /// promise or a heap slot): known from `coro_plan` on, before the
+    /// heap layout (WP-183, §5.6.24: such a slot is not guarded).
+    pub(crate) fn coro_heap_planned(&self, index: usize) -> bool {
+        let Some(plan) = self.coro.as_deref().and_then(|coro| coro.plan.as_ref()) else {
+            return false;
+        };
+        let id = SlotId::new(index as u32);
+        plan.promise == Some(id) || plan.heap_slots.contains(id)
+    }
+
     /// Before `begin_function`: the plan, if the body is a coroutine.
     pub(crate) fn coro_plan(&mut self) -> CgResult<()> {
         self.coro = None;

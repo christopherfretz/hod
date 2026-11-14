@@ -1601,3 +1601,29 @@ fn verify_call_and_control_rules() {
     // The entry block has no predecessors.
     assert_eq!(verdict(|f| drop(f.b.br(f.entry))), Some(BadBlock));
 }
+
+/// `Body::set_call_arg` (WP-197): replaces one constant argument of a
+/// call with another constant, in place; an argument that is not a
+/// constant, a value that is not one, and anything that is not an
+/// argument of a call are refused (the use facts stay true).
+#[test]
+fn a_call_argument_is_replaced_in_place() {
+    let mut f = fx();
+    let callee_ty = f.m.types.function(VOID, &[I32, I64], false).unwrap();
+    let direct = Value::sym(SymId::new(9)).unwrap();
+    let three = int(&mut f.m, I32, 3);
+    let seven = int(&mut f.m, I32, 7);
+    let args = [three, f.l];
+    let call = f.b.call(VOID, &CallDesc::new(direct, callee_ty, &args)).unwrap();
+    let sum = f.b.binary(Opcode::Add, I32, f.a, f.a).unwrap();
+    let mut body = f.done();
+    assert!(body.set_call_arg(id(call), 0, seven));
+    let site = body.inst(id(call)).call().unwrap();
+    assert_eq!(site.args(), [seven, f.l]);
+    assert_eq!(site.callee_value(), direct);
+    assert!(!body.set_call_arg(id(call), 1, seven), "not a constant there");
+    assert!(!body.set_call_arg(id(call), 0, f.a), "not a constant");
+    assert!(!body.set_call_arg(id(call), 2, seven), "no third argument");
+    assert!(!body.set_call_arg(id(sum), 0, seven), "not a call");
+    body.verify(&f.m).unwrap();
+}

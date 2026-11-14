@@ -670,7 +670,7 @@ impl Session {
             return Err(misuse(&format!("no body was delivered for '{name}'")));
         }
         // WP-021: the `available_externally` copies, judged now.
-        match self.inlining.conclude(&self.module, &self.bodies) {
+        match self.inlining.conclude(&mut self.module, &mut self.bodies) {
             Ok(copies) => {
                 for copy in copies {
                     self.judge_built(copy);

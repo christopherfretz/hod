@@ -987,9 +987,15 @@ the callee is `alwaysinline` or the call site carries `alwaysinline`
 (even into a `noinline` callee), unless the call site carries
 `noinline`, and the callee is a body LLVM can inline: not variadic (with
 or without `va_start`), not a pre-split coroutine, no call to itself, no
-`returns_twice` call, no `indirectbr`, no `llvm.localescape`. Every
-other call is kept by `opt`, so out of line is `opt`'s result and hod
-accepts it whatever the body holds. The readers keep the call site's
+`indirectbr`, no `llvm.localescape`, and no `call` that may return twice
+(`returns_twice` on the call or on its callee) unless the body is
+`returns_twice` itself (WP-197, measured with `opt` 19 and 22: an
+`invoke` of `setjmp` does not keep the body out of line, nor does the
+`setjmp` of a `returns_twice` body). A body with a block address of its
+own is inlined only when every use of it is a `callbr`; hod does not
+tell, so for it hod assumes neither answer. Every other call is kept by
+`opt`, so out of line is `opt`'s result and hod accepts it whatever the
+body holds. The readers keep the call site's
 `alwaysinline` and `noinline` (`spec/ir.md` §5.7). Inlined,
 `llvm.returnaddress`, `llvm.frameaddress` (any depth),
 `llvm.addressofreturnaddress` and `llvm.sponentry` are copied unchanged
@@ -997,22 +1003,60 @@ into the caller: they mean the caller's frame, which a call out of line
 does not give.
 
 **Declined.** A direct call that LLVM inlines, to a body whose meaning
-depends on being inlined, declines the module (status 2 in strict mode);
-for an `available_externally` copy, the calls that reach the copy and
+depends on being inlined, declines the module (status 2 in strict
+mode; but see "Frame bias" below); for an `available_externally` copy, the calls that reach the copy and
 that LLVM inlines. Reported in the callee, by these stable names
 (`hod::inline_reason`):
 
 | name | the body has | inlined by LLVM? |
 |---|---|---|
-| `alwaysinline:frame-address` | `llvm.frameaddress`, `llvm.sponentry`, `llvm.localaddress`, `llvm.eh.dwarf.cfa` | yes: the caller's frame |
-| `alwaysinline:return-address` | `llvm.returnaddress`, `llvm.addressofreturnaddress` | yes: the caller's return address |
+| `alwaysinline:frame-address` | `llvm.frameaddress`, `llvm.sponentry`, `llvm.localaddress`, `llvm.eh.dwarf.cfa` | yes: the caller's frame (`llvm.frameaddress` alone: accepted with a frame bias where it has one, WP-197) |
+| `alwaysinline:return-address` | `llvm.returnaddress`, `llvm.addressofreturnaddress` | yes: the caller's return address (`llvm.returnaddress` alone: accepted with a frame bias where it has one, WP-197) |
 | `alwaysinline:stacksave-escapes` | an `llvm.stacksave` result used other than by `llvm.stackrestore` | yes: the caller's stack pointer |
-| `alwaysinline:returns-twice` | a call to a `returns_twice` function | no: LLVM keeps the call, so hod does (WP-188); the name is no longer reported |
+| `alwaysinline:returns-twice` | a call that may return twice (`setjmp`, `vfork`) | only an `invoke` of it, or in a `returns_twice` body (WP-197); a `call` in any other body keeps the call, so hod does (WP-188) |
 | `alwaysinline:returns-local-address` | a return of a stack slot's address (through `getelementptr`, `select`, `phi`) | yes: `llc -O0` keeps the slot live for the whole caller, out of line it is dead |
 | `alwaysinline:frame-register-asm` | inline assembly whose template or constraints name `sp`, `fp`, `lr`, `x29`, `x30` (or the x86-64 frame registers) | yes: the caller's registers |
 
 `blockaddress` of the body's own labels is accepted: the label belongs
 to the body that runs.
+
+**Frame bias** (WP-197). A body whose only constructs of the table are
+`llvm.returnaddress(n)` and `llvm.frameaddress(n)` is accepted, with
+each depth raised to `n + b`, when it runs only where LLVM inlines it,
+always `b >= 1` frames below the frame LLVM's inlined code runs in.
+Every hod function has its frame record (`spec/codegen.md` §5.4, §5.6:
+`x29`/`lr` on AArch64, `rbp` and the return address on x86-64), and an
+out-of-line call of the body adds exactly one record, so depth `n + b`
+names the frame and the return address `n` names inlined: the same
+value, not an approximation. `b` is found over the graph of direct
+calls among the module's compiled bodies (and the `available_externally`
+copies they reach):
+
+- A body runs in its own frame (`0`) when its linkage is not local
+  (another object may call it), when anything but the callee of a direct
+  call names it (an operand of code, a constant of the module, an alias,
+  a structor, a personality, `llvm.used`/`llvm.compiler.used`), or when
+  a direct call to it is kept. A copy is named only by direct calls
+  (every other reference is to the external symbol), so only a kept call
+  gives it `0`.
+- A direct call LLVM inlines from a body that runs `c` frames below adds
+  `c + 1`, when LLVM certainly inlines it: the body is viable as above,
+  and the call is no `callbr`, has no operand bundle, is made with the
+  callee's function type, is not `musttail` (hod's tail call would
+  replace the caller's frame), is not in a pre-split coroutine, and the
+  personalities do not differ (LLVM's `InlineFunction` refuses those).
+  A call where hod cannot tell leaves the callee's frame unknown.
+- Every body with an unknown frame, more than one `b` (a body called
+  both directly and through another inlined body, a kept call beside an
+  inlined one, a cycle of inlined calls: depths above 31 are not
+  followed), or only `0` while an inlined call reaches it, keeps the
+  decline by its name. So does a body with another construct of the
+  table, `llvm.addressofreturnaddress`, `llvm.sponentry`, or a block
+  address of its own.
+
+A body that must run both inlined and out of line (an `alwaysinline`
+`linkonce_odr` or external function, whose symbol other objects may
+call) would need a second, local copy: declined.
 
 **Size.** `always-inline` deletes the discardable functions it inlined
 everywhere; hod keeps them, so a hod object of a pre-opt module carries

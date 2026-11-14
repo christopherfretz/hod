@@ -437,3 +437,21 @@ The lowering is `spec/codegen.md` §5.6.28. In short:
   `x64:inline-asm`; a bundle `x64:inline-asm-bundle`.
 
 Tests: `crates/hod_x64/tests/inline_asm.rs` (§5.6.28).
+
+## 12. Real-project system-register reads; `callbr` results on AArch64 (WP-196)
+
+- The system-register reads kiln writes for real projects on AArch64
+  (abseil's `UnscaledCycleClock::Now`/`Frequency`: `mrs $0, cntvct_el0`
+  and `mrs $0, cntfrq_el0` in a `sideeffect` template with one `=r`
+  output; `crc_internal::GetCpuType`: `mrs $0, MIDR_EL1`, upper case,
+  without `sideeffect`; `optnone` functions with
+  `+fp-armv8,+neon,+outline-atomics,+v8a,-fmv`) are §5.4's and compile
+  strict; the template's word is `llc`'s up to the general register the
+  allocator chose. Test: `crates/hod_a64/tests/sysreg_asm.rs`
+  `kiln_shapes_compile_with_llc_s_words`.
+- A `callbr` result defined again on an indirect edge (§6,
+  `spec/codegen.md` §5.5.3) is released after that edge's `phi` copies:
+  a register result whose only uses were on another edge (a loop
+  header's `phi`) no longer stays in a register at the end of the block.
+  Test: `crates/hod_a64/tests/callbr_phi.rs` (`loop_reg`, built by hod
+  plain and stressed and by `llc` 19 and 22, linked and run).

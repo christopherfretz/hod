@@ -837,6 +837,10 @@ fn emit<'a>(
                 // destination; `spec/codegen.md` §5.5.3 has LLVM 19's).
                 result(cx, inst, ops, &plan)?;
                 cx.phi_stores(*dest)?;
+                // A register result no `phi` of this destination took
+                // (its only uses were on another edge) is let go: no
+                // register holds a value at the end of a block (§4.5).
+                cx.release(inst.result());
                 branch(cx, cx.block_label(*dest))?;
                 for &(at, kind, _) in labels.iter().filter(|l| usize::from(l.2) == n) {
                     let fixup = match kind {

@@ -511,7 +511,9 @@ cxx_std = 17
 c = "kiln"
 # kiln's row, without the unity build (every source its own object).
 # The shim gives allocator_jemalloc.cpp the header it misses outside a unity TU.
-configure = ["-DBUILD_UNITTESTS=ON", "-DBUILD_SHELL=ON", "-DDISABLE_UNITY=1", "-DCMAKE_PROJECT_DuckDB_INCLUDE=@HOD_OSS@/shims/duckdb-no-unity.cmake"]
+# duckdb's Debug build type turns on ASan and UBSan (-fsanitize=address,undefined):
+# off, the lane builds plain -O0 objects (its Debug flags keep -DDEBUG, duckdb's assertions).
+configure = ["-DBUILD_UNITTESTS=ON", "-DBUILD_SHELL=ON", "-DDISABLE_UNITY=1", "-DENABLE_SANITIZER=FALSE", "-DENABLE_UBSAN=FALSE", "-DCMAKE_PROJECT_DuckDB_INCLUDE=@HOD_OSS@/shims/duckdb-no-unity.cmake"]
 build_targets = ["unittest", "shell"]
 # The list of the test cases first (catch-tests.log, projects.py reads it
 # for the per-case results), then kiln's test: the default (non-slow) cases.

@@ -225,6 +225,7 @@ impl<'a> Writer<'a> {
             loclists_unit: crate::loclists::NO_LISTS,
             split: true,
             tls_addrs: Vec::new(),
+            base_type_dies: Vec::new(),
         }
     }
 

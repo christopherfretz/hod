@@ -80,13 +80,44 @@ pub enum ValueLoc {
 }
 
 /// One located range of an instance, in the plan: code offsets of its
-/// function.
+/// function, and what it holds: `count` pieces from `first` in
+/// `UnitPlan::value_pieces` (one, or the variable's fragments sorted by
+/// offset, §6.31).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Range {
     start: u32,
     end: u32,
+    first: u32,
+    count: u32,
+}
+
+/// What one record says over a range: where the value is and the
+/// record's expression (with its fragment, if any).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Piece {
     at: ValueLoc,
     expr: ExprId,
+}
+
+/// A located row of a variable described in fragments, while its
+/// ranges are composed (§6.31).
+#[derive(Clone, Copy, Debug)]
+struct PieceRow {
+    start: u32,
+    end: u32,
+    row: u32,
+    /// The fragment's bits, `(offset, size)`; `(0, u64::MAX)` for the
+    /// whole variable.
+    bits: (u64, u64),
+    piece: Piece,
+}
+
+/// The plan's scratch for composing pieces (§6.31).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PieceScratch {
+    rows: Vec<PieceRow>,
+    bounds: Vec<u32>,
+    active: Vec<PieceRow>,
 }
 
 /// The rows of a function's instances (part of `FnScratch`).
@@ -118,21 +149,44 @@ impl Groups {
     }
 }
 
-/// Checks a value record's expression (§6.23): the stable name of why it
-/// cannot be written. The operations are those of a declared location
-/// (`func::check_expr`), plus `DW_OP_stack_value` last.
+/// `DW_ATE_signed`, `DW_ATE_unsigned`: the encodings of a
+/// `DW_OP_LLVM_convert`.
+const DW_ATE_SIGNED: u8 = 0x05;
+const DW_ATE_UNSIGNED: u8 = 0x07;
+const DW_ATE_BOOLEAN: u8 = 0x02;
+
+/// Checks a value record's expression (§6.23, §6.31): the stable name of
+/// why it cannot be written. The operations are those of a declared
+/// location (`func::check_expr`), plus `DW_OP_stack_value` last, a
+/// conversion to a signed or unsigned integer of 1 to 64 bits (not in a
+/// memory location), and a byte-aligned fragment after all of them.
 pub(crate) fn check_value_expr(
     debug: &hod_ir::DebugInfo,
     expr: ExprId,
 ) -> Result<(), &'static str> {
     let mut last = None;
+    let mut converts = false;
     for op in debug.ops(expr) {
+        if let DiOp::Fragment(offset, size) = op {
+            // Last (`hod_ir` checks the order, `expr::order_error`).
+            if offset % 8 != 0 || size % 8 != 0 || size == 0 {
+                return Err(DEBUG_DBG_VALUE_FRAGMENT);
+            }
+            continue;
+        }
         if last == Some(DiOp::StackValue) {
             return Err(DEBUG_DBG_VALUE_EXPR);
         }
         match op {
-            DiOp::Fragment(..) => return Err(DEBUG_DBG_VALUE_FRAGMENT),
+            DiOp::Convert(bits, encoding)
+                if (1..=64).contains(&bits)
+                    && (encoding == u64::from(DW_ATE_SIGNED)
+                        || encoding == u64::from(DW_ATE_UNSIGNED)) =>
+            {
+                converts = true;
+            }
             DiOp::Convert(..)
+            | DiOp::Fragment(..)
             | DiOp::TagOffset(_)
             | DiOp::EntryValue(_)
             | DiOp::ImplicitPointer
@@ -148,10 +202,78 @@ pub(crate) fn check_value_expr(
         last = Some(op);
     }
     match last {
-        None | Some(DiOp::StackValue | DiOp::Deref) => Ok(()),
+        None | Some(DiOp::StackValue) => Ok(()),
+        Some(DiOp::Deref) if !converts => Ok(()),
         Some(_) => Err(DEBUG_DBG_VALUE_EXPR),
     }
 }
+
+/// The name of the base type of a conversion (`llc`'s
+/// `createBaseTypeDIEs`: the encoding's name and the bits, e.g.
+/// `DW_ATE_signed_32`).
+pub(crate) fn base_type_name(bits: u8, encoding: u8) -> &'static [u8] {
+    let (start, len) = name_span(bits, encoding == DW_ATE_SIGNED);
+    &BASE_TYPE_NAMES[start..start + len]
+}
+
+/// Where the name of `(bits, signed)` is in [`BASE_TYPE_NAMES`].
+const fn name_span(bits: u8, signed: bool) -> (usize, usize) {
+    let mut at = 0;
+    let mut k = 0;
+    while k < 128 {
+        let (b, s) = ((k % 64) as u8 + 1, k < 64);
+        let len = name_len(b, s);
+        if b == bits && s == signed {
+            return (at, len);
+        }
+        at += len;
+        k += 1;
+    }
+    (0, 0)
+}
+
+const fn name_len(bits: u8, signed: bool) -> usize {
+    let prefix = if signed { SIGNED.len() } else { UNSIGNED.len() };
+    prefix + if bits >= 10 { 2 } else { 1 }
+}
+
+const SIGNED: &[u8] = b"DW_ATE_signed_";
+const UNSIGNED: &[u8] = b"DW_ATE_unsigned_";
+const NAMES_LEN: usize = {
+    let mut n = 0;
+    let mut b = 1;
+    while b <= 64 {
+        n += name_len(b, true) + name_len(b, false);
+        b += 1;
+    }
+    n
+};
+
+/// `DW_ATE_signed_1` to `DW_ATE_signed_64`, then the unsigned ones,
+/// back to back.
+static BASE_TYPE_NAMES: [u8; NAMES_LEN] = {
+    let mut out = [0u8; NAMES_LEN];
+    let mut at = 0;
+    let mut k = 0;
+    while k < 128 {
+        let (bits, signed) = ((k % 64) as u8 + 1, k < 64);
+        let prefix = if signed { SIGNED } else { UNSIGNED };
+        let mut i = 0;
+        while i < prefix.len() {
+            out[at] = prefix[i];
+            at += 1;
+            i += 1;
+        }
+        if bits >= 10 {
+            out[at] = b'0' + bits / 10;
+            at += 1;
+        }
+        out[at] = b'0' + bits % 10;
+        at += 1;
+        k += 1;
+    }
+    out
+};
 
 /// Writes one checked operation.
 fn write_op(op: DiOp, out: &mut Vec<u8>) {
@@ -191,8 +313,8 @@ const fn low_bits_op(op: DiOp) -> bool {
     )
 }
 
-/// What an expression is: empty, a value (ends in `DW_OP_stack_value`),
-/// or a memory location (ends in `DW_OP_deref`).
+/// What an expression is, its fragment aside: empty, a value (ends in
+/// `DW_OP_stack_value`), or a memory location (ends in `DW_OP_deref`).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Shape {
     Empty,
@@ -200,57 +322,222 @@ enum Shape {
     Memory,
 }
 
-fn shape(debug: &hod_ir::DebugInfo, expr: ExprId) -> Shape {
+/// The operations of `expr` without its fragment.
+fn body(debug: &hod_ir::DebugInfo, expr: ExprId) -> impl Iterator<Item = DiOp> + Clone + '_ {
+    debug.ops(expr).filter(|op| !matches!(op, DiOp::Fragment(..)))
+}
+
+/// The fragment of `expr`, `(offset, size)` in bits (§6.31).
+fn fragment(debug: &hod_ir::DebugInfo, expr: ExprId) -> Option<(u64, u64)> {
     match debug.ops(expr).last() {
+        Some(DiOp::Fragment(offset, size)) => Some((offset, size)),
+        _ => None,
+    }
+}
+
+fn shape(debug: &hod_ir::DebugInfo, expr: ExprId) -> Shape {
+    match body(debug, expr).last() {
         None => Shape::Empty,
         Some(DiOp::StackValue) => Shape::Value,
         Some(_) => Shape::Memory,
     }
 }
 
-/// Whether a range at `at` with expression `expr` gets an entry.
+/// A constant after the conversions that lead its expression, as
+/// `llc`'s instruction selection folds them (`DIExpression::
+/// constantFold`, §6.31): its bits (zero-extended), its width, and how
+/// many operations were folded.
+fn fold(debug: &hod_ir::DebugInfo, expr: ExprId, bits: u64, width: u8) -> (u64, u8, usize) {
+    let (mut v, mut w, mut k) = (bits, width, 0);
+    for op in body(debug, expr) {
+        let DiOp::Convert(to, encoding) = op else { break };
+        let to = to as u8; // 1 to 64: `check_value_expr`
+        if to <= w {
+            v &= mask(to);
+        } else if encoding == u64::from(DW_ATE_SIGNED) && (v >> (w - 1)) & 1 == 1 {
+            v |= mask(to) & !mask(w);
+        }
+        w = to;
+        k += 1;
+    }
+    (v, w, k)
+}
+
+/// The low `bits` bits set.
+const fn mask(bits: u8) -> u64 {
+    if bits >= 64 { u64::MAX } else { (1 << bits) - 1 }
+}
+
+/// Whether the operations `ops` (a stack value's, after any folded
+/// conversion) compute right on a value `width` bits wide pushed
+/// zero-extended, and the width of what they leave: up to the first
+/// conversion only operations that keep the low bits when the value is
+/// narrow, and a first conversion of at most `width` bits (it reads the
+/// low bits); after it the value is typed.
+fn computes(ops: impl Iterator<Item = DiOp>, width: u8) -> Option<u8> {
+    let mut typed = None;
+    for op in ops {
+        if let DiOp::Convert(to, _) = op {
+            if typed.is_none() && to > u64::from(width) {
+                return None;
+            }
+            typed = Some(to as u8);
+        } else if typed.is_none() && width < 64 && !low_bits_op(op) {
+            return None;
+        }
+    }
+    Some(typed.unwrap_or(width))
+}
+
+/// Whether a range at `at` with expression `expr` gets an entry (or,
+/// for a fragment, a piece): §6.23, and for a fragment of `size` bits a
+/// value at least that wide (the piece is its low bits).
 fn located(debug: &hod_ir::DebugInfo, at: ValueLoc, expr: ExprId) -> bool {
-    let narrow = |bits: u32| bits < 64 && !debug.ops(expr).all(low_bits_op);
+    let fits = |width: u8| fragment(debug, expr).is_none_or(|(_, size)| size <= u64::from(width));
     match (at, shape(debug, expr)) {
         (ValueLoc::None, _) | (ValueLoc::Const { .. }, Shape::Memory) => false,
-        (ValueLoc::Frame { .. }, Shape::Empty) => true,
-        (ValueLoc::Frame { size, .. }, Shape::Value) => !narrow(u32::from(size) * 8),
+        (ValueLoc::Frame { size, .. }, Shape::Empty) => fits(size * 8),
+        (ValueLoc::Frame { size, .. }, Shape::Value) => {
+            computes(body(debug, expr), size * 8).is_some_and(fits)
+        }
         (ValueLoc::Frame { size, .. }, Shape::Memory) => size == 8,
-        (ValueLoc::Const { width, .. }, Shape::Empty | Shape::Value) => !narrow(u32::from(width)),
+        (ValueLoc::Const { bits, width }, Shape::Empty | Shape::Value) => {
+            let (_, width, k) = fold(debug, expr, bits, width);
+            computes(body(debug, expr).skip(k), width).is_some_and(fits)
+        }
     }
+}
+
+/// Whether two pieces' bits overlap (`(0, u64::MAX)`: the whole
+/// variable).
+fn overlap(a: (u64, u64), b: (u64, u64)) -> bool {
+    a.0 < b.0.saturating_add(b.1) && b.0 < a.0.saturating_add(a.1)
 }
 
 impl UnitPlan<'_> {
     /// The location list of the instance whose DIE row `row` places
     /// (`LocalPlace::Value`): its located ranges into `value_ranges`.
     pub(crate) fn value_list(&mut self, vars: &[LocalRow], groups: &Groups, row: u32) -> LocalWhat {
+        let debug = self.debug;
         let first = self.value_ranges.len() as u32;
         let at = groups.members.partition_point(|&(h, _)| h < row);
-        for &(head, r) in &groups.members[at..] {
-            if head != row {
-                break;
+        let members = groups.members[at..].iter().take_while(|&&(h, _)| h == row);
+        let pieces = members.clone().any(|&(_, r)| {
+            vars.get(r as usize).is_some_and(|v| {
+                matches!(v.place, LocalPlace::Value { .. }) && fragment(debug, v.expr).is_some()
+            })
+        });
+        if pieces {
+            self.compose(vars, members.map(|&(_, r)| r), first);
+        } else {
+            for &(_, r) in members {
+                let Some(&LocalRow { expr, place: LocalPlace::Value { start, end, at }, .. }) =
+                    vars.get(r as usize)
+                else {
+                    continue;
+                };
+                if end <= start || !located(debug, at, expr) {
+                    continue;
+                }
+                let piece = Piece { at, expr };
+                if self.value_ranges.len() > first as usize
+                    && let Some(last) = self.value_ranges.last_mut()
+                    && last.end == start
+                    && self.value_pieces.get(last.first as usize) == Some(&piece)
+                {
+                    last.end = end;
+                } else {
+                    self.push_range(start, end, &[piece]);
+                }
             }
+        }
+        LocalWhat::List { first, count: self.value_ranges.len() as u32 - first }
+    }
+
+    /// The ranges of a variable described in fragments (§6.31): over
+    /// each stretch of code between the bounds of its rows, the pieces
+    /// that hold there, sorted by offset (`llc`'s `DebugLocEntry`); a
+    /// later row replaces the earlier ones it overlaps. Adjacent equal
+    /// entries are merged; a stretch without a piece has no entry.
+    fn compose(&mut self, vars: &[LocalRow], rows: impl Iterator<Item = u32>, first: u32) {
+        let debug = self.debug;
+        let mut s = std::mem::take(&mut self.piece_scratch);
+        s.rows.clear();
+        s.bounds.clear();
+        s.active.clear();
+        for r in rows {
             let Some(&LocalRow { expr, place: LocalPlace::Value { start, end, at }, .. }) =
                 vars.get(r as usize)
             else {
                 continue;
             };
-            if end <= start || !located(self.debug, at, expr) {
+            if end <= start || !located(debug, at, expr) {
                 continue;
             }
-            let n = self.value_ranges.len();
-            if n > first as usize
+            let bits = fragment(debug, expr).unwrap_or((0, u64::MAX));
+            s.rows.push(PieceRow { start, end, row: r, bits, piece: Piece { at, expr } });
+            s.bounds.extend([start, end]);
+        }
+        s.rows.sort_by_key(|p| (p.start, p.row));
+        s.bounds.sort_unstable();
+        s.bounds.dedup();
+        let mut next = 0;
+        let mut pieces = Vec::new();
+        for w in 1..s.bounds.len() {
+            let (a, b) = (s.bounds[w - 1], s.bounds[w]);
+            s.active.retain(|p| p.end > a);
+            while let Some(&p) = s.rows.get(next) {
+                if p.start > a {
+                    break;
+                }
+                next += 1;
+                s.active.retain(|q| !overlap(q.bits, p.bits));
+                if p.end > a {
+                    s.active.push(p);
+                }
+            }
+            if s.active.is_empty() {
+                continue;
+            }
+            s.active.sort_by_key(|p| p.bits.0);
+            pieces.clear();
+            pieces.extend(s.active.iter().map(|p| p.piece));
+            if self.value_ranges.len() > first as usize
                 && let Some(last) = self.value_ranges.last_mut()
-                && last.end == start
-                && last.at == at
-                && last.expr == expr
+                && last.end == a
+                && self
+                    .value_pieces
+                    .get(last.first as usize..(last.first + last.count) as usize)
+                    .is_some_and(|held| held == pieces.as_slice())
             {
-                last.end = end;
+                last.end = b;
             } else {
-                self.value_ranges.push(Range { start, end, at, expr });
+                self.push_range(a, b, &pieces);
             }
         }
-        LocalWhat::List { first, count: self.value_ranges.len() as u32 - first }
+        self.piece_scratch = s;
+    }
+
+    /// A new range holding `pieces`; the base types their conversions
+    /// name join the unit's, in first use (§6.31).
+    fn push_range(&mut self, start: u32, end: u32, pieces: &[Piece]) {
+        let first = self.value_pieces.len() as u32;
+        self.value_pieces.extend_from_slice(pieces);
+        self.value_ranges.push(Range { start, end, first, count: pieces.len() as u32 });
+        for p in pieces {
+            let skip = match p.at {
+                ValueLoc::Const { bits, width } => fold(self.debug, p.expr, bits, width).2,
+                _ => 0,
+            };
+            for op in body(self.debug, p.expr).skip(skip) {
+                if let DiOp::Convert(bits, encoding) = op {
+                    let t = (bits as u8, encoding as u8);
+                    if !self.base_types.contains(&t) {
+                        self.base_types.push(t);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -284,6 +571,16 @@ const DW_OP_LIT0: u8 = 0x30;
 const DW_OP_CONSTU: u8 = 0x10;
 const DW_OP_CONSTS: u8 = 0x11;
 const DW_OP_STACK_VALUE: u8 = 0x9f;
+const DW_OP_PIECE: u8 = 0x93;
+const DW_OP_CONVERT: u8 = 0xa8;
+const DW_OP_DUP: u8 = 0x12;
+const DW_OP_SHR: u8 = 0x25;
+const DW_OP_NOT: u8 = 0x20;
+const DW_OP_MUL: u8 = 0x1e;
+const DW_OP_SHL: u8 = 0x24;
+const DW_OP_OR: u8 = 0x21;
+const DW_OP_MINUS: u8 = 0x1c;
+const DW_OP_AND: u8 = 0x1a;
 /// The header of a unit's contribution (DWARF 5 §7.29).
 pub(crate) const LISTS_HEADER: usize = 12;
 /// No contribution for the current unit yet.
@@ -308,7 +605,9 @@ impl Writer<'_> {
             self.loclists.extend_from_slice(&0u32.to_le_bytes()); // offset_entry_count
         }
         let at = self.loclists.len();
-        let signed = signed_type(plan, node);
+        let ty = type_encoding(plan, node);
+        let cv =
+            Converts { legacy: self.split, types: &plan.base_types, dies: &self.base_type_dies };
         let base = self.fn_addr.get(l.func as usize).copied().unwrap_or(0);
         self.loclists.push(DW_LLE_BASE_ADDRESSX);
         write_uleb(&mut self.loclists, u64::from(base));
@@ -318,7 +617,23 @@ impl Writer<'_> {
             write_uleb(&mut self.loclists, u64::from(r.start));
             write_uleb(&mut self.loclists, u64::from(r.end));
             self.expr.clear();
-            entry_ops(plan.debug, r, signed, &mut self.expr);
+            let pieces = &plan.value_pieces[r.first as usize..(r.first + r.count) as usize];
+            let mut done = 0; // the bits the pieces so far cover
+            for p in pieces {
+                let bits = fragment(plan.debug, p.expr);
+                if let Some((offset, _)) = bits
+                    && offset > done
+                {
+                    self.expr.push(DW_OP_PIECE);
+                    write_uleb(&mut self.expr, (offset - done) / 8);
+                }
+                entry_ops(plan.debug, p, ty, &cv, &mut self.expr);
+                if let Some((offset, size)) = bits {
+                    self.expr.push(DW_OP_PIECE);
+                    write_uleb(&mut self.expr, size / 8);
+                    done = offset + size;
+                }
+            }
             write_uleb(&mut self.loclists, self.expr.len() as u64);
             self.loclists.extend_from_slice(&self.expr);
         }
@@ -369,19 +684,38 @@ impl Writer<'_> {
     }
 }
 
-/// Whether the variable's type is a signed base type (`llc`'s
+/// The encoding of the variable's type when it is a base type (`llc`'s
 /// `DwarfDebug::emitDebugLocValue` reads the type itself, not through a
 /// typedef).
-fn signed_type(plan: &UnitPlan<'_>, node: DiId) -> bool {
-    let DiNode::LocalVariable(v) = plan.debug.node(node) else { return false };
-    let Some(ty) = v.ty else { return false };
-    matches!(plan.debug.node(ty), DiNode::BasicType(b) if matches!(b.encoding, 0x05 | 0x06))
+fn type_encoding(plan: &UnitPlan<'_>, node: DiId) -> Option<u8> {
+    let DiNode::LocalVariable(v) = plan.debug.node(node) else { return None };
+    match plan.debug.node(v.ty?) {
+        DiNode::BasicType(b) => Some(b.encoding as u8),
+        _ => None,
+    }
 }
 
-/// The location of one entry (module doc).
-fn entry_ops(debug: &hod_ir::DebugInfo, r: &Range, signed: bool, out: &mut Vec<u8>) {
-    let shape = shape(debug, r.expr);
-    match r.at {
+/// How a unit writes `DW_OP_LLVM_convert` (§6.31): `DW_OP_convert` and
+/// the base type DIE at `dies[k]` for `types[k]`, or, in a split unit,
+/// `llc`'s legacy operations (`DwarfDebug::useOpConvert` is false for
+/// gdb with split DWARF).
+struct Converts<'w> {
+    legacy: bool,
+    types: &'w [(u8, u8)],
+    dies: &'w [u32],
+}
+
+/// The location of one piece (module doc), without its `DW_OP_piece`.
+fn entry_ops(
+    debug: &hod_ir::DebugInfo,
+    p: &Piece,
+    ty: Option<u8>,
+    cv: &Converts<'_>,
+    out: &mut Vec<u8>,
+) {
+    let shape = shape(debug, p.expr);
+    let mut skip = 0;
+    match p.at {
         ValueLoc::Frame { offset, size } => {
             out.push(DW_OP_FBREG);
             write_sleb(out, offset);
@@ -396,8 +730,15 @@ fn entry_ops(debug: &hod_ir::DebugInfo, r: &Range, signed: bool, out: &mut Vec<u
             }
         }
         ValueLoc::Const { bits, width } => {
-            if signed {
-                let shift = 64 - u32::from(width);
+            let (mut bits, width, k) = fold(debug, p.expr, bits, width);
+            skip = k;
+            // LLVM 22: a boolean's constant is 0 or 1; an `i1` is
+            // zero-extended (19 sign-extended it).
+            if ty == Some(DW_ATE_BOOLEAN) && bits != 0 {
+                bits = 1;
+            }
+            if matches!(ty, Some(0x05 | 0x06)) {
+                let shift = if width > 1 { 64 - u32::from(width) } else { 0 };
                 out.push(DW_OP_CONSTS);
                 write_sleb(out, ((bits << shift) as i64) >> shift);
             } else if bits < 32 {
@@ -409,16 +750,72 @@ fn entry_ops(debug: &hod_ir::DebugInfo, r: &Range, signed: bool, out: &mut Vec<u
         }
         ValueLoc::None => return,
     }
-    let n = debug.ops(r.expr).count();
-    for (k, op) in debug.ops(r.expr).enumerate() {
+    let n = body(debug, p.expr).count();
+    let mut prev: Option<u8> = None; // the legacy form's pending conversion
+    for (k, op) in body(debug, p.expr).enumerate().skip(skip) {
         if shape == Shape::Memory && k + 1 == n {
             break; // the last `DW_OP_deref` is the memory location's own
         }
-        write_op(op, out);
+        match op {
+            DiOp::Convert(bits, encoding) if cv.legacy => {
+                // `DwarfExpression::addExpression`: a widening pair is an
+                // extension, anything else waits for the next.
+                let (bits, encoding) = (bits as u8, encoding as u8);
+                match prev {
+                    Some(from) if from < bits => {
+                        if encoding == DW_ATE_SIGNED {
+                            legacy_sext(from, out);
+                        } else {
+                            legacy_zext(from, out);
+                        }
+                        prev = None;
+                    }
+                    _ => prev = Some(bits),
+                }
+            }
+            DiOp::Convert(bits, encoding) => {
+                let t = (bits as u8, encoding as u8);
+                let die = cv.types.iter().position(|&u| u == t).and_then(|k| cv.dies.get(k));
+                let Some(&die) = die else {
+                    unreachable!("a located conversion's base type is the unit's (push_range)")
+                };
+                out.push(DW_OP_CONVERT);
+                // `llc`'s `ULEB128PadSize`: four bytes.
+                out.extend_from_slice(&[
+                    (die & 0x7f) as u8 | 0x80,
+                    ((die >> 7) & 0x7f) as u8 | 0x80,
+                    ((die >> 14) & 0x7f) as u8 | 0x80,
+                    (die >> 21) as u8,
+                ]);
+            }
+            _ => write_op(op, out),
+        }
     }
-    if matches!(r.at, ValueLoc::Const { .. }) && shape == Shape::Empty {
+    if matches!(p.at, ValueLoc::Const { .. }) && shape == Shape::Empty {
         out.push(DW_OP_STACK_VALUE);
     }
+}
+
+/// `llc`'s `emitLegacySExt`: `(((X >> (from - 1)) * ~0) << from) | X`.
+fn legacy_sext(from: u8, out: &mut Vec<u8>) {
+    out.extend_from_slice(&[DW_OP_DUP, DW_OP_CONSTU]);
+    write_uleb(out, u64::from(from) - 1);
+    out.extend_from_slice(&[DW_OP_SHR, DW_OP_LIT0, DW_OP_NOT, DW_OP_MUL, DW_OP_CONSTU]);
+    write_uleb(out, u64::from(from));
+    out.extend_from_slice(&[DW_OP_SHL, DW_OP_OR]);
+}
+
+/// `llc`'s `emitLegacyZExt`: `X & ((1 << from) - 1)`.
+fn legacy_zext(from: u8, out: &mut Vec<u8>) {
+    if from / 7 < 5 {
+        out.push(DW_OP_CONSTU);
+        write_uleb(out, mask(from));
+    } else {
+        out.extend_from_slice(&[DW_OP_LIT0 + 1, DW_OP_CONSTU]);
+        write_uleb(out, u64::from(from));
+        out.extend_from_slice(&[DW_OP_SHL, DW_OP_LIT0 + 1, DW_OP_MINUS]);
+    }
+    out.push(DW_OP_AND);
 }
 
 /// `.debug_loclists.dwo` (§6.15, §6.23): the lists the writer put after

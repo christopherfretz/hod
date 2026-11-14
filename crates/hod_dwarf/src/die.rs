@@ -159,6 +159,13 @@ pub struct UnitPlan<'a> {
     /// WP-162: the located ranges of the variables described by value
     /// records, by list (`LocalWhat::List`, §6.23).
     pub(crate) value_ranges: Vec<crate::loclists::Range>,
+    /// WP-225: what each range holds, by `Range::pieces` (one piece, or
+    /// the fragments of a variable described in pieces, §6.31).
+    pub(crate) value_pieces: Vec<crate::loclists::Piece>,
+    /// WP-225: the base types the located expressions convert to
+    /// (`DW_OP_convert`), in first use: `(bits, DW_ATE_*)`.
+    pub(crate) base_types: Vec<(u8, u8)>,
+    pub(crate) piece_scratch: crate::loclists::PieceScratch,
     /// The `.debug_addr` entries the functions' DIEs take.
     pub(crate) code_addrs: u32,
     pub(crate) fn_scratch: crate::func::FnScratch,
@@ -318,6 +325,9 @@ impl<'a> UnitPlan<'a> {
             locals: Vec::new(),
             ranges: Vec::new(),
             value_ranges: Vec::new(),
+            value_pieces: Vec::new(),
+            base_types: Vec::new(),
+            piece_scratch: crate::loclists::PieceScratch::default(),
             code_addrs: 0,
             fn_scratch: crate::func::FnScratch::default(),
             scope_dies: crate::scope::ScopeDies::new(module),
@@ -672,6 +682,10 @@ pub(crate) struct Writer<'a> {
     /// (`R_X86_64_DTPOFF64`), ascending (§6.24).
     pub(crate) split: bool,
     pub(crate) tls_addrs: Vec<u32>,
+    /// WP-225: the unit offsets of the base type DIEs of
+    /// `UnitPlan::base_types` (empty in a split unit, whose conversions
+    /// take `llc`'s legacy form, §6.31).
+    pub(crate) base_type_dies: Vec<u32>,
 }
 
 #[inline]
@@ -880,6 +894,22 @@ impl<'a> Writer<'a> {
         }
         if ranges || pc_lists {
             self.sec_offset(Target::Rnglists, rnglists_base as i64);
+        }
+
+        // WP-225 (§6.31): the base types of the unit's `DW_OP_convert`s
+        // are its first children, as `llc`'s `createBaseTypeDIEs` puts
+        // them, so that their offsets fit the operands' four bytes.
+        self.base_type_dies.clear();
+        if n > 1 {
+            for &(bits, encoding) in &plan.base_types {
+                let offset =
+                    u32::try_from(self.info.len() - unit_start).map_err(|_| Error::TooLarge)?;
+                self.base_type_dies.push(offset);
+                self.abbrev(code(fam::BASE_TYPE, 0, false));
+                self.strx(crate::loclists::base_type_name(bits, encoding))?;
+                self.info.push(encoding);
+                write_uleb(&mut self.info, u64::from(bits).div_ceil(8));
+            }
         }
 
         // The children, depth first.
@@ -1135,6 +1165,7 @@ pub fn write_debug_info(
         loclists_unit: crate::loclists::NO_LISTS,
         split: false,
         tls_addrs: Vec::new(),
+        base_type_dies: Vec::new(),
     };
     if let Some(u) = units.iter().find(|u| !u.plan.sealed) {
         return Err(unsupported(u.plan.unit, "a unit plan that is not sealed"));

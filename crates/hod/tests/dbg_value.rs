@@ -376,13 +376,24 @@ fn declined(text: &str) -> String {
 #[test]
 fn refusals_are_named() {
     let cases = [
+        // WP-225 (§6.31): a fragment that is not whole bytes; a
+        // conversion wider than 64 bits, to a float, or under a memory
+        // location.
         (
             hod_dwarf::DEBUG_DBG_VALUE_FRAGMENT,
-            "    #dbg_value(i32 %a, !37, !DIExpression(DW_OP_LLVM_fragment, 0, 16), !40)\n",
+            "    #dbg_value(i32 %a, !37, !DIExpression(DW_OP_LLVM_fragment, 0, 12), !40)\n",
         ),
         (
             hod_dwarf::DEBUG_DBG_VALUE_EXPR,
-            "    #dbg_value(i32 %a, !37, !DIExpression(DW_OP_LLVM_convert, 32, DW_ATE_signed, DW_OP_stack_value), !40)\n",
+            "    #dbg_value(i32 %a, !37, !DIExpression(DW_OP_LLVM_convert, 32, DW_ATE_signed, DW_OP_LLVM_convert, 128, DW_ATE_signed, DW_OP_stack_value), !40)\n",
+        ),
+        (
+            hod_dwarf::DEBUG_DBG_VALUE_EXPR,
+            "    #dbg_value(i32 %a, !37, !DIExpression(DW_OP_LLVM_convert, 32, DW_ATE_float, DW_OP_stack_value), !40)\n",
+        ),
+        (
+            hod_dwarf::DEBUG_DBG_VALUE_EXPR,
+            "    #dbg_value(ptr %q, !37, !DIExpression(DW_OP_LLVM_convert, 64, DW_ATE_unsigned, DW_OP_deref), !40)\n",
         ),
         (
             hod_dwarf::DEBUG_DBG_VALUE_EXPR,
@@ -398,5 +409,209 @@ fn refusals_are_named() {
             assert_eq!(declined(&expressions(triple, 5, record)), name, "{triple}: {record}");
         }
         assert_eq!(declined(&expressions(triple, 4, "")), hod_dwarf::DWARF_4_SHAPE, "{triple}");
+    }
+}
+
+/// WP-225 (§6.31): conversions and fragments, after one block of values
+/// with homes. `split`: split DWARF (`chain.dwo`, `compile`'s name).
+fn pieces(triple: &str, split: bool) -> String {
+    let split_name = if split { ", splitDebugFilename: \"chain.dwo\"" } else { "" };
+    format!(
+        r#"target triple = "{triple}"
+
+declare void @use(i32)
+declare void @usep(ptr)
+
+define dso_local i32 @g(i32 noundef %n, ptr noundef %p) !dbg !10 {{
+entry:
+  %a = add i32 %n, 1, !dbg !20
+  %q = getelementptr i8, ptr %p, i64 8, !dbg !20
+  %w = sext i32 %n to i64, !dbg !20
+  br label %b, !dbg !20
+b:
+    #dbg_value(i32 %a, !30, !DIExpression(DW_OP_LLVM_convert, 32, DW_ATE_signed, DW_OP_LLVM_convert, 64, DW_ATE_signed, DW_OP_stack_value), !40)
+    #dbg_value(i64 %w, !31, !DIExpression(DW_OP_LLVM_convert, 64, DW_ATE_unsigned, DW_OP_LLVM_convert, 8, DW_ATE_unsigned, DW_OP_stack_value), !40)
+    #dbg_value(i64 0, !34, !DIExpression(DW_OP_LLVM_convert, 64, DW_ATE_unsigned, DW_OP_LLVM_convert, 8, DW_ATE_unsigned, DW_OP_stack_value), !40)
+    #dbg_value(i8 -56, !35, !DIExpression(DW_OP_LLVM_convert, 8, DW_ATE_signed, DW_OP_LLVM_convert, 32, DW_ATE_signed, DW_OP_stack_value), !40)
+    #dbg_value(i1 true, !36, !DIExpression(DW_OP_not, DW_OP_LLVM_convert, 1, DW_ATE_unsigned, DW_OP_LLVM_convert, 32, DW_ATE_unsigned, DW_OP_stack_value), !40)
+    #dbg_value(i32 5, !37, !DIExpression(), !40)
+    #dbg_value(i64 %w, !50, !DIExpression(DW_OP_LLVM_fragment, 0, 64), !40)
+    #dbg_value(i64 3, !50, !DIExpression(DW_OP_LLVM_fragment, 64, 64), !40)
+    #dbg_value(ptr %q, !51, !DIExpression(DW_OP_plus_uconst, 8, DW_OP_stack_value, DW_OP_LLVM_fragment, 64, 64), !40)
+    #dbg_value(ptr %q, !52, !DIExpression(DW_OP_deref, DW_OP_LLVM_fragment, 0, 64), !40)
+    #dbg_value(i32 %a, !53, !DIExpression(DW_OP_LLVM_convert, 32, DW_ATE_signed, DW_OP_LLVM_convert, 64, DW_ATE_signed, DW_OP_stack_value, DW_OP_LLVM_fragment, 64, 64), !40)
+    #dbg_value(i32 %a, !54, !DIExpression(DW_OP_LLVM_fragment, 0, 64), !40)
+  call void @use(i32 %a), !dbg !21
+    #dbg_value(i64 poison, !50, !DIExpression(DW_OP_LLVM_fragment, 0, 64), !40)
+    #dbg_value(i32 0, !37, !DIExpression(), !40)
+  call void @usep(ptr %q), !dbg !23
+    #dbg_value(ptr %q, !50, !DIExpression(DW_OP_deref), !40)
+  call void @usep(ptr null), !dbg !24
+  %t = trunc i64 %w to i32, !dbg !24
+  ret i32 %t, !dbg !22
+}}
+
+!llvm.dbg.cu = !{{!0}}
+!llvm.module.flags = !{{!5, !6}}
+
+!0 = distinct !DICompileUnit(language: DW_LANG_C11, file: !1, producer: "clang", isOptimized: true, runtimeVersion: 0{split_name}, emissionKind: FullDebug, splitDebugInlining: false, nameTableKind: None)
+!1 = !DIFile(filename: "pieces.c", directory: "/hod/tests")
+!5 = !{{i32 7, !"Dwarf Version", i32 5}}
+!6 = !{{i32 2, !"Debug Info Version", i32 3}}
+!10 = distinct !DISubprogram(name: "g", scope: !1, file: !1, line: 1, type: !11, scopeLine: 1, flags: DIFlagPrototyped, spFlags: DISPFlagDefinition | DISPFlagOptimized, unit: !0)
+!11 = !DISubroutineType(types: !12)
+!12 = !{{!14, !14}}
+!14 = !DIBasicType(name: "int", size: 32, encoding: DW_ATE_signed)
+!16 = !DIBasicType(name: "long", size: 64, encoding: DW_ATE_signed)
+!17 = !DIBasicType(name: "_Bool", size: 8, encoding: DW_ATE_boolean)
+!18 = !DIBasicType(name: "unsigned char", size: 8, encoding: DW_ATE_unsigned_char)
+!20 = !DILocation(line: 2, scope: !10)
+!21 = !DILocation(line: 3, scope: !10)
+!22 = !DILocation(line: 4, scope: !10)
+!23 = !DILocation(line: 13, scope: !10)
+!24 = !DILocation(line: 14, scope: !10)
+!30 = !DILocalVariable(name: "wide", scope: !10, file: !1, line: 5, type: !16)
+!31 = !DILocalVariable(name: "low", scope: !10, file: !1, line: 6, type: !18)
+!34 = !DILocalVariable(name: "flag", scope: !10, file: !1, line: 9, type: !17)
+!35 = !DILocalVariable(name: "folded", scope: !10, file: !1, line: 10, type: !14)
+!36 = !DILocalVariable(name: "nflag", scope: !10, file: !1, line: 11, type: !14)
+!37 = !DILocalVariable(name: "b5", scope: !10, file: !1, line: 12, type: !17)
+!45 = !DICompositeType(tag: DW_TAG_structure_type, name: "P", file: !1, line: 1, size: 128, elements: !46)
+!46 = !{{!47, !48}}
+!47 = !DIDerivedType(tag: DW_TAG_member, name: "x", scope: !45, file: !1, line: 1, baseType: !16, size: 64)
+!48 = !DIDerivedType(tag: DW_TAG_member, name: "y", scope: !45, file: !1, line: 1, baseType: !16, size: 64, offset: 64)
+!50 = !DILocalVariable(name: "pa", scope: !10, file: !1, line: 13, type: !45)
+!51 = !DILocalVariable(name: "pb", scope: !10, file: !1, line: 14, type: !45)
+!52 = !DILocalVariable(name: "pc", scope: !10, file: !1, line: 15, type: !45)
+!53 = !DILocalVariable(name: "pd", scope: !10, file: !1, line: 16, type: !45)
+!54 = !DILocalVariable(name: "pe", scope: !10, file: !1, line: 17, type: !45)
+!40 = !DILocation(line: 5, scope: !10)
+"#
+    )
+}
+
+/// `ops_of`, with each `DW_OP_convert`'s base type by name only.
+fn named_ops(entries: &[(u64, u64, String)]) -> Vec<String> {
+    ops_of(entries)
+        .into_iter()
+        .map(|e| {
+            e.split(", ")
+                .map(|op| match op.strip_prefix("DW_OP_convert (") {
+                    Some(rest) => format!(
+                        "DW_OP_convert {}",
+                        rest.split_once(") ").map_or(rest, |(_, n)| n).trim_matches('"')
+                    ),
+                    None => op.to_owned(),
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .collect()
+}
+
+/// §6.31, as `llc` 22 writes each shape (`spec/landed/dwarf/WP-225.md`):
+/// a conversion of a home's value by `DW_OP_convert` and a base type DIE
+/// (the unit's first children); the leading conversions of a constant
+/// folded into it; LLVM 22's constants (a boolean is 0 or 1, an `i1` is
+/// not sign-extended); fragments composed into pieces, gaps as empty
+/// pieces, a poison record ending its piece, a record of the whole
+/// variable ending every piece, and a piece wider than its value left
+/// out. Split, the conversions take `llc`'s legacy form.
+#[test]
+fn pieces_and_conversions() {
+    let Some(dwarfdump) = tool("llvm-dwarfdump") else { return };
+    let dir = Scratch::new("dbg-value-pieces");
+    for triple in TRIPLES {
+        let arch = triple.split('-').next().unwrap_or(triple);
+        let plain = dir.write(&format!("{arch}.o"), compile(&pieces(triple, false), None));
+        let dwo = dir.join(format!("{arch}-split.dwo"));
+        let split =
+            dir.write(&format!("{arch}-split.o"), compile(&pieces(triple, true), Some(&dwo)));
+        for file in [&plain, &split, &dwo] {
+            let verify = output(Command::new(&dwarfdump).arg("--verify").arg(file));
+            assert!(verify.contains("No errors."), "{arch}: {verify}");
+        }
+        let ops = |file: &Path, name: &str| named_ops(&entries(&dwarfdump, file, name));
+        let info = output(Command::new(&dwarfdump).arg("--debug-info").arg(&plain));
+        let first: Vec<&str> = info
+            .lines()
+            .skip_while(|l| !l.contains("DW_TAG_compile_unit"))
+            .filter(|l| l.contains("DW_TAG_"))
+            .skip(1)
+            .take(7)
+            .map(|l| l.split("DW_TAG_").nth(1).unwrap_or(l))
+            .collect();
+        assert_eq!(first[..6], ["base_type"; 6], "{arch}: {info}");
+        assert_eq!(first[6], "subprogram", "{arch}: {info}");
+        assert_eq!(
+            ops(&plain, "wide"),
+            [
+                "DW_OP_fbreg, DW_OP_deref_size 0x4, DW_OP_convert DW_ATE_signed_32, DW_OP_convert DW_ATE_signed_64, DW_OP_stack_value"
+            ],
+            "{arch}"
+        );
+        assert_eq!(
+            ops(&plain, "low"),
+            [
+                "DW_OP_fbreg, DW_OP_deref, DW_OP_convert DW_ATE_unsigned_64, DW_OP_convert DW_ATE_unsigned_8, DW_OP_stack_value"
+            ],
+            "{arch}"
+        );
+        assert_eq!(ops(&plain, "flag"), ["DW_OP_lit0, DW_OP_stack_value"], "{arch}");
+        assert_eq!(ops(&plain, "folded"), ["DW_OP_consts -56, DW_OP_stack_value"], "{arch}");
+        assert_eq!(
+            ops(&plain, "nflag"),
+            [
+                "DW_OP_consts +1, DW_OP_not, DW_OP_convert DW_ATE_unsigned_1, DW_OP_convert DW_ATE_unsigned_32, DW_OP_stack_value"
+            ],
+            "{arch}"
+        );
+        assert_eq!(
+            ops(&plain, "b5"),
+            ["DW_OP_lit1, DW_OP_stack_value", "DW_OP_lit0, DW_OP_stack_value"],
+            "{arch}"
+        );
+        assert_eq!(
+            ops(&plain, "pa"),
+            [
+                "DW_OP_fbreg, DW_OP_piece 0x8, DW_OP_lit3, DW_OP_stack_value, DW_OP_piece 0x8",
+                "DW_OP_piece 0x8, DW_OP_lit3, DW_OP_stack_value, DW_OP_piece 0x8",
+                "DW_OP_fbreg, DW_OP_deref",
+            ],
+            "{arch}"
+        );
+        assert_eq!(
+            ops(&plain, "pb"),
+            [
+                "DW_OP_piece 0x8, DW_OP_fbreg, DW_OP_deref, DW_OP_plus_uconst 0x8, DW_OP_stack_value, DW_OP_piece 0x8"
+            ],
+            "{arch}"
+        );
+        assert_eq!(ops(&plain, "pc"), ["DW_OP_fbreg, DW_OP_deref, DW_OP_piece 0x8"], "{arch}");
+        assert_eq!(
+            ops(&plain, "pd"),
+            [
+                "DW_OP_piece 0x8, DW_OP_fbreg, DW_OP_deref_size 0x4, DW_OP_convert DW_ATE_signed_32, DW_OP_convert DW_ATE_signed_64, DW_OP_stack_value, DW_OP_piece 0x8"
+            ],
+            "{arch}"
+        );
+        assert!(ops(&plain, "pe").is_empty(), "{arch}: {:?}", ops(&plain, "pe"));
+        // Split: `emitLegacySExt` for the widening, nothing for the
+        // truncation; no base type DIEs.
+        assert_eq!(
+            ops(&dwo, "wide"),
+            [
+                "DW_OP_fbreg, DW_OP_deref_size 0x4, DW_OP_dup, DW_OP_constu 0x1f, DW_OP_shr, DW_OP_lit0, DW_OP_not, DW_OP_mul, DW_OP_constu 0x20, DW_OP_shl, DW_OP_or, DW_OP_stack_value"
+            ],
+            "{arch}"
+        );
+        assert_eq!(ops(&dwo, "low"), ["DW_OP_fbreg, DW_OP_deref, DW_OP_stack_value"], "{arch}");
+        assert_eq!(
+            ops(&dwo, "nflag"),
+            ["DW_OP_consts +1, DW_OP_not, DW_OP_constu 0x1, DW_OP_and, DW_OP_stack_value"],
+            "{arch}"
+        );
+        let dwo_info = output(Command::new(&dwarfdump).arg("--debug-info").arg(&dwo));
+        assert!(!dwo_info.contains("DW_ATE_signed_32"), "{arch}: {dwo_info}");
     }
 }

@@ -25,6 +25,13 @@ mod float_gen;
 #[path = "common/aggr_gen.rs"]
 mod aggr_gen;
 
+#[path = "common/generic_atomics.rs"]
+mod generic_atomics;
+
+use generic_atomics::{
+    GENERIC_ROUNDS, GenericFn, generic_driver, generic_module, generic_table, newer_than_19,
+};
+
 use float_gen::{Check, Rng, Suite, T, cases, check};
 
 const MAJORS: [u32; 2] = [22, 19];
@@ -679,177 +686,6 @@ fn wide_atomics_without_cx16_call_libatomic() {
 
 // ---- atomics below their size's alignment: libatomic's generic routines ----
 
-/// What a function of the under-aligned suite does to its cell.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Generic {
-    Load,
-    Store,
-    Xchg,
-    Cas,
-}
-
-/// A function of the under-aligned suite: `void g<k>(cell, in, out)`.
-#[derive(Clone, Copy, Debug)]
-struct GenericFn {
-    op: Generic,
-    ty: &'static str,
-    /// The type's size in bytes.
-    size: u32,
-    /// The access's alignment, below `size`.
-    align: u32,
-    /// The ordering text (two orderings for a `cmpxchg`).
-    order: &'static str,
-    weak: bool,
-}
-
-/// How many times the driver calls each function.
-const GENERIC_ROUNDS: usize = 4;
-
-/// Every operation that has a generic routine, for each type at each
-/// alignment below its size that is listed; `cmpxchg` for the integers
-/// and the pointer only (LLVM's verifier).
-fn generic_table() -> Vec<GenericFn> {
-    let types: [(&'static str, u32, &'static [u32], bool); 8] = [
-        ("i16", 2, &[1], true),
-        ("i32", 4, &[1, 2], true),
-        ("i64", 8, &[1, 4], true),
-        ("ptr", 8, &[2], true),
-        ("half", 2, &[1], false),
-        ("float", 4, &[2], false),
-        ("double", 8, &[1, 4], false),
-        ("i128", 16, &[1, 8], true),
-    ];
-    let mut table = Vec::new();
-    for (ty, size, aligns, cas) in types {
-        for &align in aligns {
-            let low = align == 1;
-            let f = |op, order, weak| GenericFn { op, ty, size, align, order, weak };
-            table.push(f(Generic::Load, if low { "seq_cst" } else { "acquire" }, false));
-            table.push(f(Generic::Store, if low { "seq_cst" } else { "release" }, false));
-            table.push(f(Generic::Xchg, if low { "seq_cst" } else { "acq_rel" }, false));
-            if cas {
-                table.push(f(Generic::Cas, "seq_cst seq_cst", false));
-                table.push(f(Generic::Cas, "acq_rel monotonic", true));
-            }
-        }
-    }
-    table
-}
-
-/// The module: each function reads its operands from `in` (the value, or
-/// the expected value and, 16 bytes on, the new one), does its one atomic
-/// access to `cell` and writes what it read to `out` (the value, then at
-/// 16 a `cmpxchg`'s flag).
-fn generic_module(table: &[GenericFn]) -> String {
-    use std::fmt::Write as _;
-    let mut text = aggr_gen::header();
-    for (k, f) in table.iter().enumerate() {
-        let GenericFn { ty, align, order, .. } = *f;
-        let core = match f.op {
-            Generic::Load => format!(
-                "  %v = load atomic {ty}, ptr %cell {order}, align {align}\n  \
-                 store {ty} %v, ptr %out, align 1\n"
-            ),
-            Generic::Store => format!(
-                "  %x = load {ty}, ptr %in, align 1\n  \
-                 store atomic {ty} %x, ptr %cell {order}, align {align}\n"
-            ),
-            Generic::Xchg => format!(
-                "  %x = load {ty}, ptr %in, align 1\n  \
-                 %v = atomicrmw xchg ptr %cell, {ty} %x {order}, align {align}\n  \
-                 store {ty} %v, ptr %out, align 1\n"
-            ),
-            Generic::Cas => format!(
-                "  %e = load {ty}, ptr %in, align 1\n  \
-                 %in.n = getelementptr i8, ptr %in, i64 16\n  \
-                 %n = load {ty}, ptr %in.n, align 1\n  \
-                 %r = cmpxchg {}ptr %cell, {ty} %e, {ty} %n {order}, align {align}\n  \
-                 %old = extractvalue {{ {ty}, i1 }} %r, 0\n  \
-                 %ok = extractvalue {{ {ty}, i1 }} %r, 1\n  \
-                 store {ty} %old, ptr %out, align 1\n  \
-                 %flag = zext i1 %ok to i8\n  \
-                 %out.k = getelementptr i8, ptr %out, i64 16\n  \
-                 store i8 %flag, ptr %out.k, align 1\n",
-                if f.weak { "weak " } else { "" }
-            ),
-        };
-        write!(
-            text,
-            "define void @g{k}(ptr %cell, ptr %in, ptr %out) {{\nentry:\n{core}  ret void\n}}\n\n"
-        )
-        .unwrap();
-    }
-    text.push_str(aggr_gen::PIE_FLAGS);
-    text
-}
-
-/// The C driver: each function [`GENERIC_ROUNDS`] times on a cell placed
-/// at its alignment past a 64-byte boundary (so it honors the access's
-/// alignment and no more), every other `cmpxchg` with the expected value
-/// equal to the cell's. It works out what the cell and `out` must hold by
-/// copying bytes, checks the bytes around the cell, and prints
-/// `compared N wrong M`.
-fn generic_driver(table: &[GenericFn]) -> String {
-    use std::fmt::Write as _;
-    let mut c = String::from(
-        "#include <stdio.h>\n#include <string.h>\n\
-         typedef void (*fn)(void *, const void *, void *);\n\
-         enum { LOAD, STORE, XCHG, CAS };\n",
-    );
-    for k in 0..table.len() {
-        writeln!(c, "void g{k}(void *, const void *, void *);").unwrap();
-    }
-    c.push_str("static const struct { fn f; int op, size, align; } fs[] = {\n");
-    for (k, f) in table.iter().enumerate() {
-        let op = match f.op {
-            Generic::Load => "LOAD",
-            Generic::Store => "STORE",
-            Generic::Xchg => "XCHG",
-            Generic::Cas => "CAS",
-        };
-        writeln!(c, "  {{ g{k}, {op}, {}, {} }},", f.size, f.align).unwrap();
-    }
-    write!(
-        c,
-        "}};\nint main(void) {{\n  unsigned n = 0, wrong = 0;\n  \
-         for (unsigned i = 0; i < sizeof fs / sizeof fs[0]; i++) {{\n    \
-         for (int round = 0; round < {GENERIC_ROUNDS}; round++) {{\n      \
-         _Alignas(64) unsigned char buf[64];\n      \
-         unsigned char in[32], out[32], was[16], cell_want[16], out_want[32];\n      \
-         int size = fs[i].size, at = fs[i].align;\n      \
-         unsigned char *cell = buf + at;\n      \
-         memset(buf, 0xee, sizeof buf);\n      \
-         for (int b = 0; b < size; b++) was[b] = (unsigned char)(0x11 * (i + 1) + 7 * b + 31 * round);\n      \
-         memcpy(cell, was, size);\n      \
-         for (int b = 0; b < 32; b++) in[b] = (unsigned char)(0xc3 ^ (5 * b + 13 * i + round));\n      \
-         if (fs[i].op == CAS && (round & 1)) memcpy(in, was, size);\n      \
-         memset(out, 0xa5, sizeof out);\n      \
-         memset(out_want, 0xa5, sizeof out_want);\n      \
-         memcpy(cell_want, was, size);\n      \
-         switch (fs[i].op) {{\n      \
-         case LOAD: memcpy(out_want, was, size); break;\n      \
-         case STORE: memcpy(cell_want, in, size); break;\n      \
-         case XCHG: memcpy(out_want, was, size); memcpy(cell_want, in, size); break;\n      \
-         default: {{\n        \
-         int same = memcmp(was, in, size) == 0;\n        \
-         memcpy(out_want, was, size);\n        \
-         out_want[16] = (unsigned char)same;\n        \
-         if (same) memcpy(cell_want, in + 16, size);\n      \
-         }}\n      \
-         }}\n      \
-         fs[i].f(cell, in, out);\n      \
-         int bad = memcmp(cell, cell_want, size) != 0 || memcmp(out, out_want, sizeof out) != 0;\n      \
-         for (int b = 0; b < 64; b++)\n        \
-         if ((b < at || b >= at + size) && buf[b] != 0xee) bad = 1;\n      \
-         n++;\n      \
-         if (bad) {{ wrong++; printf(\"wrong: g%u round %d\\n\", i, round); }}\n    \
-         }}\n  }}\n  \
-         printf(\"compared %u wrong %u\\n\", n, wrong);\n  return wrong != 0;\n}}\n"
-    )
-    .unwrap();
-    c
-}
-
 /// §5.6.10: an atomic load, store, `atomicrmw xchg` or `cmpxchg` whose
 /// alignment is below its size calls libatomic's generic routine
 /// (`__atomic_load`, `__atomic_store`, `__atomic_exchange`,
@@ -860,21 +696,29 @@ fn generic_driver(table: &[GenericFn]) -> String {
 #[test]
 fn under_aligned_atomics_run_against_libatomic() {
     use std::path::{Path, PathBuf};
-    let table = generic_table();
-    let text = generic_module(&table);
+    let table = generic_table(false, false);
+    let module = |keep: &dyn Fn(&GenericFn) -> bool| {
+        generic_module(&table, &aggr_gen::header(), "", aggr_gen::PIE_FLAGS, keep)
+    };
+    let text = module(&|_| true);
     let (m, bodies) = aggr_gen::parse(&text);
     let scratch = hod_testutil::Scratch::new("x64-leftovers-generic-atomic");
-    let mut legs: Vec<(String, PathBuf)> = Vec::new();
+    let mut legs: Vec<(String, Vec<PathBuf>)> = Vec::new();
     for (mode, stress) in [("plain", hod_cg::Stress::default()), ("stress", hod_cg::Stress::ALL)] {
         let bytes = hod_x64::compile_to_object(&m, &bodies, &aggr_gen::pic(stress))
             .unwrap_or_else(|e| panic!("{mode}: {e}"));
-        legs.push((format!("hod-{mode}"), scratch.write(&format!("hod-{mode}.o"), bytes)));
+        legs.push((format!("hod-{mode}"), vec![scratch.write(&format!("hod-{mode}.o"), bytes)]));
     }
-    for major in MAJORS {
-        let name = format!("llc{major}");
-        if let Some(object) = aggr_gen::llc(&scratch, major, &name, &text) {
-            legs.push((name, object));
-        }
+    if let Some(object) = aggr_gen::llc(&scratch, 22, "llc22", &text) {
+        legs.push(("llc22".into(), vec![object]));
+    }
+    // `llc` 19 has no `usub_cond`, `usub_sat`, `fmaximum`, `fminimum`:
+    // those functions come from `llc` 22 in its leg.
+    if let (Some(old), Some(new)) = (
+        aggr_gen::llc(&scratch, 19, "llc19", &module(&|f| !newer_than_19(f))),
+        aggr_gen::llc(&scratch, 22, "llc22-new", &module(&newer_than_19)),
+    ) {
+        legs.push(("llc19".into(), vec![old, new]));
     }
     if !has_libatomic() {
         eprintln!("note: the x86-64 cross toolchain has no libatomic: not linked or run");
@@ -884,10 +728,11 @@ fn under_aligned_atomics_run_against_libatomic() {
     let driver = toolchain.compile_c(&scratch, "driver", &generic_driver(&table), &["-fPIE"]);
     let want = format!("compared {} wrong 0", table.len() * GENERIC_ROUNDS);
     for linker in &toolchain.linkers {
-        for (leg, object) in &legs {
+        for (leg, objects) in &legs {
             let program = scratch.join(format!("{leg}-{}", linker.name));
-            let inputs: Vec<&Path> =
-                vec![driver.as_path(), object.as_path(), Path::new("-latomic")];
+            let mut inputs: Vec<&Path> = vec![driver.as_path()];
+            inputs.extend(objects.iter().map(PathBuf::as_path));
+            inputs.push(Path::new("-latomic"));
             toolchain.link_ok(linker, &["-pie"], &inputs, &program);
             let ran = toolchain.run(linker, &program);
             let out = ran.stdout_text();

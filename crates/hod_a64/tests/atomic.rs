@@ -16,6 +16,13 @@ mod aggr_gen;
 #[path = "common/atomic_threads.rs"]
 mod atomic_threads;
 
+#[path = "../../hod_x64/tests/common/generic_atomics.rs"]
+mod generic_atomics;
+
+use generic_atomics::{
+    GENERIC_ROUNDS, GenericFn, generic_driver, generic_module, generic_table, newer_than_19,
+};
+
 use std::fmt::Write as _;
 
 use aggr_gen::{Report, Rng, Suite, T, assert_agrees, bytes_of, edges, run, value};
@@ -516,19 +523,195 @@ fn outline_helpers_are_called_where_llvm_calls_them() {
     }
 }
 
-/// What hod refuses: an under-aligned access, a type with no atomic
-/// sequence, a `bfloat` arithmetic operation.
+/// What hod refuses: a type with no atomic sequence, a `bfloat`
+/// arithmetic operation, aligned or not. (`a64:atomic-unaligned` is no
+/// longer returned: WP-232.)
 #[test]
 fn refused_atomics_by_name() {
     let f = |body: &str| format!("define void @f(ptr %p) {{\nentry:\n  {body}\n  ret void\n}}\n");
     assert_refused(&[
-        (&f("%v = load atomic i32, ptr %p seq_cst, align 2"), atomic::UNALIGNED),
-        (&f("store atomic i64 0, ptr %p release, align 4"), atomic::UNALIGNED),
-        (&f("%v = atomicrmw add ptr %p, i32 1 seq_cst, align 1"), atomic::UNALIGNED),
-        (&f("%v = cmpxchg ptr %p, i128 0, i128 1 seq_cst seq_cst, align 8"), atomic::UNALIGNED),
         (&f("%v = load atomic fp128, ptr %p seq_cst, align 16"), atomic::TYPE),
+        (&f("%v = load atomic fp128, ptr %p seq_cst, align 4"), atomic::TYPE),
         (&f("%v = atomicrmw fadd ptr %p, bfloat 1.0 seq_cst"), atomic::BFLOAT_OP),
+        (&f("%v = atomicrmw fadd ptr %p, bfloat 1.0 seq_cst, align 1"), atomic::BFLOAT_OP),
     ]);
+}
+
+/// The feature sets `llc` could treat differently for an under-aligned
+/// access (it calls the same generic routines under each), as the
+/// `attributes` line of the module, `None` for none.
+const GENERIC_FEATURES: [(&str, Option<&str>); 3] =
+    [("default", None), ("lse", Some("+lse")), ("outline", Some("+outline-atomics"))];
+
+/// `.ll` text for AArch64 with `features` on every function.
+fn with_features(features: Option<&str>, header: &str, functions: &str) -> String {
+    match features {
+        None => format!("{header}{functions}"),
+        Some(f) => format!(
+            "{header}{}\nattributes #0 = {{ \"target-features\"=\"{f}\" }}\n",
+            functions.replace("{\nentry:", "#0 {\nentry:")
+        ),
+    }
+}
+
+/// §5.5.1: an atomic access whose alignment is below its size calls
+/// libatomic's generic routine under every feature set, as `llc` does:
+/// `__atomic_load`, `__atomic_store`, `__atomic_exchange`, and
+/// `__atomic_compare_exchange` for `cmpxchg` and for the loop of every
+/// other `atomicrmw`; plain and stressed. (Run against libatomic in
+/// `under_aligned_atomics_run_against_libatomic`.)
+#[test]
+fn under_aligned_atomics_call_libatomic_generic() {
+    let f = |sig: &str, body: &str| {
+        format!("define void @f(ptr %p{sig}) {{\nentry:\n  {body}\n  ret void\n}}\n")
+    };
+    let cas = "__atomic_compare_exchange";
+    let cases = [
+        (f("", "%v = load atomic i32, ptr %p seq_cst, align 2"), "__atomic_load"),
+        (f("", "%v = load atomic double, ptr %p acquire, align 4"), "__atomic_load"),
+        (f("", "%v = load atomic i128, ptr %p acquire, align 8"), "__atomic_load"),
+        (f("", "load atomic i64, ptr %p seq_cst, align 4"), "__atomic_load"),
+        (f("", "store atomic i64 0, ptr %p release, align 4"), "__atomic_store"),
+        (f(", half %x", "store atomic half %x, ptr %p seq_cst, align 1"), "__atomic_store"),
+        (f(", i128 %x", "store atomic i128 %x, ptr %p release, align 8"), "__atomic_store"),
+        (f("", "store atomic ptr %p, ptr %p release, align 4"), "__atomic_store"),
+        (f(", i64 %x", "%v = atomicrmw xchg ptr %p, i64 %x seq_cst, align 4"), "__atomic_exchange"),
+        (
+            f(", float %x", "%v = atomicrmw xchg ptr %p, float %x acq_rel, align 2"),
+            "__atomic_exchange",
+        ),
+        (f("", "%v = atomicrmw xchg ptr %p, ptr %p acq_rel, align 2"), "__atomic_exchange"),
+        (f(", i64 %e", "%v = cmpxchg ptr %p, i64 %e, i64 1 seq_cst seq_cst, align 4"), cas),
+        (f(", i32 %e", "%v = cmpxchg weak ptr %p, i32 %e, i32 %e acq_rel monotonic, align 2"), cas),
+        (f(", i128 %e", "%v = cmpxchg ptr %p, i128 %e, i128 0 release monotonic, align 8"), cas),
+        (f("", "%v = cmpxchg ptr %p, ptr %p, ptr null seq_cst seq_cst, align 2"), cas),
+        (f("", "%v = cmpxchg ptr %p, ptr null, ptr %p seq_cst acquire, align 4"), cas),
+        (f(", i32 %x", "%v = atomicrmw add ptr %p, i32 %x seq_cst, align 1"), cas),
+        (f(", i16 %x", "%v = atomicrmw max ptr %p, i16 %x acquire, align 1"), cas),
+        (f(", i64 %x", "%v = atomicrmw udec_wrap ptr %p, i64 %x release, align 2"), cas),
+        (f(", i64 %x", "%v = atomicrmw usub_sat ptr %p, i64 %x monotonic, align 4"), cas),
+        (f(", i128 %x", "%v = atomicrmw nand ptr %p, i128 %x acq_rel, align 8"), cas),
+        (f(", i128 %x", "atomicrmw uinc_wrap ptr %p, i128 %x seq_cst, align 4"), cas),
+        (f(", half %x", "%v = atomicrmw fadd ptr %p, half %x seq_cst, align 1"), cas),
+        (f(", float %x", "%v = atomicrmw fminimum ptr %p, float %x acquire, align 2"), cas),
+        (f(", double %x", "%v = atomicrmw fmax ptr %p, double %x release, align 4"), cas),
+    ];
+    for (text, routine) in &cases {
+        for (name, features) in GENERIC_FEATURES {
+            for stress in [Stress::default(), Stress::ALL] {
+                let (m, bodies) = parse(&with_features(features, &ll_header(22), text));
+                let options = Options { stress, ..Options::default() };
+                let emitted = common::emit(&m, &bodies, &options);
+                let elf = hod_obj::elf::to_vec(&emitted.object).unwrap();
+                let routine = format!("\0{routine}\0");
+                assert!(
+                    elf.windows(routine.len()).any(|w| w == routine.as_bytes()),
+                    "{name}: no {routine} in the object of\n{text}"
+                );
+                assert!(
+                    !elf.windows(10).any(|w| w == b"__aarch64_"),
+                    "{name}: an outline helper in the object of\n{text}"
+                );
+            }
+        }
+    }
+}
+
+/// `llc -O0 -global-isel=0 -fast-isel=0` of LLVM `major` on `text`, if
+/// installed (a failure under `HOD_REQUIRE_TOOLS=1`).
+fn llc_of(
+    scratch: &hod_testutil::Scratch,
+    major: u32,
+    name: &str,
+    text: &str,
+) -> Option<std::path::PathBuf> {
+    let llc = std::path::PathBuf::from(format!("/usr/lib/llvm-{major}/bin/llc"));
+    if !llc.is_file() {
+        assert!(!hod_testutil::tools_required(), "llc {major} is required");
+        eprintln!("note: llc {major} not found; skipping its leg");
+        return None;
+    }
+    let input = scratch.write(&format!("{name}.ll"), text);
+    let output = scratch.join(format!("{name}.o"));
+    let mut command = std::process::Command::new(llc);
+    command
+        .args(["-O0", "-global-isel=0", "-fast-isel=0", "-filetype=obj"])
+        .arg(&input)
+        .arg("-o")
+        .arg(&output);
+    let ran = hod_testutil::run_with(&mut command, &[], std::time::Duration::from_mins(3));
+    assert!(ran.success(), "llc {major} failed:\n{}", ran.stderr_text());
+    Some(output)
+}
+
+/// §5.5.1 (WP-232): every under-aligned atomic access (load, store,
+/// `xchg`, `cmpxchg`, every other `atomicrmw` operation, and those whose
+/// value is the pointer itself) of `common/generic_atomics.rs`, under
+/// each feature set: hod plain and under every stress option, `llc` 22
+/// and 19, each linked with `-latomic` by every linker and run natively
+/// on cells placed at the access's alignment past a 64-byte boundary;
+/// the driver works out the cell and the result itself and checks the
+/// bytes around the cell.
+#[test]
+fn under_aligned_atomics_run_against_libatomic() {
+    use std::path::{Path, PathBuf};
+    let table = generic_table(true, true);
+    let scratch = hod_testutil::Scratch::new("a64-atomic-generic");
+    let Some(toolchain) = common::linking::Toolchain::aarch64(&scratch) else { return };
+    let driver = toolchain.compile_c(&scratch, "driver", &generic_driver(&table), &[]);
+    let want = format!("compared {} wrong 0", table.len() * GENERIC_ROUNDS);
+    let mut legs: Vec<(String, Vec<PathBuf>)> = Vec::new();
+    for (name, features) in GENERIC_FEATURES {
+        let attrs = if features.is_some() { " #0" } else { "" };
+        let footer = features
+            .map(|f| format!("\nattributes #0 = {{ \"target-features\"=\"{f}\" }}\n"))
+            .unwrap_or_default();
+        let module = |major: u32, keep: &dyn Fn(&GenericFn) -> bool| {
+            generic_module(&table, &ll_header(major), attrs, &footer, keep)
+        };
+        let text = module(22, &|_| true);
+        let (m, bodies) = parse(&text);
+        for (mode, stress) in [("plain", Stress::default()), ("stress", Stress::ALL)] {
+            let emitted = common::emit(&m, &bodies, &Options { stress, ..Options::default() });
+            let object = common::write_object(&scratch, &format!("hod-{name}-{mode}.o"), &emitted);
+            legs.push((format!("hod-{name}-{mode}"), vec![object]));
+        }
+        if let Some(object) = llc_of(&scratch, 22, &format!("llc22-{name}"), &text) {
+            legs.push((format!("llc22-{name}"), vec![object]));
+        }
+        // `llc` 19 has no `usub_cond`, `usub_sat`, `fmaximum`, `fminimum`:
+        // those functions come from `llc` 22 in its leg.
+        if let (Some(old), Some(new)) = (
+            llc_of(&scratch, 19, &format!("llc19-{name}"), &module(19, &|f| !newer_than_19(f))),
+            llc_of(&scratch, 22, &format!("llc22-new-{name}"), &module(22, &newer_than_19)),
+        ) {
+            legs.push((format!("llc19-{name}"), vec![old, new]));
+        }
+    }
+    for linker in &toolchain.linkers {
+        for (leg, objects) in &legs {
+            let program = scratch.join(format!("{leg}-{}", linker.name));
+            let mut inputs: Vec<&Path> = vec![driver.as_path()];
+            inputs.extend(objects.iter().map(PathBuf::as_path));
+            inputs.push(Path::new("-latomic"));
+            toolchain.link_ok(linker, &[], &inputs, &program);
+            let ran = toolchain.run(linker, &program);
+            let out = ran.stdout_text();
+            assert!(
+                ran.success() && out.lines().last() == Some(want.as_str()),
+                "{leg}/{}: {:?}, expected `{want}`\n{out}{}",
+                linker.name,
+                ran.status,
+                ran.stderr_text()
+            );
+        }
+    }
+    eprintln!(
+        "a64 under-aligned atomics through libatomic: {} functions, {} calls each leg, legs {:?}",
+        table.len(),
+        table.len() * GENERIC_ROUNDS,
+        legs.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>()
+    );
 }
 
 /// Contended programs on real threads (`common/atomic_threads.rs`):

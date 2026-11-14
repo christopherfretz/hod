@@ -629,6 +629,7 @@ fn the_instruction_forms_are_the_documented_ones() {
 /// `under_aligned_atomics_run_against_libatomic`.)
 #[test]
 fn under_aligned_atomics_call_libatomic_generic() {
+    const CAS: &str = "__atomic_compare_exchange";
     let f = |sig: &str, body: &str| {
         format!("define void @f(ptr %p{sig}) {{\nentry:\n  {body}\n  ret void\n}}\n")
     };
@@ -658,6 +659,16 @@ fn under_aligned_atomics_call_libatomic_generic() {
             f(", i128 %e", "%v = cmpxchg ptr %p, i128 %e, i128 0 release monotonic, align 8"),
             "__atomic_compare_exchange",
         ),
+        // WP-232: the other `atomicrmw` operations, `llc`'s loop.
+        (f(", i32 %x", "%v = atomicrmw add ptr %p, i32 %x seq_cst, align 1"), CAS),
+        (f(", i16 %x", "%v = atomicrmw max ptr %p, i16 %x acquire, align 1"), CAS),
+        (f(", i64 %x", "%v = atomicrmw udec_wrap ptr %p, i64 %x release, align 2"), CAS),
+        (f(", i64 %x", "%v = atomicrmw usub_sat ptr %p, i64 %x monotonic, align 4"), CAS),
+        (f(", i128 %x", "%v = atomicrmw nand ptr %p, i128 %x acq_rel, align 8"), CAS),
+        (f(", i128 %x", "atomicrmw uinc_wrap ptr %p, i128 %x seq_cst, align 4"), CAS),
+        (f(", half %x", "%v = atomicrmw fadd ptr %p, half %x seq_cst, align 1"), CAS),
+        (f(", float %x", "%v = atomicrmw fminimum ptr %p, float %x acquire, align 2"), CAS),
+        (f(", double %x", "%v = atomicrmw fmax ptr %p, double %x release, align 4"), CAS),
     ];
     for (text, routine) in &cases {
         for stress in [Stress::default(), Stress::ALL] {
@@ -693,9 +704,12 @@ fn compile_ll(functions: &str) -> Result<(), CgError> {
 fn refused_atomics_by_name() {
     let f = |body: &str| format!("define void @f(ptr %p) {{\nentry:\n  {body}\n  ret void\n}}\n");
     let cases = [
-        (f("%v = atomicrmw add ptr %p, i32 1 seq_cst, align 1"), atomic::UNALIGNED),
-        (f("%v = atomicrmw umax ptr %p, i64 1 seq_cst, align 4"), atomic::UNALIGNED),
+        (f("store atomic ptr %p, ptr %p release, align 4"), atomic::UNALIGNED),
+        (f("%v = atomicrmw xchg ptr %p, ptr %p acq_rel, align 2"), atomic::UNALIGNED),
+        (f("%v = cmpxchg ptr %p, ptr %p, ptr null seq_cst seq_cst, align 2"), atomic::UNALIGNED),
         (f("%v = load atomic fp128, ptr %p seq_cst, align 16"), atomic::TYPE),
+        (f("%v = load atomic fp128, ptr %p seq_cst, align 4"), atomic::TYPE),
+        (f("%v = atomicrmw fadd ptr %p, bfloat 1.0 seq_cst, align 1"), atomic::BFLOAT_OP),
         (f("%v = atomicrmw fadd ptr %p, bfloat 1.0 seq_cst"), atomic::BFLOAT_OP),
         // `fmax` .. `fminimum`, `half` arithmetic: WP-144 (`tests/leftovers.rs`).
         (f("%v = atomicrmw fmax ptr %p, bfloat 1.0 seq_cst"), atomic::BFLOAT_OP),

@@ -36,6 +36,14 @@
 //! low bits depend on the high ones (a division, a right shift, a
 //! comparison) has no entry there, and a memory location needs an
 //! address-wide value.
+//!
+//! Fragments and conversions (§6.31): a variable with fragment records
+//! gets entries composed of pieces (`compose`): per stretch of code, the
+//! pieces that hold there sorted by offset, each its location then
+//! `DW_OP_piece`, a gap an empty `DW_OP_piece`. `DW_OP_LLVM_convert` is
+//! `DW_OP_convert` of one of the unit's base type DIEs (its first
+//! children, in first use), or `llc`'s legacy extension in a split unit;
+//! a constant's leading conversions are folded into it.
 
 use std::collections::HashMap;
 
@@ -47,14 +55,15 @@ use crate::die::{Kind, Reloc, Sec, Target, UnitPlan, Writer};
 use crate::func::{LocalData, LocalPlace, LocalRow, LocalWhat};
 use crate::leb::{write_sleb, write_uleb};
 
-/// A fragment (`DW_OP_LLVM_fragment`) in a value record's expression: a
-/// variable described in pieces.
+/// A fragment (`DW_OP_LLVM_fragment`) in a value record's expression
+/// that is not byte aligned, or of size 0 (§6.31).
 pub const DEBUG_DBG_VALUE_FRAGMENT: &str = "debug:dbg-value-fragment";
 
 /// A value record's expression hod does not write: an LLVM operation
-/// (`DW_OP_LLVM_*`, a conversion, an entry value), `DW_OP_stack_value`
-/// before the end, or a memory location that does not end in
-/// `DW_OP_deref`.
+/// (`DW_OP_LLVM_*` other than a fragment and a conversion to an integer
+/// of 1 to 64 bits, an entry value), `DW_OP_stack_value` before the end,
+/// a memory location that does not end in `DW_OP_deref`, or one with a
+/// conversion.
 pub const DEBUG_DBG_VALUE_EXPR: &str = "debug:dbg-value-expr";
 
 /// Where a variable described by value records is over one range.

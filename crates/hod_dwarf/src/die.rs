@@ -820,6 +820,29 @@ impl<'a> Writer<'a> {
         self.tls_addrs.clear();
     }
 
+    /// WP-225 (§6.31): the base types of the unit's `DW_OP_convert`s are
+    /// its first children, as `llc`'s `createBaseTypeDIEs` puts them, so
+    /// that their offsets fit the operands' four bytes. A unit without
+    /// children has none: they come from its variables' lists. Then the
+    /// walk of the other children starts (`stack`).
+    fn base_types(&mut self, plan: &UnitPlan<'_>, unit_start: usize) -> Result<(), Error> {
+        self.base_type_dies.clear();
+        self.stack.clear();
+        if plan.dies.len() > 1 {
+            self.stack.push((0, plan.children_of(0).start));
+        }
+        for &(bits, encoding) in &plan.base_types {
+            let offset =
+                u32::try_from(self.info.len() - unit_start).map_err(|_| Error::TooLarge)?;
+            self.base_type_dies.push(offset);
+            self.abbrev(code(fam::BASE_TYPE, 0, false));
+            self.strx(crate::loclists::base_type_name(bits, encoding))?;
+            self.info.push(encoding);
+            write_uleb(&mut self.info, u64::from(bits).div_ceil(8));
+        }
+        Ok(())
+    }
+
     pub(crate) fn unit(&mut self, u: &UnitInput<'_, 'a>, symbols: u32) -> Result<(), Error> {
         let plan = u.plan;
         let n = plan.dies.len();
@@ -896,27 +919,8 @@ impl<'a> Writer<'a> {
             self.sec_offset(Target::Rnglists, rnglists_base as i64);
         }
 
-        // WP-225 (§6.31): the base types of the unit's `DW_OP_convert`s
-        // are its first children, as `llc`'s `createBaseTypeDIEs` puts
-        // them, so that their offsets fit the operands' four bytes.
-        self.base_type_dies.clear();
-        if n > 1 {
-            for &(bits, encoding) in &plan.base_types {
-                let offset =
-                    u32::try_from(self.info.len() - unit_start).map_err(|_| Error::TooLarge)?;
-                self.base_type_dies.push(offset);
-                self.abbrev(code(fam::BASE_TYPE, 0, false));
-                self.strx(crate::loclists::base_type_name(bits, encoding))?;
-                self.info.push(encoding);
-                write_uleb(&mut self.info, u64::from(bits).div_ceil(8));
-            }
-        }
-
-        // The children, depth first.
-        self.stack.clear();
-        if n > 1 {
-            self.stack.push((0, plan.children_of(0).start));
-        }
+        // The children, depth first, after the base types (WP-225).
+        self.base_types(plan, unit_start)?;
         while let Some(top) = self.stack.last_mut() {
             let (die, cursor) = *top;
             if cursor == plan.children_of(die).end {
@@ -1174,11 +1178,10 @@ pub fn write_debug_info(
         w.unit(u, symbols)?;
     }
     let abbrev = write_abbrev(&w.used);
-    for len in [w.info.len(), w.str_offsets.len(), w.addr.len(), w.rnglists.len(), w.loclists.len()]
-    {
-        if u32::try_from(len).is_err() {
-            return Err(Error::TooLarge);
-        }
+    let lens =
+        [w.info.len(), w.str_offsets.len(), w.addr.len(), w.rnglists.len(), w.loclists.len()];
+    if lens.iter().any(|&len| u32::try_from(len).is_err()) {
+        return Err(Error::TooLarge);
     }
     if obj.section_count() >= u32::MAX - 7 {
         return Err(Error::Object(hod_obj::Error::TooLarge(hod_obj::Limit::Sections)));

@@ -335,6 +335,15 @@ The emitter's side is `spec/codegen.md` §9.7.3.
   relocation (`R_AARCH64_ABS16/32/64`); in a byte, or in `.bss`, it is
   refused. `.ascii`, `.asciz`/`.string` (comma lists, the escapes of
   LLVM's lexer), `.zero n`, `.space`/`.skip n{, fill}`.
+- **`.ident "string"`** (one string) writes nothing to the current
+  section: the strings go to `.comment` as LLVM's ELF streamer writes
+  them (`emitIdent`): `SHT_PROGBITS`, `SHF_MERGE | SHF_STRINGS`, entries
+  of one byte, a NUL, then each string with its NUL, in order. The
+  string's bytes are the ones written between the quotes: LLVM reads no
+  escape here (`\t` is a backslash and a `t`), unlike `.ascii`. (`llc`
+  appends the strings of `!llvm.ident` to the same section; hod drops
+  that metadata, so with both its `.comment` is the first part of
+  `llc`'s.)
 - **Alignment.** `.p2align n{, fill}` and AArch64's `.align n` (a power
   of two), `.balign n{, fill}`; no maximum-skip operand. Code is padded
   as LLVM pads it: zeros up to a multiple of 4, then `nop`s; with a fill,

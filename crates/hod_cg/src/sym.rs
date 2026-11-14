@@ -690,6 +690,18 @@ runtime_fns! {
     Ldexpf128 = "ldexpf128": (FP128, I32) -> FP128;
     /// `frexpf128`: `fp128` on x86-64, where `long double` is `x86_fp80` (WP-117).
     Frexpf128 = "frexpf128": (FP128, PTR) -> FP128;
+    /// `__atomic_load(size, ptr, ret *, order)`: libatomic's generic
+    /// load, an x86-64 atomic whose alignment is below its size, as
+    /// `llc`'s `AtomicExpand` (`expandAtomicOpToLibcall`).
+    AtomicLoad = "__atomic_load": (I64, PTR, PTR, I32) -> VOID;
+    /// `__atomic_store(size, ptr, value *, order)`: generic store.
+    AtomicStore = "__atomic_store": (I64, PTR, PTR, I32) -> VOID;
+    /// `__atomic_exchange(size, ptr, value *, ret *, order)`: generic
+    /// exchange.
+    AtomicExchange = "__atomic_exchange": (I64, PTR, PTR, PTR, I32) -> VOID;
+    /// `__atomic_compare_exchange(size, ptr, expected *, desired *,
+    /// success, failure)`: generic compare-exchange, C `bool`.
+    AtomicCompareExchange = "__atomic_compare_exchange": (I64, PTR, PTR, PTR, I32, I32) -> I8;
     /// `__atomic_load_16(ptr, order)`: libatomic, a 16-byte atomic on
     /// x86-64 without `cx16` (WP-144).
     AtomicLoad16 = "__atomic_load_16": (PTR, I32) -> I128;

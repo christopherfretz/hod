@@ -3000,8 +3000,21 @@ differences are listed below. x86-64 is TSO, so no ordering but
   as on AArch64.
 - **Volatile** changes nothing: an atomic volatile access is the same
   instruction, and a plain volatile access is not atomic (`mem.rs`).
-- **Refused, by name:** `x64:atomic-unaligned`, an access whose
-  alignment is below its size (`llc` calls `__atomic_*`);
+- **Below its size's alignment**, an access calls libatomic's generic
+  routine, as `llc`'s `AtomicExpand` does: a load
+  `__atomic_load(size, ptr, &ret, order)`, a store
+  `__atomic_store(size, ptr, &value, order)`, `atomicrmw xchg`
+  `__atomic_exchange(size, ptr, &value, &ret, order)`, `cmpxchg`
+  `__atomic_compare_exchange(size, ptr, &expected, &desired, success,
+  failure)`, the expected value in the result's slot (the routine writes
+  the cell's value there on failure) and its C `bool` the result's flag.
+  The values are in frame slots aligned to their size, the orders C's
+  `memory_order` numbers; `weak` changes nothing.
+- **Refused, by name:** `x64:atomic-unaligned`, an under-aligned
+  `atomicrmw` other than `xchg` (`llc` builds a
+  `__atomic_compare_exchange` loop, which hod does not), and an
+  under-aligned store, `xchg` or `cmpxchg` whose value operand is the
+  pointer operand itself;
   `x64:atomic-type`, an atomic of `fp128`, `x86_fp80`, a vector, an
   integer that is not 8, 16, 32, 64 or 128 bits, or an operation whose
   type does not fit it; `x64:atomic-bfloat-op`, `bfloat` arithmetic;

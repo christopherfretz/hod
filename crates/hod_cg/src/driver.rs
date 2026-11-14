@@ -8,8 +8,8 @@
 //! operands, the records, and the retry in far mode.
 
 use hod_ir::{
-    Block, BlockId, Body, Const, DbgRecordKind, FnAttrs, Inst, InstKind, LocId, Module, Opcode,
-    ParamAttrs, SymbolKind, TypeId, TypeKind, UwTable, Value,
+    Block, BlockId, Body, DbgRecordKind, FnAttrs, Inst, InstKind, LocId, Module, Opcode,
+    ParamAttrs, SymbolKind, TypeId, TypeKind, UwTable, Value, ValueKind,
 };
 
 use crate::abi::{AbiUnsupported, LaneLoc, PartKind, Place, Sig};
@@ -45,10 +45,14 @@ fn declares_a_phi(body: &Body, address: Value) -> bool {
 /// the SysV ABI passes no argument for an empty record, so the inlined
 /// copy of the parameter has no storage (AArch64 passes it as an `i8`,
 /// and the declaration names a slot there).
-fn declares_undef(module: &Module, address: Value) -> bool {
-    address
-        .as_const()
-        .is_some_and(|id| matches!(module.consts.get(id), Const::Undef(_) | Const::Poison(_)))
+///
+/// WP-230 (`spec/dwarf.md` §6.32): any other constant too (`null`, a
+/// constant expression), and a symbol's address. `llc` 19 and 22
+/// (all three instruction selectors, both targets) give such a
+/// declaration no location: the variable has no DIE, or a retained one
+/// has its DIE without a location.
+fn declares_constant(address: Value) -> bool {
+    matches!(address.kind(), ValueKind::Const(_) | ValueKind::Sym(_))
 }
 
 /// The most code one function may have, in bytes. No target's far
@@ -883,11 +887,12 @@ impl<'a, T: Target> FnCx<'a, T> {
         for declare in body.declares() {
             if declare.address == Value::NONE
                 || (self.coro.is_some() && declares_a_phi(body, declare.address))
-                || declares_undef(self.module, declare.address)
+                || declares_constant(declare.address)
                 || self.declares_by_range(declare)
             {
                 // The address was dropped, is `undef` or `poison` (no
-                // row, as `llc` writes none: §9.5, WP-156), or is an
+                // row, as `llc` writes none: §9.5, WP-156), another
+                // constant or a symbol's address (WP-230), or is an
                 // instruction result, whose rows are ranges
                 // (`dbg_value`, WP-221); in a coroutine body hod lowers,
                 // a `phi`'s declaration is dropped (WP-111).

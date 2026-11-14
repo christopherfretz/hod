@@ -554,28 +554,25 @@ fn analyse_vzeroupper(cx: &FnCx<'_, X64>, plan: &mut Vzero) {
             } else {
                 call_effect(cx, inst)
             };
-            match call {
-                Some((before, uses)) => {
-                    dirty |= before;
-                    if uses {
-                        dirty = true;
-                    } else if dirty {
-                        if let Some(marks) = marks.as_deref_mut() {
-                            marks.before[inst.id().index()] = true;
-                        }
-                        dirty = false;
+            if let Some((before, uses)) = call {
+                dirty |= before;
+                if uses {
+                    dirty = true;
+                } else if dirty {
+                    if let Some(marks) = marks.as_deref_mut() {
+                        marks.before[inst.id().index()] = true;
                     }
-                    // A `musttail` call ends the block's code: its `ret`
-                    // is the tail exit's branch.
-                    if inst.call().is_some_and(|site| site.tail() == TailKind::MustTail) {
-                        return false;
-                    }
+                    dirty = false;
                 }
-                None => {
-                    let result = inst.ty() != TypeId::VOID && touches_ymm(types, inst.ty());
-                    if result || inst.operands().iter().any(|&v| value_touches(v)) {
-                        dirty = true;
-                    }
+                // A `musttail` call ends the block's code: its `ret` is
+                // the tail exit's branch.
+                if inst.call().is_some_and(|site| site.tail() == TailKind::MustTail) {
+                    return false;
+                }
+            } else {
+                let result = inst.ty() != TypeId::VOID && touches_ymm(types, inst.ty());
+                if result || inst.operands().iter().any(|&v| value_touches(v)) {
+                    dirty = true;
                 }
             }
         }

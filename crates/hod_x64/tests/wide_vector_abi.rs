@@ -20,7 +20,6 @@
 mod linking;
 
 #[path = "common/aggr_gen.rs"]
-#[allow(dead_code, reason = "a shared helper: not every function is used here")]
 mod aggr_gen;
 
 use std::path::{Path, PathBuf};
@@ -32,7 +31,7 @@ use hod_cg::Stress;
 use hod_testutil::{Scratch, run_with};
 use linking::Toolchain;
 
-const CALLEE_CXX: &str = r#"
+const CALLEE_CXX: &str = r"
 #include <immintrin.h>
 #include <array>
 #include <cstdarg>
@@ -65,7 +64,7 @@ double vsum(int n, ...) {
 }
 static __m256i twice(__m256i v) { return _mm256_add_epi32(v, v); }
 __m256i (*pick())(__m256i) { return twice; }
-"#;
+";
 
 const CALLER_CXX: &str = r#"
 #include <immintrin.h>
@@ -119,7 +118,7 @@ int main() {
 "#;
 
 /// The IR callee: what clang does not write.
-const CALLEE_LL: &str = r#"
+const CALLEE_LL: &str = r"
 define { <4 x double>, <4 x double> } @c_pair(<4 x double> %a, <4 x double> %b) #0 {
   %s = fadd <4 x double> %a, %b
   %d = fsub <4 x double> %a, %b
@@ -179,11 +178,11 @@ define <8 x i32> @c_tail(<8 x i32> %v) #0 {
   %r = musttail call <8 x i32> @c_maybe(<8 x i32> %w)
   ret <8 x i32> %r
 }
-"#;
+";
 
 /// The IR caller: each callee with fixed values, the results stored to
 /// `@out` in order.
-const CALLER_LL: &str = r#"
+const CALLER_LL: &str = r"
 @out = global [512 x i8] zeroinitializer, align 64
 declare { <4 x double>, <4 x double> } @c_pair(<4 x double>, <4 x double>)
 declare <6 x float> @c_odd(<6 x float>, <3 x double>, i32)
@@ -239,7 +238,7 @@ pad:
   resume { ptr, i32 } %l
 }
 @maybe = global ptr @c_maybe, align 8
-"#;
+";
 
 const MAIN_C: &str = r#"
 #include <stdio.h>
@@ -305,11 +304,11 @@ fn check_mixes(
             ("stress", hod_object(&unit.ir, Stress::ALL, "stress")),
         ]
     };
-    let (callees, callers) = (builds(units[0]), builds(units[1]));
+    let built = [builds(units[0]), builds(units[1])];
     let mut expected: Option<String> = None;
     let mut runs = 0;
-    for (callee_by, callee) in &callees {
-        for (caller_by, caller) in &callers {
+    for (callee_by, callee) in &built[0] {
+        for (caller_by, caller) in &built[1] {
             let tag = format!("{label}-{}-{callee_by}-{caller_by}", units[0].name);
             let mut objects: Vec<&Path> = vec![callee, caller];
             objects.extend(extra);

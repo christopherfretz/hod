@@ -8,7 +8,6 @@
 mod linking;
 
 #[path = "common/aggr_gen.rs"]
-#[allow(dead_code, reason = "a shared helper: not every function is used here")]
 mod aggr_gen;
 
 use std::path::Path;
@@ -20,7 +19,7 @@ use hod_cg::Stress;
 use hod_testutil::{Scratch, run_with, tool};
 
 /// The functions: each shape of §8.7's rule.
-const BODIES: &str = r#"
+const BODIES: &str = r"
 declare void @g()
 declare void @g2()
 declare <4 x i64> @w(<4 x i64>)
@@ -144,7 +143,7 @@ pad:
   store <4 x i64> %x, ptr %q, align 1
   resume { ptr, i32 } %l
 }
-"#;
+";
 
 /// The machines, and how many functions write a `vzeroupper` for each.
 const MACHINES: [(&str, &str); 9] = [

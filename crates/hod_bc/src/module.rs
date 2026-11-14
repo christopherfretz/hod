@@ -1327,12 +1327,7 @@ impl<'r, 'a> Build<'r, 'a> {
             }
             notes |= dx.notes;
         }
-        // Equal nodes are one node, as LLVM's reader makes them
-        // (`spec/ir.md` §6.3).
-        merge_handles(
-            &self.module.debug.unique_nodes(hod_ir::DiMark::default()),
-            &mut self.debug.module,
-        );
+        unique(&mut self.module.debug, hod_ir::DiMark::default(), &mut self.debug.module);
         self.dbg_cu = units;
         let dbg_kind = self.md_kinds.iter().find(|(_, name)| name == b"dbg").map(|&(id, _)| id);
         let mut ops = Vec::new();
@@ -1359,7 +1354,7 @@ impl<'r, 'a> Build<'r, 'a> {
                 notes |= dx.notes;
             }
             // A function's nodes are uniqued with the module's too.
-            merge_handles(&self.module.debug.unique_nodes(mark), &mut local.handles);
+            unique(&mut self.module.debug, mark, &mut local.handles);
             let (Ok(start), Ok(len32)) =
                 (u32::try_from(self.debug.local.len()), u32::try_from(len))
             else {
@@ -1459,9 +1454,11 @@ impl<'r, 'a> Build<'r, 'a> {
     }
 }
 
-/// The handles of debug nodes `merge` merged, rewritten to the surviving
-/// nodes.
-fn merge_handles(merge: &hod_ir::DiMerge, handles: &mut [Handle]) {
+/// Equal nodes are one node, as LLVM's reader makes them (`spec/ir.md`
+/// §6.3): makes the nodes from `since` on unique, and rewrites `handles`
+/// to the surviving nodes.
+fn unique(debug: &mut hod_ir::DebugInfo, since: hod_ir::DiMark, handles: &mut [Handle]) {
+    let merge = debug.unique_nodes(since);
     if merge.is_empty() {
         return;
     }

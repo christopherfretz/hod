@@ -116,7 +116,10 @@ fn equal_nodes_are_one_node() {
     assert!(!d.is_merged(id(2)) && d.is_merged(id(3)) && d.is_merged(id(6)));
     assert!(!d.is_merged(id(4)) && d.is_merged(id(5)));
     assert_eq!(base_type(&m, id(2)), Some(id(4)));
-    assert_eq!(base_type(&m, id(3)), Some(id(5)), "a merged node is left as it was");
+    // A merged node's own references are rewritten too: nothing names
+    // it, but it names only survivors.
+    assert_eq!(base_type(&m, id(3)), Some(id(4)));
+    assert_eq!(base_type(&m, id(6)), Some(id(4)), "the node in place");
 }
 
 /// A node that names itself is distinct (LLVM stores it so, and
@@ -225,7 +228,8 @@ define void @f(ptr %p) !dbg !3 {
     };
     let (pointers, variables) = (live(DiKind::DerivedType), live(DiKind::LocalVariable));
     assert_eq!((pointers.len(), variables.len()), (1, 1), "one void *, one q");
-    let named: Vec<DiId> = body.dbg_records().map(|record| record.var).collect();
+    // A `#dbg_declare` of an alloca is a declared slot (`ir.md` §6.6).
+    let named: Vec<DiId> = body.slot_vars().iter().map(|slot| slot.var).collect();
     assert_eq!(named, variables, "the record names the survivor");
     let DiNode::LocalVariable(v) = debug.node(variables[0]) else { panic!() };
     assert_eq!(v.ty, Some(pointers[0]));

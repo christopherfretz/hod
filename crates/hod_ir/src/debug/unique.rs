@@ -84,6 +84,8 @@ struct Pass<'p> {
     /// The number of cells of each node, its mask included; 0 for one
     /// that takes no part.
     extent: &'p [u32],
+    /// The hash of each candidate's content, as `add` computes it.
+    content: &'p [u32],
 }
 
 impl Pass<'_> {
@@ -113,11 +115,11 @@ impl<L: Layering> DebugInfo<L> {
     }
 
     /// Makes the nodes from `since` on unique, as LLVM's parsers do
-    /// (§6.3): every node that is not distinct, is defined, and names
-    /// neither itself nor a node LLVM's would not unique (`DiOther`) is
-    /// merged with every node of equal content, references compared by
-    /// the class of the node they name. A node that names itself becomes
-    /// distinct. The lowest id of each class survives; every reference
+    /// (§6.3): every node from `since` on that is defined, not distinct,
+    /// not merged, not a `DiOther` (whose content hod does not know) and
+    /// does not name itself is merged with every node of equal content,
+    /// references compared by the class of the node they name. A node
+    /// that names itself becomes distinct. The lowest id of each class survives; every reference
     /// in the tables (nodes, locations from `since` on) is rewritten to
     /// it, the others are marked merged, and the survivors are what a
     /// later [`DebugInfo::add`] of equal content returns. The nodes
@@ -134,112 +136,83 @@ impl<L: Layering> DebugInfo<L> {
         }
         let n = (count - from) as usize;
 
-        // The cells of every node that holds a node id; a node that
-        // names itself becomes distinct (LLVM: `storeDistinctInContext`).
+        // The cells of every candidate that hold a node id (the other
+        // nodes are walked only if something merges); a node that names
+        // itself becomes distinct (LLVM: `storeDistinctInContext`).
         let mut refs: Vec<u32> = Vec::new();
         let mut ref_start: Vec<u32> = Vec::with_capacity(n + 1);
         let mut extent: Vec<u32> = vec![0; n];
+        let mut content: Vec<u32> = vec![0; n];
         for at in 0..n {
             ref_start.push(refs.len() as u32);
             let id = from + at as u32;
             let head = self.heads[id as usize];
-            if head.kind == 0 || head.flags & MERGED != 0 {
+            if head.kind == 0
+                || head.flags & (MERGED | DISTINCT) != 0
+                || head.kind == DiKind::Other as u8
+            {
                 continue;
             }
             let first = refs.len();
             let cells = self.walk_refs(head, &mut refs);
-            let candidate = head.flags & DISTINCT == 0 && head.kind != DiKind::Other as u8;
-            if candidate && refs[first..].iter().any(|&cell| self.cells[cell as usize].raw() == id)
-            {
+            if refs[first..].iter().any(|&cell| self.cells[cell as usize].raw() == id) {
+                // Its cells stay in `refs`, to be rewritten.
                 self.heads[id as usize].flags |= DISTINCT;
                 continue;
             }
-            if candidate {
-                extent[at] = cells;
-            }
+            extent[at] = cells;
+            content[at] = self.content_hash(head, cells);
         }
         ref_start.push(refs.len() as u32);
-        let pass = Pass { from, refs: &refs, ref_start: &ref_start, extent: &extent };
+        let pass =
+            Pass { from, refs: &refs, ref_start: &ref_start, extent: &extent, content: &content };
 
         let mut key: Vec<u32> = (from..count).collect();
         let mut table = InternTable::<crate::intern::NoLayer>::new();
         self.classes(&pass, &mut key, &mut table);
 
-        // The survivor of each class: its lowest id.
-        let mut low = vec![UNSEEN; n];
-        let mut to: Vec<DiId> = Vec::with_capacity(n);
-        let mut merged = false;
-        for at in 0..n {
-            let id = from + at as u32;
-            let class = root(&key, from, id);
-            let survivor = match class.checked_sub(from) {
-                Some(slot) => {
-                    let slot = slot as usize;
-                    if low[slot] == UNSEEN {
-                        low[slot] = id;
+        // The survivor of each class: its lowest id. Usually every node
+        // is its own class.
+        let merged = key.iter().zip(from..).any(|(&class, id)| class != id);
+        let mut to: Vec<DiId> = Vec::new();
+        if merged {
+            let mut low = vec![UNSEEN; n];
+            to.reserve_exact(n);
+            for at in 0..n {
+                let id = from + at as u32;
+                let class = root(&key, from, id);
+                let survivor = match class.checked_sub(from) {
+                    Some(slot) => {
+                        let slot = slot as usize;
+                        if low[slot] == UNSEEN {
+                            low[slot] = id;
+                        }
+                        low[slot]
                     }
-                    low[slot]
-                }
-                None => class,
-            };
-            merged |= survivor != id;
-            to.push(DiId::new(survivor));
+                    None => class,
+                };
+                to.push(DiId::new(survivor));
+            }
         }
 
         if merged {
-            for (at, &survivor) in to.iter().enumerate() {
-                if survivor.raw() != from + at as u32 {
-                    self.heads[from as usize + at].flags |= MERGED;
-                }
-            }
-            let map = |raw: u32| -> u32 {
-                raw.checked_sub(from)
-                    .and_then(|at| to.get(at as usize))
-                    .map_or(raw, |survivor| survivor.raw())
-            };
-            for &cell in &refs {
-                let raw = self.cells[cell as usize].raw();
-                let new = map(raw);
-                if new != raw {
-                    self.cells[cell as usize] = DiId::new(new);
-                }
-            }
-            for at in since.locs as usize..self.locs.len() {
-                let record = self.locs[at];
-                let scope = map(record.scope.raw());
-                if scope == record.scope.raw() {
-                    continue;
-                }
-                self.locs[at].scope = DiId::new(scope);
-                if record.kind() == LOC_INTERNED {
-                    // Found again under its new content.
-                    let atom = (record.state & LOC_ATOM != 0)
-                        .then(|| atom_of(&self.locs, &self.atoms, self.atom_index.as_ref(), at as u32));
-                    let hash = loc_hash(&self.locs[at], atom);
-                    let id = at as u32;
-                    self.loc_interner.get_or_insert_with(InternTable::new).insert(hash, id);
-                }
-            }
-            for unit in &mut self.units {
-                *unit = DiId::new(map(unit.raw()));
-            }
-            self.edits = self.edits.wrapping_add(1);
+            self.apply(since, &to, &pass);
         }
 
-        // The survivors are what `add` finds from now on.
+        // The survivors are what `add` finds from now on. When nothing
+        // merged, every class is one node named by its own id, so the
+        // hash of the walk is the hash of its content.
+        self.interner.get_or_insert_with(InternTable::new).reserve(n);
         for at in 0..n {
             let id = from + at as u32;
-            if extent[at] == 0 || to[at].raw() != id {
+            if extent[at] == 0 || to.get(at).is_some_and(|survivor| survivor.raw() != id) {
                 continue;
             }
-            let head = self.heads[id as usize];
-            let cells = self.cells.from(head.at as usize);
-            let cells = &cells[..extent[at] as usize];
-            let mut hasher = Hasher64::new(u64::from(head.kind) | (u64::from(head.tag) << 8));
-            for cell in cells {
-                hasher.word(u64::from(cell.raw()));
-            }
-            let hash = hasher.finish();
+            let hash = if merged {
+                self.content_hash(self.heads[id as usize], extent[at])
+            } else {
+                content[at]
+            };
             let interner = self.interner.get_or_insert_with(InternTable::new);
             if interner.find(hash, |other| other == id).is_none() {
                 interner.insert(hash, id);
@@ -247,6 +220,59 @@ impl<L: Layering> DebugInfo<L> {
         }
 
         if merged { DiMerge { from, to } } else { DiMerge::default() }
+    }
+
+    /// Applies a merge: `to[at]` is the survivor of node `from + at`.
+    /// Marks the others merged, and rewrites every reference to a node
+    /// of the pass: the cells of the nodes from `since` on, the scopes of
+    /// the locations from `since` on, the compile-unit list.
+    fn apply(&mut self, since: DiMark, to: &[DiId], pass: &Pass<'_>) {
+        let from = pass.from;
+        for (at, &survivor) in to.iter().enumerate() {
+            if survivor.raw() != from + at as u32 {
+                self.heads[from as usize + at].flags |= MERGED;
+            }
+        }
+        let map = |raw: u32| -> u32 {
+            raw.checked_sub(from).and_then(|at| to.get(at as usize)).map_or(raw, |s| s.raw())
+        };
+        // The candidates' cells are in `refs` (a merged node's too:
+        // nothing names it, but it names only survivors); the distinct
+        // and `DiOther` nodes are walked now.
+        let mut more: Vec<u32> = Vec::new();
+        for at in 0..to.len() {
+            let head = self.heads[from as usize + at];
+            let walked = pass.ref_start[at] != pass.ref_start[at + 1] || pass.extent[at] != 0;
+            if head.kind != 0 && !walked {
+                self.walk_refs(head, &mut more);
+            }
+        }
+        for &cell in pass.refs.iter().chain(&more) {
+            let raw = self.cells[cell as usize].raw();
+            let new = map(raw);
+            if new != raw {
+                self.cells[cell as usize] = DiId::new(new);
+            }
+        }
+        for at in since.locs as usize..self.locs.len() {
+            let record = self.locs[at];
+            let scope = map(record.scope.raw());
+            if scope == record.scope.raw() {
+                continue;
+            }
+            self.locs[at].scope = DiId::new(scope);
+            if record.kind() == LOC_INTERNED {
+                // Found again under its new content.
+                let atom = (record.state & LOC_ATOM != 0)
+                    .then(|| atom_of(&self.locs, &self.atoms, self.atom_index.as_ref(), at as u32));
+                let hash = loc_hash(&self.locs[at], atom);
+                self.loc_interner.get_or_insert_with(InternTable::new).insert(hash, at as u32);
+            }
+        }
+        for unit in &mut self.units {
+            *unit = DiId::new(map(unit.raw()));
+        }
+        self.edits = self.edits.wrapping_add(1);
     }
 
     /// The number of cells of the node `head` (its mask included);
@@ -263,10 +289,30 @@ impl<L: Layering> DebugInfo<L> {
         (1 + total - dec.cells.len()) as u32
     }
 
+    /// The hash of the first `extent` cells of the node `head`: what
+    /// [`DebugInfo::add`] computes for its content.
+    fn content_hash(&self, head: Head, extent: u32) -> u32 {
+        let cells = &self.cells.from(head.at as usize)[..extent as usize];
+        let mut hasher = Hasher64::new(u64::from(head.kind) | (u64::from(head.tag) << 8));
+        for cell in cells {
+            hasher.word(u64::from(cell.raw()));
+        }
+        hasher.finish()
+    }
+
     /// The hash of node `id`'s content with every reference replaced by
     /// its class: what [`DebugInfo::add`] computes for the node once the
     /// references are rewritten to classes.
     fn class_hash(&self, pass: &Pass<'_>, key: &[u32], id: u32) -> u32 {
+        let from = pass.from;
+        let refs = pass.refs_of(id);
+        if refs.iter().all(|&cell| {
+            let raw = self.cells[cell as usize].raw();
+            root(key, from, raw) == raw
+        }) {
+            // Every node it names is its own class.
+            return pass.content[(id - from) as usize];
+        }
         let head = self.heads[id as usize];
         let extent = pass.extent[(id - pass.from) as usize] as usize;
         let cells = &self.cells.from(head.at as usize)[..extent];
@@ -328,9 +374,7 @@ impl<L: Layering> DebugInfo<L> {
         id: u32,
     ) -> Option<u32> {
         let before = self.interner.as_ref().and_then(|interner| {
-            interner.find(hash, |other| {
-                other < pass.from && self.same_class(pass, key, id, other)
-            })
+            interner.find(hash, |other| other < pass.from && self.same_class(pass, key, id, other))
         });
         before.or_else(|| {
             tables.iter().find_map(|table| {
@@ -432,31 +476,330 @@ impl<L: Layering> DebugInfo<L> {
             return;
         }
         members.sort_unstable();
+        // The roots of this round with their hashes, searched in a small
+        // cycle (most are a class and its members); a large one is
+        // searched in a table of them too.
+        let small = members.len() <= 16;
+        let mut listed: Vec<(u32, u32)> = Vec::new();
+        let mut round: Option<InternTable<crate::intern::NoLayer>> = None;
         loop {
-            let mut round = InternTable::new();
+            listed.clear();
+            if !small {
+                round = Some(InternTable::new());
+            }
             let mut changed = false;
             for &id in members.iter() {
                 if key[(id - from) as usize] != id {
                     continue;
                 }
                 let hash = self.class_hash(pass, key, id);
-                match self.find_class(pass, key, &[table, &round], hash, id) {
-                    Some(found) => {
+                let found = match &round {
+                    None => self.find_class(pass, key, &[table], hash, id).or_else(|| {
+                        listed.iter().find_map(|&(theirs, other)| {
+                            (theirs == hash && self.same_class(pass, key, id, other))
+                                .then_some(other)
+                        })
+                    }),
+                    Some(round) => self.find_class(pass, key, &[table, round], hash, id),
+                };
+                match (found, &mut round) {
+                    (Some(found), _) => {
                         key[(id - from) as usize] = root(key, from, found);
                         changed = true;
                     }
-                    None => round.insert(hash, id),
+                    (None, round) => {
+                        listed.push((hash, id));
+                        if let Some(round) = round {
+                            round.insert(hash, id);
+                        }
+                    }
                 }
             }
             if !changed {
                 break;
             }
         }
-        for &id in members.iter() {
-            if key[(id - from) as usize] == id {
-                let hash = self.class_hash(pass, key, id);
-                table.insert(hash, id);
+        // The last round merged nothing: its roots are the classes, under
+        // their final hashes.
+        for &(hash, id) in &listed {
+            table.insert(hash, id);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::names::{DW_TAG_POINTER_TYPE, DW_TAG_STRUCTURE_TYPE, DiFlags};
+    use super::super::node::{
+        DiBasicType, DiBound, DiCompositeType, DiDerivedType, DiLexicalBlock, DiSubrange,
+        DiSubroutineType, DiTuple,
+    };
+    use super::*;
+    use crate::ids::LocId;
+    use crate::{DiLocation, IrErrorKind};
+
+    fn int() -> DiNode<'static> {
+        DiBasicType { name: b"int", size: 32, encoding: 5, ..Default::default() }.into()
+    }
+
+    fn pointer(to: DiId) -> DiNode<'static> {
+        DiDerivedType {
+            tag: DW_TAG_POINTER_TYPE,
+            base_type: (!to.is_none()).then_some(to),
+            size: 64,
+            ..Default::default()
+        }
+        .into()
+    }
+
+    fn tuple(elements: &[DiId]) -> DiNode<'_> {
+        DiTuple { elements }.into()
+    }
+
+    fn reserve(d: &mut DebugInfo, count: usize) -> Vec<DiId> {
+        (0..count).map(|_| d.reserve().unwrap()).collect()
+    }
+
+    fn base(d: &DebugInfo, id: DiId) -> Option<DiId> {
+        match d.node(id) {
+            DiNode::DerivedType(t) => t.base_type,
+            other => panic!("{id:?} is {other:?}"),
+        }
+    }
+
+    fn elements(d: &DebugInfo, id: DiId) -> Vec<DiId> {
+        match d.node(id) {
+            DiNode::Tuple(t) => t.elements.to_vec(),
+            other => panic!("{id:?} is {other:?}"),
+        }
+    }
+
+    /// The nodes the reference cells of every node hold are the nodes
+    /// `DiNode::refs` reports, in order: the cells the pass rewrites are
+    /// exactly the references.
+    fn check_ref_cells(d: &DebugInfo) {
+        for raw in 0..d.heads.len() as u32 {
+            let head = d.heads[raw as usize];
+            if head.kind == 0 {
+                continue;
+            }
+            let mut cells = Vec::new();
+            let extent = d.walk_refs(head, &mut cells);
+            let by_cells: Vec<DiId> = cells.iter().map(|&cell| d.cells[cell as usize]).collect();
+            let mut by_node = Vec::new();
+            d.node(DiId::new(raw)).refs(&mut |_, _, id| by_node.push(id));
+            assert_eq!(by_cells, by_node, "node {raw}");
+            // The walk ends where the node's cells end: at the next
+            // node's, for nodes stored one after another.
+            let next = d.heads.iter().map(|h| h.at).filter(|&at| at > head.at).min();
+            if let Some(next) = next {
+                assert_eq!(head.at + extent, next, "node {raw}");
             }
         }
+    }
+
+    /// Plain duplicates, and duplicates that name duplicates by a
+    /// forward reference: the lowest id survives, every reference names
+    /// it, and `add` finds it afterwards.
+    #[test]
+    fn duplicates_and_chains() {
+        let mut d = DebugInfo::default();
+        let ids = reserve(&mut d, 4);
+        let [p1, p2, i1, i2] = ids[..] else { unreachable!() };
+        d.define(p1, &pointer(i1)).unwrap();
+        d.define(p2, &pointer(i2)).unwrap();
+        d.define(i1, &int()).unwrap();
+        d.define(i2, &int()).unwrap();
+        let user = d.add(&tuple(&[p2, i2])).unwrap();
+        check_ref_cells(&d);
+        let merge = d.unique_nodes(DiMark::default());
+        assert_eq!(merge.merged(), 2);
+        assert_eq!(
+            (merge.get(p2), merge.get(i2), merge.get(p1), merge.get(user)),
+            (p1, i1, p1, user)
+        );
+        assert!(d.is_merged(p2) && d.is_merged(i2) && !d.is_merged(p1) && !d.is_merged(i1));
+        assert_eq!(base(&d, p1), Some(i1));
+        assert_eq!(elements(&d, user), [p1, i1]);
+        assert_eq!(d.add(&int()).unwrap(), i1);
+        assert_eq!(d.add(&pointer(i1)).unwrap(), p1);
+        assert_eq!(d.add(&tuple(&[p1, i1])).unwrap(), user);
+        check_ref_cells(&d);
+        d.verify().unwrap();
+        // Nothing left to merge: an empty merge.
+        assert!(d.unique_nodes(DiMark::default()).is_empty());
+    }
+
+    /// A node that names itself is distinct (LLVM's
+    /// `storeDistinctInContext`); the node with its content, which
+    /// names it, is not merged with it.
+    #[test]
+    fn a_self_reference_is_distinct() {
+        let mut d = DebugInfo::default();
+        let ids = reserve(&mut d, 2);
+        d.define(ids[0], &tuple(&[ids[0]])).unwrap();
+        d.define(ids[1], &tuple(&[ids[0]])).unwrap();
+        assert!(d.unique_nodes(DiMark::default()).is_empty());
+        assert!(d.is_distinct(ids[0]) && !d.is_distinct(ids[1]));
+        assert!(!d.is_merged(ids[0]) && !d.is_merged(ids[1]));
+    }
+
+    /// Inside one cycle, merging repeats: `!2 = !4` first, which makes
+    /// `!1 = !3`. Cycles that are alike and share no node stay apart.
+    #[test]
+    fn cycles() {
+        let mut d = DebugInfo::default();
+        let n = reserve(&mut d, 9);
+        d.define(n[0], &tuple(&[n[1], n[3]])).unwrap();
+        d.define(n[1], &tuple(&[n[0], n[2]])).unwrap();
+        d.define(n[2], &tuple(&[n[0]])).unwrap();
+        d.define(n[3], &tuple(&[n[0], n[4]])).unwrap();
+        d.define(n[4], &tuple(&[n[0]])).unwrap();
+        d.define(n[5], &tuple(&[n[6]])).unwrap();
+        d.define(n[6], &tuple(&[n[5]])).unwrap();
+        d.define(n[7], &tuple(&[n[8]])).unwrap();
+        d.define(n[8], &tuple(&[n[7]])).unwrap();
+        let merge = d.unique_nodes(DiMark::default());
+        assert_eq!(merge.merged(), 2);
+        assert_eq!((merge.get(n[3]), merge.get(n[4])), (n[1], n[2]));
+        assert_eq!(elements(&d, n[0]), [n[1], n[1]]);
+        assert_eq!(elements(&d, n[1]), [n[0], n[2]]);
+        assert!((5..9).all(|at| !d.is_merged(n[at])));
+        check_ref_cells(&d);
+    }
+
+    /// A large cycle (compared through a table, not a list), in two
+    /// rounds: a hub, twenty equal leaves naming it, and twenty equal
+    /// nodes naming the hub and a leaf.
+    #[test]
+    fn a_large_cycle() {
+        let mut d = DebugInfo::default();
+        let hub = d.reserve().unwrap();
+        let leaves = reserve(&mut d, 20);
+        let pairs = reserve(&mut d, 20);
+        let all: Vec<DiId> = leaves.iter().chain(&pairs).copied().collect();
+        d.define(hub, &tuple(&all)).unwrap();
+        for &leaf in &leaves {
+            d.define(leaf, &tuple(&[hub])).unwrap();
+        }
+        for (&pair, &leaf) in pairs.iter().zip(leaves.iter().rev()) {
+            d.define(pair, &tuple(&[hub, leaf])).unwrap();
+        }
+        let merge = d.unique_nodes(DiMark::default());
+        assert_eq!(merge.merged(), 38);
+        let want: Vec<DiId> = [leaves[0]; 20].into_iter().chain([pairs[0]; 20]).collect();
+        assert_eq!(elements(&d, hub), want);
+        assert_eq!(elements(&d, pairs[0]), [hub, leaves[0]]);
+        check_ref_cells(&d);
+    }
+
+    /// `distinct` nodes are never merged, with each other or with an
+    /// equal uniqued node, and never found by `add`.
+    #[test]
+    fn distinct_nodes_stay_apart() {
+        let mut d = DebugInfo::default();
+        let n = reserve(&mut d, 5);
+        d.define_distinct(n[0], &int()).unwrap();
+        d.define_distinct(n[1], &int()).unwrap();
+        d.define(n[2], &int()).unwrap();
+        d.define_distinct(n[3], &pointer(n[4])).unwrap();
+        d.define(n[4], &int()).unwrap();
+        let merge = d.unique_nodes(DiMark::default());
+        assert_eq!(merge.merged(), 1);
+        assert_eq!(merge.get(n[4]), n[2]);
+        assert_eq!(base(&d, n[3]), Some(n[2]), "a distinct node's reference is rewritten");
+        assert_eq!(d.add(&int()).unwrap(), n[2]);
+        assert_ne!(d.add(&pointer(n[2])).unwrap(), n[3]);
+        check_ref_cells(&d);
+    }
+
+    /// A later pass from a mark: the nodes before it are looked up, not
+    /// merged, and the new ones merge into them.
+    #[test]
+    fn a_later_pass_finds_earlier_nodes() {
+        let mut d = DebugInfo::default();
+        let i1 = d.reserve().unwrap();
+        d.define(i1, &int()).unwrap();
+        let p1 = d.add(&pointer(i1)).unwrap();
+        assert!(d.unique_nodes(DiMark::default()).is_empty());
+        let mark = d.node_mark();
+        let n = reserve(&mut d, 3);
+        d.define(n[0], &pointer(n[1])).unwrap();
+        d.define(n[1], &int()).unwrap();
+        d.define(n[2], &tuple(&[n[0]])).unwrap();
+        let merge = d.unique_nodes(mark);
+        assert_eq!((merge.get(n[0]), merge.get(n[1]), merge.get(n[2])), (p1, i1, n[2]));
+        assert_eq!(merge.get(p1), p1, "an id before the mark stands for itself");
+        assert_eq!(elements(&d, n[2]), [p1]);
+        assert!(!d.is_merged(p1) && !d.is_merged(i1));
+    }
+
+    /// `complete` refuses a merged forward declaration and completes its
+    /// survivor; equal declarations with one identifier are one node,
+    /// distinct definitions with it are not.
+    #[test]
+    fn complete_and_identifiers() {
+        let declaration = DiCompositeType {
+            tag: DW_TAG_STRUCTURE_TYPE,
+            name: b"S",
+            flags: DiFlags::FWD_DECL,
+            identifier: b"_ZTS1S",
+            ..Default::default()
+        };
+        let definition = DiCompositeType { flags: DiFlags::default(), size: 32, ..declaration };
+        let mut d = DebugInfo::default();
+        let n = reserve(&mut d, 4);
+        d.define(n[0], &declaration.into()).unwrap();
+        d.define(n[1], &declaration.into()).unwrap();
+        d.define_distinct(n[2], &definition.into()).unwrap();
+        d.define_distinct(n[3], &definition.into()).unwrap();
+        let merge = d.unique_nodes(DiMark::default());
+        assert_eq!(merge.merged(), 1);
+        assert!(d.is_merged(n[1]) && !d.is_merged(n[2]) && !d.is_merged(n[3]));
+        let refused = d.complete(n[1], &definition.into()).unwrap_err();
+        assert_eq!(refused.kind, IrErrorKind::InvalidDebugInfo);
+        d.complete(n[0], &definition.into()).unwrap();
+    }
+
+    /// A location's scope is rewritten, and the location is found again
+    /// under the survivor.
+    #[test]
+    fn locations_name_the_survivor() {
+        let block = DiLexicalBlock { scope: None, file: None, line: 4, column: 2 };
+        let mut d = DebugInfo::default();
+        let n = reserve(&mut d, 2);
+        d.define(n[0], &block.into()).unwrap();
+        d.define(n[1], &block.into()).unwrap();
+        let at = DiLocation { line: 7, column: 1, scope: n[1], inlined_at: LocId::NONE };
+        let loc = d.loc(at).unwrap();
+        let merge = d.unique_nodes(DiMark::default());
+        assert_eq!(merge.get(n[1]), n[0]);
+        assert_eq!(d.location(loc).map(|l| l.scope), Some(n[0]));
+        assert_eq!(d.loc(DiLocation { scope: n[0], ..at }).unwrap(), loc);
+    }
+
+    /// Every field shape that holds a node id: options, lists with null
+    /// elements, and a bound that names a node.
+    #[test]
+    fn reference_cells_of_every_shape() {
+        let mut d = DebugInfo::default();
+        let n = reserve(&mut d, 6);
+        d.define(n[0], &int()).unwrap();
+        d.define(n[1], &int()).unwrap();
+        let types = [DiId::NONE, n[0], n[1]];
+        d.define(n[2], &DiSubroutineType { types: &types, ..Default::default() }.into()).unwrap();
+        let subrange = |count| DiSubrange { count: DiBound::Node(count), ..Default::default() };
+        d.define(n[3], &subrange(n[0]).into()).unwrap();
+        d.define(n[4], &subrange(n[1]).into()).unwrap();
+        d.define(n[5], &tuple(&[n[3], DiId::NONE, n[4]])).unwrap();
+        check_ref_cells(&d);
+        let merge = d.unique_nodes(DiMark::default());
+        assert_eq!(merge.merged(), 2);
+        assert_eq!(elements(&d, n[5]), [n[3], DiId::NONE, n[3]]);
+        match d.node(n[2]) {
+            DiNode::SubroutineType(t) => assert_eq!(t.types, [DiId::NONE, n[0], n[0]]),
+            other => panic!("{other:?}"),
+        }
+        check_ref_cells(&d);
     }
 }

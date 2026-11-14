@@ -17,7 +17,7 @@
 //!
 //! (with a compile unit listing the two variables, `@a` of type `!5` and
 //! `@b` of type `!6`) with the distinct bit (bit 0 of `op0`) of the two
-//! BASIC_TYPE records cleared in the bitstream. `llvm-dis` of either
+//! `BASIC_TYPE` records cleared in the bitstream. `llvm-dis` of either
 //! prints one `DIBasicType` and one pointer type: the reader merged the
 //! two basic types, then the two pointers that name them. `hod_bc` must
 //! read the same, and what it reads must be what `hod_ll` reads from

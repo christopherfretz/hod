@@ -55,8 +55,10 @@ other two being the control's own XFAILs with objects.
 census found hod refusing for a reason of its own (below), is not in
 shard 1/20. Run alone under qemu: control 2 of 2 PASS (20.7 s, 14.3 s);
 hybrid 1 of 1 PASS (23.8 s), its module given to `llc`.
-With hod `3b14f8f` it cannot build strict (the refusal); its strict run
-with WP-225's fix follows when that lands.
+With hod `3b14f8f` it cannot build strict (the refusal). With hod
+`46076a3` (main after wave 21, with WP-225), strict alone under qemu: 2
+of 2 PASS (18.0 s, 20.0 s), its module built by hod; the census's module
+of it builds and `llvm-dwarfdump --verify` finds no errors.
 
 ## Coverage (census, hybrid, whole suite)
 
@@ -90,7 +92,7 @@ the native `-g` control too). Hence 45 xfail where the baseline has 46.
 
 | first reason | modules | what it was | now |
 |---|---:|---|---|
-| `debug:dbg-value-fragment` | 1 | `map/PR28469_undefined_behavior_segfault.sh.cpp` (`-O2 -g`): `#dbg_value(ptr poison, ..., DW_OP_LLVM_fragment 0 8)` of an inlined reference parameter | written by WP-225 |
+| `debug:dbg-value-fragment` | 1 | `map/PR28469_undefined_behavior_segfault.sh.cpp` (`-O2 -g`): `#dbg_value(ptr poison, ..., DW_OP_LLVM_fragment 0 8)` of an inlined reference parameter | written by WP-225; passes strict with hod `46076a3` |
 | `malformed-input` | 1 | `func.not_fn/not_fn.nttp.pass.cpp`: kiln names a struct type it never defines in a `DITemplateValueParameter` value | kiln's (WP-1424 there); `llc` rejects the module too |
 
 These are the native run's refusals less the 55 wide static members and
@@ -119,7 +121,8 @@ also passes `llvm-dwarfdump --verify`), hod `3b14f8f`:
 | declined, failed (including `--verify`) | 0 |
 
 A module can carry several permitted classes. The one difference is
-`vector.capacity/resize_size_exceptions.pass.cpp`, and it is `llc`'s: a
+`vector.capacity/resize_size_exceptions.pass.cpp`, and it is `llc`'s,
+not hod's (no permitted class is added for it): a
 lambda that captures a pack by reference (`[&a...]`) has one member per
 element, all named after the pack, in a class with an ODR identifier.
 LLVM's IR reader uniques a member of an identified class by its name and

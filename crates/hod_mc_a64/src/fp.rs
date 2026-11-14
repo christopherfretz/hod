@@ -71,6 +71,25 @@ const fn int_to_fp(opcode: u32, fsz: FpSize, rd: VReg, sz: Size, rn: RegZr) -> u
     fp_int(0, opcode, sz, fsz.ftype(), rd.code(), rn.code())
 }
 
+/// The half-precision form (`FEAT_FP16`, `ftype` `11`) of a word that a
+/// constructor of this module built for single precision ([`FpSize::S`]):
+/// the data-processing forms (`FMAX <Hd>, <Hn>, <Hm>`, ...), the compares
+/// and the conversions to and from a general register (`FCVTAS <Wd|Xd>,
+/// <Hn>`, ...). Not for the FMOV (general) forms, whose `ftype` follows
+/// the general register.
+#[inline]
+pub const fn fp_half(single: u32) -> u32 {
+    single | 0x00c0_0000
+}
+
+/// `FJCVTZS <Wd>, <Dn>` (`FEAT_JSCVT`): double to a 32-bit integer
+/// toward zero, modulo 2^32 (JavaScript's conversion), `Z` set when the
+/// conversion was exact.
+#[inline]
+pub const fn fjcvtzs(rd: RegZr, rn: VReg) -> u32 {
+    0x1e7e_0000 | rn.code() << 5 | rd.code()
+}
+
 /// The `S` view goes with `W` and the `D` view with `X` in the FMOV
 /// (general) forms.
 #[inline]

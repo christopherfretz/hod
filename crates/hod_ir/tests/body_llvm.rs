@@ -1373,6 +1373,20 @@ const INTRINSICS: &[(&str, &str)] = &[
     ("llvm.masked.store.v8i64.p0", "void (<8 x i64>, ptr, <8 x i1>)"),
     ("llvm.masked.expandload.v4i32", "<4 x i32> (ptr, <4 x i1>, <4 x i32>)"),
     ("llvm.masked.compressstore.v64i8", "void (<64 x i8>, ptr, <64 x i1>)"),
+    ("llvm.aarch64.crypto.sm3partw1", "<4 x i32> (<4 x i32>, <4 x i32>, <4 x i32>)"),
+    ("llvm.aarch64.crypto.sm3partw2", "<4 x i32> (<4 x i32>, <4 x i32>, <4 x i32>)"),
+    ("llvm.aarch64.crypto.sm3ss1", "<4 x i32> (<4 x i32>, <4 x i32>, <4 x i32>)"),
+    ("llvm.aarch64.crypto.sm3tt1a", "<4 x i32> (<4 x i32>, <4 x i32>, <4 x i32>, i64)"),
+    ("llvm.aarch64.crypto.sm3tt1b", "<4 x i32> (<4 x i32>, <4 x i32>, <4 x i32>, i64)"),
+    ("llvm.aarch64.crypto.sm3tt2a", "<4 x i32> (<4 x i32>, <4 x i32>, <4 x i32>, i64)"),
+    ("llvm.aarch64.crypto.sm3tt2b", "<4 x i32> (<4 x i32>, <4 x i32>, <4 x i32>, i64)"),
+    ("llvm.aarch64.crypto.sm4e", "<4 x i32> (<4 x i32>, <4 x i32>)"),
+    ("llvm.aarch64.crypto.sm4ekey", "<4 x i32> (<4 x i32>, <4 x i32>)"),
+    ("llvm.aarch64.frint32x.f32", "float (float)"),
+    ("llvm.aarch64.frint32z.f64", "double (double)"),
+    ("llvm.aarch64.frint64x.f32", "float (float)"),
+    ("llvm.aarch64.frint64z.f64", "double (double)"),
+    ("llvm.aarch64.fjcvtzs", "i32 (double)"),
 ];
 
 /// Names on the list that LLVM 22 upgrades to other IR on reading (so

@@ -117,6 +117,16 @@ enum Low {
     Ternary(bool),
     /// `xar`.
     Xar,
+    /// `sm3partw1`, `sm3partw2` (tied to operand 0) and `sm4ekey`.
+    Sm3(mc::Sm3Reg),
+    /// `sm3ss1`.
+    Sm3ss1,
+    /// `sm3tt{1,2}{a,b}`: tied to operand 0, the lane of operand 2 last.
+    Sm3tt(mc::Sm3tt),
+    /// `sm4e`, tied to operand 0.
+    Sm4e,
+    /// `fjcvtzs` into a general register.
+    Jcvt,
     /// `fcvtxn` (vector) and `sisd.fcvtxn`.
     Fcvtxn,
     /// `vcvtfp2hf` (`true`) and `vcvthf2fp`.
@@ -224,10 +234,10 @@ fn low(which: Intrinsic<'_>) -> Option<Low> {
         I::Aarch64NeonFrecpe => L::Fp2(Fp2::Frecpe),
         I::Aarch64NeonFrsqrte => L::Fp2(Fp2::Frsqrte),
         I::Aarch64NeonFrecpx => L::Fp2(Fp2::Frecpx),
-        I::Aarch64NeonFrint32x => L::Fp2(Fp2::Frint32x),
-        I::Aarch64NeonFrint32z => L::Fp2(Fp2::Frint32z),
-        I::Aarch64NeonFrint64x => L::Fp2(Fp2::Frint64x),
-        I::Aarch64NeonFrint64z => L::Fp2(Fp2::Frint64z),
+        I::Aarch64NeonFrint32x | I::Aarch64Frint32x => L::Fp2(Fp2::Frint32x),
+        I::Aarch64NeonFrint32z | I::Aarch64Frint32z => L::Fp2(Fp2::Frint32z),
+        I::Aarch64NeonFrint64x | I::Aarch64Frint64x => L::Fp2(Fp2::Frint64x),
+        I::Aarch64NeonFrint64z | I::Aarch64Frint64z => L::Fp2(Fp2::Frint64z),
         I::Aarch64NeonFcvtns => L::FpToInt(Fp2::Fcvtns),
         I::Aarch64NeonFcvtnu => L::FpToInt(Fp2::Fcvtnu),
         I::Aarch64NeonFcvtms => L::FpToInt(Fp2::Fcvtms),
@@ -310,6 +320,16 @@ fn low(which: Intrinsic<'_>) -> Option<Low> {
         I::Aarch64CryptoEor3s | I::Aarch64CryptoEor3u => L::Ternary(true),
         I::Aarch64CryptoBcaxs | I::Aarch64CryptoBcaxu => L::Ternary(false),
         I::Aarch64CryptoXar => L::Xar,
+        I::Aarch64CryptoSm3partw1 => L::Sm3(mc::Sm3Reg::Sm3partw1),
+        I::Aarch64CryptoSm3partw2 => L::Sm3(mc::Sm3Reg::Sm3partw2),
+        I::Aarch64CryptoSm4ekey => L::Sm3(mc::Sm3Reg::Sm4ekey),
+        I::Aarch64CryptoSm3ss1 => L::Sm3ss1,
+        I::Aarch64CryptoSm3tt1a => L::Sm3tt(mc::Sm3tt::Sm3tt1a),
+        I::Aarch64CryptoSm3tt1b => L::Sm3tt(mc::Sm3tt::Sm3tt1b),
+        I::Aarch64CryptoSm3tt2a => L::Sm3tt(mc::Sm3tt::Sm3tt2a),
+        I::Aarch64CryptoSm3tt2b => L::Sm3tt(mc::Sm3tt::Sm3tt2b),
+        I::Aarch64CryptoSm4e => L::Sm4e,
+        I::Aarch64Fjcvtzs => L::Jcvt,
         I::Aarch64NeonFcvtxn | I::Aarch64SisdFcvtxn => L::Fcvtxn,
         I::Aarch64NeonVcvtfp2hf => L::HalfConvert(true),
         I::Aarch64NeonVcvthf2fp => L::HalfConvert(false),
@@ -434,6 +454,12 @@ fn fp_elem(fmt: FpFormat) -> Elem {
 }
 
 fn kind_of(cx: &FnCx<'_, A64>, ty: TypeId) -> T {
+    kind_of_as(cx, ty, false)
+}
+
+/// [`kind_of`], and with `bfloat_as_h` a vector of `bfloat` is one of
+/// 16-bit integers: what the structure loads and stores move (WP-205).
+fn kind_of_as(cx: &FnCx<'_, A64>, ty: TypeId, bfloat_as_h: bool) -> T {
     let types = cx.types();
     match types.kind(ty) {
         TypeKind::Void => T::Void,
@@ -449,6 +475,7 @@ fn kind_of(cx: &FnCx<'_, A64>, ty: TypeId) -> T {
                 TypeKind::Int(32) => (Elem::S, None, 32),
                 TypeKind::Int(64) => (Elem::D, None, 64),
                 TypeKind::Half => (Elem::H, Some(FpFormat::H), 16),
+                TypeKind::BFloat if bfloat_as_h => (Elem::H, None, 16),
                 TypeKind::Float => (Elem::S, Some(FpFormat::S), 32),
                 TypeKind::Double => (Elem::D, Some(FpFormat::D), 64),
                 _ => return T::Other,
@@ -509,10 +536,16 @@ fn splat(cx: &FnCx<'_, A64>, value: Value) -> Option<u64> {
         Const::Int { value, .. } => Some(value),
         Const::Zero(_) => Some(0),
         Const::Aggregate { elems, .. } => {
-            // A vector constant with every element equal.
+            // A vector constant with every element equal; `undef` and
+            // `poison` elements may be anything (WP-205: clang's scalar
+            // `vqshlub_n_s8` sets lane 0 only).
             let mut first = None;
             for &e in elems {
-                let Const::Int { value, .. } = cx.module.consts.get(e) else { return None };
+                let value = match cx.module.consts.get(e) {
+                    Const::Int { value, .. } => value,
+                    Const::Undef(_) | Const::Poison(_) => continue,
+                    _ => return None,
+                };
                 if *first.get_or_insert(value) != value {
                     return None;
                 }
@@ -633,7 +666,9 @@ pub fn intrinsic<'a>(
 ) -> CgResult<()> {
     let Some(low) = low(which) else { return unsupported(INTRINSIC) };
     let ret = kind_of(cx, inst.ty());
-    let kinds: Vec<T> = args.iter().map(|&a| value_kind(cx, a)).collect();
+    let memory = matches!(low, Low::Multi(_) | Low::Lane(..) | Low::Replicate(_));
+    let kinds: Vec<T> =
+        args.iter().map(|&a| kind_of_as(cx, crate::common::value_ty(cx, a), memory)).collect();
     match low {
         Low::Table(extend, n) => return table(cx, inst, extend, n, args, ret),
         Low::Multi(op) => return multi(cx, inst, op, args, &kinds, ret),
@@ -646,7 +681,12 @@ pub fn intrinsic<'a>(
     // Every other family: register operands, then at most one immediate
     // last.
     let (regs_args, imm_arg) = match low {
-        Low::Fixed(_) | Low::Insert(_) | Low::ShiftNarrow(_) | Low::Xar | Low::Int3Lane(_) => {
+        Low::Fixed(_)
+        | Low::Insert(_)
+        | Low::ShiftNarrow(_)
+        | Low::Xar
+        | Low::Int3Lane(_)
+        | Low::Sm3tt(_) => {
             let (imm_last, operands) =
                 args.split_last().map_or((None, args), |(l, r)| (Some(*l), r));
             (operands, imm_last)
@@ -764,11 +804,9 @@ fn plan(
                 if op.has_scalar() {
                     one(word(mc::try_neon_fp3_scalar(op, fmt, v0, v0, v0))?)
                 } else {
-                    let sz = match fmt {
-                        FpFormat::D => FpSize::D,
-                        FpFormat::S => FpSize::S,
-                        FpFormat::H => return unsupported(TARGET),
-                    };
+                    // Half precision: the single-precision word in its
+                    // `FEAT_FP16` form (WP-205).
+                    let sz = if fmt == FpFormat::D { FpSize::D } else { FpSize::S };
                     let f = match op {
                         Fp3::Fmax => mc::fmax,
                         Fp3::Fmin => mc::fmin,
@@ -776,7 +814,8 @@ fn plan(
                         Fp3::Fminnm => mc::fminnm,
                         _ => return unsupported(TARGET),
                     };
-                    one(f(sz, v0, v0, v0))
+                    let w = f(sz, v0, v0, v0);
+                    one(if fmt == FpFormat::H { mc::fp_half(w) } else { w })
                 }
             } else {
                 return unsupported(TARGET);
@@ -862,8 +901,14 @@ fn plan(
                     let w = word(mc::try_neon_fp2_scalar(op, fmt, v0, v0))?;
                     Plan::One { word: w, n: 0, m: None, a: None }
                 }
-                (T::Int(32 | 64), Some(fmt @ (FpFormat::S | FpFormat::D))) => {
-                    let fsz = if fmt == FpFormat::S { FpSize::S } else { FpSize::D };
+                // `i16` of half precision: the scalar SIMD form, saturating
+                // to 16 bits, as `llc` 22 (WP-205; `llc` 19 cannot select it).
+                (T::Int(16), Some(FpFormat::H)) => {
+                    let w = word(mc::try_neon_fp2_scalar(op, FpFormat::H, v0, v0))?;
+                    Plan::One { word: w, n: 0, m: None, a: None }
+                }
+                (T::Int(32 | 64), Some(fmt)) => {
+                    let fsz = if fmt == FpFormat::D { FpSize::D } else { FpSize::S };
                     let f = match op {
                         Fp2::Fcvtns => mc::fcvtns,
                         Fp2::Fcvtnu => mc::fcvtnu,
@@ -877,7 +922,8 @@ fn plan(
                         Fp2::Fcvtzu => mc::fcvtzu,
                         _ => return unsupported(TARGET),
                     };
-                    Plan::Gpr { word: f(gpr_size(ret), mc::RegZr::ZR, fsz, v0) }
+                    let w = f(gpr_size(ret), mc::RegZr::ZR, fsz, v0);
+                    Plan::Gpr { word: if fmt == FpFormat::H { mc::fp_half(w) } else { w } }
                 }
                 _ => return unsupported(TARGET),
             }
@@ -898,6 +944,12 @@ fn plan(
                     }
                     (Some(FpFormat::D), T::Int(64) | T::Vec { .. }) => {
                         mc::try_neon_shift_scalar(op, Elem::D, v0, v0, amount)
+                    }
+                    // Half precision and a 32- or 64-bit integer: `llc`'s
+                    // 16-bit fixed point in the `H` view (the integer's low
+                    // 16 bits in, the result zero-extended out; WP-205).
+                    (Some(FpFormat::H), T::Int(32 | 64)) => {
+                        mc::try_neon_shift_scalar(op, Elem::H, v0, v0, amount)
                     }
                     _ => None,
                 },
@@ -1071,6 +1123,29 @@ fn plan(
             let Some(w) = mc::try_xar(v0, v0, v0, amount) else { return unsupported(IMMEDIATE) };
             one(w)
         }
+        Low::Sm3(op) => {
+            let w = mc::sm3reg(op, v0, v0, v0);
+            if matches!(op, mc::Sm3Reg::Sm4ekey) {
+                one(w)
+            } else {
+                Plan::One { word: w, n: 1, m: Some(2), a: None }
+            }
+        }
+        Low::Sm3ss1 => Plan::One { word: mc::sm3ss1(v0, v0, v0, v0), n: 0, m: Some(1), a: Some(2) },
+        Low::Sm3tt(op) => {
+            let index = immediate(cx)?;
+            let Some(w) = mc::try_sm3tt(op, v0, v0, v0, index) else {
+                return unsupported(IMMEDIATE);
+            };
+            Plan::One { word: w, n: 1, m: Some(2), a: None }
+        }
+        Low::Sm4e => Plan::One { word: mc::sm4e(v0, v0), n: 1, m: None, a: None },
+        Low::Jcvt => {
+            if k(0).fp_scalar() != Some(FpFormat::D) || ret != T::Int(32) {
+                return unsupported(TARGET);
+            }
+            Plan::Gpr { word: mc::fjcvtzs(mc::RegZr::ZR, v0) }
+        }
         Low::Fcvtxn => {
             let w =
                 if ret.vec().is_some() { mc::fcvtxn(v0, v0) } else { mc::fcvtxn_scalar(v0, v0) };
@@ -1130,7 +1205,7 @@ fn fields_of(cx: &FnCx<'_, A64>, ty: TypeId, n: u32) -> Option<(VecBits, Elem)> 
     if fields.len() != n as usize || fields.iter().any(|&f| f != first) {
         return None;
     }
-    kind_of(cx, first).vec()
+    kind_of_as(cx, first, true).vec()
 }
 
 /// Stores the block's first `n` registers to the result's slot.

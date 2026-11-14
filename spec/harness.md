@@ -3976,7 +3976,8 @@ did not fail are the passed ones.
   alike, so a feature test hod declines changes nothing that is built.
   The build (`make -k`, the shared jobserver, else `-j 4`) and the tests
   run in the mode. Every compile runs under the row's address-space cap
-  (`vmem_kb`, `KILN_OSS_VMEM_KB`) and a 600 s limit (the wrapper's); the
+  (`vmem_kb`, `KILN_OSS_VMEM_KB`; a link under the row's `link_vmem_kb`,
+  at most 16 GB, when it sets one) and a 600 s limit (the wrapper's); the
   tests run under the same cap (or the row's `test_vmem_kb`, at most
   100 GB, for a test that reserves address space it never touches),
   under the row's `test_timeout`, ctest

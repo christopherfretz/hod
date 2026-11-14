@@ -54,6 +54,7 @@ mkdir -p "$FINDINGS" "$(dirname "$REGS")" "$OSS"
 SNAP="$OSS/lane-$$"
 mkdir "$SNAP" && cp -p "$HERE"/oss-build.sh "$HERE"/oss-report.py "$HERE"/projects.py "$HERE"/projects.toml \
   "$HERE"/kiln-cxx "$HERE"/kiln-cc "$HERE"/hod-shim "$HERE"/oss-reduce.py "$SNAP"/ || exit 2
+[ ! -d "$HERE/shims" ] || cp -Rp "$HERE/shims" "$SNAP/shims" || exit 2
 trap 'find "$SNAP" -mindepth 1 -delete; rmdir "$SNAP"' EXIT
 HERE="$SNAP"
 

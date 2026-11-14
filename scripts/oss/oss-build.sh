@@ -142,6 +142,10 @@ KILN_OSS_DIR="${KILN_OSS_DIR:-$(dirname "$BROOT")/kiln/scripts/oss}"
 P_CONFIGURE=("${P_CONFIGURE[@]//@KILN_OSS@/$KILN_OSS_DIR}")
 P_INSTALL_CONFIGURE=("${P_INSTALL_CONFIGURE[@]//@KILN_OSS@/$KILN_OSS_DIR}")
 P_TEST="${P_TEST//@KILN_OSS@/$KILN_OSS_DIR}"
+# `@HOD_OSS@` is this lane's scripts/oss (its own shims/, copied with the
+# lane by oss-run.sh), for a row's project include.
+P_CONFIGURE=("${P_CONFIGURE[@]//@HOD_OSS@/$HERE}")
+P_INSTALL_CONFIGURE=("${P_INSTALL_CONFIGURE[@]//@HOD_OSS@/$HERE}")
 
 CXX="${KILN_OSS_CXX:-$BROOT/target-kiln/release/kiln++}"
 [ -x "$CXX" ] || { echo "oss-build: no kiln++ at $CXX (set KILN_OSS_CXX)" >&2; exit 2; }

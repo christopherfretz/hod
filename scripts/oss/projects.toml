@@ -510,7 +510,8 @@ build = "cmake"
 cxx_std = 17
 c = "kiln"
 # kiln's row, without the unity build (every source its own object).
-configure = ["-DBUILD_UNITTESTS=ON", "-DBUILD_SHELL=ON", "-DDISABLE_UNITY=1"]
+# The shim gives allocator_jemalloc.cpp the header it misses outside a unity TU.
+configure = ["-DBUILD_UNITTESTS=ON", "-DBUILD_SHELL=ON", "-DDISABLE_UNITY=1", "-DCMAKE_PROJECT_DuckDB_INCLUDE=@HOD_OSS@/shims/duckdb-no-unity.cmake"]
 build_targets = ["unittest", "shell"]
 # The list of the test cases first (catch-tests.log, projects.py reads it
 # for the per-case results), then kiln's test: the default (non-slow) cases.
@@ -518,7 +519,7 @@ test = "test/unittest --list-test-names-only > catch-tests.log 2>/dev/null; DUCK
 test_timeout = 14400
 c_compiler = "clang-19"
 wave = 4
-notes = "WP-223, from kiln's row (WP-799): release v1.5.6, default extensions (core_functions, parquet), not the amalgamation, DISABLE_UNITY so every source is a TU. The test is unittest with no arguments (the default, non-slow, Catch2 and sqllogictest cases), at most 4 threads per database; the per-case results come from Catch's failure headers and the --list-test-names-only list."
+notes = "WP-223, from kiln's row (WP-799): release v1.5.6, default extensions (core_functions, parquet), not the amalgamation, DISABLE_UNITY so every source is a TU (shims/duckdb-no-unity.cmake: v1.5.6's allocator_jemalloc.cpp lacks an include then, clang 19 rejects it alike). The test is unittest with no arguments (the default, non-slow, Catch2 and sqllogictest cases), at most 4 threads per database; the per-case results come from Catch's failure headers and the --list-test-names-only list."
 
 [icu4c]
 url = "https://github.com/unicode-org/icu"

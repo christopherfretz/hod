@@ -897,9 +897,34 @@ refusal of "Memory (WP-036)" below: those names are no longer produced.
   2^32 is `limit:frame-size`. The result is the new `sp`; the frame is
   marked dynamic. `llvm.stacksave` is `mov xD, sp`;
   `llvm.stackrestore` is `mov sp, xS` and marks the frame dynamic.
+- **Vector `getelementptr`** (a `ptradd` whose result is `<N x ptr>`,
+  WP-234): one lane at a time, no vector arithmetic. Each vector
+  operand's image is found first: a `Mem` vector's slot, or an `Fpr`
+  vector's register stored into a 16-byte frame slot of its own and
+  given back at once; a scalar operand is the same in every lane
+  (splatted, put again for each lane); a scalar constant index, and a
+  zero-like vector one, is folded into the constant offset. For lane
+  `n`: a pool temporary gets lane `n` of the base and the constant
+  offset (`add_const`); for each other index a second temporary gets
+  lane `n` of it (a general load of the lane's width, or the low 8 bytes
+  of an `i128` lane or `i128` scalar: an index wider than 64 bits is
+  truncated), is sign-extended and scaled as a scalar `ptradd`'s index
+  (`sbfx`/`sxtw`, a shift, or `mul` by `x16`) and added; the sum is
+  stored as lane `n` of the result's image and both temporaries are
+  given back, so nothing is pinned across lanes. The result's image is
+  its slot (`Mem`), or a 16-byte frame slot loaded into its register
+  after the last lane (`Fpr`). Any `N` whose lanes are addressable is
+  lowered (1 to 256); `inbounds`, `nuw` and `nusw` change nothing. What
+  stays refused is the vector group's: an index vector of lanes other
+  than 8, 16, 32, 64 or 128 bits, `a64:vector-odd-element`; `<N x i1>`
+  indices, `a64:vector-mask` / `a64:mask-wide`; more than 256 lanes,
+  `a64:vector-length`. A constant `getelementptr` expression with a
+  fixed vector operand is folded lane by lane by `hod_ir`
+  (`ConstPool::fold_gep`): it becomes a vector of the lanes' addresses,
+  in an initializer or as an operand; one whose lanes do not all fold
+  stays `const-expr:getelementptr`.
 - **Refused:** a `load`/`store` of an `Fpr` value, `a64:load-fpr` and
-  `a64:store-fpr` (WP-039); a `ptradd` producing a vector of pointers,
-  `a64:ptradd-vector`. `Mem`-class values are `aggr`'s (WP-040).
+  `a64:store-fpr` (WP-039). `Mem`-class values are `aggr`'s (WP-040).
 
 ##### Control flow (WP-037)
 
@@ -1247,9 +1272,9 @@ section.
   than 64 `i1`), `a64:vector-odd-element` (integer lanes of a width other
   than 8, 16, 32, 64 and at most 64), `a64:vector-wide-element`
   (`i128` or `fp128` lanes), `a64:vector-length` (more than 256 lanes),
-  `a64:vector-index`; `getelementptr` over a vector
-  of pointers stays `a64:ptradd-vector`, element-wise arithmetic
-  `a64:vector-op` / `a64:mem-vector` (WP-080). `a64:vector-bfloat` and
+  `a64:vector-index`; element-wise arithmetic
+  `a64:vector-op` / `a64:mem-vector` (WP-080). `getelementptr` over
+  vectors is lowered lane by lane since WP-234 ("Memory" above). `a64:vector-bfloat` and
   `a64:intrinsic-target` are defined for WP-080 and WP-083.
 - **Tests**: `crates/hod_a64/tests/vector.rs` (the generator over shapes
   × operations × indices against a model, `llc` and clang
@@ -2599,8 +2624,30 @@ are X-aggr's, atomic accesses X-atomic's (`x64:todo:atomic`).
   from `rbp`. An alignment that is not a power of two or is above `2^32`,
   or a constant size at or above `2^63`, is `limit:frame-size`.
 - **`stacksave`** is `mov r, rsp`; **`stackrestore`** `mov rsp, r`.
-- **Refused**: `x64:ptradd-vector`, a `ptradd` whose result is a vector
-  of pointers (a `<2 x ptr>` is `Fpr`; X-lanes may take it).
+- **Vector `getelementptr`** (a `ptradd` whose result is `<N x ptr>`,
+  WP-234, `mem.rs` `ptr_add_vector`): one lane at a time, no vector
+  arithmetic. Each vector operand's image is found first (`vector::
+  image`: a `Mem` vector's slot, or an `Fpr` vector's register stored
+  into a fresh 16-byte slot and given back at once); a scalar operand is
+  the same in every lane (splatted, put again for each lane); a scalar
+  constant index, and a zero-like vector one, is folded into the
+  constant offset. For lane `n`: `rcx` = lane `n` of the base, plus the
+  constant offset (`add_addend`); for each other index `rdx` = lane `n`
+  of it (a load of the lane's width, or the low 8 bytes of an `i128`
+  lane or `i128` scalar: an index wider than 64 bits is truncated),
+  sign-extended and scaled as a scalar `ptradd`'s index (`movsx`, a
+  shift, `imul`, or `imul` by `r10` beyond 32 bits), then `lea rcx,
+  [rcx + rdx*s]`; `rcx` is stored as lane `n` of the result's image.
+  `rcx` and `rdx` hold no values (§5.6), so nothing of the pool is
+  taken. The result's image is its slot (`Mem`), or a fresh 16-byte
+  slot loaded into its register after the last lane (`Fpr`). Any `N`
+  whose lanes are addressable is lowered (1 to 256); `inbounds`, `nuw`
+  and `nusw` change nothing. What stays refused is the vector group's
+  (§5.6.13): an index vector of lanes other than 8, 16, 32, 64 or 128
+  bits, `x64:vector-odd-element`; `<N x i1>` indices, `x64:vector-mask`
+  / `x64:mask-wide`; more than 256 lanes, `x64:vector-length`. Constant
+  vector `getelementptr` expressions are folded by `hod_ir` as on
+  AArch64 (§5.5, "Memory (WP-036)").
 
 #### 5.6.5 Mem-class values (WP-126)
 
@@ -3258,8 +3305,8 @@ mask (`<N x i1>`, `N ≤ 64`, class `Gpr`, bit `i` = element `i`), or
   `x64:vector-wide-element` (`i128`, `fp128`, `x86_fp80`; lane
   moves of `i128` and `x86_fp80` since §5.6.18),
   `x64:vector-length` (more than 256 lanes), `x64:vector-index` (an
-  index wider than 64 bits), `x64:ptradd-vector` (a `ptradd` of a
-  vector of pointers, `mem.rs`'s); a conversion to
+  index wider than 64 bits); a `ptradd` of a vector of pointers is
+  lowered lane by lane since WP-234 (§5.6.4); a conversion to
   `bfloat` lanes from 64-bit integers is `x64:vector-bfloat`.
 - **Images.** A lane is reached in the vector's image: a `Mem` vector's
   own slot, or a 16-byte frame slot an `Fpr` operand is stored into

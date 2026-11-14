@@ -392,7 +392,7 @@ a hook, not by a byte copy. This changes the interface in
 | form | name | why |
 |---|---|---|
 | scalable vectors | `type:scalable-vector` (matrix), `abi:scalable-vector` | no SVE; no corpus use |
-| vectors of pointers, `getelementptr` over them | `a64:ptradd-vector` | no corpus use |
+| vectors of pointers, `getelementptr` over them | `a64:ptradd-vector` (lowered lane by lane on both targets since WP-234: kiln `-O2` libc++ modules use it) | no corpus use |
 | non-byte elements other than `i1` (`<N x i4>`) | `a64:vector-odd-element` | no corpus use |
 | `i128` and `fp128` elements | `a64:vector-wide-element` | one module (pr105613); add to V3 when there is a second |
 | `bfloat` arithmetic | `a64:vector-bfloat` | loads, stores and bitcasts work; arithmetic is not in the corpus |

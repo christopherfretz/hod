@@ -696,6 +696,20 @@ text with bitcode follows the same rule (WP-172).
 `tests/upgrade.rs` holds an LLVM 19 module with both intrinsics equal
 through `llvm-as-19` and shows that `llvm-as-22` changes it.
 
+**Numbering is not content.** The dump compares metadata structurally
+because the two readers number it differently, and they must: a text's
+`!N` are its author's numbers, while a bitcode's metadata ids are
+`llvm-as`'s enumeration (strings, then distinct, then uniqued nodes, in
+the order the writer reached them), and the bitcode carries no trace of
+the text's numbers. So nothing a consumer writes may depend on a
+`DiId`'s value or on the order of ids; only on what the nodes hold and
+how they refer to each other. The line table's file order was the one
+place that did (`dwarf.md` §4.4): kiln-built abseil modules built to
+two objects from their text and their `llvm-as-22` bitcode (WP-192).
+`crates/hod/tests/text_bitcode_debug.rs` builds a module whose text
+and bitcode number their files in opposite orders, from both, on both
+targets, DWARF 5 and 4, with `llvm-as` 19 and 22, and compares bytes.
+
 ### 9.3 The handwritten module
 
 `tests/oracle.rs` uses `tests/data/module.ll`. It runs the same

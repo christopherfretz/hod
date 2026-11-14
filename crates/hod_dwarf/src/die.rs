@@ -263,23 +263,33 @@ impl<'a> UnitPlan<'a> {
         let DiNode::File(file) = debug.node(file) else { return Err(bad(unit, "file")) };
 
         // The file table: directory 0 and file 0 from the unit, then every
-        // file node in id order (`spec/dwarf.md` §4.4, §5.7).
+        // file node in the order of its contents, never of its id: ids are
+        // the input's numbering, which the text and the bitcode of one
+        // module do not share (`spec/dwarf.md` §4.4, §5.7; WP-192).
         let mut files = FileTable::new_with_source(
             file.directory,
             file.filename,
             md5_of(&file),
             source_of(&file),
         );
-        let mut file_index = Vec::new();
         let count = debug.node_count();
-        for raw in 0..count as u32 {
-            let id = DiId::new(raw);
-            if debug.kind(id) == DiKind::File {
-                let DiNode::File(f) = debug.node(id) else { continue };
-                let at = files.add_with_source(f.directory, f.filename, md5_of(&f), source_of(&f));
-                file_index.push((raw, at));
-            }
-        }
+        let mut by_content: Vec<_> = (0..count as u32)
+            .filter(|&raw| debug.kind(DiId::new(raw)) == DiKind::File)
+            .filter_map(|raw| match debug.node(DiId::new(raw)) {
+                DiNode::File(f) => {
+                    Some(((f.directory, f.filename, md5_of(&f), source_of(&f)), raw))
+                }
+                _ => None,
+            })
+            .collect();
+        by_content.sort_unstable();
+        let mut file_index: Vec<(u32, u32)> = by_content
+            .into_iter()
+            .map(|((directory, filename, md5, source), raw)| {
+                (raw, files.add_with_source(directory, filename, md5, source))
+            })
+            .collect();
+        file_index.sort_unstable();
 
         let mut plan = UnitPlan {
             debug,

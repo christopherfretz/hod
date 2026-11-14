@@ -365,6 +365,9 @@ pub mod fam {
     // WP-189: an explicit member function with a ref-qualifier
     // (`spec/dwarf.md` §6.24).
     pub const METHOD_EXPLICIT_QUALIFIED: usize = 113;
+    // WP-206: the member function declarations no family above holds
+    // (`spec/dwarf.md` §6.27).
+    pub const METHOD_ANY: usize = 114;
 }
 
 /// Every family, in code order (`spec/dwarf.md` §6.1 has the same table).
@@ -1809,6 +1812,36 @@ pub const FAMILIES: &[Family] = &[
             o(3, at::CONTAINING_TYPE, REF4),
         ],
     ),
+    // WP-206: 114, the member function declarations no family above
+    // holds (`spec/dwarf.md` §6.27): a calling convention, `artificial`
+    // with `noreturn` (a lambda's static invoker), `explicit` with
+    // `noreturn`; in the order of `llc`'s `applySubprogramAttributes`.
+    // Neither a ref-qualifier nor `deleted`: those combinations stay
+    // refused.
+    fam(
+        "subprogram (member declaration, any)",
+        tag::SUBPROGRAM,
+        Optional,
+        2048,
+        "WP-206",
+        &[
+            o(0, at::LINKAGE_NAME, STRX),
+            s(at::NAME, STRX),
+            o(1, at::DECL_FILE, UDATA),
+            o(1, at::DECL_LINE, UDATA),
+            o(2, at::CALLING_CONVENTION, DATA1),
+            o(3, at::TYPE, REF4),
+            o(4, at::VIRTUALITY, DATA1),
+            o(4, at::VTABLE_ELEM_LOCATION, EXPRLOC),
+            s(at::DECLARATION, FLAG_PRESENT),
+            o(5, at::ARTIFICIAL, FLAG_PRESENT),
+            o(6, at::EXTERNAL, FLAG_PRESENT),
+            o(7, at::NORETURN, FLAG_PRESENT),
+            o(8, at::ACCESSIBILITY, DATA1),
+            o(9, at::EXPLICIT, FLAG_PRESENT),
+            o(4, at::CONTAINING_TYPE, REF4),
+        ],
+    ),
 ];
 
 /// The slots of the general static-member families (54, 55), in `llc`'s
@@ -1988,7 +2021,10 @@ mod tests {
         // WP-162 appended families 107 to 112.
         assert_eq!(BASES[fam::FORMAL_PARAMETER_LIST], 11482);
         assert_eq!(BASES[fam::VARIABLE_OF_ABSTRACT_LIST], 11524);
-        assert_eq!(CODE_END, 12550);
+        // WP-189 appended family 113, WP-206 family 114.
+        assert_eq!(BASES[fam::METHOD_EXPLICIT_QUALIFIED], 11526);
+        assert_eq!(BASES[fam::METHOD_ANY], 12550);
+        assert_eq!(CODE_END, 14598);
         for (index, name) in [
             (fam::CONST_TYPE, "const_type"),
             (fam::TYPEDEF, "typedef"),

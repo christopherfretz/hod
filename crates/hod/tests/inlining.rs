@@ -602,6 +602,65 @@ fn what_cannot_have_been_inlined_is_accepted() {
     compile(&module).expect("an address of an available_externally body");
 }
 
+/// WP-237: the `-O0` variable-length array, as jemalloc's
+/// `tcache_bin_flush_impl_small` has it: the saved pointer kept in an
+/// entry-block slot (`saved_stack`) and loaded for the restore.
+/// `extra_use` is spliced after the restore, `ret` is the returned value.
+fn saved_stack(extra_use: &str, ret: &str) -> String {
+    let body = format!(
+        "  %slot = alloca ptr, align 8\n  %n = alloca i64, align 8\n  br label %vla\n\
+         vla:\n  %k = load i64, ptr %n, align 8\n  %p = call ptr @llvm.stacksave.p0()\n  \
+         store ptr %p, ptr %slot, align 8\n  %a = alloca {{ ptr }}, i64 %k, align 8\n  \
+         store ptr null, ptr %a, align 8\n  br label %out\n\
+         out:\n  %q = load ptr, ptr %slot, align 8\n  call void @llvm.stackrestore.p0(ptr %q)\n\
+         {extra_use}  ret ptr {ret}"
+    );
+    let extra = "declare ptr @llvm.stacksave.p0()\ndeclare void @llvm.stackrestore.p0(ptr)\n\
+                 declare void @take(ptr)\n@g = global ptr null";
+    sensitive(&body, extra, "internal", "alwaysinline nounwind")
+}
+
+#[test]
+fn a_saved_stack_slot_is_not_an_escape() {
+    compile(&saved_stack("", "null")).expect("the -O0 variable-length array");
+    // A second save into the same slot (a scope in a loop) and lifetime
+    // markers on it change nothing.
+    let again = "  %p2 = call ptr @llvm.stacksave.p0()\n  store ptr %p2, ptr %slot, align 8\n  \
+                 call void @llvm.lifetime.start.p0(ptr %slot)\n  \
+                 %q2 = load ptr, ptr %slot, align 8\n  call void @llvm.stackrestore.p0(ptr %q2)\n";
+    let module = saved_stack(again, "null").replace(
+        "declare void @take",
+        "declare void @llvm.lifetime.start.p0(ptr)\ndeclare void @take",
+    );
+    compile(&module).expect("a slot that keeps saves only");
+}
+
+#[test]
+fn a_saved_stack_that_escapes_is_declined() {
+    let escapes = [
+        // The loaded pointer returned, passed to a call, stored elsewhere.
+        ("", "%q"),
+        ("  call void @take(ptr %q)\n", "null"),
+        ("  store ptr %q, ptr @g, align 8\n", "null"),
+        // The saved pointer itself stored to a global.
+        ("  %p3 = call ptr @llvm.stacksave.p0()\n  store ptr %p3, ptr @g, align 8\n", "null"),
+        // The slot's address returned, passed, stored, or another value
+        // stored into it.
+        ("", "%slot"),
+        ("  call void @take(ptr %slot)\n", "null"),
+        ("  store ptr %slot, ptr @g, align 8\n", "null"),
+        ("  store ptr null, ptr %slot, align 8\n", "null"),
+    ];
+    for (extra_use, ret) in escapes {
+        assert_eq!(declined(&saved_stack(extra_use, ret)), inline_reason::STACKSAVE, "{extra_use}");
+    }
+    // A slot that is not an entry-block alloca: a dynamic one.
+    let module = saved_stack("", "null")
+        .replace("  %slot = alloca ptr, align 8\n", "")
+        .replace("vla:\n", "vla:\n  %slot = alloca ptr, align 8\n");
+    assert_eq!(declined(&module), inline_reason::STACKSAVE);
+}
+
 #[test]
 fn the_other_triggers_of_the_o0_pipeline_are_refused_by_name() {
     let cases = [

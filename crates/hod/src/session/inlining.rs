@@ -57,8 +57,9 @@ pub mod reason {
     /// return address is the caller's.
     pub const RETURN_ADDRESS: &str = "alwaysinline:return-address";
     /// `llvm.stacksave` whose result is used other than by
-    /// `llvm.stackrestore` in the same body: inlined, it is the caller's
-    /// stack pointer.
+    /// `llvm.stackrestore` in the same body, directly or through a slot
+    /// that keeps saves only (a variable-length array's `saved_stack`,
+    /// WP-237): inlined, it is the caller's stack pointer.
     pub const STACKSAVE: &str = "alwaysinline:stacksave-escapes";
     /// A call that may return twice (`setjmp`, `vfork`) in a body LLVM
     /// inlines: an `invoke` of it, or a `call` in a `returns_twice` body
@@ -257,15 +258,62 @@ fn is_slot_address(body: &Body, value: Value, depth: u32) -> bool {
     }
 }
 
+/// Whether `inst` is a call of the intrinsic `name`.
+fn calls_intrinsic(inst: hod_ir::Inst<'_>, name: &str) -> bool {
+    inst.call().is_some_and(|site| site.intrinsic().is_some_and(|i| i.name() == name))
+}
+
 /// Whether the result of the `llvm.stacksave` call `saved` is used by
-/// anything but `llvm.stackrestore`.
+/// anything but `llvm.stackrestore` (`spec/cli.md` "Always-inline"):
+/// directly, or through a stack slot that keeps it for a restore (the
+/// `-O0` shape of a variable-length array, [`keeps_saves_only`]).
 fn stacksave_escapes(body: &Body, saved: Value) -> bool {
     body.insts().any(|inst| {
         inst.operands().contains(&saved)
-            && !inst.call().is_some_and(|site| {
-                site.intrinsic().is_some_and(|i| i.name() == "llvm.stackrestore")
-            })
+            && !calls_intrinsic(inst, "llvm.stackrestore")
+            && !matches!(inst.kind(), InstKind::Store { value, ptr, .. }
+                if value == saved && keeps_saves_only(body, ptr))
     })
+}
+
+/// Whether `ptr` is a stack slot of the body (an `alloca` of the entry
+/// block) used only to keep `llvm.stacksave` results for
+/// `llvm.stackrestore` (WP-237): every use is a store into it of a
+/// `llvm.stacksave` result, a load from it whose result only
+/// `llvm.stackrestore` uses, or a lifetime marker. A C front end writes a
+/// variable-length array at `-O0` this way (`saved_stack`). The saved
+/// pointer then never leaves the body's activation: out of line, the pair
+/// restores the body's own stack pointer before it returns, which leaves
+/// the caller's as it was, as the pair inlined does. Its address taken,
+/// another value stored to it, or a load used by anything else, and the
+/// saved pointer may escape.
+fn keeps_saves_only(body: &Body, ptr: Value) -> bool {
+    if !matches!(ptr.kind(), ValueKind::Slot(_)) {
+        return false;
+    }
+    let is_save = |value: Value| match value.kind() {
+        ValueKind::Inst(inst) => calls_intrinsic(body.inst(inst), "llvm.stacksave"),
+        _ => false,
+    };
+    let mut loaded = Vec::new();
+    for inst in body.insts() {
+        if !inst.operands().contains(&ptr) {
+            continue;
+        }
+        match inst.kind() {
+            InstKind::Store { value, ptr: to, .. }
+                if to == ptr && value != ptr && is_save(value) => {}
+            InstKind::Load { .. } => loaded.push(inst.result()),
+            _ if calls_intrinsic(inst, "llvm.lifetime.start")
+                || calls_intrinsic(inst, "llvm.lifetime.end") => {}
+            _ => return false,
+        }
+    }
+    loaded.is_empty()
+        || body.insts().all(|inst| {
+            calls_intrinsic(inst, "llvm.stackrestore")
+                || !inst.operands().iter().any(|value| loaded.contains(value))
+        })
 }
 
 /// The first reason `body`'s meaning depends on being inlined, if any.

@@ -200,8 +200,10 @@ pub fn vex_forms(b: &mut Batch) {
         "nle_uq", "ord_s", "eq_us", "nge_uq", "ngt_uq", "false_os", "neq_os", "ge_oq", "gt_oq",
         "true_us",
     ];
-    for (op, suffix) in [(V3Imm::Cmpps, "ps"), (V3Imm::Cmppd, "pd")] {
-        for w in Width::ALL {
+    for (op, suffix) in
+        [(V3Imm::Cmpps, "ps"), (V3Imm::Cmppd, "pd"), (V3Imm::Cmpss, "ss"), (V3Imm::Cmpsd, "sd")]
+    {
+        for w in Width::ALL.into_iter().filter(|&w| op.allows(w)) {
             for (p, pred) in (0u8..).zip(PREDS) {
                 let mn = format!("vcmp{pred}{suffix}");
                 for (d, a, s) in [(0, 1, 2), (9, 10, 3), (15, 8, 12)] {
@@ -216,14 +218,18 @@ pub fn vex_forms(b: &mut Batch) {
                     );
                 }
                 let m = M::base(5, 0x40);
+                let mem = match suffix {
+                    "ss" => format!("dword ptr {}", m.text()),
+                    "sd" => format!("qword ptr {}", m.text()),
+                    _ => vm(w, m),
+                };
                 emit_as!(
                     b,
                     mn.clone(),
                     try_v3_rrmi(op, w, x(4), x(13), m.mem(), p),
-                    "{mn} {}, {}, {}",
+                    "{mn} {}, {}, {mem}",
                     vr(w, 4),
-                    vr(w, 13),
-                    vm(w, m)
+                    vr(w, 13)
                 );
             }
         }

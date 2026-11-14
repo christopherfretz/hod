@@ -171,6 +171,9 @@ vex_family! {
         /// `VCMPPS`/`VCMPPD`: the predicate (0 to 31) is the immediate.
         Cmpps = (1, 0, false, 0xc2, XY, "vcmpps"),
         Cmppd = (1, 1, false, 0xc2, XY, "vcmppd"),
+        /// `VCMPSS`/`VCMPSD`: the low element compared, the others `a`'s.
+        Cmpss = (1, 2, false, 0xc2, X, "vcmpss"),
+        Cmpsd = (1, 3, false, 0xc2, X, "vcmpsd"),
     }
 }
 

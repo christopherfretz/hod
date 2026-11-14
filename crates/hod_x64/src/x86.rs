@@ -37,13 +37,18 @@
 //! refused by its own name (`intrinsic:llvm.x86...`), as `llc` refuses to
 //! select it. Every other `llvm.x86.*` name is not on `hod_ir`'s list and
 //! `classify` refuses it by its name; AArch64 refuses all of them
-//! (`never`). hod writes only SSE2 instructions, whatever the features
-//! (§5.6.2).
+//! (`never`). hod writes only SSE2 instructions here, whatever the
+//! features (§5.6.2), but for `cmp.ss`/`cmp.sd` with a predicate above 7
+//! in a function with AVX (`vcmpss`/`vcmpsd`, WP-202).
+//!
+//! The vector intrinsics past SSSE3 (SSE4.1 to AVX2, AES, PCLMUL, SHA,
+//! FMA, F16C, GFNI; §5.6.33, WP-202) are in [`ext`].
 //!
 //! The system and state intrinsics (`<fxsrintrin.h>`, `<ia32intrin.h>`,
 //! `<xsave*intrin.h>`, `<bmi*intrin.h>`, `<crc32intrin.h>`, ...;
 //! §5.6.29, WP-190) are in [`sys`].
 
+pub mod ext;
 pub mod sys;
 
 use hod_cg::{CgResult, Class, FnCx, FrameRef, PReg};
@@ -77,6 +82,8 @@ pub enum Level {
     Sse3,
     /// SSSE3.
     Ssse3,
+    /// AVX (WP-202: the five-bit compare predicates).
+    Avx,
 }
 
 impl Level {
@@ -85,6 +92,7 @@ impl Level {
         match self {
             Level::Sse3 => "sse3",
             Level::Ssse3 => "ssse3",
+            Level::Avx => "avx",
         }
     }
 
@@ -94,6 +102,7 @@ impl Level {
         match self {
             Level::Sse3 => 0,
             Level::Ssse3 => 1,
+            Level::Avx => 4,
         }
     }
 }
@@ -445,7 +454,8 @@ pub fn intrinsic<'a>(
     args: &'a [Value],
 ) -> Option<CgResult<()>> {
     let Some((ret, params, op)) = row(which) else {
-        return sys::intrinsic(cx, inst, which, args);
+        return sys::intrinsic(cx, inst, which, args)
+            .or_else(|| ext::intrinsic(cx, inst, which, args));
     };
     Some(lower(cx, inst, which, args, ret, params, op))
 }
@@ -488,7 +498,15 @@ fn lower<'a>(
                 return cx.bug("cmpss/cmpsd of a predicate that is not a constant");
             };
             let (a, b) = pair(cx, args[0], args[1])?;
-            put(cx, mc::cmps_rr(FpCmp::ALL[(pred & 7) as usize], fp, xm(a), xm(b)));
+            let pred = (pred & 0xff) as u8;
+            if pred & 0x1f >= 8 && enabled(cx, Level::Avx) {
+                // WP-202: with AVX the predicate has five bits (`llc`
+                // writes `vcmpss`); the legacy encoding reads three.
+                let op = if fp == FpSize::S { mc::V3Imm::Cmpss } else { mc::V3Imm::Cmpsd };
+                put(cx, mc::v3_rrri(op, mc::Width::X, xm(a), xm(a), xm(b), pred));
+            } else {
+                put(cx, mc::cmps_rr(FpCmp::ALL[usize::from(pred & 7)], fp, xm(a), xm(b)));
+            }
             cx.finish(inst, a)
         }
         Op::Comi(ordered, fp, pred) => {

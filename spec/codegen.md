@@ -3566,7 +3566,7 @@ result types are not LLVM's declaration is `x64:x86-intrinsic-signature`.
    `maxps`/`minps`/`maxss`/... (the second operand when either is NaN or
    both are zeros); `cmp.ss`/`cmp.sd` are `cmpss`/`cmpsd` with the
    `immarg` predicate's low three bits (the legacy encoding's, as `llc`
-   encodes 8 to 31); `comi{eq,ge,gt,le,lt,neq}.ss` and `.sd` are
+   encodes 8 to 31; with AVX, §5.6.33 (4)); `comi{eq,ge,gt,le,lt,neq}.ss` and `.sd` are
    `comiss`/`comisd`, the `ucomi` ones `ucomiss`/`ucomisd`, then the
    predicate from the flags: `gt` `seta`, `ge` `setae`, `lt` and `le` the
    same with the operands swapped, `eq` `sete` and `setnp`, `neq`
@@ -3615,10 +3615,10 @@ result types are not LLVM's declaration is `x64:x86-intrinsic-signature`.
    its feature is `intrinsic:` and its LLVM name, as `llc` cannot select
    it. Every `llvm.x86.*` name hod does not list is `intrinsic:` and its
    name from `classify` (`spec/ir.md`): `sse3.monitor`/`mwait` (no
-   encoding in `hod_mc_x64`), the `x86_mmx` forms clang 19
-   writes (`mmx.*`, `sse.cvtpi2ps`, ..., the 64-bit `ssse3.*`), and all of
-   `sse41.*` and `sse42.*` but `sse42.crc32.*` (§5.6.29). AArch64 refuses
-   every `llvm.x86.*` name.
+   encoding in `hod_mc_x64`), and the `x86_mmx` forms clang 19
+   writes (`mmx.*`, `sse.cvtpi2ps`, ..., the 64-bit `ssse3.*`). SSE4.1,
+   SSE4.2 and later are §5.6.29 (`sse42.crc32.*`) and §5.6.33 (WP-202).
+   AArch64 refuses every `llvm.x86.*` name.
 
 Evidence: `spec/landed/codegen/WP-173.md`.
 
@@ -4150,6 +4150,107 @@ own registers, so no combination is refused for being one.
    is the same as `llc`'s for every flag set measured.
 
 Evidence: `spec/landed/codegen/WP-194.md`.
+
+#### 5.6.33 x86 vector intrinsics past SSSE3 (WP-202)
+
+The `llvm.x86.*` calls clang 19 and 22 write at `-O0` for the functions
+of `<smmintrin.h>`/`<nmmintrin.h>` (SSE4.1, SSE4.2), `<wmmintrin.h>`
+(AES, PCLMUL), `<shaintrin.h>`, `<avxintrin.h>`, `<avx2intrin.h>`,
+`<fmaintrin.h>`, `<f16cintrin.h>` and the 128- and 256-bit forms of
+`<gfniintrin.h>` (`crates/hod_x64/src/x86/ext.rs`; 173 `hod_ir`
+`Intrinsic` members, matrix rows `never(X64_ONLY)` / `on(X86_SSE)`). A
+section of its own: it shares §5.6.22's signature rule
+(`x64:x86-intrinsic-signature`) and feature rule, and §5.6.29's
+"refused by name" for a function without the feature. With the feature
+hod writes the instruction `llc` selects or instructions that compute
+the same bits, so it writes SSE4, AES, SHA, GFNI and `VEX` instructions
+there (§5.6.2's "SSE2 only" holds for every function and construct
+without them: the code of the x86-64 baseline is unchanged).
+
+1. **Features.** Each row needs the feature of clang's header function;
+   the last item of the function's `target-features` that turns it on or
+   off decides, none is off, a `target-cpu` alone does not count:
+
+   | need | on by | off by |
+   |---|---|---|
+   | `sse4.1`, `sse4.2` | that level or a later one of §5.6.22's chain (`avx`, every `avx*`, `fma`, `f16c`, ...) | it, an earlier level, `sse`, `sse2` |
+   | `avx` | `avx` or any `avx*`, `fma`, `f16c`, `xop`, `fma4` | as above, and `avx` |
+   | `avx2` | `avx2` or any `avx*` but `avx` (AVX-512, AVX10, `avxvnni`, ...) | `avx2`, or what turns `avx` off |
+   | `fma`, `f16c` | it, or an `avx512*`/`avx10*` feature | it, or what turns `avx` off |
+   | `aes`, `pclmul` | it, or `vaes`, `vpclmulqdq` | it, `sse`, `sse2` |
+   | `sha`, `gfni` | it | it, `sse`, `sse2` |
+
+   The 256-bit GFNI forms need `gfni` and `avx`. (`aes`, `pclmul`,
+   `sha` and `gfni` are not judged by §5.6.2's feature check yet: a
+   module that names them is refused there before code generation.)
+2. **128-bit vectors** (class `Fpr`): the legacy encoding in place on
+   the first operand's register, also where AVX is on and `llc` writes
+   the `VEX` form (the same lanes; the upper half of a `ymm` holds none
+   of hod's values): `sse41.packusdw`, `phminposuw`, `ptestz`/`c`/`nzc`
+   (`ptest`, then `sete`/`setb`/`seta` zero-extended), `round.ps`/`pd`/
+   `ss`/`sd`, `dpps`, `dppd`, `insertps`, `mpsadbw`; `pclmulqdq`;
+   `aesni.aesenc`/`aesenclast`/`aesdec`/`aesdeclast`/`aesimc`/
+   `aeskeygenassist`; `sha1rnds4`, `sha1nexte`, `sha1msg1`/`2`,
+   `sha256msg1`/`2`; `vgf2p8affineqb.128`, `vgf2p8affineinvqb.128`,
+   `vgf2p8mulb.128`. An `immarg` is the immediate (its low byte). Built
+   otherwise:
+   - `sse41.blendvps`/`blendvpd`/`pblendvb` (the instruction reads its
+     mask from `xmm0`): the sign of each mask element spread to all its
+     bits in `xmm14` (`psrad 31`, and `pshufd 0xf5` for `pd`; `pcmpgtb`
+     against zero for bytes), then `b & m | a & ~m` by `pand`/`pandn`/
+     `por`.
+   - `sse42.pcmpistr*128` and `pcmpestr*128`: the lengths moved to `eax`
+     and `edx`; `pcmpistri`/`pcmpestri` leave the index in `ecx`, the
+     `a`/`c`/`o`/`s`/`z` forms the flag (`seta`, `setb`, `seto`, `sets`,
+     `sete`); `pcmpistrm`/`pcmpestrm` write `xmm0`, which is kept in
+     `xmm15` around them. `eax`, `ecx`, `edx` never hold values.
+   - `sha256rnds2`: `xmm0` saved to a slot, the third operand moved
+     into it, the instruction on `xmm14`, `xmm0` reloaded.
+   - The AVX-only 128-bit forms are their `VEX.128` instruction:
+     `avx.vpermilvar.ps`/`pd`, `avx.vtestz`/`c`/`nzc.ps`/`pd`,
+     `avx2.psllv`/`psrlv` `.d`/`.q`, `psrav.d`, `avx.maskload`/
+     `maskstore.ps`/`pd`, `avx2.maskload`/`maskstore.d`/`q`,
+     `fma.vfmaddsub.ps`/`pd` (`vfmaddsub213`), `vcvtps2ph.128`.
+   A third vector operand is copied to `xmm15` and its register given
+   back before the other two are asked for: no lowering pins three
+   registers of the class.
+3. **256-bit vectors** (class `Mem`, the bytes in a frame slot, §4.1,
+   `spec/abi-x64.md` §1.3; no value of hod's is ever kept in a `ymm`):
+   the first operand loaded into `ymm14` by `vmovdqu`, the `VEX.256`
+   instruction with the second operand from its slot (a 128-bit shift
+   count from its register, a third operand loaded into `ymm15`), and
+   `ymm14` stored to the result's slot by `vmovdqu`; an `i32` or 128-bit
+   result is moved from `eax`/`xmm14` to its register. The instructions
+   are `llc`'s, one per intrinsic: `avx.addsub`/`max`/`min`/`hadd`/
+   `hsub` `.pd.256`/`.ps.256`, `blendv.*.256`, `dp.ps.256`,
+   `cmp.ps.256`/`.pd.256` (the five-bit predicate), the conversions
+   `cvt.pd2.ps.256`, `cvt.ps2dq.256`, `cvt(t).pd2dq.256`,
+   `cvtt.ps2dq.256`, `rcp.ps.256`, `rsqrt.ps.256`, `round.*.256`,
+   `vpermilvar.*.256`, `vtest*.256`, `ptest*.256`, `movmsk.*.256`,
+   `ldu.dq.256` (`vmovdqu`), `maskload`/`maskstore` `.256`; `avx2.pack*`,
+   `pavg.b`/`.w`, `pblendvb`, `phadd`/`phsub` `.d`/`.w`/`.sw`,
+   `pmadd.ub.sw`, `pmadd.wd`, `pmovmskb`, `pmul.hr.sw`, `pmulh.w`,
+   `pmulhu.w`, `psad.bw`, `pshuf.b`, `psign.*`, `psll`/`psrl`/`psra` by
+   a vector and the `i` forms by an `i32` (a constant the immediate,
+   saturated at 255, a variable one through `movd xmm15`, as §5.6.22),
+   `psllv`/`psrlv`/`psrav` `.256`, `permd`/`permps` (the index operand
+   in `ymm14`: `vpermd` takes it in `vvvv`), `mpsadbw`, `maskload`/
+   `maskstore` `.256`; `fma.vfmaddsub.*.256`; `vcvtps2ph.256`;
+   `vgf2p8affineqb.256`, `vgf2p8affineinvqb.256`, `vgf2p8mulb.256`.
+   `avx.vzeroupper` and `avx.vzeroall` are `vzeroupper`: hod keeps no
+   value in an upper half, and `vzeroall` would clear the `xmm`s that
+   hold values (`llc` keeps its live ones in memory around it); what
+   the registers hold is not observable by the program.
+4. **§5.6.22's compares with AVX.** `sse.cmp.ss` and `sse2.cmp.sd` with
+   a predicate of 8 to 31 in a function with AVX are `vcmpss`/`vcmpsd`
+   with the whole predicate, as `llc`'s (the legacy encoding reads
+   three bits, which is right only without AVX).
+5. **Refused by name** (`classify`): the gathers (`avx2.gather.*`, 16
+   names), every AVX-512, AVX10, VAES, VPCLMULQDQ and 512-bit GFNI name
+   (counted in `spec/landed/codegen/WP-202.md`), and every other
+   `llvm.x86.*` name not listed. AArch64 refuses every `llvm.x86.*` name.
+
+Evidence: `spec/landed/codegen/WP-202.md`.
 
 ## 6. Control flow
 

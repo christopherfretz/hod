@@ -164,7 +164,8 @@ kiln's lanes). Its rules:
    lane (`runner.arch == 'X64'`) the `test x64` job sets it to
    `$RUNNER_TEMP/avx512-report.tsv` before the test step, and a last
    step (`if: always()`) appends `scripts/avx512-summary.sh`'s Markdown
-   to `$GITHUB_STEP_SUMMARY`: the processor's model name, its `avx512*`
+   to `$GITHUB_STEP_SUMMARY` and prints it in the job's log: the
+   processor's model name, its `avx512*`
    flags, the counts executed, skipped, dry-run and failed, each
    program's line, and in bold that nothing executed when nothing did.
    GitHub's `ubuntu-24.04` runners are a mixed fleet, some with AVX-512

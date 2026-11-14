@@ -188,6 +188,13 @@ Two things a producer of LLVM IR must know:
 - `uwtable` and `frame-pointer` values that LLVM's verifier accepts and
   no LLVM version defines (3, 5, ...) are errors here.
 
+`classify` (§8) accepts the AArch64 branch-protection flags and the
+function attributes `branch-target-enforcement`, `sign-return-address`,
+`sign-return-address-key` and `guarded-control-stack` on both targets
+(WP-185): AArch64 implements them (`spec/codegen.md` §5.6.26), x86-64
+ignores them as `llc` does. `branch-protection-pauth-lr`, flag and
+attribute, stays refused on AArch64 (`module:`/`attr:branch-protection-pauth-lr`).
+
 ### 2.2 Symbols
 
 One `SymId` space, because code refers to all of them the same way: by
@@ -978,7 +985,8 @@ does not have is `Rejected`. The lists below are the table, in full.
   `sanitize_address`, `sanitize_alloc_token`, `sanitize_hwaddress`,
   `sanitize_memory`, `sanitize_memtag`, `sanitize_numerical_stability`,
   `sanitize_realtime`, `sanitize_realtime_blocking`, `sanitize_thread`,
-  `sanitize_type`, `convergent` (below), `noredzone` (below); with a
+  `sanitize_type`, `convergent` (below), `noredzone` (below),
+  `nocf_check` (below); with a
   value: `uwtable`
   (`UwTable`: `sync` or `async`) and `alignstack(N)`.
 - On functions, as strings (`FnStr`, 22 keys): `target-cpu`,
@@ -1000,7 +1008,9 @@ does not have is `Rejected`. The lists below are the table, in full.
   `branch-protection-pauth-lr` and `guarded-control-stack` are the two
   missing members of the `sign-return-address` family;
   `stack-protector-buffer-size` decides which functions `ssp` protects
-  and is on every function clang emits; `min-legal-vector-width` bounds
+  in LLVM and is on every function clang emits (hod reads it with the
+  attribute and protects a superset, `spec/codegen.md` §5.6.24: `ssp`,
+  `sspstrong` and `sspreq` are rows `ON` on both targets, WP-183); `min-legal-vector-width` bounds
   the vector registers an x86 function may use and is on every x86
   function clang emits; `no-jump-tables` forbids a code shape.
 
@@ -1053,6 +1063,33 @@ does not have is `Rejected`. The lists below are the table, in full.
   changes no code; `classify` accepts it on every target
   (`attr:noredzone`, row `ON`).
 
+  `nocf_check` (WP-184; clang's `__attribute__((nocf_check))`), a
+  function flag (`FnAttrs::NO_CF_CHECK`, bit 21) and a call-site flag
+  (`CallDesc::nocf_check`, `CallSite::is_nocf_check`, printed after the
+  call as ` nocf_check`). On a function it drops the entry `endbr64` of
+  a `cf-protection-branch` module; on an indirect call it asks for
+  `notrack` (`spec/codegen.md` §5.6.25). `classify` accepts it on every
+  target (`attr:nocf_check`, row `ON`); it changes no AArch64 code, as
+  in `llc`.
+
+  `"probe-stack"` and `"stack-probe-size"` (WP-186; clang's
+  `-fstack-clash-protection` writes `"probe-stack"="inline-asm"` on every
+  function, `-mstack-probe-size=N` the size) are read together by
+  `FnAttrsView::stack_probe` (`hod_ir::StackProbe`): no `"probe-stack"`
+  is `None` (a `"stack-probe-size"` alone changes nothing, as in `llc`);
+  `"inline-asm"` is `Inline(P)`, `P` the size or 4096 without one; any
+  other `"probe-stack"` value names a probe function to call
+  (`__probestack`-style), refused as `attr:probe-stack-function`; a size
+  that is not a decimal multiple of 4096 in `[4096, 2^24)` is refused as
+  `attr:stack-probe-size-value` (`llc` takes others, and some of them do
+  not probe: 0 on x86-64 allocates the whole frame at once). Both rows
+  are `ON` (`attr:probe-stack`, `attr:stack-probe-size`); what the
+  targets build is `spec/codegen.md` §5.6.27. kiln accepts
+  `-fstack-clash-protection` and writes neither attribute.
+  `"zero-call-used-regs"="skip"` zeroes nothing and is accepted (the
+  classifier skips its row); every other value is refused as
+  `attr:zero-call-used-regs` (WP-186).
+
 **Dropped**, because only an optimizer (or a pass that runs before any
 backend) reads them:
 
@@ -1101,7 +1138,7 @@ backend) reads them:
 producer records with `record_unsupported`, §2). It is never silently
 dropped. Of LLVM 19's and 22's attribute names these are:
 `coro_elide_safe`, `coro_only_destroy_when_complete`,
-`fn_ret_thunk_extern`, `hybrid_patchable`, `jumptable`, `nocf_check`,
+`fn_ret_thunk_extern`, `hybrid_patchable`, `jumptable`,
 `nodivergencesource`, `noduplicate`, `noimplicitfloat`, `nonlazybind`,
 `optdebug`, `optforfuzzing`, `safestack`, `shadowcallstack`,
 `speculative_load_hardening`, `strictfp`, and the strings
@@ -1109,7 +1146,7 @@ dropped. Of LLVM 19's and 22's attribute names these are:
 `denormal-fp-math-f32`, `loader-replaceable`,
 `marked_for_windows_hot_patching`, `no-inline-line-tables`,
 `profile-sample-accurate`, `use-sample-profile`. Some of them change
-code (`noimplicitfloat`, `nonlazybind`, `nocf_check`,
+code (`noimplicitfloat`, `nonlazybind`,
 `shadowcallstack`, ...) and move to "kept" with the work package that
 implements them; some look optimizer-only (`nodivergencesource`,
 `noduplicate`, `optdebug`, `optforfuzzing`, the profile strings) and
@@ -2437,8 +2474,15 @@ are `TwoTyped` (malformed). A rejected attribute is recorded as
 an interned set to `out`: flags, the unwind-table kind unless none, the
 stack alignment, the strings (the merge of two groups on one function).
 `CALL_SITE_FLAGS` are the call-site function attributes kept (`noreturn`,
-`nounwind`, `returns_twice`, `convergent`); `set_call_site_flags` sets
-`CallDesc`'s fields from them.
+`nounwind`, `returns_twice`, `convergent`, `alwaysinline`, and
+`noinline` as `CALL_SITE_NOINLINE`, a bit above every `FnAttrs` flag:
+a function's `noinline` is dropped, a call site's is kept, WP-188);
+`set_call_site_flags` sets `CallDesc`'s fields from them. A call site
+with both `alwaysinline` and `noinline` is malformed, as in LLVM's
+verifier ("'noinline and alwaysinline' are incompatible"); the printer
+writes them in place after `convergent`. The text reader takes
+`noinline` from a group (`AttrGroup::noinline`) or in place; the
+bitcode reader from a call-site group's kind 14.
 
 **Special globals and attachments** (§2.2). `SpecialGlobal::from_name`
 (without `@`): `llvm.global_ctors`, `llvm.global_dtors`, `llvm.used`,

@@ -97,6 +97,8 @@ pub const X64: X64 = X64 {
 pub struct FnState {
     /// The frame: the prologue's patched immediate (`frame`, WP-116).
     pub frame: frame::FrameState,
+    /// The stack guard (`guard`, WP-183).
+    pub guard: crate::guard::GuardState,
 }
 
 /// The general registers `from..=to` by hardware number, `rsp` excluded.
@@ -265,6 +267,8 @@ impl Target for X64 {
     const STACK_ALIGN: u32 = 16;
     /// `ret`: `__NoopCoro_ResumeDestroy` (WP-137, `crate::coro`).
     const NOOP_CORO_FN: &'static [u8] = &[0xc3];
+    /// `endbr64; ret` (WP-184, `crate::cet`).
+    const NOOP_CORO_FN_MARKED: &'static [u8] = &[0xf3, 0x0f, 0x1e, 0xfa, 0xc3];
     /// WP-137: `crate::coro_body`.
     const CORO_BODIES: bool = true;
 
@@ -560,6 +564,12 @@ impl Target for X64 {
     fn emit_call(&self, cx: &mut FnCx<'_, Self>, call: &CallEmit) -> CgResult<()> {
         frame::emit_call(cx, call.target, call.variadic, call.vector_regs_used)?;
         cx.call_returns_here(call.target, reg::dwarf); // WP-113: `spec/dwarf.md` §6.19
+        crate::cet::after_call(cx, call.target); // WP-184
+        Ok(())
+    }
+
+    fn branch_target(&self, cx: &mut FnCx<'_, Self>, _at: hod_cg::BranchTarget) -> CgResult<()> {
+        crate::cet::landing(cx); // WP-184
         Ok(())
     }
 
@@ -571,6 +581,10 @@ impl Target for X64 {
         align: u64,
     ) -> CgResult<()> {
         frame::dynamic_slot(cx, ptr, size, align)
+    }
+
+    fn enter_guard(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()> {
+        crate::guard::enter(cx)
     }
 
     fn patch_branch(code: &mut [u8], at: u32, kind: FixupKind, displacement: i64) -> bool {

@@ -108,6 +108,28 @@ impl Ty {
         made.unwrap_or_else(|error| panic!("{}: {error:?}", self.text()))
     }
 
+    /// Appends the leaves of the type (what is not an array or a
+    /// structure), at most two of them.
+    pub fn leaves<'a>(&'a self, out: &mut Vec<&'a Ty>) {
+        match self {
+            Ty::Arr(elem, len) => {
+                for _ in 0..(*len).min(2) {
+                    elem.leaves(out);
+                }
+            }
+            Ty::Struct(fields) | Ty::Packed(fields) => {
+                for field in fields {
+                    if out.len() >= 2 {
+                        return;
+                    }
+                    field.leaves(out);
+                }
+            }
+            _ => out.push(self),
+        }
+        out.truncate(2);
+    }
+
     /// Whether the type is an integer, and its width.
     pub fn int_bits(&self) -> Option<u32> {
         if let Ty::Int(bits) = self { Some(*bits) } else { None }

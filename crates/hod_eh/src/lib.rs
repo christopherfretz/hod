@@ -80,6 +80,17 @@ pub enum Op {
         /// The register.
         reg: u16,
     },
+    /// AArch64: the return address's signing state flips
+    /// (`DW_CFA_AARCH64_negate_ra_state`, 0x2d): after the instruction
+    /// that signs it (`paciasp`, `pacibsp`) and after the one that
+    /// authenticates it (`spec/eh.md` §4.5, WP-185).
+    NegateRaState,
+    /// AArch64: the function signs its return address with the B key
+    /// (`.cfi_b_key_frame`). Not an instruction: as the FDE's first row
+    /// it puts the FDE under a CIE whose augmentation ends in `B`
+    /// (`.eh_frame`, §2.2) and writes nothing; anywhere else it writes
+    /// nothing either (`spec/eh.md` §4.5, WP-185).
+    BKeyFrame,
 }
 
 /// A call-frame instruction and the code offset, from the function's
@@ -312,6 +323,7 @@ const DW_CFA_DEF_CFA_OFFSET: u8 = 0x0e;
 const DW_CFA_OFFSET_EXTENDED_SF: u8 = 0x11;
 const DW_CFA_DEF_CFA_SF: u8 = 0x12;
 const DW_CFA_DEF_CFA_OFFSET_SF: u8 = 0x13;
+const DW_CFA_AARCH64_NEGATE_RA_STATE: u8 = 0x2d;
 
 /// The longest encoding of one row: `DW_CFA_advance_loc4` and an
 /// instruction with two LEB128 operands (a 16-bit register, a 32-bit
@@ -458,6 +470,8 @@ fn instruction<S: Sink>(out: &mut S, target: &CfiTarget, op: Op) -> Option<()> {
                 uleb(out, u64::from(reg));
             }
         }
+        Op::NegateRaState => out.byte(DW_CFA_AARCH64_NEGATE_RA_STATE),
+        Op::BKeyFrame => {}
     }
     Some(())
 }
@@ -518,14 +532,23 @@ struct PendingReloc {
     addend: i64,
 }
 
-/// The FDEs in the order they are written (`spec/eh.md` §5): grouped by
-/// CIE, the CIE without a personality first, then one per personality in
-/// the order of the first function (by `order`) that uses it; within a
-/// CIE by `order`. Returns the order and, per CIE, its personality and the
-/// number of FDEs.
-/// The FDEs' indices in output order, and per CIE its personality and its
-/// number of FDEs.
-type Layout = (Vec<u32>, Vec<(Option<SymbolId>, u32)>);
+/// Whether `fde` signs its return address with the B key: its first row
+/// is [`Op::BKeyFrame`] (`spec/eh.md` §4.5).
+#[inline]
+fn b_key(fde: &Fde<'_>) -> bool {
+    fde.rows.first().is_some_and(|row| row.op == Op::BKeyFrame)
+}
+
+/// One CIE of the output: its personality, whether its augmentation has
+/// `B` ([`b_key`]), and its number of FDEs.
+type CieKey = (Option<SymbolId>, bool, u32);
+
+/// The FDEs' indices in output order, and the CIEs ([`CieKey`]) in
+/// output order (`spec/eh.md` §5): grouped by CIE, the CIE without a
+/// personality first, then one per personality in the order of the
+/// first function (by `order`) that uses it, each without `B` before
+/// with it; within a CIE by `order`.
+type Layout = (Vec<u32>, Vec<CieKey>);
 
 fn layout(fdes: &[Fde<'_>]) -> Result<Layout, Error> {
     // Personalities with the lowest order that uses each; few per object.
@@ -544,23 +567,27 @@ fn layout(fdes: &[Fde<'_>]) -> Result<Layout, Error> {
     if let Some(w) = personalities.windows(2).find(|w| w[0].1 == w[1].1) {
         return Err(Error::DuplicateOrder { order: w[0].1 });
     }
-    let rank = |fde: &Fde<'_>| match fde.personality {
-        None => 0,
-        Some(p) => 1 + personalities.iter().position(|&(q, _)| q == p).unwrap_or(0),
+    let rank = |fde: &Fde<'_>| {
+        let personality = match fde.personality {
+            None => 0,
+            Some(p) => 1 + personalities.iter().position(|&(q, _)| q == p).unwrap_or(0),
+        };
+        2 * personality + usize::from(b_key(fde))
     };
     // A counting sort by CIE, stable, then by `order` within each CIE
     // (already sorted when the input is in module order).
-    let mut counts = vec![0u32; personalities.len() + 1];
+    let mut counts = vec![0u32; 2 * (personalities.len() + 1)];
     for fde in fdes {
         counts[rank(fde)] += 1;
     }
-    let mut cies: Vec<(Option<SymbolId>, u32)> = Vec::with_capacity(counts.len());
+    let mut cies: Vec<CieKey> = Vec::with_capacity(counts.len());
     let mut starts = Vec::with_capacity(counts.len());
     let mut next = 0u32;
     for (i, &count) in counts.iter().enumerate() {
         starts.push(next);
         next += count;
-        cies.push((i.checked_sub(1).map(|i| personalities[i].0), count));
+        let personality = (i / 2).checked_sub(1).map(|i| personalities[i].0);
+        cies.push((personality, i % 2 == 1, count));
     }
     let mut sorted = vec![0u32; fdes.len()];
     for (i, fde) in fdes.iter().enumerate() {
@@ -569,7 +596,7 @@ fn layout(fdes: &[Fde<'_>]) -> Result<Layout, Error> {
         *slot += 1;
     }
     let mut begin = 0usize;
-    for &(_, count) in &cies {
+    for &(_, _, count) in &cies {
         let group = &mut sorted[begin..begin + count as usize];
         if !group.is_sorted_by_key(|&i| fdes[i as usize].order) {
             group.sort_unstable_by_key(|&i| fdes[i as usize].order);
@@ -581,7 +608,7 @@ fn layout(fdes: &[Fde<'_>]) -> Result<Layout, Error> {
         }
         begin += count as usize;
     }
-    cies.retain(|&(_, count)| count > 0);
+    cies.retain(|&(_, _, count)| count > 0);
     Ok((sorted, cies))
 }
 
@@ -591,12 +618,17 @@ fn write_cie(
     relocs: &mut Vec<PendingReloc>,
     target: &CfiTarget,
     personality: Option<SymbolId>,
+    b_key: bool,
 ) {
     let start = out.len();
     out.extend_from_slice(&[0; 4]); // length
     out.extend_from_slice(&[0; 4]); // CIE id
     out.push(1); // version
-    out.extend_from_slice(if personality.is_some() { b"zPLR\0" } else { b"zR\0" });
+    out.extend_from_slice(if personality.is_some() { b"zPLR" } else { b"zR" });
+    if b_key {
+        out.push(b'B');
+    }
+    out.push(0);
     write_uleb(out, u64::from(target.code_align));
     write_sleb(out, i64::from(target.data_align));
     out.push(target.return_address);
@@ -638,9 +670,9 @@ pub fn write_eh_frame(obj: &mut Object, fdes: &[Fde<'_>]) -> Result<Option<Secti
     let mut relocs = Vec::with_capacity(cies.len() + fdes.len() + with_lsda);
     let mut next = sorted.iter();
     let mut last_start = 0;
-    for &(personality, count) in &cies {
+    for &(personality, b_key, count) in &cies {
         let cie = out.len();
-        write_cie(&mut out, &mut relocs, target, personality);
+        write_cie(&mut out, &mut relocs, target, personality, b_key);
         for _ in 0..count {
             let Some(&i) = next.next() else { unreachable!("layout counts every FDE") };
             let fde = &fdes[i as usize];
@@ -753,7 +785,9 @@ pub fn write_debug_frame(obj: &mut Object, fdes: &[Fde<'_>]) -> Result<Option<Se
         return Err(Error::PersonalityInDebugFrame { order: f.order });
     }
     let target = for_arch(obj.arch());
-    // One CIE: `layout` sorts by `order` and refuses a duplicate.
+    // One CIE, without `B` as in `llc` (`MCDwarf` emits a new CIE for a
+    // new key only in `.eh_frame`), but the FDEs sorted as `layout` sorts
+    // them: those without the B key first (§10.2), each part by `order`.
     let (sorted, _) = layout(fdes)?;
     let rows: usize = fdes.iter().map(|f| f.rows.len()).sum();
     let mut out = Vec::with_capacity(24 + fdes.len() * 32 + rows * 5);

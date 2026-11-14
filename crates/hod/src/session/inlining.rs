@@ -17,12 +17,14 @@
 //!   body is judged like any other only then: one nothing calls is never
 //!   compiled, so it cannot decline the module.
 //! - A body whose meaning depends on being inlined (its frame, its return
-//!   address, a stack pointer or a local address that outlives it, a
-//!   `returns_twice` call) declines the module when a direct call to it
-//!   may have been inlined: [`reason`].
+//!   address, a stack pointer or a local address that outlives it)
+//!   declines the module when a direct call to it is one LLVM's
+//!   always-inliner inlines ([`inlined`], WP-188): [`reason`].
 //! - Everything else (`llvm.is.constant`, `llvm.objectsize`, `musttail`,
-//!   dynamic `alloca`, variadic bodies, ...) is correct out of line; the
-//!   reasons are in the spec.
+//!   dynamic `alloca`, and every body LLVM does not inline: variadic,
+//!   recursive, `returns_twice` calls, `indirectbr`, `llvm.localescape`,
+//!   `llvm.va_start`) is correct out of line; the reasons are in the
+//!   spec.
 //!
 //! The work is one scan of a body's call sites and returns when it is
 //! accepted, and one pass over every accepted body's call sites at the
@@ -30,8 +32,8 @@
 //! [`reason`].
 
 use hod_ir::{
-    Body, Callee, FnAttrs, FnAttrsId, InstKind, Linkage, Module, SymId, SymbolKind, Value,
-    ValueKind,
+    Body, CallSite, Callee, FnAttrs, FnAttrsId, InstKind, Linkage, Module, Opcode, SymId,
+    SymbolKind, TypeKind, Value, ValueKind,
 };
 
 use crate::front::symbol_name;
@@ -52,8 +54,10 @@ pub mod reason {
     /// `llvm.stackrestore` in the same body: inlined, it is the caller's
     /// stack pointer.
     pub const STACKSAVE: &str = "alwaysinline:stacksave-escapes";
-    /// A call to a `returns_twice` function (`setjmp`, `vfork`): out of
-    /// line, the frame it saves is dead when the caller jumps back.
+    /// A call to a `returns_twice` function (`setjmp`, `vfork`) in a
+    /// body that is otherwise inlined. Not reached since WP-188: LLVM
+    /// does not inline such a body, so its call is kept, as `opt`
+    /// keeps it. The name stays stable.
     pub const RETURNS_TWICE: &str = "alwaysinline:returns-twice";
     /// A return of the address of a stack slot (an `alloca` of the entry
     /// block): inlined, `llc -O0` keeps the slot alive for the whole
@@ -103,13 +107,47 @@ pub(crate) fn is_available_externally(module: &Module, sym: SymId) -> bool {
     module.symbol(sym).linkage() == Linkage::AvailableExternally && fn_attrs(module, sym).is_some()
 }
 
-/// Whether any attribute set of `module` holds `alwaysinline`: a function's
-/// or a call site's (the readers keep a call site's set in the same
-/// table, but not which call uses it). Without one, nothing in the
-/// module was ever inlined at `-O0`.
-fn may_have_inlined(module: &Module) -> bool {
-    (0..module.fn_attrs_count())
-        .any(|index| module.fn_attrs(FnAttrsId::new(index as u32)).has(FnAttrs::ALWAYS_INLINE))
+/// Whether `opt -passes=always-inline` (LLVM 19 and 22) inlines the
+/// direct call `site` of `callee` (WP-188, `spec/cli.md`
+/// "Always-inline"): the callee or the call site is `alwaysinline`, the
+/// call site is not `noinline`. Whether the callee's body can be inlined
+/// at all is [`inline_viable`].
+fn inlined(module: &Module, site: &CallSite<'_>, callee: SymId) -> bool {
+    !site.is_noinline()
+        && (site.is_always_inline() || has_flag(module, callee, FnAttrs::ALWAYS_INLINE))
+}
+
+/// Whether LLVM's always-inliner can inline `body` at all (its
+/// `isInlineViable` and the always-inliner's own checks, measured with
+/// `opt` 19 and 22): not variadic, not a pre-split coroutine, no call to
+/// itself, no `returns_twice` call, no `indirectbr`, no
+/// `llvm.localescape` or `llvm.va_start`.
+fn inline_viable(module: &Module, body: &Body) -> bool {
+    let sym = body.symbol();
+    if matches!(module.types.kind(body.fn_type()), TypeKind::Function { variadic: true, .. })
+        || has_flag(module, sym, FnAttrs::PRESPLIT_COROUTINE)
+    {
+        return false;
+    }
+    if body.blocks().any(|block| block.terminator().opcode() == Opcode::IndirectBr) {
+        return false;
+    }
+    !body.calls().any(|site| {
+        site.returns_twice()
+            || match site.callee() {
+                Callee::Intrinsic(intrinsic) => {
+                    matches!(intrinsic.name(), "llvm.localescape" | "llvm.va_start")
+                }
+                Callee::Value(value) => match value.kind() {
+                    ValueKind::Sym(callee) => {
+                        callee == sym
+                            || (callee.index() < module.symbol_count()
+                                && has_flag(module, callee, FnAttrs::RETURNS_TWICE))
+                    }
+                    _ => false,
+                },
+            }
+    })
 }
 
 /// The direct callee of a call site, if it is a symbol.
@@ -240,6 +278,12 @@ pub(crate) fn sensitivity(module: &Module, body: &Body) -> Option<&'static str> 
     None
 }
 
+/// The reason `body` declines a call LLVM inlines: its [`sensitivity`],
+/// when LLVM can inline it at all ([`inline_viable`]).
+fn inline_sensitivity(module: &Module, body: &Body) -> Option<&'static str> {
+    sensitivity(module, body).filter(|_| inline_viable(module, body))
+}
+
 fn decline(module: &Module, sym: SymId, why: &'static str) -> CompileError {
     Unsupported::in_function(Construct::Named(why.into()), symbol_name(module, sym)).into()
 }
@@ -273,7 +317,7 @@ impl Inlining {
 
     /// Notes an accepted body whose meaning depends on being inlined.
     pub(crate) fn note(&mut self, module: &Module, body: &Body) {
-        if let Some(why) = sensitivity(module, body) {
+        if let Some(why) = inline_sensitivity(module, body) {
             self.sensitive.push((body.symbol(), why));
         }
     }
@@ -292,18 +336,18 @@ impl Inlining {
         if self.held.is_empty() && self.sensitive.is_empty() {
             return Ok(Vec::new());
         }
-        let watch = !self.sensitive.is_empty() && may_have_inlined(module);
-        if !watch && self.held.is_empty() {
-            return Ok(Vec::new());
-        }
         self.sensitive.sort_unstable_by_key(|&(sym, _)| sym.index());
         self.held.sort_unstable_by_key(|body| body.symbol().index());
         let mut reached = vec![false; self.held.len()];
+        // Per held copy: its reason, judged once, at its first inlined
+        // call.
+        let mut judged: Vec<Option<Option<&'static str>>> = vec![None; self.held.len()];
         let mut work: Vec<usize> = Vec::new();
         let mut visit = |body: &Body, work: &mut Vec<usize>| -> Result<(), CompileError> {
             for site in body.calls() {
                 let Some(callee) = direct_callee(site.callee()) else { continue };
-                if watch
+                let inlined = inlined(module, &site, callee);
+                if inlined
                     && let Ok(at) =
                         self.sensitive.binary_search_by_key(&callee.index(), |&(s, _)| s.index())
                 {
@@ -311,15 +355,20 @@ impl Inlining {
                 }
                 if let Ok(at) =
                     self.held.binary_search_by_key(&callee.index(), |b| b.symbol().index())
-                    && !reached[at]
                 {
-                    reached[at] = true;
-                    // A copy stands for an inlined body: the module was
-                    // inlined into, whatever `watch` says.
-                    if let Some(why) = sensitivity(module, &self.held[at]) {
+                    // A copy stands for an inlined body where the call is
+                    // inlined; a kept call (`noinline` site, a body LLVM
+                    // cannot inline) means it out of line.
+                    if inlined
+                        && let Some(why) = *judged[at]
+                            .get_or_insert_with(|| inline_sensitivity(module, &self.held[at]))
+                    {
                         return Err(decline(module, callee, why));
                     }
-                    work.push(at);
+                    if !reached[at] {
+                        reached[at] = true;
+                        work.push(at);
+                    }
                 }
             }
             Ok(())

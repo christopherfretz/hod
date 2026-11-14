@@ -22,6 +22,13 @@ pub fn build(b: &mut Batch) {
     emit!(b, rdtscp(), "rdtscp");
     emit!(b, cpuid(), "cpuid");
     emit!(b, cld(), "cld");
+    emit!(b, std(), "std");
+    emit!(b, hlt(), "hlt");
+    emit!(b, fwait(), "fwait");
+    emit!(b, syscall(), "syscall");
+    for n in [0, 1, 3, 4, 0x80, 0xff] {
+        emit!(b, int_i(n), "int {n}");
+    }
     for (size, suffix) in SIZES.into_iter().zip(['b', 'w', 'd', 'q']) {
         let (movs, stos) = (format!("rep movs{suffix}"), format!("rep stos{suffix}"));
         emit_as!(b, &movs, rep_movs(size), "{movs}");

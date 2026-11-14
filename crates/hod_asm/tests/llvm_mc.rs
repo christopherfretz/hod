@@ -8,7 +8,7 @@ use hod_asm::Refusal;
 use hod_asm::a64::{Code, Features, assemble};
 use hod_testutil::{Scratch, run, tool};
 
-const ALL: Features = Features { lse: true, crc: true, fp: true };
+const ALL: Features = Features { lse: true, crc: true, fp: true, rand: true };
 
 /// Bodies the assembler accepts. Each is assembled alone by hod; LLVM
 /// assembles them all in one file. A body's numeric labels are its own.
@@ -367,7 +367,7 @@ const REFUSED: &[(&str, &str)] = &[
     ("ldr x0, =0x1234", "asm:operand/literal-pool"),
     ("add x0, x1, #:lo12:sym", "asm:operand/specifier"),
     ("adrp x0, sym", "asm:mnemonic/adrp"),
-    ("mrs x0, midr_el1", "asm:operand/sysreg"),
+    ("mrs x0, midr_el2", "asm:operand/sysreg"),
     ("msr cntvct_el0, x0", "asm:operand/sysreg"),
     ("dmb foo", "asm:operand/option"),
     ("mov x0, #0x12345", "asm:operand/range"),
@@ -473,7 +473,7 @@ fn refused_bodies_are_named() {
 /// The LSE atomics, `crc32` and floating point need their feature.
 #[test]
 fn features_gate_instructions() {
-    let base = Features { lse: false, crc: false, fp: false };
+    let base = Features { lse: false, crc: false, fp: false, rand: false };
     for body in ["cas x0, x1, [x2]", "ldaddal w0, w1, [x2]", "crc32b w0, w1, w2", "fadd d0, d1, d2"]
     {
         assert_eq!(hod(body, base).err().map(|r| r.0), Some("asm:feature"), "{body}");

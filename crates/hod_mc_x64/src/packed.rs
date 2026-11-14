@@ -503,6 +503,28 @@ family! {
     pub fn cvtpd2ps_rm = (0x66, 0x5a);
 }
 
+/// `RCPPS xmm, xmm` (`0F 53 /r`): approximate reciprocals of the four
+/// `f32` (WP-181).
+#[inline]
+pub const fn rcpps_rr(dst: Xmm, src: Xmm) -> Inst {
+    xx(op(0, 0x53), dst, src)
+}
+
+/// `RSQRTPS xmm, xmm` (`0F 52 /r`): approximate reciprocal square roots of
+/// the four `f32` (WP-181).
+#[inline]
+pub const fn rsqrtps_rr(dst: Xmm, src: Xmm) -> Inst {
+    xx(op(0, 0x52), dst, src)
+}
+
+/// `MASKMOVDQU xmm, xmm` (`66 0F F7 /r`, `data` in reg, `mask` in rm):
+/// byte `i` of `data` is stored to `[rdi + i]` where bit 7 of byte `i` of
+/// `mask` is set; a non-temporal hint (WP-181).
+#[inline]
+pub const fn maskmovdqu_rr(data: Xmm, mask: Xmm) -> Inst {
+    xx(op(0x66, 0xf7), data, mask)
+}
+
 /// `PMOVMSKB r32, xmm` (`66 0F D7 /r`, the general register in reg): the
 /// sign bit of each byte, zero-extended into `dst`.
 #[inline]

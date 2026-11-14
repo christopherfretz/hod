@@ -434,19 +434,49 @@ const MODULE: [SupportRow; 24] = [
         "any `frame-pointer` value: hod always keeps a frame pointer (`spec/codegen.md` §5)",
     ),
     // `BranchProtection` bit order.
-    row("module:branch-target-enforcement", todo(LATER), never(A64_ONLY), ""),
-    row("module:guarded-control-stack", todo(LATER), never(A64_ONLY), ""),
-    row("module:sign-return-address", todo(LATER), never(A64_ONLY), ""),
-    row("module:sign-return-address-all", todo(LATER), never(A64_ONLY), ""),
-    row("module:sign-return-address-with-bkey", todo(LATER), never(A64_ONLY), ""),
-    row("module:branch-protection-pauth-lr", todo(LATER), never(A64_ONLY), ""),
+    // WP-185: on AArch64 the flags decide `.note.gnu.property` (BTI,
+    // PAC, GCS bits) and, through `hod_ll`'s upgrade, the functions'
+    // attributes; on x86-64 `llc` ignores them.
+    both(
+        "module:branch-target-enforcement",
+        ON,
+        "AArch64: the BTI bit of `.note.gnu.property`; x86-64: ignored, as `llc` (WP-185)",
+    ),
+    both(
+        "module:guarded-control-stack",
+        ON,
+        "AArch64: the GCS bit of `.note.gnu.property`, no code change; x86-64: ignored (WP-185)",
+    ),
+    both(
+        "module:sign-return-address",
+        ON,
+        "AArch64: the PAC bit of `.note.gnu.property`; x86-64: ignored, as `llc` (WP-185)",
+    ),
+    both(
+        "module:sign-return-address-all",
+        ON,
+        "read with `sign-return-address` by `hod_ll`'s upgrade; x86-64: ignored (WP-185)",
+    ),
+    both(
+        "module:sign-return-address-with-bkey",
+        ON,
+        "read with `sign-return-address` by `hod_ll`'s upgrade; x86-64: ignored (WP-185)",
+    ),
+    row(
+        "module:branch-protection-pauth-lr",
+        todo(LATER),
+        ON,
+        "AArch64: `paciasppc` and the PC-modifier forms (FEAT_PAuth_LR); x86-64: ignored (WP-185)",
+    ),
     row(
         "module:cf-protection-branch",
         never(X64_ONLY),
-        todo(X64),
-        "changes code: `endbr64` at every function entry an indirect branch may reach, at \
-         landing pads and after `returns_twice` calls, then the IBT property note; `llc` \
-         19 and 22 turn it on for any value, 0 included (WP-143), as `hod_ir` reads it (WP-144)",
+        ON,
+        "`endbr64` at every function entry but a `nocf_check` one, at address-taken blocks, \
+         landing pads, the `llvm.eh.sjlj.setjmp` resume point, coroutine entry stubs and after \
+         direct calls of `returns_twice` functions, then the IBT bit in `.note.gnu.property` \
+         (WP-184); `llc` 19 and 22 turn it on for any value, 0 included (WP-143), as `hod_ir` \
+         reads it (WP-144)",
     ),
     row(
         "module:cf-protection-return",
@@ -602,15 +632,15 @@ const CC: [SupportRow; 26] = [
     row(
         "cc:preserve_mostcc",
         ON,
-        todo(X64),
-        "assigned as `ccc`; the callee also saves `x9`..`x15` (WP-095)",
+        ON,
+        "assigned as `ccc`; the callee also saves `x9`..`x15` (WP-095); x86-64: `rax`, `rcx`, `rdx`, `rsi`, `rdi`, `r8`..`r10` but its result's (WP-181)",
     ),
     // WP-101.
     row(
         "cc:preserve_allcc",
         ON,
-        todo(X64),
-        "assigned as `ccc`; the callee also saves `x9`..`x15` and `q8`..`q31` whole",
+        ON,
+        "assigned as `ccc`; the callee also saves `x9`..`x15` and `q8`..`q31` whole; x86-64: `preserve_mostcc`'s and `xmm0`..`xmm15` but its result's (WP-181)",
     ),
     row("cc:swiftcc", ON, todo(X64), "assigned as `ccc` (`spec/abi-a64.md` §1.2)"),
     row("cc:cxx_fast_tlscc", ON, todo(X64), "assigned as `ccc` (`spec/abi-a64.md` §1.2)"),
@@ -698,7 +728,7 @@ const ATTR_MEM: [SupportRow; 6] = [
     a64("attr:elementtype", LATER, "on an inline-assembly or intrinsic argument"),
 ];
 
-const ATTR_VALUE: [SupportRow; 3] = [
+const ATTR_VALUE: [SupportRow; 5] = [
     both("attr:align", ON, "on a parameter or return: an assumption, no code"),
     row(
         "attr:alignstack",
@@ -707,6 +737,16 @@ const ATTR_VALUE: [SupportRow; 3] = [
         "on a parameter: placement of a stack block (abi-a64.md §3.3); on a function: no code, `sp` is always 16-aligned and an over-aligned slot aligns itself",
     ),
     row("attr:uwtable", ON, ON, "on a function with a body (WP-049)"),
+    both(
+        "attr:probe-stack-function",
+        todo(LATER),
+        "a `probe-stack` value other than `inline-asm`: a probe function to call",
+    ),
+    both(
+        "attr:stack-probe-size-value",
+        todo(LATER),
+        "a `stack-probe-size` other than a multiple of 4096 below 2^24 (WP-186)",
+    ),
 ];
 
 /// In the order of `FnAttrs::FLAG_NAMES`.
@@ -725,9 +765,13 @@ const ATTR_FLAG: [SupportRow; FnAttrs::FLAG_NAMES.len()] = [
         "an ordinary call; a body whose meaning depends on being inlined is declined \
          (`spec/cli.md` \"Always-inline\", WP-021)",
     ),
-    a64("attr:ssp", "spec/codegen.md §13", "open question: accept and ignore, or implement"),
-    a64("attr:sspreq", "spec/codegen.md §13", ""),
-    a64("attr:sspstrong", "spec/codegen.md §13", ""),
+    both(
+        "attr:ssp",
+        ON,
+        "a guard above the escaping slots, checked at every exit (`spec/codegen.md` §5.6.24, WP-183)",
+    ),
+    both("attr:sspreq", ON, "as `attr:ssp`, every function protected"),
+    both("attr:sspstrong", ON, "as `attr:ssp`"),
     row(
         "attr:presplitcoroutine",
         ON,
@@ -753,6 +797,11 @@ const ATTR_FLAG: [SupportRow; FnAttrs::FLAG_NAMES.len()] = [
         "constrains transformations only, and hod makes none (§5.7); `bundle:convergencectrl` and the `llvm.experimental.convergence.*` intrinsics stay refused",
     ),
     both("attr:noredzone", ON, "hod keeps no data below the stack pointer (`spec/codegen.md` §5)"),
+    both(
+        "attr:nocf_check",
+        ON,
+        "on x86-64 under `cf-protection-branch`: no `endbr64` at the function's entry; an indirect call with it is refused as `x64:nocf-check-indirect-call` (no `notrack` encoding); no code elsewhere, as `llc` (WP-184)",
+    ),
 ];
 
 /// In `FnStr::ALL` order.
@@ -772,15 +821,43 @@ const ATTR_STRING: [SupportRow; FnStr::ALL.len()] = [
     a64("attr:patchable-function-entry", LATER, ""),
     a64("attr:patchable-function-prefix", LATER, ""),
     a64("attr:function-instrument", LATER, ""),
-    row("attr:branch-target-enforcement", todo(LATER), never(A64_ONLY), ""),
-    row("attr:sign-return-address", todo(LATER), never(A64_ONLY), ""),
-    row("attr:sign-return-address-key", todo(LATER), never(A64_ONLY), ""),
-    row("attr:branch-protection-pauth-lr", todo(LATER), never(A64_ONLY), ""),
-    row("attr:guarded-control-stack", todo(LATER), never(A64_ONLY), ""),
-    a64("attr:stack-probe-size", LATER, ""),
-    a64("attr:probe-stack", LATER, ""),
+    both(
+        "attr:branch-target-enforcement",
+        ON,
+        "AArch64: `bti c` at the entry, `bti j` where an indirect branch lands \
+         (`spec/codegen.md` §5.6.26); x86-64: ignored, as `llc` (WP-185)",
+    ),
+    both(
+        "attr:sign-return-address",
+        ON,
+        "AArch64: `paciasp`/`autiasp` with `DW_CFA_AARCH64_negate_ra_state`, `non-leaf` and \
+         `all` alike (every hod frame saves `x30`); x86-64: ignored (WP-185)",
+    ),
+    both(
+        "attr:sign-return-address-key",
+        ON,
+        "AArch64: `b_key` signs with `pacibsp`/`autibsp` under a CIE with `B`; x86-64: \
+         ignored (WP-185)",
+    ),
+    row(
+        "attr:branch-protection-pauth-lr",
+        todo(LATER),
+        ON,
+        "AArch64: FEAT_PAuth_LR; x86-64: ignored (WP-185)",
+    ),
+    both(
+        "attr:guarded-control-stack",
+        ON,
+        "no code change: hod returns only to the address its call left in `x30` (WP-185)",
+    ),
+    both("attr:stack-probe-size", ON, "a parameter of `attr:probe-stack`, read with it (WP-186)"),
+    both(
+        "attr:probe-stack",
+        ON,
+        "`inline-asm`: frames and `alloca`s probed page by page (`spec/codegen.md` §5.6.27, WP-186); other values are `attr:probe-stack-function`",
+    ),
     a64("attr:split-stack", LATER, ""),
-    a64("attr:zero-call-used-regs", LATER, ""),
+    a64("attr:zero-call-used-regs", LATER, "`skip` accepted: it zeroes nothing (WP-186)"),
     both("attr:stack-protector-buffer-size", ON, "a parameter of `attr:ssp`, read with it"),
     both("attr:min-legal-vector-width", ON, "read by x86 only"),
     both("attr:no-jump-tables", ON, "hod emits no jump table (`spec/codegen.md` §6.2)"),
@@ -1638,8 +1715,8 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
     row(
         "inst:callbr",
         ON,
-        todo(X64),
-        "inline assembly with labels, `asm goto` (WP-103, `spec/codegen.md` §5.5.3)",
+        ON,
+        "inline assembly with labels, `asm goto` (WP-103, `spec/codegen.md` §5.5.3; x86-64: an empty template, WP-181, §5.6.23)",
     ),
     row("inst:invoke", ON, ON, ""),
     row("inst:resume", ON, ON, ""),
@@ -1696,8 +1773,8 @@ const CALL: [SupportRow; 4] = [
     row(
         "call:inline-asm",
         ON,
-        todo(X64),
-        "the callee is inline assembly of instructions: `hod_asm` (WP-103, `spec/asm.md`)",
+        ON,
+        "the callee is inline assembly of instructions: `hod_asm` (WP-103, `spec/asm.md`; x86-64: WP-187)",
     ),
     row(
         "call:inline-asm-empty",
@@ -3372,8 +3449,9 @@ const INTRINSIC_A64: &[SupportRow] = &[
 ];
 
 /// The x86 target intrinsics of WP-173, which follow [`INTRINSIC_A64`] on
-/// the list. Above SSE2 the lowering refuses a function whose
-/// `target-features` do not enable the set, by the intrinsic's name.
+/// the list, then WP-190's system and state ones. Above SSE2 (and for
+/// WP-190's above the baseline) the lowering refuses a function whose
+/// `target-features` do not enable the feature, by the intrinsic's name.
 const INTRINSIC_X86: &[SupportRow] = &[
     row("intrinsic:llvm.x86.sse.cmp.ss", never(X64_ONLY), on(X86_SSE), "SSE"),
     row("intrinsic:llvm.x86.sse.comieq.ss", never(X64_ONLY), on(X86_SSE), "SSE"),
@@ -3398,6 +3476,12 @@ const INTRINSIC_X86: &[SupportRow] = &[
     row("intrinsic:llvm.x86.sse.min.ss", never(X64_ONLY), on(X86_SSE), "SSE"),
     row("intrinsic:llvm.x86.sse.movmsk.ps", never(X64_ONLY), on(X86_SSE), "SSE"),
     row("intrinsic:llvm.x86.sse.sfence", never(X64_ONLY), on(X86_SSE), "SSE"),
+    row("intrinsic:llvm.x86.sse.ldmxcsr", never(X64_ONLY), on(X86_SSE), "SSE; WP-181"),
+    row("intrinsic:llvm.x86.sse.rcp.ps", never(X64_ONLY), on(X86_SSE), "SSE; WP-181"),
+    row("intrinsic:llvm.x86.sse.rcp.ss", never(X64_ONLY), on(X86_SSE), "SSE; WP-181"),
+    row("intrinsic:llvm.x86.sse.rsqrt.ps", never(X64_ONLY), on(X86_SSE), "SSE; WP-181"),
+    row("intrinsic:llvm.x86.sse.rsqrt.ss", never(X64_ONLY), on(X86_SSE), "SSE; WP-181"),
+    row("intrinsic:llvm.x86.sse.stmxcsr", never(X64_ONLY), on(X86_SSE), "SSE; WP-181"),
     row("intrinsic:llvm.x86.sse2.cmp.sd", never(X64_ONLY), on(X86_SSE), "SSE2"),
     row("intrinsic:llvm.x86.sse2.comieq.sd", never(X64_ONLY), on(X86_SSE), "SSE2"),
     row("intrinsic:llvm.x86.sse2.comige.sd", never(X64_ONLY), on(X86_SSE), "SSE2"),
@@ -3423,6 +3507,8 @@ const INTRINSIC_X86: &[SupportRow] = &[
     row("intrinsic:llvm.x86.sse2.cvttsd2si64", never(X64_ONLY), on(X86_SSE), "SSE2"),
     row("intrinsic:llvm.x86.sse2.lfence", never(X64_ONLY), on(X86_SSE), "SSE2"),
     row("intrinsic:llvm.x86.sse2.mfence", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.clflush", never(X64_ONLY), on(X86_SSE), "SSE2; WP-181"),
+    row("intrinsic:llvm.x86.sse2.maskmov.dqu", never(X64_ONLY), on(X86_SSE), "SSE2; WP-181"),
     row("intrinsic:llvm.x86.sse2.max.pd", never(X64_ONLY), on(X86_SSE), "SSE2"),
     row("intrinsic:llvm.x86.sse2.max.sd", never(X64_ONLY), on(X86_SSE), "SSE2"),
     row("intrinsic:llvm.x86.sse2.min.pd", never(X64_ONLY), on(X86_SSE), "SSE2"),
@@ -3473,7 +3559,79 @@ const INTRINSIC_X86: &[SupportRow] = &[
     row("intrinsic:llvm.x86.ssse3.psign.b.128", never(X64_ONLY), on(X86_SSE), "SSSE3 (WP-173)"),
     row("intrinsic:llvm.x86.ssse3.psign.d.128", never(X64_ONLY), on(X86_SSE), "SSSE3 (WP-173)"),
     row("intrinsic:llvm.x86.ssse3.psign.w.128", never(X64_ONLY), on(X86_SSE), "SSSE3 (WP-173)"),
+    // WP-190: the system and state intrinsics.
+    row("intrinsic:llvm.x86.flags.read.u64", never(X64_ONLY), on(X86_SYS), "baseline (WP-190)"),
+    row("intrinsic:llvm.x86.flags.write.u64", never(X64_ONLY), on(X86_SYS), "baseline (WP-190)"),
+    row("intrinsic:llvm.x86.fxsave", never(X64_ONLY), on(X86_SYS), "FXSR (WP-190)"),
+    row("intrinsic:llvm.x86.fxsave64", never(X64_ONLY), on(X86_SYS), "FXSR (WP-190)"),
+    row("intrinsic:llvm.x86.fxrstor", never(X64_ONLY), on(X86_SYS), "FXSR (WP-190)"),
+    row("intrinsic:llvm.x86.fxrstor64", never(X64_ONLY), on(X86_SYS), "FXSR (WP-190)"),
+    row("intrinsic:llvm.x86.rdtsc", never(X64_ONLY), on(X86_SYS), "baseline (WP-190)"),
+    row("intrinsic:llvm.x86.rdtscp", never(X64_ONLY), on(X86_SYS), "baseline (WP-190)"),
+    row("intrinsic:llvm.x86.rdpmc", never(X64_ONLY), on(X86_SYS), "baseline (WP-190)"),
+    row("intrinsic:llvm.x86.addcarry.32", never(X64_ONLY), on(X86_SYS), "baseline (WP-190)"),
+    row("intrinsic:llvm.x86.addcarry.64", never(X64_ONLY), on(X86_SYS), "baseline (WP-190)"),
+    row("intrinsic:llvm.x86.subborrow.32", never(X64_ONLY), on(X86_SYS), "baseline (WP-190)"),
+    row("intrinsic:llvm.x86.subborrow.64", never(X64_ONLY), on(X86_SYS), "baseline (WP-190)"),
+    row("intrinsic:llvm.x86.xgetbv", never(X64_ONLY), on(X86_SYS), "XSAVE (WP-190)"),
+    row("intrinsic:llvm.x86.xsetbv", never(X64_ONLY), on(X86_SYS), "XSAVE (WP-190)"),
+    row("intrinsic:llvm.x86.rdrand.16", never(X64_ONLY), on(X86_SYS), "RDRND (WP-190)"),
+    row("intrinsic:llvm.x86.rdrand.32", never(X64_ONLY), on(X86_SYS), "RDRND (WP-190)"),
+    row("intrinsic:llvm.x86.rdrand.64", never(X64_ONLY), on(X86_SYS), "RDRND (WP-190)"),
+    row("intrinsic:llvm.x86.rdseed.16", never(X64_ONLY), on(X86_SYS), "RDSEED (WP-190)"),
+    row("intrinsic:llvm.x86.rdseed.32", never(X64_ONLY), on(X86_SYS), "RDSEED (WP-190)"),
+    row("intrinsic:llvm.x86.rdseed.64", never(X64_ONLY), on(X86_SYS), "RDSEED (WP-190)"),
+    row("intrinsic:llvm.x86.xsave", never(X64_ONLY), on(X86_SYS), "XSAVE (WP-190)"),
+    row("intrinsic:llvm.x86.xsave64", never(X64_ONLY), on(X86_SYS), "XSAVE (WP-190)"),
+    row("intrinsic:llvm.x86.xrstor", never(X64_ONLY), on(X86_SYS), "XSAVE (WP-190)"),
+    row("intrinsic:llvm.x86.xrstor64", never(X64_ONLY), on(X86_SYS), "XSAVE (WP-190)"),
+    row("intrinsic:llvm.x86.xsaveopt", never(X64_ONLY), on(X86_SYS), "XSAVEOPT (WP-190)"),
+    row("intrinsic:llvm.x86.xsaveopt64", never(X64_ONLY), on(X86_SYS), "XSAVEOPT (WP-190)"),
+    row("intrinsic:llvm.x86.xsavec", never(X64_ONLY), on(X86_SYS), "XSAVEC (WP-190)"),
+    row("intrinsic:llvm.x86.xsavec64", never(X64_ONLY), on(X86_SYS), "XSAVEC (WP-190)"),
+    row("intrinsic:llvm.x86.xsaves", never(X64_ONLY), on(X86_SYS), "XSAVES (WP-190)"),
+    row("intrinsic:llvm.x86.xsaves64", never(X64_ONLY), on(X86_SYS), "XSAVES (WP-190)"),
+    row("intrinsic:llvm.x86.xrstors", never(X64_ONLY), on(X86_SYS), "XSAVES (WP-190)"),
+    row("intrinsic:llvm.x86.xrstors64", never(X64_ONLY), on(X86_SYS), "XSAVES (WP-190)"),
+    row("intrinsic:llvm.x86.clflushopt", never(X64_ONLY), on(X86_SYS), "CLFLUSHOPT (WP-190)"),
+    row("intrinsic:llvm.x86.clwb", never(X64_ONLY), on(X86_SYS), "CLWB (WP-190)"),
+    row("intrinsic:llvm.x86.bmi.bextr.32", never(X64_ONLY), on(X86_SYS), "BMI (WP-190)"),
+    row("intrinsic:llvm.x86.bmi.bextr.64", never(X64_ONLY), on(X86_SYS), "BMI (WP-190)"),
+    row("intrinsic:llvm.x86.bmi.bzhi.32", never(X64_ONLY), on(X86_SYS), "BMI2 (WP-190)"),
+    row("intrinsic:llvm.x86.bmi.bzhi.64", never(X64_ONLY), on(X86_SYS), "BMI2 (WP-190)"),
+    row("intrinsic:llvm.x86.bmi.pdep.32", never(X64_ONLY), on(X86_SYS), "BMI2 (WP-190)"),
+    row("intrinsic:llvm.x86.bmi.pdep.64", never(X64_ONLY), on(X86_SYS), "BMI2 (WP-190)"),
+    row("intrinsic:llvm.x86.bmi.pext.32", never(X64_ONLY), on(X86_SYS), "BMI2 (WP-190)"),
+    row("intrinsic:llvm.x86.bmi.pext.64", never(X64_ONLY), on(X86_SYS), "BMI2 (WP-190)"),
+    row("intrinsic:llvm.x86.sse42.crc32.32.8", never(X64_ONLY), on(X86_SYS), "CRC32 (WP-190)"),
+    row("intrinsic:llvm.x86.sse42.crc32.32.16", never(X64_ONLY), on(X86_SYS), "CRC32 (WP-190)"),
+    row("intrinsic:llvm.x86.sse42.crc32.32.32", never(X64_ONLY), on(X86_SYS), "CRC32 (WP-190)"),
+    row("intrinsic:llvm.x86.sse42.crc32.64.64", never(X64_ONLY), on(X86_SYS), "CRC32 (WP-190)"),
+    row("intrinsic:llvm.x86.rdfsbase.32", never(X64_ONLY), on(X86_SYS), "FSGSBASE (WP-190)"),
+    row("intrinsic:llvm.x86.rdfsbase.64", never(X64_ONLY), on(X86_SYS), "FSGSBASE (WP-190)"),
+    row("intrinsic:llvm.x86.rdgsbase.32", never(X64_ONLY), on(X86_SYS), "FSGSBASE (WP-190)"),
+    row("intrinsic:llvm.x86.rdgsbase.64", never(X64_ONLY), on(X86_SYS), "FSGSBASE (WP-190)"),
+    row("intrinsic:llvm.x86.wrfsbase.32", never(X64_ONLY), on(X86_SYS), "FSGSBASE (WP-190)"),
+    row("intrinsic:llvm.x86.wrfsbase.64", never(X64_ONLY), on(X86_SYS), "FSGSBASE (WP-190)"),
+    row("intrinsic:llvm.x86.wrgsbase.32", never(X64_ONLY), on(X86_SYS), "FSGSBASE (WP-190)"),
+    row("intrinsic:llvm.x86.wrgsbase.64", never(X64_ONLY), on(X86_SYS), "FSGSBASE (WP-190)"),
+    row("intrinsic:llvm.x86.xbegin", never(X64_ONLY), on(X86_SYS), "RTM (WP-190)"),
+    row("intrinsic:llvm.x86.xend", never(X64_ONLY), on(X86_SYS), "RTM (WP-190)"),
+    row("intrinsic:llvm.x86.xabort", never(X64_ONLY), on(X86_SYS), "RTM (WP-190)"),
+    row("intrinsic:llvm.x86.xtest", never(X64_ONLY), on(X86_SYS), "RTM (WP-190)"),
+    row("intrinsic:llvm.x86.rdpid", never(X64_ONLY), on(X86_SYS), "RDPID (WP-190)"),
+    row("intrinsic:llvm.x86.rdpkru", never(X64_ONLY), on(X86_SYS), "PKU (WP-190)"),
+    row("intrinsic:llvm.x86.wrpkru", never(X64_ONLY), on(X86_SYS), "PKU (WP-190)"),
+    row("intrinsic:llvm.x86.serialize", never(X64_ONLY), on(X86_SYS), "SERIALIZE (WP-190)"),
+    row("intrinsic:llvm.x86.incsspd", never(X64_ONLY), on(X86_SYS), "SHSTK (WP-190)"),
+    row("intrinsic:llvm.x86.incsspq", never(X64_ONLY), on(X86_SYS), "SHSTK (WP-190)"),
+    row("intrinsic:llvm.x86.rdsspd", never(X64_ONLY), on(X86_SYS), "SHSTK (WP-190)"),
+    row("intrinsic:llvm.x86.rdsspq", never(X64_ONLY), on(X86_SYS), "SHSTK (WP-190)"),
 ];
+
+/// The value classes of the x86 system and state intrinsics' signatures
+/// (WP-190): integers, pointers and the `{iN, iM}` results.
+const X86_SYS: &[TypeClass] = &[TypeClass::Int, TypeClass::Ptr, TypeClass::Aggregate];
 
 // ---- the table ----
 
@@ -3705,6 +3863,8 @@ pub(crate) mod at {
     pub(crate) const ATTR_ALIGN: usize = find("attr:align");
     pub(crate) const ATTR_ALIGNSTACK: usize = find("attr:alignstack");
     pub(crate) const ATTR_UWTABLE: usize = find("attr:uwtable");
+    pub(crate) const ATTR_PROBE_STACK_FUNCTION: usize = find("attr:probe-stack-function");
+    pub(crate) const ATTR_STACK_PROBE_SIZE_VALUE: usize = find("attr:stack-probe-size-value");
     /// Plus the bit number of an `FnAttrs` flag.
     pub(crate) const ATTR_FLAG: usize = find("attr:noreturn");
     pub(crate) const ATTR_RETURNS_TWICE: usize = find("attr:returns_twice");

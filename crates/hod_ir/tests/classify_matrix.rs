@@ -332,6 +332,7 @@ fn every_kept_attribute_has_a_row() {
     expected.extend(PARAM_FLAGS.iter().map(|(name, _)| name));
     expected.extend(PARAM_MEMS.iter().map(|(name, _)| name));
     expected.extend(["align", "alignstack", "uwtable"]);
+    expected.extend(["probe-stack-function", "stack-probe-size-value"]); // WP-186
     expected.extend(FnAttrs::FLAG_NAMES.iter().map(|(name, _)| name));
     expected.extend(FnStr::ALL.iter().map(|key| match key {
         FnStr::NoBuiltin => "no-builtin",
@@ -339,7 +340,10 @@ fn every_kept_attribute_has_a_row() {
     }));
     assert_eq!(rows_of("attr"), expected);
 
-    let rows: BTreeSet<&str> = rows_of("attr").into_iter().collect();
+    // WP-186: two rows are values of a kept attribute, not attributes.
+    let values = ["probe-stack-function", "stack-probe-size-value"];
+    let rows: BTreeSet<&str> =
+        rows_of("attr").into_iter().filter(|n| !values.contains(n)).collect();
     let kept: BTreeSet<&str> = ATTRIBUTES
         .iter()
         .filter(|info| info.class == AttrClass::Kept)
@@ -780,11 +784,16 @@ fn the_census_counts_occurrences_and_symbols() {
 fn inline_assembly_rows_of_wp_103() {
     let a64 = Support::shipped(Arch::Aarch64);
     let x64 = Support::shipped(Arch::X86_64);
-    for row in ["call:inline-asm", "inst:callbr", "module:asm"] {
-        assert_eq!(a64.supports(row), Some(true), "{row}");
-        assert_eq!(x64.supports(row), Some(false), "{row}");
-        assert!(x64.clone().with(row).is_some(), "{row}: x86-64 may switch it on");
-    }
+    // WP-187: x86-64 assembles templates of instructions too.
+    assert_eq!(a64.supports("call:inline-asm"), Some(true));
+    assert_eq!(x64.supports("call:inline-asm"), Some(true));
+    assert_eq!(a64.supports("module:asm"), Some(true));
+    assert_eq!(x64.supports("module:asm"), Some(false));
+    assert!(x64.clone().with("module:asm").is_some(), "x86-64 may switch it on");
+    // WP-181: `callbr` of an empty template on x86-64 (one with a
+    // template of instructions is refused by the target, WP-187).
+    assert_eq!(a64.supports("inst:callbr"), Some(true));
+    assert_eq!(x64.supports("inst:callbr"), Some(true));
 }
 
 // WP-128: the x86-64 intrinsics no other group takes, the overflow

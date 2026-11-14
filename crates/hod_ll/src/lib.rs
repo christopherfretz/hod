@@ -104,6 +104,9 @@ pub struct AttrGroup {
     /// The names of its rejected attributes: whoever applies the group
     /// to a function or a call records each as `attr:<name>`.
     pub rejected: Vec<Box<str>>,
+    /// Whether it holds `noinline` (dropped from `attrs`; kept on a call
+    /// site, WP-188).
+    pub noinline: bool,
 }
 
 /// What the text of a module leaves behind for whoever parses the

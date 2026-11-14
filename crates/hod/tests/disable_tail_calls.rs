@@ -179,15 +179,11 @@ fn noredzone_changes_no_code() {
 
 /// A function attribute the readers refuse (`AttrClass::Rejected`) is
 /// noted by the readers with the function's symbol and reported by
-/// `classify`'s module pass (`walk.rs`, `module.unsupported()`), whose
-/// rejection the facade turns into an answer with `from_rejection(..,
-/// false)` (`crates/hod/src/session.rs:442`), which names no function:
-/// the answer is `unsupported construct 'attr:<name>'` without `in
-/// function '<f>'`. A kept attribute that the matrix refuses is judged
-/// in the body pass and is named with its function. Ignored until the
-/// facade names it (outside WP-179's ownership).
+/// `classify`'s module pass (`walk.rs`, `module.unsupported()`); the
+/// facade names the function of such an `attr:` refusal
+/// (`crates/hod/src/session.rs`, `judge_module`, WP-183), as the body
+/// pass names a kept attribute that the matrix refuses.
 #[test]
-#[ignore = "the facade's module pass does not name the function (crates/hod/src/session.rs:442)"]
 fn a_refused_function_attribute_names_its_function() {
     let body = "define void @f() noimplicitfloat {\n  ret void\n}\n";
     for (triple, layout) in TARGETS {

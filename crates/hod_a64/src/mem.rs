@@ -540,7 +540,7 @@ pub fn alloca<'a>(
     if align > 16 {
         put(cx, mc::and_imm(Size::X, X16.sp(), X16.zr(), !(align - 1)));
     }
-    put(cx, mc::mov_sp(Size::X, SP, X16.sp()));
+    crate::probe::set_sp(cx); // WP-186: `mov sp, x16`, probed
     put(cx, mc::mov(Size::X, xr(rd).zr(), X16.zr()));
     cx.state.frame.dynamic = true;
     cx.finish(inst, rd)

@@ -72,8 +72,8 @@ pub use asm_text::{
     module_asm_effects, read_module_asm,
 };
 pub use attrs::{
-    ATTRIBUTES, AttrClass, AttrInfo, AttrSyntax, FnAttrs, FnAttrsId, FnAttrsView, FnStr, UwTable,
-    attr_class, attr_info,
+    ATTRIBUTES, AttrClass, AttrInfo, AttrSyntax, FnAttrs, FnAttrsId, FnAttrsView, FnStr,
+    StackProbe, UwTable, attr_class, attr_info,
 };
 pub use attrs::{CallConv, ParamAttrs, ParamMem};
 pub use comdat::{Comdat, ComdatKind};

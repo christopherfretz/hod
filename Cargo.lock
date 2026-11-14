@@ -160,6 +160,7 @@ version = "0.0.0"
 name = "hod_x64"
 version = "0.0.0"
 dependencies = [
+ "hod_asm",
  "hod_cg",
  "hod_interp",
  "hod_ir",

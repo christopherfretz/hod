@@ -245,6 +245,46 @@ tier (about 20 s) runs in `cargo test`; the full gate runs everything.
   finds the smallest set of functions that must go to `llc` for the test to
   pass, and writes the reduced IR into `tests/ir/` as a reproducer.
 
+### Real projects for x86-64 on the AArch64 host (LLVM, cross-built)
+
+`scripts/oss/llvm-x64/` (WP-180) builds LLVM 19.1.7 for
+`x86_64-unknown-linux-gnu` on the AArch64 development host twice from
+one source tree: by kiln with hod (fallback allowed, `HOD_CENSUS=1`;
+`.build/oss/llvm-x64-hod`) and by kiln with its LLVM back end, the
+control (`.build/oss/llvm-x64-llc`). It is WP-178's native recipe
+(`scripts/oss/llvm/`: the wrapper over kiln's logging wrapper,
+`KILN_STATS_LOG`, hod's coverage log, the census and the saved modules)
+with the cross settings:
+
+- the compiler wrappers add `--target=x86_64-unknown-linux-gnu`; kiln
+  then finds the distribution's cross GCC (`/usr/lib/gcc-cross`) and its
+  system root by itself, and mold links x86-64;
+- CMake: `CMAKE_SYSTEM_NAME=Linux`, `CMAKE_SYSTEM_PROCESSOR=x86_64`,
+  `CMAKE_CROSSCOMPILING_EMULATOR="qemu-x86_64;-L;/usr/x86_64-linux-gnu"`,
+  `LLVM_HOST_TRIPLE` and `LLVM_DEFAULT_TARGET_TRIPLE` the target,
+  `-O0`, assertions, no `-g`, static libraries, `X86;AArch64`;
+- host tools: `llvm-tblgen` and `llvm-min-tblgen` copied once from
+  WP-178's native tree (`LLVM_NATIVE_TOOL_DIR`); `llvm-config`,
+  `llvm-nm` and `llvm-readobj` from the distribution's LLVM 19
+  (`LLVM_CONFIG_PATH`, `LLVM_NM`, `LLVM_READOBJ`), so no `NATIVE`
+  sub-build is configured;
+- links get 16 GB of address space (mold maps -O0 archives whole);
+- tests: the container has no `binfmt_misc` entry, so unit-test binaries
+  run as `qemu-x86_64 -L /usr/x86_64-linux-gnu <binary>`
+  (`unittests.sh`), and `qemu-tools.sh` replaces each x86-64 tool of
+  `build/bin` by a launcher before `llvm-lit` runs (`lit.sh`, which also
+  takes a list of tests: `lit-codegen-x86.txt` and `lit-instcombine.txt`
+  are every 15th test of `test/CodeGen/X86` and every 10th of
+  `test/Transforms/InstCombine`, sorted by name).
+
+The census, the saved refused modules with their command lines and
+smallest reproducers, and the test comparisons are in
+`.build/findings/oss/LLVM-X64-CENSUS.md` (`census-file.sh`); the numbers
+are in `spec/landed/harness/WP-180.md`. Under the emulator, tests that
+spawn x86-64 child processes (`ProgramEnvTest.*`) and read the host's
+`/proc/cpuinfo` (`Threading.NumPhysicalCoresSupported`) fail in both
+trees.
+
 ## Performance
 
 Speed and memory are properties with tests, not goals with hopes.

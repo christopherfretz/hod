@@ -176,6 +176,21 @@ fn method_family(a: &MethodAttrs) -> Option<(usize, u32)> {
                 | b(a.del) << 10,
         ));
     }
+    // WP-189: `explicit operator T() const &` (§6.24).
+    if a.expl && !a.art && !a.nr && a.name {
+        return Some((
+            fam::METHOD_EXPLICIT_QUALIFIED,
+            b(a.link)
+                | b(a.decl) << 1
+                | b(a.ty) << 2
+                | b(a.virt) << 3
+                | b(a.ext) << 4
+                | b(a.lref) << 5
+                | b(a.rref) << 6
+                | b(a.acc) << 7
+                | b(a.del) << 8,
+        ));
+    }
     None
 }
 
@@ -246,7 +261,7 @@ impl UnitPlan<'_> {
                     // WP-113: §6.19
                     return Err(unsupported(
                         self.dies[i].node,
-                        "a member function declaration with a calling convention, without a vtable index or containing type, or with explicit or artificial and a ref-qualifier or noreturn",
+                        "a member function declaration with a calling convention, without a vtable index or containing type, artificial and a ref-qualifier or noreturn, or explicit and noreturn",
                     ));
                 }
             }

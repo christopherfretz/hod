@@ -357,13 +357,19 @@ pub struct Bundle<'a> {
     pub inputs: &'a [Value],
 }
 
-pub(crate) const CALL_TAIL_MASK: u8 = 0b11;
-pub(crate) const CALL_NORETURN: u8 = 1 << 2;
-pub(crate) const CALL_NOUNWIND: u8 = 1 << 3;
-pub(crate) const CALL_RETURNS_TWICE: u8 = 1 << 4;
-pub(crate) const CALL_CONVERGENT: u8 = 1 << 5;
+pub(crate) const CALL_TAIL_MASK: u16 = 0b11;
+pub(crate) const CALL_NORETURN: u16 = 1 << 2;
+pub(crate) const CALL_NOUNWIND: u16 = 1 << 3;
+pub(crate) const CALL_RETURNS_TWICE: u16 = 1 << 4;
+pub(crate) const CALL_CONVERGENT: u16 = 1 << 5;
+/// `alwaysinline` on the call site (WP-188).
+pub(crate) const CALL_ALWAYS_INLINE: u16 = 1 << 6;
+/// `noinline` on the call site (WP-188).
+pub(crate) const CALL_NOINLINE: u16 = 1 << 7;
+/// `nocf_check` on the call site (WP-184).
+pub(crate) const CALL_NO_CF_CHECK: u16 = 1 << 8;
 
-/// The record of one call, `invoke` or `callbr`. 40 bytes.
+/// The record of one call, `invoke` or `callbr`. 44 bytes.
 ///
 /// The instruction's value list is `callee, arguments, bundle inputs`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -390,7 +396,7 @@ pub(crate) struct CallData {
     pub(crate) intrinsic: u16,
     pub(crate) noverloads: u8,
     /// Tail kind and the `CALL_*` bits.
-    pub(crate) flags: u8,
+    pub(crate) flags: u16,
 }
 
 /// A metadata operand (§5.3): `count` strings whose start and length in
@@ -1877,7 +1883,7 @@ impl<'a> CallSite<'a> {
     /// The tail-call marker.
     #[inline]
     pub fn tail(&self) -> TailKind {
-        TailKind::from_raw(self.data().flags & CALL_TAIL_MASK)
+        TailKind::from_raw((self.data().flags & CALL_TAIL_MASK) as u8)
     }
 
     /// `noreturn` on the call.
@@ -1902,6 +1908,25 @@ impl<'a> CallSite<'a> {
     #[inline]
     pub fn is_convergent(&self) -> bool {
         self.data().flags & CALL_CONVERGENT != 0
+    }
+
+    /// `alwaysinline` on the call site: LLVM's always-inliner inlines
+    /// the call whatever the callee's attributes (`spec/ir.md` §5.7).
+    #[inline]
+    pub fn is_always_inline(&self) -> bool {
+        self.data().flags & CALL_ALWAYS_INLINE != 0
+    }
+
+    /// `noinline` on the call site: no inliner inlines the call.
+    #[inline]
+    pub fn is_noinline(&self) -> bool {
+        self.data().flags & CALL_NOINLINE != 0
+    }
+
+    /// `nocf_check` on the call (`spec/ir.md` §5.7, WP-184).
+    #[inline]
+    pub fn is_nocf_check(&self) -> bool {
+        self.data().flags & CALL_NO_CF_CHECK != 0
     }
 
     /// Whether the return value or any argument has an attribute.
@@ -2012,7 +2037,10 @@ impl fmt::Debug for CallSite<'_> {
             .field("noreturn", &self.is_noreturn())
             .field("nounwind", &self.is_nounwind())
             .field("returns_twice", &self.returns_twice())
-            .field("convergent", &self.is_convergent());
+            .field("nocf_check", &self.is_nocf_check())
+            .field("convergent", &self.is_convergent())
+            .field("always_inline", &self.is_always_inline())
+            .field("noinline", &self.is_noinline());
         if self.has_param_attrs() {
             s.field("ret_attrs", &self.ret_attrs());
             for index in 0..self.args().len() {
@@ -2052,7 +2080,7 @@ mod tests {
         assert_eq!(size_of::<DbgDeclare>(), 16);
         assert_eq!(size_of::<DbgRecordData>(), 28);
         assert_eq!(size_of::<Clause>(), 8);
-        assert_eq!(size_of::<CallData>(), 40);
+        assert_eq!(size_of::<CallData>(), 44);
         assert_eq!(size_of::<BundleData>(), 16);
         assert_eq!(size_of::<PadData>(), 16);
     }

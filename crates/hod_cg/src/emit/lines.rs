@@ -96,14 +96,18 @@ pub(super) struct Placed<'c> {
     pub(super) calls: &'c [crate::debug_calls::DebugCallRow],
 }
 
-fn dwarf_err(error: hod_dwarf::Error) -> CgError {
+fn dwarf_err(debug: &DebugInfo, error: hod_dwarf::Error) -> CgError {
     match error {
         // `spec/dwarf.md` §6.4: what the function DIEs refuse has a
         // stable name of its own.
         hod_dwarf::Error::Unsupported { what, .. } if what.starts_with("debug:") => {
             CgError::unsupported(what)
         }
-        hod_dwarf::Error::Unsupported { .. } => CgError::unsupported(unsupported::DEBUG_DIE),
+        // WP-189: the detail names the node's kind and tag.
+        hod_dwarf::Error::Unsupported { .. } => CgError::UnsupportedDetail {
+            construct: unsupported::DEBUG_DIE,
+            detail: error.detail(debug).unwrap_or_default(),
+        },
         // §6.12: what is wrong with the input is a decline, by name; what
         // is left (a line row, a span, a symbol, a global's address the
         // bridge made) is the bridge's bug.
@@ -140,7 +144,7 @@ impl<'m> DebugLines<'m> {
             // `LineTablesOnly` and `DebugDirectivesOnly` (WP-061,
             // `spec/dwarf.md` §6.10): the plan refuses what they cannot
             // describe; the second gets no DIEs at all.
-            let plan = UnitPlan::for_functions(module, unit).map_err(dwarf_err)?;
+            let plan = UnitPlan::for_functions(module, unit).map_err(|e| dwarf_err(debug, e))?;
             let mut globals = cu.globals.to_vec();
             globals.sort_unstable();
             let dies = has_dies(cu.emission_kind);
@@ -281,7 +285,7 @@ impl<'m> DebugLines<'m> {
             vars: &self.locals,
             calls: &self.calls,
         };
-        self.units[unit].plan.add_function(&input).map_err(dwarf_err)?;
+        self.units[unit].plan.add_function(&input).map_err(|e| dwarf_err(self.debug, e))?;
         if lines.is_empty() {
             return Ok(());
         }
@@ -307,13 +311,13 @@ impl<'m> DebugLines<'m> {
         self.rows.clear();
         let made = function_rows(&f, &mut self.rows);
         self.transitions = transitions;
-        made.map_err(dwarf_err)?;
+        made.map_err(|e| dwarf_err(self.debug, e))?;
         if let Some((entries, ready)) = stubs {
             stub_rows(&mut self.rows, scope, entries, ready);
         }
         let u = &mut self.units[unit];
         let seq = Sequence { order: 0, symbol, addend, size, rows: &self.rows };
-        u.program.push(u.plan.files().files().len(), &seq).map_err(dwarf_err)
+        u.program.push(u.plan.files().files().len(), &seq).map_err(|e| dwarf_err(self.debug, e))
     }
 
     /// Adds `code` to the code of `unit` as `DwarfCompileUnit::addRange`
@@ -361,8 +365,13 @@ impl<'m> DebugLines<'m> {
             }
         }
         for u in &mut self.units {
-            u.plan.seal().map_err(dwarf_err)?;
-            u.plan.place_symbols(|s| place(obj, s));
+            u.plan.seal().map_err(|e| dwarf_err(self.debug, e))?;
+            // WP-189: a template parameter's address of a symbol this
+            // object does not define is relocated against the undefined
+            // symbol, as `llc` does (`spec/dwarf.md` §6.24).
+            u.plan.place_symbols(|s| {
+                Some(place(obj, s).unwrap_or((super::ModuleEmitter::obj_sym(s), 0)))
+            });
         }
         // `llc` writes nothing for a unit with neither code nor anything
         // it lists (`spec/dwarf.md` §1.2, WP-111).
@@ -383,7 +392,8 @@ impl<'m> DebugLines<'m> {
                 program: &self.units[i].program,
             })
             .collect();
-        let lines = write_debug_line_units(obj, &line_units).map_err(dwarf_err)?;
+        let lines =
+            write_debug_line_units(obj, &line_units).map_err(|e| dwarf_err(self.debug, e))?;
         let inputs: Vec<UnitInput<'_, '_>> = written
             .iter()
             .zip(&lines.offsets)
@@ -399,7 +409,7 @@ impl<'m> DebugLines<'m> {
             return Ok(()); // only `DebugDirectivesOnly` units
         }
         hod_dwarf::write_unit_dies(obj, lines.sections.line, &inputs, self.split)
-            .map_err(dwarf_err)?;
+            .map_err(|e| dwarf_err(self.debug, e))?;
         Ok(())
     }
 }

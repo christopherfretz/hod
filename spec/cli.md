@@ -976,29 +976,38 @@ constructs that look inlining-sensitive and are not:
 - `llvm.objectsize`: the same; "unknown" (`-1` or `0` per its `min`
   argument) is always a permitted answer, and the checks built on it are
   `_FORTIFY_SOURCE` checks that only lose precision.
-- A call site marked `alwaysinline` with an ordinary callee: LLVM 19 and
-  22 do inline it. Out of line the callee runs the same code; the
-  exceptions below apply to it too (any `alwaysinline` set in the module
-  turns the check on, because the readers do not say which call carries
-  it).
 - Dynamic `alloca`: inlined, LLVM wraps it in `stacksave`/`stackrestore`
   and frees it at the inlined return, which is the out-of-line lifetime.
 - `musttail` in the callee becomes a plain call at a non-`musttail`
-  site: the same meaning. Variadic bodies, recursion, `indirectbr` and
-  `noinline` call sites are not inlined by LLVM.
+  site: the same meaning.
 
-**Declined.** A direct call to a body whose meaning depends on being
-inlined declines the module (status 2 in strict mode) when it may have
-been inlined: the callee is an `available_externally` copy, or the module
-has any `alwaysinline` attribute set. Reported in the callee, by these
-stable names (`hod::inline_reason`):
+**Which calls LLVM inlines** (WP-188, measured with
+`opt -passes=always-inline` 19 and 22). A direct call is inlined when
+the callee is `alwaysinline` or the call site carries `alwaysinline`
+(even into a `noinline` callee), unless the call site carries
+`noinline`, and the callee is a body LLVM can inline: not variadic (with
+or without `va_start`), not a pre-split coroutine, no call to itself, no
+`returns_twice` call, no `indirectbr`, no `llvm.localescape`. Every
+other call is kept by `opt`, so out of line is `opt`'s result and hod
+accepts it whatever the body holds. The readers keep the call site's
+`alwaysinline` and `noinline` (`spec/ir.md` §5.7). Inlined,
+`llvm.returnaddress`, `llvm.frameaddress` (any depth),
+`llvm.addressofreturnaddress` and `llvm.sponentry` are copied unchanged
+into the caller: they mean the caller's frame, which a call out of line
+does not give.
+
+**Declined.** A direct call that LLVM inlines, to a body whose meaning
+depends on being inlined, declines the module (status 2 in strict mode);
+for an `available_externally` copy, the calls that reach the copy and
+that LLVM inlines. Reported in the callee, by these stable names
+(`hod::inline_reason`):
 
 | name | the body has | inlined by LLVM? |
 |---|---|---|
 | `alwaysinline:frame-address` | `llvm.frameaddress`, `llvm.sponentry`, `llvm.localaddress`, `llvm.eh.dwarf.cfa` | yes: the caller's frame |
 | `alwaysinline:return-address` | `llvm.returnaddress`, `llvm.addressofreturnaddress` | yes: the caller's return address |
 | `alwaysinline:stacksave-escapes` | an `llvm.stacksave` result used other than by `llvm.stackrestore` | yes: the caller's stack pointer |
-| `alwaysinline:returns-twice` | a call to a `returns_twice` function | no: LLVM leaves it out of line; declined anyway (a `setjmp` in a body meant to vanish into its caller is the caller's frame by intent) |
+| `alwaysinline:returns-twice` | a call to a `returns_twice` function | no: LLVM keeps the call, so hod does (WP-188); the name is no longer reported |
 | `alwaysinline:returns-local-address` | a return of a stack slot's address (through `getelementptr`, `select`, `phi`) | yes: `llc -O0` keeps the slot live for the whole caller, out of line it is dead |
 | `alwaysinline:frame-register-asm` | inline assembly whose template or constraints name `sp`, `fp`, `lr`, `x29`, `x30` (or the x86-64 frame registers) | yes: the caller's registers |
 

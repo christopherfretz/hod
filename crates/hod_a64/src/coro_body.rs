@@ -145,17 +145,10 @@ pub fn stubs(cx: &mut FnCx<'_, A64>) -> CgResult<()> {
         cx.cfi(CfiOp::Restore { reg: DWARF_FP });
         cx.cfi(CfiOp::Restore { reg: DWARF_LR });
         cx.cfi(CfiOp::Restore { reg: DWARF_X19 });
+        crate::protect::stub_entry(cx); // WP-185
         // The prologue, as `frame::begin` emitted and `frame::end`
         // patched it, with the same rows.
-        let (lo, hi) = (frame & 0xfff, frame & 0xff_f000);
-        put(cx, mc::sub_imm(Size::X, SP, SP, u64::from(lo)));
-        if lo != 0 {
-            cx.cfi(CfiOp::DefCfaOffset(lo as i32));
-        }
-        put(cx, mc::sub_imm(Size::X, SP, SP, u64::from(hi)));
-        if hi != 0 {
-            cx.cfi(CfiOp::DefCfaOffset(frame as i32));
-        }
+        crate::probe::put_allocation(cx, frame); // WP-186: the two `sub`s
         put(cx, mc::stp_off(Size::X, Reg::X29.zr(), Reg::X30.zr(), SP, 0));
         let f = frame as i32;
         cx.cfi(CfiOp::Offset { reg: DWARF_FP, cfa_offset: -f });

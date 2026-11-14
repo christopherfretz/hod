@@ -57,6 +57,7 @@ this document follows `spec/abi-a64.md`, section for section.
 | `ccc` (0) | specified by this document |
 | `fastcc` (8) | as `ccc`, except one more return register for `float` and `double` (§5.1) |
 | `x86_64_sysvcc` (78) | as `ccc`: it is the System V convention, which is this target's `ccc` (WP-141) |
+| `preserve_mostcc` (14), `preserve_allcc` (15) | as `ccc`; the callee keeps more registers, which is the frame's (`spec/codegen.md` §5.6.23, WP-181) |
 | every other number, including `swiftcc` (16) and `cxx_fast_tlscc` (17) | `abi:cc` |
 
 `hod_x64::abi::cc_is_c` is the predicate for the first three rows. "As

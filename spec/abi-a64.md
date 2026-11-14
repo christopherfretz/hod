@@ -204,7 +204,17 @@ An array whose leaves are of class `W` (`[3 x i8]`, `[2 x i32]`) is not
 a block: each leaf is an ordinary piece (§3.2), with a register or an
 8-byte slot of its own. So is every structure.
 
-Four kinds of array are **unsupported**, because LLVM does not have one
+A block of one leaf follows the same rule (WP-182): in a register it is
+the leaf's register, on the stack it is aligned to `A`, not to the
+leaf's own slot. So `[1 x fp128] alignstack(8)` (what clang writes for
+a packed `struct { long double x; }`) lies at the next multiple of 8,
+and `[1 x double] alignstack(16)` at the next multiple of 16. This is
+SelectionDAG's placement, the oracle's (`docs/VALIDATION.md` "Oracles"),
+the same in LLVM 19 and 22, and AAPCS64's (C.12, C.13 round NSAA to the
+alignment of the composite, at least 8); GlobalISel (plain `llc -O0`)
+gives the leaf its ordinary slot instead (§12).
+
+Three kinds of array are **unsupported**, because LLVM does not have one
 answer for them:
 
 - `abi:wide-int-array`: the leaf is an integer wider than 64 bits.
@@ -213,7 +223,9 @@ answer for them:
   (SelectionDAG and GlobalISel of LLVM 19 and 22) agree, for a leaf of
   two pieces (`i128`, `<1 x i128>`; WP-101): one leaf when NGRN is even,
   or when fewer than two registers are left (it is then an ordinary
-  `i128`: §3.2, the even-register rule, a 16-aligned stack slot); `n` ≥ 2
+  `i128`: §3.2, the even-register rule, a 16-aligned stack slot, except
+  that on the stack an `alignstack` below 16 makes it a block aligned to
+  `A`, as above; WP-182); `n` ≥ 2
   leaves when NGRN + 2n ≤ 8 (a block of 2n `X` registers from NGRN, no
   even-register rule). The rest keeps the name.
 - `abi:bfloat-array`: the leaf's class is `Bf` and NSRN + `n` > 8.
@@ -222,11 +234,9 @@ answer for them:
 - `abi:vector-array`: the leaf is a vector that takes more than one
   piece (§4.3). (The selectors disagree on how many registers the block
   needs.)
-- `abi:one-leaf-array`: `n` is 1 and `A` differs from the slot size the
-  leaf has as an ordinary piece (8, or 16 for `Q`). (One selector passes
-  a block, the other an ordinary value; they differ in the stack
-  alignment. `[1 x double]`, `[1 x fp128]` and `[1 x float]
-  alignstack(8)` are supported; `[1 x float] alignstack(16)` is not.)
+
+`abi:one-leaf-array` named a fourth kind until WP-182 (a one-leaf array
+whose `A` is not the leaf's slot size); it is no longer reported.
 
 These names concern arguments only. As a return value (§5) and as a
 `byval` pointee (§6.2) every such array is supported.
@@ -892,7 +902,6 @@ coverage log (`spec/cli.md`) counts by them.
 | `abi:wide-int-array` | an array argument of integers wider than 64 bits, where LLVM's selectors disagree (§3.3) |
 | `abi:bfloat-array` | an array argument of `bfloat` that does not fit the vector registers left (§3.3) |
 | `abi:vector-array` | an array argument of vectors of more than one piece (§3.3) |
-| `abi:one-leaf-array` | an array argument with one leaf and a different stack alignment than the leaf's (§3.3) |
 | `abi:attribute-after-empty-argument` | §6.5 |
 | `abi:inreg`, `abi:swiftself`, `abi:swifterror`, `abi:swiftasync`, `abi:inalloca`, `abi:preallocated`, `abi:elementtype` | the attribute (§6.6) |
 | `abi:byval-align` | `byval` aligned above 16 (§6.2) |
@@ -932,16 +941,23 @@ above a part, unused argument registers, stack bytes outside the parts,
 padding in a memory return), so that anything LLVM reads beyond what
 this document says shows up. Every case runs under all four
 configurations of §1.1, except that `nest` runs under llc 22 only
-(§6.3) and that in the IR grid a variadic case runs with LLVM calling
-only (the other direction is `variadic::variadic_against_c`, §9.3).
+(§6.3), that in the IR grid a variadic case runs with LLVM calling
+only (the other direction is `variadic::variadic_against_c`, §9.3), and
+that a case with a one-leaf array whose `A` is not the leaf's slot size
+runs under SelectionDAG only (§3.3, §12).
 The cases of a batch share a handful of compiler and linker runs.
 
 - `grid::systematic_grid`: every scalar (§4.1), 58 vectors (§4.3) and
   some 70 aggregates (§4.4), each under 13 kinds of register and stack
   pressure and as a return type; the extension attributes at 20 widths
   (§7); `sret`, `byval`, `nest`, `byref` and `alignstack` (§6); return
-  types beyond the registers (§5); the conventions (§1.2). About 2,970
-  signatures.
+  types beyond the registers (§5); the conventions (§1.2); arrays of
+  each leaf class of lengths 1 and 2 (also 3, 4, 5, 8, 9 with
+  `HOD_ABI_GRID=full`), nested one-leaf arrays and structures of them,
+  at `alignstack` none, 8 and 16, in registers, at the register
+  boundary, on the stack at odd offsets and beside `sret` and `byval`
+  (`one_leaf_arrays`, WP-182). About 4,410 signatures (5,690 with
+  `HOD_ABI_GRID=full`).
 - `grid::random_grid`: seeded random signatures of up to 19 parameters
   over nested random types and attributes; whatever `assign` accepts is
   run. 400 signatures in the quick gate; 8,000 with `HOD_ABI_GRID=full`.
@@ -1011,10 +1027,17 @@ versions; each is an unsupported name:
   applies to the members (`abi:wide-int-array`);
 - arrays of vectors that take more than one register
   (`abi:vector-array`);
-- one-leaf arrays whose stack alignment differs from the leaf's
-  (`abi:one-leaf-array`);
 - parameter attributes after a zero-sized argument
   (`abi:attribute-after-empty-argument`).
+
+Not a name: a one-leaf array on the stack whose `A` is not the leaf's
+slot size (`[1 x fp128] alignstack(8)`, `[1 x double] alignstack(16)`,
+`[1 x i128] alignstack(8)`) is a block aligned to `A` for SelectionDAG
+and an ordinary leaf for GlobalISel. hod follows SelectionDAG, the
+oracle, which is also AAPCS64's rule for the C types clang writes these
+for (WP-182); an object compiled by plain `llc -O0` or `clang -O0`
+(GlobalISel) disagrees with one compiled at `-O1` and above about such
+an argument.
 
 Also observed: LLVM's verifier refuses `sret` on a function that returns
 a value and variadic `fastcc`; LLVM has no AArch64 lowering for

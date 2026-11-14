@@ -1140,6 +1140,7 @@ fn frame_walk<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, ret: bool, depth: Valu
     }
     if ret {
         put(cx, mc::ldr_off(Load::X, r.zr(), base, 8));
+        crate::protect::strip_return_address(cx, r); // WP-185
     } else if depth == 0 {
         put(cx, mc::mov_sp(Size::X, r.sp(), FP));
     }

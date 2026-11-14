@@ -91,6 +91,17 @@ fn moves(b: &mut Batch) {
 }
 
 fn arithmetic(b: &mut Batch) {
+    // WP-181: the approximations and MXCSR.
+    for d in 0..16 {
+        for s in 0..16 {
+            emit!(b, rcpss_rr(x(d), x(s)), "rcpss {}, {}", xmm(d), xmm(s));
+            emit!(b, rsqrtss_rr(x(d), x(s)), "rsqrtss {}, {}", xmm(d), xmm(s));
+        }
+    }
+    for m in some_mems() {
+        emit!(b, ldmxcsr_m(m.mem()), "ldmxcsr {}", m.sized(Size::D));
+        emit!(b, stmxcsr_m(m.mem()), "stmxcsr {}", m.sized(Size::D));
+    }
     macro_rules! ops {
         ($($rr:ident $rm:ident $stem:literal $kind:literal;)*) => {$(
             for (fp, p) in FPS {

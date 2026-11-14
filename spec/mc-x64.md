@@ -362,6 +362,7 @@ outside the operand.
 | `cmpxchg8b_m(m: Mem)` | CMPXCHG8B `0F C7 /1`: `edx:eax` against the 8 bytes at `m`, `ecx:ebx` stored if equal; lockable | |
 | `cmpxchg16b_m(m: Mem)` | CMPXCHG16B `REX.W 0F C7 /1`; lockable | |
 | `mfence()`, `lfence()`, `sfence()` | `0F AE F0`, `0F AE E8`, `0F AE F8` | |
+| `clflush_m(m: Mem)` | CLFLUSH `0F AE /7`: the cache line of `m` written back and invalidated (WP-181) | |
 | `pause()` | PAUSE `F3 90` | |
 
 `lock` with a memory-destination `add`, `sub`, `and`, `or`, `xor`, `xadd`,
@@ -396,6 +397,10 @@ is LLVM's choice; `xchg ax, ax` is `66 90`.
 | `rdtsc()` | RDTSC `0F 31`: the time-stamp counter into `edx:eax` (`llvm.readcyclecounter`) | |
 | `rdtscp()` | RDTSCP `0F 01 F9`: the same and `IA32_TSC_AUX` into `ecx`; needs the RDTSCP feature | |
 | `cpuid()` | CPUID `0F A2`: leaf `eax`, subleaf `ecx`, into `eax`, `ebx`, `ecx`, `edx` | |
+| `syscall()` | SYSCALL `0F 05` (WP-187) | |
+| `hlt()` | HLT `F4` (WP-187) | |
+| `fwait()` | FWAIT `9B` (`wait`) (WP-187) | |
+| `int_i(n: u8)` | INT `CD ib`; `int3()` for `n` = 3, as LLVM writes `int $3` (WP-187) | |
 
 `nop(len)` is, for 1 to 9 bytes, the SDM's recommended form (Vol. 2B,
 "NOP", table 4-12): `90`; `66 90`; `0F 1F 00`; `0F 1F 40 00`;
@@ -409,6 +414,7 @@ per byte in front. This is LLVM's padding (`.nops len, len`).
 | constructor | encodes |
 |---|---|
 | `cld()` | CLD `FC`: clears the direction flag (the psABI guarantees it clear at calls and returns) |
+| `std()` | STD `FD`: sets the direction flag (inline assembly only, WP-187) |
 | `rep_movs(size)` | `F3` then MOVSB/MOVSW/MOVSD/MOVSQ `[66] [REX.W] A4`/`A5`: copies `rcx` elements of `size` from `[rsi]` to `[rdi]`, advancing both; `rcx` ends at 0 |
 | `rep_stos(size)` | `F3` then STOSB/W/D/Q `[66] [REX.W] AA`/`AB`: stores `al`/`ax`/`eax`/`rax` to `rcx` elements at `[rdi]`; `rcx` ends at 0 |
 
@@ -460,6 +466,8 @@ faults.
 | `movd_mr(size, dst: Mem, src: X)` | MOVD `66 0F 7E /r` (`D`) / MOVQ `66 0F D6 /r` (`Q`): a store of the low element | `size` is `D` or `Q` |
 | `cvtss2sd_rr(dst: X, src: X)`, `cvtss2sd_rm(dst: X, src: Mem)` | CVTSS2SD `F3 0F 5A /r`: exact | |
 | `cvtsd2ss_rr(dst: X, src: X)`, `cvtsd2ss_rm(dst: X, src: Mem)` | CVTSD2SS `F2 0F 5A /r`: rounded as MXCSR says | |
+| `rcpss_rr(dst: X, src: X)`, `rsqrtss_rr(dst, src)` | RCPSS `F3 0F 53 /r`, RSQRTSS `F3 0F 52 /r`: the low element approximated, the rest of `dst` kept (WP-181) | |
+| `ldmxcsr_m(src: Mem)`, `stmxcsr_m(dst: Mem)` | LDMXCSR `0F AE /2`, STMXCSR `0F AE /3`: MXCSR from or to 32 bits of memory (WP-181) | |
 
 Register-register moves use the load opcode with `dst` in reg (`0F 10`,
 `0F 28`, `66 0F 6F`), as LLVM encodes them. The conversions' operand order
@@ -539,6 +547,8 @@ with `dst` in `rm`:
 | `cvtpd2dq_*`, `cvttpd2dq_*` | CVTPD2DQ `F2 0F E6 /r`, CVTTPD2DQ `66 0F E6 /r`: into the low half, the high half zeroed |
 | `cvtps2pd_*` | CVTPS2PD `0F 5A /r`: the low two `f32`; the memory form reads 64 bits |
 | `cvtpd2ps_*` | CVTPD2PS `66 0F 5A /r`: into the low half, the high half zeroed |
+| `rcpps_rr(dst: X, src: X)`, `rsqrtps_rr(dst, src)` | RCPPS `0F 53 /r`, RSQRTPS `0F 52 /r`: approximate reciprocals and reciprocal square roots (WP-181) |
+| `maskmovdqu_rr(data: X, mask: X)` | MASKMOVDQU `66 0F F7 /r`, `data` in reg: byte `i` of `data` stored to `[rdi + i]` where bit 7 of byte `i` of `mask` is set (WP-181) |
 | `pmovmskb_rr(dst: Reg, src: X)` | PMOVMSKB `66 0F D7 /r`, `dst` (32 bits) in reg: the 16 byte sign bits, zero-extended |
 | `movmskp_rr(fp, dst: Reg, src: X)` | MOVMSKPS/PD `[66] 0F 50 /r`, `dst` (32 bits) in reg: the element sign bits |
 | `pextrw_rri(dst: Reg, src: X, lane: u8)` | PEXTRW `66 0F C5 /r ib`, `dst` (32 bits) in reg: word `lane & 7`, zero-extended |
@@ -552,8 +562,7 @@ displacement is part of the addend, as for `cmps_rm`.
 
 Not provided: anything from SSE3 and later (`pshufb`, `pminsd`,
 `pmulld`, `pcmpeqq`, `blendv*`, `round*`, `ptest`, `pextrb/d/q`,
-`pinsrb/d/q`, `movddup`), `maskmovdqu`, the non-temporal stores, and
-MMX.
+`pinsrb/d/q`, `movddup`), the non-temporal stores, and MMX.
 
 ## Relocatable immediates
 
@@ -797,6 +806,29 @@ an 8-bit operand numbered 4 to 7, in each position, gets the REX prefix
 to 3 get none, and LLVM's disassembler, at every major, reads `spl`,
 `bpl`, `sil`, `dil` where intended and never `ah`, `ch`, `dh`, `bh`.
 
+## Processor state and extensions
+
+The instructions of the x86 system and state intrinsics (WP-190,
+`src/state.rs`; `spec/codegen.md` §5.6.29 says which function may use
+which). Each is checked against `llvm-mc` 19 and 22 like the rest
+(`tests/l1/state.rs`).
+
+| constructor | encodes | precondition |
+|---|---|---|
+| `xstate_m(op: XState, m)` | `FXSAVE`/`FXRSTOR` `0F AE /0`, `/1`; `XSAVE`/`XRSTOR`/`XSAVEOPT` `0F AE /4`, `/5`, `/6`; `XSAVEC`/`XSAVES`/`XRSTORS` `0F C7 /4`, `/5`, `/3`; each `..64` form with `REX.W` | |
+| `clflushopt_m(m)`, `clwb_m(m)` | `66 0F AE /7`, `66 0F AE /6` | |
+| `rdrand_r(size, r)`, `rdseed_r(size, r)` | `[66] [REX.W] 0F C7 /6`, `/7`, register operand | `size` not `B` |
+| `segbase_r(op: SegBase, size, r)` | `RDFSBASE`/`RDGSBASE`/`WRFSBASE`/`WRGSBASE` `F3 [REX.W] 0F AE /0` to `/3`, register operand | `size` `D` or `Q` |
+| `rdssp_r(size, r)` | `RDSSPD`/`RDSSPQ` `F3 [REX.W] 0F 1E /1`, register operand (a `nop` without shadow stacks) | `size` `D` or `Q` |
+| `incssp_r(size, r)` | `INCSSPD`/`INCSSPQ` `F3 [REX.W] 0F AE /5`, register operand | `size` `D` or `Q` |
+| `rdpid_r(r)` | `RDPID r64` `F3 0F C7 /7` | |
+| `rdpmc()`, `xgetbv()`, `xsetbv()` | `0F 33`, `0F 01 D0`, `0F 01 D1` (`ecx` selects; `edx:eax`) | |
+| `xend()`, `xtest()`, `rdpkru()`, `wrpkru()`, `serialize()` | `0F 01 D5`, `D6`, `EE`, `EF`, `E8` | |
+| `xabort(imm: u8)` | `C6 F8 ib` | |
+| `xbegin(disp: i32)` | `C7 F8 cd`: the abort target `disp` bytes past the instruction, written as plain bytes (no site: hod writes 0, the next instruction) | |
+| `crc32_rr(size, dst, src)` | `F2 [66] [REX] 0F 38 F0 /r` (`src` a byte register; `REX` for `spl`..`dil`), `F1 /r` otherwise; `dst` 32 bits, 64 with `REX.W` for `Q` | |
+| `bmi_rrr(op: Bmi, size, dst, x, y)` | three-byte VEX (`C4`, map `0F38`, `L` 0, `W` for `Q`): `BEXTR` `F7`, `BZHI` `F5` (`x` in `ModRM.rm`, `y` in `vvvv`); `PDEP` `F2.F5`, `PEXT` `F3.F5` (`x` in `vvvv`, `y` in `ModRM.rm`); operands in Intel's order | `size` `D` or `Q` |
+
 ## Not provided
 
 By decision of the scope so far: the high-byte registers `ah`..`bh`; the
@@ -804,14 +836,15 @@ string instructions other than `rep_movs`/`rep_stos` (`cmps`, `scas`,
 `lods`, `repne`, the forms without `rep`, `std`); `xadd` and `cmpxchg`
 with a register destination; `movabs` to and from the accumulator with a
 64-bit address; `enter`; 16-bit `push`/`pop`; far branches; `jrcxz` and
-`loop`; `hlt` and the system instructions other than `rdtsc`, `rdtscp`
-and `cpuid`; a relocatable immediate other than those of "Relocatable
+`loop`; `hlt` and the system instructions other than `rdtsc`, `rdtscp`,
+`cpuid` and those of "Processor state and extensions"; a relocatable immediate other than those of "Relocatable
 immediates" (an `imm32` of an ALU instruction, for one); the `-fno-plt` general-dynamic call through
 the GOT (`data16 rex64 call [rip + __tls_get_addr@GOTPCREL]`) and the
 descriptor call `call [rax]`, whose `R_X86_64_TLSDESC_CALL` marks an
 instruction rather than a field; the SSE instructions not listed in
 "Scalar floating point" or "Packed SSE2" (SSE3 and later: `rounds`,
-`pshufb`, ...); MMX; and everything VEX- or EVEX-encoded (AVX, APX). Adding an instruction is a constructor, a
+`pshufb`, ...); MMX; and everything VEX- or EVEX-encoded (AVX, APX) but the four BMI
+operations. Adding an instruction is a constructor, a
 row here, a row in `tests/l1/table.rs` and a sweep.
 
 ## Test method

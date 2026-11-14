@@ -362,6 +362,9 @@ pub mod fam {
     pub const VARIABLE_ALIGNED_LIST: usize = 110;
     pub const FORMAL_PARAMETER_OF_ABSTRACT_LIST: usize = 111;
     pub const VARIABLE_OF_ABSTRACT_LIST: usize = 112;
+    // WP-189: an explicit member function with a ref-qualifier
+    // (`spec/dwarf.md` §6.24).
+    pub const METHOD_EXPLICIT_QUALIFIED: usize = 113;
 }
 
 /// Every family, in code order (`spec/dwarf.md` §6.1 has the same table).
@@ -1778,6 +1781,34 @@ pub const FAMILIES: &[Family] = &[
         "WP-162",
         &[o(0, at::LOCATION, SEC_OFFSET), s(at::ABSTRACT_ORIGIN, REF4)],
     ),
+    // WP-189: 113, an explicit member function declaration with a
+    // ref-qualifier (`explicit operator T() const &`), in the order of
+    // `llc`'s `applySubprogramAttributes`: the reference flags, then
+    // `accessibility`, `explicit`, `deleted` (`spec/dwarf.md` §6.24).
+    fam(
+        "subprogram (member declaration, explicit, qualified)",
+        tag::SUBPROGRAM,
+        Optional,
+        1024,
+        "WP-189",
+        &[
+            o(0, at::LINKAGE_NAME, STRX),
+            s(at::NAME, STRX),
+            o(1, at::DECL_FILE, UDATA),
+            o(1, at::DECL_LINE, UDATA),
+            o(2, at::TYPE, REF4),
+            o(3, at::VIRTUALITY, DATA1),
+            o(3, at::VTABLE_ELEM_LOCATION, EXPRLOC),
+            s(at::DECLARATION, FLAG_PRESENT),
+            o(4, at::EXTERNAL, FLAG_PRESENT),
+            o(5, at::REFERENCE, FLAG_PRESENT),
+            o(6, at::RVALUE_REFERENCE, FLAG_PRESENT),
+            o(7, at::ACCESSIBILITY, DATA1),
+            s(at::EXPLICIT, FLAG_PRESENT),
+            o(8, at::DELETED, FLAG_PRESENT),
+            o(3, at::CONTAINING_TYPE, REF4),
+        ],
+    ),
 ];
 
 /// The slots of the general static-member families (54, 55), in `llc`'s
@@ -1957,7 +1988,7 @@ mod tests {
         // WP-162 appended families 107 to 112.
         assert_eq!(BASES[fam::FORMAL_PARAMETER_LIST], 11482);
         assert_eq!(BASES[fam::VARIABLE_OF_ABSTRACT_LIST], 11524);
-        assert_eq!(CODE_END, 11526);
+        assert_eq!(CODE_END, 12550);
         for (index, name) in [
             (fam::CONST_TYPE, "const_type"),
             (fam::TYPEDEF, "typedef"),

@@ -6,7 +6,7 @@
 //! precedes REX: `F3` for single and `F2` for double precision scalars,
 //! none and `66` for the packed single and double forms.
 
-use crate::inst::{Inst, Op, Rm, imm, modrm};
+use crate::inst::{Inst, Op, Rm, digit_m, imm, modrm};
 use crate::reg::{FpCmp, FpSize, Mem, Reg, Size, Xmm};
 
 /// `0F opcode` with mandatory prefix `prefix` (0, `66`, `F2` or `F3`).
@@ -369,4 +369,31 @@ pub const fn cvtsd2ss_rr(dst: Xmm, src: Xmm) -> Inst {
 #[inline]
 pub const fn cvtsd2ss_rm(dst: Xmm, src: Mem) -> Inst {
     scalar_rm(0x5a, FpSize::D, dst, src)
+}
+
+/// `RCPSS xmm, xmm` (`F3 0F 53 /r`): an approximate reciprocal of the low
+/// `f32` (relative error at most `1.5 * 2^-12`), the rest of `dst` kept
+/// (WP-181).
+#[inline]
+pub const fn rcpss_rr(dst: Xmm, src: Xmm) -> Inst {
+    scalar_rr(0x53, FpSize::S, dst, src)
+}
+
+/// `RSQRTSS xmm, xmm` (`F3 0F 52 /r`): an approximate reciprocal square
+/// root of the low `f32`, the rest of `dst` kept (WP-181).
+#[inline]
+pub const fn rsqrtss_rr(dst: Xmm, src: Xmm) -> Inst {
+    scalar_rr(0x52, FpSize::S, dst, src)
+}
+
+/// `LDMXCSR m32` (`0F AE /2`): MXCSR from memory (WP-181).
+#[inline]
+pub const fn ldmxcsr_m(src: Mem) -> Inst {
+    digit_m(Op::two(0xae), 2, src)
+}
+
+/// `STMXCSR m32` (`0F AE /3`): MXCSR to memory (WP-181).
+#[inline]
+pub const fn stmxcsr_m(dst: Mem) -> Inst {
+    digit_m(Op::two(0xae), 3, dst)
 }

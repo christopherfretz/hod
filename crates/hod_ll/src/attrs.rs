@@ -161,6 +161,7 @@ impl<L: Layering> Parser<'_, '_, L> {
         while next < order.len() {
             let id = order[next].0;
             let mut at = 0;
+            let mut noinline = false;
             while next < order.len() && order[next].0 == id {
                 let ent = self.index.groups[order[next].1];
                 at = ent.id.start;
@@ -171,7 +172,9 @@ impl<L: Layering> Parser<'_, '_, L> {
                 if self.tok.start >= ent.span.end {
                     return self.syntax("attribute group has no attributes");
                 }
+                noinline = false;
                 while self.tok.start < ent.span.end {
+                    noinline |= self.tok.kind == Tok::Word && self.text() == b"noinline";
                     if !self.fn_attr(true)? {
                         return self.syntax("expected a function attribute");
                     }
@@ -180,7 +183,7 @@ impl<L: Layering> Parser<'_, '_, L> {
             }
             let attrs = ir(at, self.module.intern_fn_attrs(&self.fa))?;
             let rejected = self.pending.drain(..).map(|name| name[5..].into()).collect();
-            self.groups.push(AttrGroup { id, attrs, align: self.fa_align, rejected });
+            self.groups.push(AttrGroup { id, attrs, align: self.fa_align, rejected, noinline });
         }
         Ok(())
     }

@@ -199,6 +199,11 @@ fn runs(plan: &Plan, config: Config, hod_calls: bool) -> bool {
     if plan.case.has_nest() && config.major < 22 {
         return false;
     }
+    // GlobalISel (`-O0`) gives a one-leaf array the leaf's stack slot,
+    // SelectionDAG, the oracle, the block's alignment (§3.3, WP-182).
+    if config.opt == "-O0" && plan.case.has_one_leaf_block() {
+        return false;
+    }
     // LLVM has no `va_arg` for this target: a variadic callee is written
     // in C (see `variadic.rs`).
     !(hod_calls && plan.case.fixed.is_some())

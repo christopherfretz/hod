@@ -29,6 +29,7 @@ mod packed;
 mod selftest;
 mod shift;
 mod sse;
+mod state;
 mod system;
 mod tls;
 
@@ -66,6 +67,8 @@ pub const GROUPS: &[Group] = &[
     ("x87", x87::build),
     ("x87-memory-operands", x87::memory),
     ("x87-llc-text", x87::llc_text),
+    // processor state and extensions (WP-190).
+    ("state-and-extensions", state::build),
 ];
 
 fn check(group: &str) {
@@ -108,4 +111,6 @@ differential! {
     x87_matches_llvm => "x87";
     x87_memory_operands_match_llvm => "x87-memory-operands";
     x87_llc_text_matches_llvm => "x87-llc-text";
+    // WP-190.
+    state_and_extensions_match_llvm => "state-and-extensions";
 }

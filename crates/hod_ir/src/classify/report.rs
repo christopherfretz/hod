@@ -182,6 +182,14 @@ pub fn support_markdown() -> String {
          says otherwise.\n\
          - `rejected`: refused by design; the last column says why.\n\
          \n\
+         The x86_64 rows noted `AVX-512 (WP-...)` are lowered and checked against\n\
+         `llc` 19 and 22 by dataflow and against `llvm-mc` by their bytes; this page\n\
+         records no execution of them. They execute only on an x86-64 processor\n\
+         with the features: in the hosted x86-64 lane when GitHub's runner has\n\
+         them (a mixed fleet), whose `test x64` job summary states the processor,\n\
+         its AVX-512 flags and how many programs executed and how many were\n\
+         skipped (`docs/design/0007-avx512.md` §4.4).\n\
+         \n\
          ## Summary\n\
          \n\
          | group | constructs | aarch64 supported | not-implemented | rejected \

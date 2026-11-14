@@ -16,6 +16,14 @@ input to the fallback when one is configured (`spec/cli.md`).
   says otherwise.
 - `rejected`: refused by design; the last column says why.
 
+The x86_64 rows noted `AVX-512 (WP-...)` are lowered and checked against
+`llc` 19 and 22 by dataflow and against `llvm-mc` by their bytes; this page
+records no execution of them. They execute only on an x86-64 processor
+with the features: in the hosted x86-64 lane when GitHub's runner has
+them (a mixed fleet), whose `test x64` job summary states the processor,
+its AVX-512 flags and how many programs executed and how many were
+skipped (`docs/design/0007-avx512.md` §4.4).
+
 ## Summary
 
 | group | constructs | aarch64 supported | not-implemented | rejected | x86_64 supported | not-implemented | rejected |

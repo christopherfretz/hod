@@ -144,6 +144,40 @@ kiln's lanes). Its rules:
    fixed range of seeds natively: every program built by hod and by
    `llc`, a difference a failure. `.github/actions/hod-ci` already
    installs `csmith` and `libcsmith-dev`.
+8. **AVX-512 execution (WP-229).** No emulator of either lane executes
+   AVX-512 (`qemu-x86_64` has none), so the AVX-512 execution tests
+   (`hod_x64`: `x86_avx512::avx512_names_agree_with_llc_on_hardware`,
+   `x86_avx512::vsib_names_agree_with_llc_on_hardware`, `abi::zmm_grid`)
+   run a program only (a) by the command `HOD_X64_AVX512_RUNNER` names
+   (a command prefix, the program's path appended; `native`: directly),
+   which wins, or (b) natively on x86-64 Linux when the first
+   processor's `flags` line of `/proc/cpuinfo` has every feature the
+   program requires (`hod_testutil::avx512`; the requirements are
+   `docs/design/0007-avx512.md` §4.4). Otherwise the program is linked
+   and skipped, as on the AArch64 lane. **Executed** means the program
+   ran on that processor and hod's results equaled `llc` 22's for every
+   function or call it ran; an executed program that disagrees fails its
+   test with the whole output. With `HOD_AVX512_REPORT=<file>` each test
+   appends one line per program: `program`, `executed`, `skipped`,
+   `dry-run` or `failed`, and a detail (how it ran and the processor's
+   model, or the missing features), separated by tabs. On the x86-64
+   lane (`runner.arch == 'X64'`) the `test x64` job sets it to
+   `$RUNNER_TEMP/avx512-report.tsv` before the test step, and a last
+   step (`if: always()`) appends `scripts/avx512-summary.sh`'s Markdown
+   to `$GITHUB_STEP_SUMMARY`: the processor's model name, its `avx512*`
+   flags, the counts executed, skipped, dry-run and failed, each
+   program's line, and in bold that nothing executed when nothing did.
+   GitHub's `ubuntu-24.04` runners are a mixed fleet, some with AVX-512
+   and some without; the lane does not set `HOD_REQUIRE_AVX512`, so a
+   run on a processor without it stays green with every program skipped,
+   and only its summary says whether AVX-512 code ran. `HOD_REQUIRE_AVX512=1`
+   (for a host known to have AVX-512) makes a skip a failure.
+   `HOD_AVX512_CPUINFO=<file>` exists only to test this plumbing: the
+   flags are read from that file on any host, and a program they would
+   run natively is reported `dry-run` and not run. Tests:
+   `hod_testutil::avx512::tests` (the parser on an Intel Xeon's flags
+   with AVX-512, an AMD EPYC 7763's without, malformed files; the
+   decision), `abi::zmm::zmm_machines_require_their_features`.
 
 What runs where, and the tests compiled or run for one host only, is
 `docs/VALIDATION.md` "Hosted CI".

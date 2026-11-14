@@ -243,12 +243,12 @@ pub fn encode<'a>(m: &str, ops: &[Op<'a>], features: Features) -> R<Option<Encod
     }
     let e = match m {
         "fmla" | "fmls" | "fcmeq" | "fcmge" | "fcmgt" | "fcmle" | "fcmlt" => {
-            let [d, n, b] = ops else { return fail(operand::FORM) };
-            if let Some(zero) = is_zero(b) {
+            let [dst, src, other] = ops else { return fail(operand::FORM) };
+            if let Some(zero) = is_zero(other) {
                 if !zero {
                     return fail(operand::FP_IMMEDIATE);
                 }
-                let (bits, fmt, [rd, rn]) = fp_regs::<2>(&[*d, *n], features)?;
+                let (bits, fmt, [rd, rn]) = fp_regs::<2>(&[*dst, *src], features)?;
                 let base = match m {
                     "fcmeq" => FCMEQ_ZERO,
                     "fcmge" => FCMGE_ZERO,
@@ -257,8 +257,8 @@ pub fn encode<'a>(m: &str, ops: &[Op<'a>], features: Features) -> R<Option<Encod
                     "fcmlt" => FCMLT_ZERO,
                     _ => return fail(operand::FORM),
                 };
-                let w = fp_class(base, half2(base), bits, fmt);
-                word(w | u32::from(rn.index()) << 5 | u32::from(rd.index()))
+                let class = fp_class(base, half2(base), bits, fmt);
+                word(class | u32::from(rn.index()) << 5 | u32::from(rd.index()))
             } else {
                 let (bits, fmt, [rd, rn, rm]) = fp_regs::<3>(ops, features)?;
                 // `fcmle`/`fcmlt` of two registers are `fcmge`/`fcmgt`
@@ -374,14 +374,14 @@ fn wide_of(e: Elem) -> (u8, View) {
 /// v1.1d, v2.1d`): the narrow element is the sources' (the result's for
 /// the high-narrowing cases), 64 bits of it, or 128 for the `2` form.
 fn long<'a>(op: Long3, upper: bool, ops: &[Op<'a>], features: Features) -> R<Encoded<'a>> {
-    let [d, n, m] = ops else { return fail(operand::FORM) };
-    let ((rd, dc, dv), (rn, nc, nv), (rm, mc_, mv)) = (vreg(d)?, vreg(n)?, vreg(m)?);
+    let [dst, src1, src2] = ops else { return fail(operand::FORM) };
+    let ((rd, dc, dv), (rn, nc, nv), (rm, mc_, mv)) = (vreg(dst)?, vreg(src1)?, vreg(src2)?);
     let narrow = if op.narrows() { (dc, dv) } else { (nc, nv) };
-    let Some((bits, e)) = shape(narrow.0, narrow.1) else { return fail(operand::VECTOR) };
-    if (bits == VecBits::V128) != upper || !op.takes(e) {
+    let Some((bits, elem)) = shape(narrow.0, narrow.1) else { return fail(operand::VECTOR) };
+    if (bits == VecBits::V128) != upper || !op.takes(elem) {
         return fail(operand::VECTOR);
     }
-    let wide = wide_of(e);
+    let wide = wide_of(elem);
     let fits = if op.narrows() {
         (nc, nv) == wide && (mc_, mv) == wide
     } else {
@@ -390,11 +390,11 @@ fn long<'a>(op: Long3, upper: bool, ops: &[Op<'a>], features: Features) -> R<Enc
     if !fits {
         return fail(operand::VECTOR);
     }
-    if op == Long3::Pmull && e == Elem::D && !features.aes {
+    if op == Long3::Pmull && elem == Elem::D && !features.aes {
         return fail(other::FEATURE);
     }
-    let w = checked(mc::neon::try_neon_long3(op, e, rd, rn, rm))?.word;
-    Ok(word(w | u32::from(upper) << 30))
+    let lower = checked(mc::neon::try_neon_long3(op, elem, rd, rn, rm))?.word;
+    Ok(word(lower | u32::from(upper) << 30))
 }
 
 /// The address of a structure load or store: `[xn|sp]`, then nothing,

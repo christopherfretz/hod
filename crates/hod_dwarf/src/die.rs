@@ -118,6 +118,9 @@ pub struct UnitPlan<'a> {
     pub(crate) debug: &'a DebugInfo,
     pub(crate) unit: DiId,
     pub(crate) cu: DiCompileUnit<'a>,
+    /// WP-221: `DW_AT_producer`, the producer and the recorded command
+    /// line (§6.30).
+    pub(crate) producer: std::borrow::Cow<'a, [u8]>,
     pub(crate) name: &'a [u8],
     pub(crate) comp_dir: &'a [u8],
     files: FileTable<'a>,
@@ -298,6 +301,7 @@ impl<'a> UnitPlan<'a> {
             debug,
             unit,
             cu,
+            producer: crate::producer::producer(&cu), // WP-221: §6.30
             name: file.filename,
             comp_dir: file.directory,
             files,
@@ -806,7 +810,7 @@ impl<'a> Writer<'a> {
         self.tls_addrs.clear();
     }
 
-    pub(crate) fn unit(&mut self, u: &UnitInput<'_, 'a>, symbols: u32) -> Result<(), Error> {
+    pub(crate) fn unit(&mut self, u: &UnitInput<'a, 'a>, symbols: u32) -> Result<(), Error> {
         let plan = u.plan;
         let n = plan.dies.len();
         self.addr_of.clear();
@@ -860,7 +864,7 @@ impl<'a> Writer<'a> {
             if pc_lists { (fam::COMPILE_UNIT_LISTS, 0) } else { (fam::COMPILE_UNIT, mask) };
         self.offsets[0] = UNIT_HEADER as u32;
         self.abbrev(code(family, mask, n > 1));
-        self.strx(cu.producer)?;
+        self.strx(&plan.producer)?;
         self.info.extend_from_slice(&cu.language.to_le_bytes());
         self.strx(plan.name)?;
         self.sec_offset(Target::StrOffsets, str_offsets_base as i64);

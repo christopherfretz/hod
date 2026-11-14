@@ -29,7 +29,10 @@
 //!   makes the last `DW_OP_deref` of a value's expression implicit);
 //! - a constant: `DW_OP_consts` (a variable of a signed base type, the
 //!   bits sign-extended) or `DW_OP_lit`/`DW_OP_constu`, then `E`, then
-//!   `DW_OP_stack_value` unless `E` ends in it.
+//!   `DW_OP_stack_value` unless `E` ends in it;
+//! - a declared value's home `fbreg o` holding the variable's address
+//!   (WP-221, §6.30; `E` is the declaration's, checked as a slot's):
+//!   `DW_OP_fbreg o, DW_OP_deref`, then all of `E`.
 //!
 //! A value narrower than 64 bits is computed on in the low bits only
 //! (the loaded value is zero-extended): an `E` with an operation whose
@@ -77,6 +80,13 @@ pub enum ValueLoc {
     },
     /// Nowhere the code generator can prove: no entry.
     None,
+    /// The variable is at the address stored `offset` bytes from the
+    /// frame base, and the expression is a declaration's (WP-221,
+    /// §6.30): `DW_OP_fbreg offset, DW_OP_deref`, then the expression.
+    Address {
+        /// The offset from the frame base.
+        offset: i64,
+    },
 }
 
 /// One located range of an instance, in the plan: code offsets of its
@@ -213,7 +223,7 @@ fn located(debug: &hod_ir::DebugInfo, at: ValueLoc, expr: ExprId) -> bool {
     let narrow = |bits: u32| bits < 64 && !debug.ops(expr).all(low_bits_op);
     match (at, shape(debug, expr)) {
         (ValueLoc::None, _) | (ValueLoc::Const { .. }, Shape::Memory) => false,
-        (ValueLoc::Frame { .. }, Shape::Empty) => true,
+        (ValueLoc::Address { .. }, _) | (ValueLoc::Frame { .. }, Shape::Empty) => true,
         (ValueLoc::Frame { size, .. }, Shape::Value) => !narrow(u32::from(size) * 8),
         (ValueLoc::Frame { size, .. }, Shape::Memory) => size == 8,
         (ValueLoc::Const { width, .. }, Shape::Empty | Shape::Value) => !narrow(u32::from(width)),
@@ -408,6 +418,16 @@ fn entry_ops(debug: &hod_ir::DebugInfo, r: &Range, signed: bool, out: &mut Vec<u
             }
         }
         ValueLoc::None => return,
+        ValueLoc::Address { offset } => {
+            // WP-221: a declaration's expression, whole (`func::write_ops`).
+            out.push(DW_OP_FBREG);
+            write_sleb(out, offset);
+            out.push(DW_OP_DEREF);
+            for op in debug.ops(r.expr) {
+                write_op(op, out);
+            }
+            return;
+        }
     }
     let n = debug.ops(r.expr).count();
     for (k, op) in debug.ops(r.expr).enumerate() {

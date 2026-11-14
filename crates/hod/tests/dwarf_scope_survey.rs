@@ -172,7 +172,11 @@ fn add_functions(module: &Module, bodies: &[Body], plan: &mut UnitPlan<'_>, s: &
                                 hod_dwarf::ValueLoc::Const { bits, width }
                             }
                             hod_cg::ValueAt::None => hod_dwarf::ValueLoc::None,
-                            hod_cg::ValueAt::Home(..) => {
+                            // WP-221: a declared value's range.
+                            hod_cg::ValueAt::Address(offset) => {
+                                hod_dwarf::ValueLoc::Address { offset }
+                            }
+                            hod_cg::ValueAt::Home(..) | hod_cg::ValueAt::HomeAddress(_) => {
                                 return LocalRow {
                                     place: LocalPlace::Refused("debug:frame-place"),
                                     node: v.var,

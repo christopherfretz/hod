@@ -62,6 +62,7 @@ mod line;
 mod local_type;
 mod loclists;
 mod policy;
+mod producer;
 mod reduced;
 pub mod scope;
 mod spec;

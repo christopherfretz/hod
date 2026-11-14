@@ -21,6 +21,7 @@ use crate::Error;
 use crate::abbrev::{code, fam};
 use crate::die::{CodeSpan, Kind, NONE, UnitPlan, Writer, bad, unsupported};
 use crate::leb::{write_sleb, write_uleb};
+use crate::loclists::ValueLoc;
 
 /// `DW_OP_fbreg`.
 const DW_OP_FBREG: u8 = 0x91;
@@ -62,7 +63,7 @@ pub enum LocalPlace {
         /// One past its last byte.
         end: u32,
         /// Where the variable is in it.
-        at: crate::loclists::ValueLoc,
+        at: ValueLoc,
     },
     /// The code generator could not describe the row: the function is
     /// refused under this stable name.
@@ -536,13 +537,18 @@ impl<'a> UnitPlan<'a> {
                     if n.align != 0 && (n.arg != 0 || n.name.is_empty()) {
                         return Err(unsupported(v.node, "debug:variable-alignment"));
                     }
-                    if let LocalPlace::Frame(_) | LocalPlace::FrameIndirect(_) | LocalPlace::Coro(_) =
-                        v.place
+                    // WP-221: a declared value's range has a declaration's
+                    // expression.
+                    if let LocalPlace::Frame(_)
+                    | LocalPlace::FrameIndirect(_)
+                    | LocalPlace::Coro(_)
+                    | LocalPlace::Value { at: ValueLoc::Address { .. }, .. } = v.place
                         && let Err(name) = check_expr(self.debug, v.expr)
                     {
                         return Err(unsupported(v.node, name));
                     }
-                    if let LocalPlace::Value { .. } = v.place
+                    if let LocalPlace::Value { at, .. } = v.place
+                        && !matches!(at, ValueLoc::Address { .. })
                         && let Err(name) = crate::loclists::check_value_expr(self.debug, v.expr)
                     {
                         return Err(unsupported(v.node, name));

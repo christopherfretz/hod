@@ -194,10 +194,12 @@ fn clones(unit: &Node) -> Vec<&Node> {
 /// clang's coroutine ramp: `CoroSplit` moves the declarations of the
 /// frame's variables (`__promise`, the parameters' copies, the loop
 /// variable) to the frame's address, the result of the allocation call.
-/// `llc -O0` drops a declaration whose address is not a stack slot or an
-/// argument; hod's code generator keeps it (`crates/hod_cg`, the records
-/// of `dbg_declare`), so hod's ramp has a `__promise` with a location
-/// `llc`'s has not. Outside WP-098's ownership.
+/// `llc -O0` (`SelectionDAG`) drops a declaration on the frame pointer's
+/// `phi`; hod describes it by a location list from the `phi` on
+/// (`spec/dwarf.md` §6.30, WP-221), so hod's ramp has a `__promise` and
+/// a located `__coro_frame` where `llc`'s has none and one without a
+/// location: the class `declared value` (§6.7). Without the variables
+/// declared on the `phi` the trees are equal.
 #[test]
 fn ramp_frame_variables_match_llc() {
     let (Some(dwarfdump), Some(cc), Some(llc)) =
@@ -207,7 +209,14 @@ fn ramp_frame_variables_match_llc() {
     };
     let scratch = Scratch::new("dies-label-ramp");
     let text = coro_ir(&cc, &scratch, "ramp");
-    compare(&scratch, &dwarfdump, &llc, "ramp", &text);
+    let (h, l) = unit_trees(&scratch, &dwarfdump, &llc, "ramp", &text);
+    let declared = support::declared_on_phi(&text);
+    assert!(declared.iter().any(|v| v == "__promise"), "{declared:?}");
+    let (h, l) =
+        (support::without_declared(&h, &declared), support::without_declared(&l, &declared));
+    if let Some(d) = first_difference(&h, &l) {
+        panic!("ramp: hod's tree, then llc's, without {declared:?}: {d}");
+    }
 }
 
 /// `-g -O0` IR of `coro.cpp`, each variable declared once per function

@@ -3554,16 +3554,20 @@ keeps the refusal). Evidence: `spec/landed/dwarf/WP-230.md`.
 
 An imported declaration (`using n::map;`, §6.11) whose entity is a
 function definition the module only inlines was refused as
-`debug:import-entity` (8 of the 886 optimized modules:
-`tests/debug/inlined_import.cpp` and libc++'s `isnormal.pass`, `-O1`
-and `-O2`, both targets). `llc` 22's `constructImportedEntityDIE` names
+`debug:import-entity` (4 of the 886 optimized modules:
+`tests/debug/inlined_import.cpp`, `-O1` and `-O2`, both targets). `llc` 22's `constructImportedEntityDIE` names
 the entity's abstract instance whenever the function has one
 (`getAbstractScopeDIEs().lookup(SP)`), also when it has code of its own
 (a concrete DIE); otherwise `getOrCreateSubprogramDIE`. hod does the
 same (`import.rs` `import_target`, `imported_die`): imports are sealed
 after every function is added, so every abstract instance exists. A
 definition with neither code nor an abstract instance keeps
-`debug:import-entity`.
+`debug:import-entity`: libc++'s `isnormal.pass` (4 of the 8) imports
+`std::__math::isnormal`, a definition with a retained parameter that
+the module neither places nor inlines, and `llc` 22 writes it as an
+abstract instance (`DW_AT_inline DW_INL_inlined`, no concrete or
+inlined instance) that the import names; hod does not make one
+(follow-up).
 
 **Tests.** `crates/hod/tests/inlined_import.rs` (the entity inlined
 only, and also placed out of line; both targets; trees equal to `llc`

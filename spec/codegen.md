@@ -4638,10 +4638,13 @@ Design: `docs/design/0007-avx512.md`. Evidence:
    bytes on random inputs, small floats and doubles and special values,
    skipping a function whose features the CPU lacks
    (`__builtin_cpu_supports`) and failing when it skips all. Without the
-   variable it only links the program, **also under
-   `HOD_REQUIRE_TOOLS=1`**: no emulator on the hosts of this suite
-   executes AVX-512 (QEMU's user mode models none), so the variable is
-   the one way to run it, on an AVX-512 host:
+   variable it runs the program natively on an x86-64 processor whose
+   `/proc/cpuinfo` flags have `avx512f` (WP-229, `spec/harness.md` "CI"
+   item 8: the hosted x86-64 lane, when its runner has AVX-512, with the
+   outcome in the `test x64` job's summary), and otherwise only links it,
+   **also under `HOD_REQUIRE_TOOLS=1`**: no emulator on the hosts of this
+   suite executes AVX-512 (QEMU's user mode models none). On an AVX-512
+   host by hand:
    `HOD_REQUIRE_TOOLS=1 HOD_X64_AVX512_RUNNER=native cargo test -p hod_x64 --test x86_avx512`.
 3. **512-bit vectors and vectors of `i1` by value** (`spec/abi-x64.md`
    §1.3, §3.2, §4.3, §5.1, §8.7, §9.1): under AVX-512 whose conventions

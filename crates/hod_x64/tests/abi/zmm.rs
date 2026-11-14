@@ -9,7 +9,9 @@
 //! stack slots it reads its arguments from, and the registers and stack
 //! slots each call passes and receives. With `HOD_X64_AVX512_RUNNER` set
 //! (a command that runs an x86-64 program on a CPU with AVX-512, the
-//! program's path appended) the grid also runs, as WP-203's does.
+//! program's path appended), or on an x86-64 processor whose flags have
+//! the machine's features ([`required_features`], WP-229), the grid also
+//! runs, as WP-203's does.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -176,7 +178,9 @@ fn accepted(cases: Vec<Case>, features: Features) -> (Vec<Case>, BTreeMap<&'stat
 /// machine of [`machines`]: every signature hod accepts is placed as each
 /// `llc` places it ([`same_as_llc`]); hod refuses only a mask of more
 /// than 64 elements (`x64:mask-vector`), as it refuses one without
-/// AVX-512. With `HOD_X64_AVX512_RUNNER`, it also runs.
+/// AVX-512. With `HOD_X64_AVX512_RUNNER`, or natively on a processor with
+/// the machine's features ([`avx512_runner`]), it also runs; each
+/// machine's outcome is reported (`HOD_AVX512_REPORT`).
 #[test]
 fn zmm_grid() {
     let Some(base) = Tools::find() else { return };
@@ -198,29 +202,112 @@ fn zmm_grid() {
             features.bw,
             cases.len()
         );
-        if let Some(tools) = avx512_runner(&base, &machine) {
+        // The number: two labels can be equal (the label cuts the
+        // feature string short).
+        let name = format!("abi zmm_grid {n} {}", machine.label());
+        if let Some((tools, how)) = avx512_runner(&base, &machine, &name) {
             let report = run_cases(&format!("abi-zmm-run{n}"), &cases, 0x208, &tools);
             eprintln!("zmm grid run, {}: {}", machine.label(), report.summary());
-            report.check(&format!("zmm grid {}", machine.label()));
+            if !report.failures.is_empty() {
+                let first = report.failures.first().map_or("", String::as_str);
+                let detail = format!("{how}; {} failure(s); {first}", report.failures.len());
+                hod_testutil::avx512::report(&name, "failed", &detail);
+            }
+            report.check(&format!("zmm grid {} ({how})", machine.label()));
+            let detail = format!("{how}; {} signatures; {}", cases.len(), report.summary());
+            hod_testutil::avx512::report(&name, "executed", &detail);
         }
     }
     eprintln!("zmm grid: {total} signatures over {} machines", machines().len());
 }
 
-/// The tools with `HOD_X64_AVX512_RUNNER` as the runner (`native`: the
-/// host itself), when it is set: the grid then runs as WP-203's does
-/// (§11).
-pub fn avx512_runner(base: &Tools, machine: &Machine) -> Option<Tools> {
-    let runner = std::env::var("HOD_X64_AVX512_RUNNER").ok()?;
-    let words: Vec<&str> = runner.split_whitespace().collect();
-    let mut tools = base.with_machine(machine.clone())?;
-    tools.runner = match words[..] {
-        [] => return None,
-        // As `x86_avx512::avx512_names_agree_with_llc_on_hardware`.
-        ["native"] => Vec::new(),
-        _ => words.iter().map(Into::into).collect(),
+/// The features a program compiled for `machine` may use that an x86-64
+/// processor with AVX-512 may lack, in LLVM's names: the vector ones the
+/// machine's feature string enables (`avx*` but AVX10, `fma`, `f16c`,
+/// `gfni`, `vaes`, `vpclmulqdq`, `bmi`, `bmi2`) and not disables
+/// afterwards, and Knights Landing's own (`knl`, whose string is empty).
+/// A census CPU's string lists every feature of the CPU.
+pub fn required_features(machine: &Machine) -> Vec<String> {
+    let vector = |name: &str| {
+        (name.starts_with("avx") && !name.starts_with("avx10"))
+            || ["fma", "f16c", "gfni", "vaes", "vpclmulqdq", "bmi", "bmi2"].contains(&name)
     };
-    Some(tools)
+    let mut required: Vec<String> = Vec::new();
+    if machine.cpu == "knl" {
+        required.extend(["avx512f", "avx512cd", "avx512er", "avx512pf"].map(String::from));
+    }
+    for item in machine.features.split(',') {
+        if let Some(name) = item.strip_prefix('+').filter(|n| vector(n)) {
+            if !required.iter().any(|r| r == name) {
+                required.push(name.to_owned());
+            }
+        } else if let Some(name) = item.strip_prefix('-') {
+            required.retain(|r| r != name);
+        }
+    }
+    required
+}
+
+/// The tools that run the grid of `machine` (§11), and how they run it,
+/// as `hod_testutil::avx512` decides (as for
+/// `x86_avx512::avx512_names_agree_with_llc_on_hardware`): with
+/// `HOD_X64_AVX512_RUNNER` as the runner (`native`: the host itself),
+/// else natively on an x86-64 processor with every feature of
+/// [`required_features`]; `None`, reported under `name`, when the grid is
+/// not run.
+pub fn avx512_runner(base: &Tools, machine: &Machine, name: &str) -> Option<(Tools, String)> {
+    use hod_testutil::avx512::{self, Execution};
+    let required = required_features(machine);
+    let required: Vec<&str> = required.iter().map(String::as_str).collect();
+    let (prefix, how) = match avx512::execution(&required) {
+        Execution::Run { prefix, how } => (prefix, how),
+        Execution::DryRun(why) => {
+            avx512::skip(name, "dry-run", &format!("{why}; requires {}", required.join(",")));
+            return None;
+        }
+        Execution::Skip(why) => {
+            avx512::skip(name, "skipped", &why);
+            return None;
+        }
+    };
+    let mut tools = base.with_machine(machine.clone())?;
+    tools.runner = prefix.into_iter().map(Into::into).collect();
+    Some((tools, how))
+}
+
+/// WP-229: what each machine of the grid requires of a processor to run
+/// natively, and that a captured Xeon's flags (Ice Lake server: F, CD,
+/// VL, BW, DQ, VBMI, VBMI2, no FP16, no BF16) select the right machines.
+#[test]
+fn zmm_machines_require_their_features() {
+    let all = machines();
+    let required: Vec<Vec<String>> = all.iter().map(required_features).collect();
+    let has = |n: usize, f: &str| required[n].iter().any(|r| r == f);
+    assert_eq!(required[0], ["avx512f"]);
+    assert_eq!(required[2], ["avx512f", "avx512vl", "avx512bw", "avx512dq"]);
+    // Tuning is not required; a disabled feature is not either.
+    assert!(required.iter().flatten().all(|r| !r.starts_with("prefer") && r != "evex512"));
+    assert_eq!(required[7], ["avx512f", "avx512vl"]);
+    assert_eq!(required[8], ["avx512f", "avx512vl", "avx512bw"]);
+    let label = |n: usize| all[n].label();
+    assert!(label(13).starts_with("skylake-avx512") && has(12, "avx512bw") && !has(13, "avx512bw"));
+    assert!(label(15).starts_with("sapphirerapids") && has(15, "avx512fp16"));
+    assert!(label(14).starts_with("znver4") && has(14, "avx512bf16") && !has(14, "avx512fp16"));
+    assert_eq!(required[17], ["avx512f", "avx512cd", "avx512er", "avx512pf"]);
+    let xeon = hod_testutil::avx512::CpuInfo::parse(
+        "model name : Xeon\nflags : avx avx2 fma f16c bmi1 bmi2 avx512f avx512dq avx512ifma \
+         avx512cd avx512bw avx512vl avx512vbmi avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni \
+         avx512_bitalg avx512_vpopcntdq\n",
+    )
+    .unwrap();
+    let runs: Vec<usize> = (0..all.len())
+        .filter(|&n| {
+            let r: Vec<&str> = required[n].iter().map(String::as_str).collect();
+            xeon.missing(&r).is_empty()
+        })
+        .collect();
+    // All but znver4 (BF16), sapphirerapids (FP16, BF16) and knl (ER, PF).
+    assert_eq!(runs, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16]);
 }
 
 /// For each case, a definition receiving it (`lf_<n>`, not for a

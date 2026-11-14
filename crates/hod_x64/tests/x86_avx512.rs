@@ -2881,11 +2881,13 @@ fn avx512_driver(cases: &[Case]) -> String {
 /// special values (zeros, infinities, NaNs, denormals, the edges of the
 /// integer conversions). The program is linked statically and run by the
 /// command `HOD_X64_AVX512_RUNNER` names (the program's path is appended;
-/// `native` runs it directly); without one the test only links it: no
-/// emulator this suite has executes AVX-512, and that holds also under
-/// `HOD_REQUIRE_TOOLS=1`. A function whose features the CPU lacks is
-/// skipped (`__builtin_cpu_supports`); a runner on which every function
-/// is skipped fails. An undefined pass-through is left out: `llc` leaves
+/// `native` runs it directly) or, without one, natively on an x86-64
+/// processor whose flags have `avx512f` ([`execute_compared`]); otherwise
+/// the test only links it and reports the skip: no emulator this suite
+/// has executes AVX-512, and that holds also under `HOD_REQUIRE_TOOLS=1`
+/// (`HOD_REQUIRE_AVX512=1` makes it a failure). A function whose
+/// features the CPU lacks is skipped (`__builtin_cpu_supports`); a runner
+/// on which every function is skipped fails. An undefined pass-through is left out: `llc` leaves
 /// what a register held where hod writes zeros.
 #[test]
 fn avx512_names_agree_with_llc_on_hardware() {
@@ -2902,32 +2904,54 @@ fn avx512_names_agree_with_llc_on_hardware() {
     let program = scratch.join("avx512");
     let linker = &toolchain.linkers[0];
     toolchain.link_ok(linker, &["-static"], &[&driver, &hod, &llc22], &program);
-    let runner = std::env::var("HOD_X64_AVX512_RUNNER").unwrap_or_default();
-    let mut words = runner.split_whitespace();
-    let mut command = match words.next() {
-        None => {
-            eprintln!(
-                "avx512 execution: {} functions linked; not run (no HOD_X64_AVX512_RUNNER: \
-                 no emulator here executes AVX-512)",
-                cases.len()
-            );
-            return;
+    execute_compared("x86_avx512 avx512_names", &program, cases.len());
+}
+
+/// Runs a driver `program` of `functions` functions that compares hod's
+/// code with `llc`'s on the processor (`avx512_driver`, `vsib_driver`) as
+/// `hod_testutil::avx512` decides: by `HOD_X64_AVX512_RUNNER`, else
+/// natively on an x86-64 processor with `avx512f` (the driver itself
+/// skips each function whose other features the processor lacks), else
+/// not at all; and reports the outcome under `name`
+/// (`HOD_AVX512_REPORT`). A failure or a disagreement fails the test with
+/// the program's whole output: hod's bytes and `llc`'s for each
+/// disagreement.
+fn execute_compared(name: &str, program: &Path, functions: usize) {
+    use hod_testutil::avx512::{self, Execution};
+    let (prefix, how) = match avx512::execution(&["avx512f"]) {
+        Execution::Run { prefix, how } => (prefix, how),
+        Execution::DryRun(why) => return avx512::skip(name, "dry-run", &why),
+        Execution::Skip(why) => {
+            eprintln!("{name}: {functions} functions linked");
+            return avx512::skip(name, "skipped", &why);
         }
-        Some("native") => Command::new(&program),
-        Some(first) => {
+    };
+    let mut command = match prefix.split_first() {
+        None => Command::new(program),
+        Some((first, rest)) => {
             let mut command = Command::new(first);
-            command.args(words).arg(&program);
+            command.args(rest).arg(program);
             command
         }
     };
     let ran = hod_testutil::run_with(&mut command, &[], Duration::from_mins(10));
-    assert!(ran.success(), "the program failed: {:?}\n{}", ran.status, ran.stderr_text());
     let out = ran.stdout_text();
     let last = out.lines().last().unwrap_or("");
-    eprintln!("avx512 execution ({runner}): {last}");
-    assert!(last.starts_with("compared ") && last.ends_with(" wrong 0"), "{out}");
-    // A runner whose CPU has no AVX-512 is no evidence.
-    assert!(!last.starts_with("compared 0 "), "the runner's CPU has no AVX-512: {last}");
+    let good = ran.success() && last.starts_with("compared ") && last.ends_with(" wrong 0");
+    // A processor on which every function is skipped is no evidence.
+    let evidence = !last.starts_with("compared 0 ");
+    let status = ran.status.map_or_else(|| "timed out".to_owned(), |s| s.to_string());
+    if !(good && evidence) {
+        avx512::report(name, "failed", &format!("{how}; {status}; {last}"));
+    }
+    assert!(
+        good,
+        "{name} ({how}): the program failed or disagrees: {status}\nstdout:\n{out}\nstderr:\n{}",
+        ran.stderr_text()
+    );
+    assert!(evidence, "{name} ({how}): the processor ran no function: {last}");
+    avx512::report(name, "executed", &format!("{how}; {functions} functions; {last}"));
+    eprintln!("{name} executed ({how}): {last}");
 }
 
 /// The `rbp` displacement of `line`'s memory operand, as `llvm-objdump`
@@ -3578,8 +3602,9 @@ fn vsib_driver(cases: &[VsibCase]) -> String {
 /// §5.6.35 item 10: on a CPU with AVX-512, hod's gathers and scatters
 /// move the bytes `llc` 22's do (see [`vsib_driver`]). As for
 /// [`avx512_names_agree_with_llc_on_hardware`], the program is linked
-/// statically and run by the command `HOD_X64_AVX512_RUNNER` names
-/// (`native` runs it directly); without one the test only links it. An
+/// statically and run as [`execute_compared`] decides: by the command
+/// `HOD_X64_AVX512_RUNNER` names, or natively on a processor with
+/// `avx512f`; otherwise the test only links it. An
 /// undefined pass-through is left out.
 #[test]
 fn vsib_names_agree_with_llc_on_hardware() {
@@ -3596,28 +3621,5 @@ fn vsib_names_agree_with_llc_on_hardware() {
     let program = scratch.join("vsib");
     let linker = &toolchain.linkers[0];
     toolchain.link_ok(linker, &["-static"], &[&driver, &hod, &llc22], &program);
-    let runner = std::env::var("HOD_X64_AVX512_RUNNER").unwrap_or_default();
-    let mut words = runner.split_whitespace();
-    let mut command = match words.next() {
-        None => {
-            eprintln!(
-                "vsib execution: {} functions linked; not run (no HOD_X64_AVX512_RUNNER)",
-                cases.len()
-            );
-            return;
-        }
-        Some("native") => Command::new(&program),
-        Some(first) => {
-            let mut command = Command::new(first);
-            command.args(words).arg(&program);
-            command
-        }
-    };
-    let ran = hod_testutil::run_with(&mut command, &[], Duration::from_mins(10));
-    assert!(ran.success(), "the program failed: {:?}\n{}", ran.status, ran.stderr_text());
-    let out = ran.stdout_text();
-    let last = out.lines().last().unwrap_or("");
-    eprintln!("vsib execution ({runner}): {last}");
-    assert!(last.starts_with("compared ") && last.ends_with(" wrong 0"), "{out}");
-    assert!(!last.starts_with("compared 0 "), "the runner's CPU has no AVX-512: {last}");
+    execute_compared("x86_avx512 vsib", &program, cases.len());
 }

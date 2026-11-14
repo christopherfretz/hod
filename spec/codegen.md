@@ -122,9 +122,12 @@ producer (`abi-a64.md` §7: with `zeroext`/`signext`, and a plain `i1` to
 document lets its consumer assume. A conditional branch or a
 `select` on `i1` tests bit 0. In memory an integer occupies
 its store size with the bits above its width zero (`spec/ir.md` §4.3);
-`store` writes that and `load` may rely on it. A frame slot hod makes for
-a `Gpr` value is a full register wide, written and read whole, so the
-invariant carries through a spill.
+`store` writes that and `load` may rely on it. A spill slot is a full
+register wide, written and read whole, so the invariant carries through a
+spill. A home or incoming slot of an integer is its store size rounded up
+to a power of two (§5.1 "Value slots"), written and read with exactly
+those bytes: the bits above the width are unspecified in the register
+after the load, as the invariant allows.
 
 ## 3. Where a value lives
 
@@ -190,7 +193,10 @@ alike, read as follows; the policy is only sound with these readings:
   (§9.5). This is the only way debug information changes the code.
 
 A home slot is assigned on the first mention of the value, definition or
-use, so blocks may be laid out in any order. Home slots are never reused.
+use, so blocks may be laid out in any order. A home slot is never reused
+while its value can still be read: only the home of a value whose
+definition and every use are in one block (a **block slot**) is handed
+out again, in another block (§5.1 "Value slots").
 
 ### 4.2 At a use
 
@@ -360,9 +366,69 @@ into an addressing mode (§5.4). The local area holds, in this order:
 2. the body's stack slots (`Body::slots`), laid out by the driver after
    `begin_function` and before the first instruction, so `Value::slot(n)`
    is a constant from the start;
-3. home slots, incoming slots and spill slots, in order of first need.
+3. home slots, incoming slots and spill slots, in order of first need,
+   some of them in the alignment holes of 2. and 3. ("Value slots"
+   below).
 
 `FrameRef::Incoming(offset)` names the caller's stack-argument area.
+
+**Value slots** (WP-198). Home, incoming and spill slots are *value
+slots*; the body's stack slots and the slots a lowering takes with
+`FnCx::alloc_slot` are not, and are laid out as above, never moved,
+never shared (the stack protector's guarded block, §5.6.24, is one of
+them and keeps its place). Three rules make value slots small, none of
+them an analysis:
+
+1. **Size.** A home or incoming slot of class `Gpr` holding an integer
+   is the integer's store size rounded up to a power of two (1, 2, 4 or
+   8 bytes); of class `Fpr`, 4 bytes for a `float` and 8 for a `double`;
+   anything else of those classes (a pointer, a vector) a register's
+   bytes; of class `Mem`, the type's allocation size at its alignment
+   (capped at the stack alignment). Each is aligned to its size, written
+   and read with exactly that many bytes, phi copies included (§4.5). A
+   spill slot stays a register wide (§4.3). In a coroutine body (§7.6)
+   every `Gpr` and `Fpr` home is a register wide: its shadow homes are.
+2. **Holes.** The bytes a slot's alignment skips are remembered (at most
+   16 holes per function); a new value slot of at most 16 bytes goes in
+   the lowest hole that holds it at its alignment before the area grows.
+   Only value slots fill holes, so the body's slots keep the offsets the
+   bump gives them.
+3. **Block slots.** The home of a value that is an instruction result
+   (not an argument, not a `phi`), defined in the block being emitted,
+   with no use outside that block (a use by a `phi` is a use in the
+   incoming block, §4.1) and not named by a `#dbg_declare`, is a block
+   slot: it holds the value from its definition to the end of the block
+   and is free again when the next block begins. Every use of the value
+   is emitted inside the block, so no read of it follows the block's
+   end in any execution that did not pass the definition again. Block
+   slots of up to 16 bytes come in size classes of 1, 2, 4, 8 and 16
+   bytes, aligned to the class (or the stack alignment if smaller); a
+   block takes a free slot of the request's class, else of the next
+   larger class that has one, else makes a slot of the request's class.
+   Each class's slots are taken in the order they were made, so a
+   block's state is a count per class. A larger `Mem` block slot is a
+   plain value slot, never reused. An `insertvalue` of class `Mem` whose
+   home is a block slot takes over the block slot of its aggregate
+   operand when that operand is a `Mem` home in a block slot, defined in
+   the same block, with this as its only use: the lowering copies the
+   aggregate into the result (nothing when the two are one slot) and
+   then writes the field.
+
+   There are no block slots in a function where code can run a second
+   time or where the debugger reads a value's location over a range:
+   - a coroutine body (§7.6);
+   - a function with a `#dbg_value` record (`spec/dwarf.md` §6.23: a
+     record's range may outlast the block);
+   - a function that calls a `returns_twice` function or sets
+     `FnCx::never_reuse_spill_slots` (§4.3): the code after the call can
+     run again after other blocks have run. The driver learns this
+     during emission; it then throws the function's code away and
+     compiles it again without block slots, as it retries a function in
+     far-branch form (§6.3).
+
+These rules change where values live, never the code's semantics: a
+named variable's storage is its body slot or a `#dbg_declare` home, and
+neither is ever a block slot.
 
 **Over-aligned slots.** A stack slot whose alignment exceeds the stack
 alignment is not in the local area. The entry code

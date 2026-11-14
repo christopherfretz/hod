@@ -198,7 +198,12 @@ impl<'a, T: Target> FnCx<'a, T> {
     /// A new home or incoming slot for a value of `class` and type `ty`
     /// (§5.1 "Value slots"): [`FnCx::home_bytes`] wide and aligned, in a
     /// hole if one fits; a block slot if `block`.
-    pub(crate) fn home_slot(&mut self, class: Class, ty: TypeId, block: bool) -> CgResult<FrameRef> {
+    pub(crate) fn home_slot(
+        &mut self,
+        class: Class,
+        ty: TypeId,
+        block: bool,
+    ) -> CgResult<FrameRef> {
         let (size, align) = match class {
             Class::Gpr | Class::Fpr => {
                 let bytes = self.home_bytes(class, ty);

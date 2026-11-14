@@ -227,7 +227,9 @@ impl Frame {
                 return Ok(FrameRef::Local(at));
             }
         }
-        let FrameRef::Local(at) = self.alloc_value(class_bytes, (class_bytes as u32).min(self.stack_align))? else {
+        let FrameRef::Local(at) =
+            self.alloc_value(class_bytes, (class_bytes as u32).min(self.stack_align))?
+        else {
             return internal("the allocator returned a slot outside the local area");
         };
         self.block_slots[class].push(at);
@@ -399,21 +401,21 @@ mod tests {
     fn block_slots_are_reused_in_every_block() {
         let mut frame = Frame::new(16);
         frame.begin_block();
-        let a = local(frame.alloc_block(16, 8));
-        let b = local(frame.alloc_block(1, 1));
-        let c = local(frame.alloc_block(16, 8));
-        assert!(a != b && b != c && a != c);
+        let big1 = local(frame.alloc_block(16, 8));
+        let small = local(frame.alloc_block(1, 1));
+        let big2 = local(frame.alloc_block(16, 8));
+        assert!(big1 != small && small != big2 && big1 != big2);
         let size = frame.size();
         frame.begin_block();
-        assert_eq!(local(frame.alloc_block(1, 1)), b);
-        assert_eq!(local(frame.alloc_block(16, 8)), a);
-        assert_eq!(local(frame.alloc_block(8, 8)), c);
+        assert_eq!(local(frame.alloc_block(1, 1)), small);
+        assert_eq!(local(frame.alloc_block(16, 8)), big1);
+        assert_eq!(local(frame.alloc_block(8, 8)), big2);
         assert_eq!(frame.size(), size);
-        let d = local(frame.alloc_block(1, 1));
-        assert!(d != a && d != b && d != c);
-        let e = local(frame.alloc_block(24, 8));
+        let small2 = local(frame.alloc_block(1, 1));
+        assert!(small2 != big1 && small2 != small && small2 != big2);
+        let odd = local(frame.alloc_block(24, 8));
         frame.begin_block();
-        assert_ne!(local(frame.alloc_block(24, 8)), e); // no class: never reused
+        assert_ne!(local(frame.alloc_block(24, 8)), odd); // no class: never reused
         frame.reset(16);
         frame.begin_block();
         assert_eq!(local(frame.alloc_block(4, 4)), 0);

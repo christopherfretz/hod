@@ -829,15 +829,41 @@ which). Each is checked against `llvm-mc` 19 and 22 like the rest
 | `crc32_rr(size, dst, src)` | `F2 [66] [REX] 0F 38 F0 /r` (`src` a byte register; `REX` for `spl`..`dil`), `F1 /r` otherwise; `dst` 32 bits, 64 with `REX.W` for `Q` | |
 | `bmi_rrr(op: Bmi, size, dst, x, y)` | three-byte VEX (`C4`, map `0F38`, `L` 0, `W` for `Q`): `BEXTR` `F7`, `BZHI` `F5` (`x` in `ModRM.rm`, `y` in `vvvv`); `PDEP` `F2.F5`, `PEXT` `F3.F5` (`x` in `vvvv`, `y` in `ModRM.rm`); operands in Intel's order | `size` `D` or `Q` |
 
+## Inline assembly
+
+The instructions only inline assembly writes (WP-199, `src/inline.rs`;
+`spec/asm.md` §13 has the census that chose them). Each is checked
+against `llvm-mc` 19 and 22 like the rest (`tests/l1/inline.rs`).
+
+| constructor | encodes | precondition |
+|---|---|---|
+| `prefetch_m(op: Prefetch, m)` | `PREFETCHNTA`/`T0`/`T1`/`T2` `0F 18 /0`..`/3`; `PREFETCH`/`PREFETCHW`/`PREFETCHWT1` `0F 0D /0`, `/1`, `/2` | |
+| `nop_r(size, r)`, `nop_m(size, m)` | `NOP r/m` `[66] [REX.W] 0F 1F /0` | `size` not `B` |
+| `in_dx(size)`, `in_i(size, port: u8)` | `IN` `EC`/`ED`, `E4`/`E5 ib` (`66` for `W`) | `size` not `Q` |
+| `out_dx(size)`, `out_i(size, port: u8)` | `OUT` `EE`/`EF`, `E6`/`E7 ib` (`66` for `W`) | `size` not `Q` |
+| `string_op(op: StringOp, size)` | `MOVS` `A4`, `STOS` `AA`, `LODS` `AC`, `SCAS` `AE`, `CMPS` `A6`; `+1` and `[66]`/`REX.W` above a byte; no repeat prefix (the caller's byte before it, as LLVM writes `rep` as an instruction of its own) | |
+| `fnstsw_m(m)`, `fnstenv_m(m)`, `fldenv_m(m)`, `fnsave_m(m)`, `frstor_m(m)` | `DD /7`, `D9 /6`, `D9 /4`, `DD /6`, `DD /4` | |
+| `crc32_q_rb(dst, src)` | `CRC32 r64, r/m8` `F2 REX.W 0F 38 F0 /r`, register source | |
+| `rdmsr()`, `wrmsr()` | `0F 32`, `0F 30` | |
+| `enclu()`, `encls()`, `enclv()`, `pconfig()` | `0F 01 D7`, `CF`, `C0`, `C5` | |
+| `hreset(imm: u8)` | `F3 0F 3A F0 C0 ib` | |
+| `clc()`, `stc()`, `cmc()`, `lahf()`, `sahf()`, `cli()`, `sti()` | `F8`, `F9`, `F5`, `9F`, `9E`, `FA`, `FB` | |
+
+The waiting x87 forms (`fstcw`, `fstsw`, `fstenv`, `fsave`, `fclex`,
+`finit`) are `fwait` and the form that does not wait, two instructions;
+the assembler writes both (`spec/asm.md` §13).
+
 ## Not provided
 
 By decision of the scope so far: the high-byte registers `ah`..`bh`; the
-string instructions other than `rep_movs`/`rep_stos` (`cmps`, `scas`,
-`lods`, `repne`, the forms without `rep`, `std`); `xadd` and `cmpxchg`
+string instructions with explicit operands (`movsb (%rsi), %es:(%rdi)`)
+and segment overrides; `xadd` and `cmpxchg`
 with a register destination; `movabs` to and from the accumulator with a
 64-bit address; `enter`; 16-bit `push`/`pop`; far branches; `jrcxz` and
-`loop`; `hlt` and the system instructions other than `rdtsc`, `rdtscp`,
-`cpuid` and those of "Processor state and extensions"; a relocatable immediate other than those of "Relocatable
+`loop`; the system instructions other than `hlt`, `rdtsc`, `rdtscp`,
+`cpuid` and those of "Processor state and extensions" and "Inline
+assembly" (the control and debug registers, `lgdt`, `invlpg`, ...); the
+memory-source `crc32`; a relocatable immediate other than those of "Relocatable
 immediates" (an `imm32` of an ALU instruction, for one); the `-fno-plt` general-dynamic call through
 the GOT (`data16 rex64 call [rip + __tls_get_addr@GOTPCREL]`) and the
 descriptor call `call [rax]`, whose `R_X86_64_TLSDESC_CALL` marks an

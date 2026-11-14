@@ -1109,13 +1109,15 @@ backend) reads them:
   `no-infs-fp-math`, `no-nans-fp-math`, `no-signed-zeros-fp-math`,
   `unsafe-fp-math`, and `no-trapping-math`;
 - `sample-profile-suffix-elision-policy`, a string LLVM defines where it
-  is read (sample-profile loading), not in its attribute list; and
-  `fmv-features`, likewise (WP-095).
+  is read (sample-profile loading), not in its attribute list;
+  `fmv-features`, likewise (WP-095); and `alloc-family`, likewise
+  (WP-227, below).
 
   Fifteen of these were added when the table was built against LLVM's
   attribute list and clang's output, each because clang emits it in an
-  ordinary build or because it is the twin of a name already here, and
-  two later, because LLVM 22 modules carry them:
+  ordinary build or because it is the twin of a name already here,
+  two later, because LLVM 22 modules carry them, and one, `alloc-family`,
+  because optimized modules carry it (WP-227):
 
   | attribute | why only an optimizer reads it |
   |---|---|
@@ -1132,6 +1134,18 @@ backend) reads them:
   | `"no-trapping-math"` | on every function clang emits; without `strictfp` (rejected) the default floating-point environment is assumed either way |
   | `"sample-profile-suffix-elision-policy"` | steers how the sample-profile loader matches symbol names with suffixes (`"selected"`); no effect on code generation; on functions of LLVM 22 bitcode modules (WP-029) |
   | `"fmv-features"` | the feature set of a function-multiversioning version (`target_version`/`target_clones`), read by the optimizer's static resolution of calls to versions (`getFeatureMask`); the resolver and the version names are already in the IR. `llc` 22 writes the same object with it removed or with a value (`"dotprod,sve2"`); on functions of clang 22 with `-fmv` (WP-095) |
+  | `"alloc-family"` | names the family of an allocation function (`"malloc"` for `malloc`, `calloc`, `realloc`, `free` and their kin; LangRef "Function Attributes"), so that the optimizer may remove a matching allocation and free of one family and leaves a mismatched pair alone (InstCombine through `getAllocationFamily`, its only reader in the LLVM source tree looked at, `cd708029`, January 2025, between 19 and 22); LLVM's library-call annotation (`BuildLibCalls`) writes it, with `allockind` and `allocsize` (both dropped), on the declarations of the C library's allocation functions (`malloc`, `calloc`, `realloc`, `aligned_alloc`, `free`, `strdup`, `strndup`, ...) in modules built at `-O1` and above by clang 19 and 22 and by kiln. `llc` 19 and 22 write the same object with it removed, at `-O0` and `-O2`, on both targets (WP-227) |
+
+  The attributes of optimized modules (WP-227) were audited by
+  compiling hod's C and C++ test programs, a sample of kiln's
+  conformance and C tests and of the GCC C torture tests, and four
+  library-heavy programs with clang 19, clang 22 and kiln at `-O0`,
+  `-O1`, `-O2` and `-O2 -g` for both targets, and by reading the saved
+  real-project modules and both corpora: `alloc-family` was the only
+  attribute hod refused, and the record (`spec/landed/ir/WP-227.md`)
+  has the counts. A dropped attribute has no row in the classify matrix
+  (§8): the `attr` rows are the kept attributes, which `classify` sees,
+  and a dropped one never reaches it.
 
 **Rejected**: anything else. An attribute that is in neither list is a
 `classify` failure naming the attribute (`attr:<name>`, which the

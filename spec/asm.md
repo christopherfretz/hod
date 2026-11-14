@@ -99,8 +99,10 @@ Any other pairing is `asm:modifier/<m>`.
 
 Registers, case-insensitive: `x0`..`x30`, `w0`..`w30`, `xzr`, `wzr`,
 `sp`, `wsp`, `fp`, `lr`, `x31`/`w31` (zero), and `b0`..`q31`. Vector
-registers (`v0.4s`, `v0.s[1]`) and register lists parse so that an
-instruction refuses them as `asm:operand/vector`. Immediates `#e` or `e`;
+registers with an arrangement (`v0.4s`), an element (`v0.s[1]`) and
+register lists (`{v0.4s, v1.4s}`, `{v0.4s-v3.4s}`, `{v0.s, v1.s}[1]`)
+are §20's; any other vector form parses so that an instruction refuses
+it as `asm:operand/vector`. Immediates `#e` or `e`;
 shifts and extends (`lsl #n`, `uxtw #n`, ...); memory operands `[xn]`,
 `[xn, #i]`, `[xn, #i]!`, `[xn], #i`, `[xn, xm{, lsl #s}]`,
 `[xn, wm, uxtw|sxtw {#s}]`; names (conditions, barrier options, system
@@ -151,8 +153,16 @@ of §7 holds the choice. Covered:
   `fmul` `fdiv` `fnmul` `fmax` `fmin` `fmaxnm` `fminnm`, `fmadd`
   `fmsub` `fnmadd` `fnmsub`, `fcmp` `fcmpe` (`#0.0`), `fccmp` `fccmpe`
   `fcsel` `fcvt` `scvtf` `ucvtf` `fcvt{n,a,p,m,z}{s,u}`;
-- scalar SIMD on `s`/`d` registers (§17): `fcvtzs` `fcvtzu`
-  (`fcvtzs d0, d1`), `fcmeq` (register, and `#0.0`/`#0`).
+- scalar SIMD (§17, feature `neon` since §20): `fcmeq` on `s`/`d`
+  registers (register, and `#0.0`/`#0`); the two-register forms of
+  §20 (`fcvtzs d0, d1`, `fcvtns s0, s1`, `scvtf h0, h1`, ...);
+- Advanced SIMD on vector operands (§20, feature `neon`): `fmla`
+  `fmls` `fmul` `fmulx` by element; the floating-point three-same and
+  two-register classes (`fadd` `fmla` `fcvtzs` `fcvtns` `frintn` ...);
+  `fcmeq` `fcmge` `fcmgt` `fcmle` `fcmlt` (register and `#0.0`); the
+  three-different class with its `2` forms (`umlal`, `smull`, `pmull`
+  `pmull2`, `addhn`, ...); `ld1`..`ld4`, `st1`..`st4` (multiple, one
+  lane) and `ld1r`..`ld4r`.
 
 Any other mnemonic is `asm:mnemonic/<name>`; a known mnemonic with
 operands outside these forms is `asm:operand/<what>` (`form`, `range`,
@@ -206,7 +216,13 @@ The lowering is `spec/codegen.md` §5.5.3 "WP-103". In short:
 
 - **Features** come from the function's `target-features`
   (`Features::from_attribute`): `+lse`, `+crc`, an architecture from
-  `v8.1a` on (both), `-fp-armv8`.
+  `v8.1a` on (both), `-fp-armv8`; `neon`, `aes` and `fp16` with LLVM's
+  implications, in order (§20).
+- **SIMD&FP operands** (§20): `w` takes a value of 16, 32, 64 or 128
+  bits, `x` one of 128, `y` none (`asm:constraint/y`); another is
+  `a64:inline-asm-operand-type`, as are `i128` and vectors of 2 or 4
+  bytes, which `llc` places and hod does not. Clobbers of `v8`..`v15`
+  (any view) keep the low halves the procedure call standard saves.
 - **Constraints** read: the prefixes `=`, `+` (as LLVM writes it: an
   output and a tied input), `&`, `*` (indirect), `%`; the codes `r`,
   `w`, `x`, `y`, `X`, `m`, `Q`, `o`, `i`, `n`, `I`..`N`, `{reg}`,
@@ -233,6 +249,14 @@ The lowering is `spec/codegen.md` §5.5.3 "WP-103". In short:
   objects and `llc` 19's and 22's: the bytes `llvm-mc` writes at that
   offset, the sections aligned alike; a cut before an aligned template
   refused.
+- `crates/hod_asm/tests/llvm_mc.rs` (§20): the NEON bodies word for
+  word against `llvm-mc` 22 and 19 (`-mattr=+lse,+crc,+fp-armv8,+aes,
+  +fullfp16`), their refusals by name, and a feature matrix (bodies ×
+  `target-features` strings) where hod accepts exactly what `llvm-mc`
+  accepts under the same `-mattr`.
+- `crates/hod_a64/tests/inline_asm_neon.rs` (§20): the operand grid
+  (constraint × type × modifier) against `llc` 19 and 22; the census's
+  NEON templates in hod's code; the refusals.
 - `crates/hod_asm/tests/census_a64.rs` (§16): the AArch64 census, each
   body by the table; the accepted ones `llvm-mc` 22's and 19's words.
 - Unit tests in each module: statements, expressions, substitution,
@@ -271,13 +295,12 @@ generation: `limit:aligned-code-moved` (§17: an aligned template after
 bytes the code's shrinking removes).
 
 The AArch64 mnemonics real templates still need, and their refusals, are
-§16's table as §17 leaves it: the NEON and SVE instructions
-(`asm:mnemonic/fmla`, `/umlal`, `/pmull`, `/cntb`, ...;
-`asm:operand/vector` for a vector arrangement of a known mnemonic,
-`fcmeq v0.4s` among them), the directives other than §17's
-(`asm:directive/inst`, `/arch_extension`, `/balignw`, ...; on x86-64
-`asm:directive/p2align` stays, §17), `asm:mnemonic/adrp` (with
-`asm:operand/specifier` for `:lo12:`), `asm:mnemonic/ld1`. A prefetch
+§16's table as §20 leaves it: SVE (`asm:mnemonic/cntb`), the NEON
+mnemonics §20 does not take (`asm:mnemonic/<m>`; a vector operand of a
+form §20 does not take is `asm:operand/vector`), the directives other
+than §17's (`asm:directive/inst`, `/arch_extension`, `/balignw`, ...;
+on x86-64 `asm:directive/p2align` stays, §17), `asm:mnemonic/adrp`
+(with `asm:operand/specifier` for `:lo12:`). A prefetch
 operation that is no name of §16 is `asm:operand/option`; `prfm` and
 `prfum` take no write-back.
 
@@ -806,15 +829,15 @@ corrected the count to 177 (§17): 143 assemble.
 
 | form | refusal | templates |
 |---|---|---|
-| NEON with vector arrangements (`fmla`, `umlal`, `pmull`, `pmull2`, `fcmeq`, `fcvtzs`/`fcvtzu`/`fcvtns` `.4s`) | `asm:mnemonic/<m>`, `asm:operand/vector` | 31 |
 | `.arch_extension crypto` (before AES in NEON) | `asm:directive/arch_extension` | 1 |
 | SVE (`cntb`) | `asm:mnemonic/cntb` | 1 |
 | an instruction as data (`.inst 0xd4200000`) | `asm:directive/inst` | 1 |
 | `adrp` | `asm:mnemonic/adrp` | 0 |
-| `ld1` and the other structure loads | `asm:mnemonic/ld1` | 0 |
 
-NEON needs vector operands and registers in the lowering
-(`asm:operand/vector` is the parser's).
+The 31 NEON templates (`fmla`, `umlal`, `pmull`, `pmull2`, `fcmeq`,
+`fcvtzs`/`fcvtzu`/`fcvtns` with arrangements) and the structure loads
+(`ld1`, none in the census) are §20's since WP-226: 174 of 177 templates
+assemble.
 `adrp sym` alone writes `R_AARCH64_ADR_PREL_PG_HI21`, a reference kind
 neither caller has, and is of use only with `:lo12:sym` (a relocation
 specifier): no census template writes either, so both wait.
@@ -887,7 +910,9 @@ of the same size (feature `fp`, as the other forms; `llvm-mc` needs
 (`0x5ea0_d800`); bit 22 is the size. Another immediate is
 `asm:operand/fp-immediate`, registers of different sizes or an `h`
 register `asm:operand/register`, a vector arrangement
-`asm:operand/vector`.
+`asm:operand/vector`. Since WP-226 (§20) these need `neon`, as
+`llvm-mc`'s, and `fcvtzs`/`fcvtzu` are §20's two-register scalar forms
+(the same words; `h` registers with `fullfp16`).
 
 **The census** (`census_a64.rs`, §16) is corrected: the 34 `.p2align`
 templates are zstd's, all under `#if defined(__GNUC__) &&
@@ -916,3 +941,154 @@ templates and stay `asm:directive/p2align`:
   `hod_mc_x64::nop`.
 - Fill `0x90` differs as fill 0 does on AArch64: `nop`s to 19, `0x90`
   bytes to 22.
+
+## 20. NEON in AArch64 templates (WP-226)
+
+**Operands** (`a64/operand.rs`), any case:
+
+- `v<n>.<T>` with `T` one of `8b` `16b` `4h` `8h` `2s` `4s` `1d` `2d`
+  `1q` (and `4b`, `2h`, which no form here takes);
+- `v<n>.<t>[i]` (`t` one of `b` `h` `s` `d` `q`, `i` 0..255);
+- a list `{v<a>.<T>, v<b>.<T>, ...}` or `{v<a>.<T>-v<b>.<T>}` of one
+  to four consecutive registers (counted modulo 32, `v31` then `v0`)
+  of one arrangement, or of one element followed by `[i]`.
+
+Another vector form (no arrangement, `.3s`, a gap in a list, mixed
+arrangements, five registers) is `asm:operand/vector` for the
+instruction that meets it.
+
+**Mnemonics** (`a64/neon.rs`), on vector operands, with feature
+`neon`. Each word equals `llvm-mc` 19's and 22's.
+
+- **By element**: `fmla`, `fmls`, `fmul` and `fmulx`.
+  - `.4s`/`.2s` by `.s[0..3]` takes `v0`..`v31`.
+  - `.2d` by `.d[0..1]` takes `v0`..`v31`.
+  - `.8h`/`.4h` by `.h[0..7]` needs `fullfp16`. Its element register
+    must be `v0`..`v15`; `v16` and above are `asm:operand/register`.
+  - An index out of range is `asm:operand/range`; another lane view is
+    `asm:operand/vector`.
+- **Three same, floating point**:
+  - `fmla` and `fmls`;
+  - the whole class of `hod_mc_a64`'s `Fp3`: `fadd` `fsub` `fmul`
+    `fdiv` `fmax` `fmin` `fmaxnm` `fminnm` `fmulx` `frecps` `frsqrts`
+    `fabd` `facge` `facgt` `faddp` `fmaxp` `fminp` `fmaxnmp` `fminnmp`;
+  - `fcmeq`, `fcmge` and `fcmgt`; `fcmle` and `fcmlt` of two registers
+    are `fcmge` and `fcmgt` with the sources swapped, as `llvm-mc`
+    writes them.
+- **Compares with zero** (`#0.0` or `#0`): `fcmeq` `fcmge` `fcmgt`
+  `fcmle` `fcmlt`. Another immediate is `asm:operand/fp-immediate`.
+- **Two-register, floating point**: the class of `Fp2`:
+  - `fcvt{n,m,a,p,z}{s,u}`;
+  - `scvtf` `ucvtf` `frecpe` `frsqrte` `fabs` `fneg` `fsqrt`;
+  - `frint{n,m,p,z,a,x,i}`.
+
+  The vector arrangements are `.2s`, `.4s`, `.2d`, and `.4h`/`.8h` with
+  `fullfp16`. The scalar forms are `s0, s1`, `d0, d1`, and `h0, h1`
+  with `fullfp16`; every form needs `neon`. Left out: `frint32*`,
+  `frint64*` (`FEAT_FRINTTS`) and `frecpx`, which are
+  `asm:mnemonic/<m>`. The fixed-point forms (`fcvtzs v0.4s, v1.4s,
+  #3`) are `asm:operand/form`.
+- **Three different**: every operation of `Long3` and its `2` form:
+  - `saddl` `uaddl` `ssubl` `usubl` `sabal` `uabal` `sabdl` `uabdl`;
+  - `smlal` `umlal` `smlsl` `umlsl` `smull` `umull`;
+  - `sqdmlal` `sqdmlsl` `sqdmull`;
+  - `addhn` `raddhn` `subhn` `rsubhn`;
+  - `pmull`.
+
+  Rules:
+  - The narrow element is the sources' (the result's for the
+    high-narrowing forms): 64 bits of it, or 128 bits for the `2` form.
+  - The other operands must be twice as wide; anything else is
+    `asm:operand/vector`.
+  - `pmull`/`pmull2` of `1d`/`2d` into `1q` needs `aes`.
+- **Structure loads and stores**:
+  - `ld1`..`ld4` and `st1`..`st4` of multiple structures (`ld1` takes
+    one to four registers, `ld<n>` exactly `n`; `1d` only for `ld1`);
+  - of one lane, with an element list and an index;
+  - `ld1r`..`ld4r`.
+
+  The address and post-index:
+  - The address is `[xn|sp]`.
+  - Post-index is `#<bytes moved>` or an X register (`rm` 31 is the
+    immediate form).
+  - `xzr` or a W register is `asm:operand/register`.
+  - Another immediate is `asm:operand/range`.
+  - An offset or pre-index write-back is `asm:operand/form`.
+
+**Neighbours taken because they share an encoding class** with a census
+form (`fmla`, `fcvtzs`/`fcvtzu`/`fcvtns`, `fcmeq`, `umlal`, `pmull`/
+`pmull2`):
+- the rest of `Fp3`, `Fp2` and `Long3`;
+- `fmls`/`fmul`/`fmulx` by element;
+- the other `fcm*` compares;
+- the structure forms beyond `ld1`.
+
+Each is in `llvm_mc.rs`'s 182 NEON bodies. `mov v0.16b, v1.16b` (an
+`orr` alias) and the integer vector classes (`add v0.4s`, `orr`,
+`ext`, ...) stay out: a vector operand of a general-register mnemonic
+is `asm:operand/register`; a NEON-only mnemonic outside these classes is
+`asm:mnemonic/<m>`.
+
+**Features**: `Features::from_attribute` reads `target-features` in
+order, with LLVM's implications as `llvm-mc` 19 and 22 apply them
+(measured):
+
+| item | sets | clears |
+|---|---|---|
+| `+neon` | `neon`, `fp` | |
+| `+aes`, `+crypto` | `aes`, `neon`, `fp` | |
+| `+fullfp16`, `+fp16fml`, `+sve` | `fp16`, `fp` | |
+| `-fp-armv8` | | `fp`, `neon`, `aes`, `fp16` |
+| `-neon` | | `neon`, `aes` |
+| `-aes` | | `aes` |
+| `-fullfp16` | | `fp16` |
+
+`+v8.2a`, `+v9a` and `+sha2` imply neither `aes` nor `fp16`. The base
+(no attribute) has `fp` and `neon`, as every AArch64 Linux target.
+kiln writes `+fp-armv8,+neon,...`, and adds `+aes` for
+`target("aes")`, `+fullfp16` for `target("fp16")`, and `+crypto` for
+`-march=...+crypto`. A form whose feature is missing is `asm:feature`.
+
+**Operands of the SIMD&FP classes** (`hod_a64::inline_asm`), as `llc`
+19 and 22 allocate and print them. The two majors agree on every cell
+measured.
+
+- **`w`**:
+  - takes values of 16, 32, 64 or 128 bits: `half`, `bfloat`,
+    `float`, `double`, `fp128`, `i16`, `i32`, `i64`, `ptr`, and vectors
+    of 8 or 16 bytes;
+  - `i8`, `<1 x i8>` and `<3 x float>` are `llc` errors ("couldn't
+    allocate"), and `a64:inline-asm-operand-type` in hod;
+  - `llc` also places `i128` and vectors of 2 or 4 bytes (`<2 x i8>`,
+    `<2 x half>`); hod refuses them as `a64:inline-asm-operand-type`
+    (no such value lives in a SIMD&FP register in hod's code).
+- **`x`**: 128-bit values only (`v0`..`v15`).
+- **`y`**: no value hod holds (SVE's types): `asm:constraint/y`.
+- **Modifiers**:
+  - none prints `v<n>`;
+  - `b` `h` `s` `d` `q` print that view;
+  - `w` and `x` print the view of the value's size (`h`, `s`, `d`, `q`);
+  - `a` prints `[s0]` and `z` prints `z0` to `llc`; hod refuses them
+    (`asm:modifier/a`, `asm:modifier/z`);
+  - `v`, `c`, `n` and `t` are `llc` errors and `asm:modifier/<m>` in
+    hod.
+- **Clobbers** `~{v8}`..`~{v15}`, in any view (`q9`, `d10`, `s11`):
+  the function saves and restores the low 64 bits the procedure call
+  standard keeps, as for any clobber of a callee-saved register.
+
+**The census** (`census_a64.rs`): the 31 NEON templates assemble.
+
+| row | projects | templates |
+|---|---|---|
+| `fmla v8.4s, v9.4s, v10.s[0]` | Eigen | 8 |
+| `fcvtzs`, `fcvtzu` (`.4s`, `.2d`, `.4h`, `.8h`) | highway | 10 |
+| `fcmeq v8.8h, ...` | highway | 5 |
+| `fcvtns v8.4s, v9.4s` | OpenCV | 1 |
+| `umlal v8.2d, v9.2s, v10.2s` | xxhash (zstd's copies) | 3 |
+| `pmull`, `pmull2` | abseil (and grpc's copy) | 4 |
+
+**174 of 177** templates assemble (143 before). Three stay refused, one
+template each:
+- `.arch_extension crypto` (`asm:directive/arch_extension`);
+- `cntb` (SVE, `asm:mnemonic/cntb`);
+- `.inst` (`asm:directive/inst`).

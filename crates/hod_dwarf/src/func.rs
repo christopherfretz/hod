@@ -29,6 +29,8 @@ const DW_OP_FBREG: u8 = 0x91;
 const DW_OP_REG0: u8 = 0x50;
 const DW_OP_REGX: u8 = 0x90;
 const DW_OP_DEREF: u8 = 0x06;
+/// `DW_OP_piece` (WP-230).
+const DW_OP_PIECE: u8 = 0x93;
 
 /// One line-table transition of a placed function, as the code generator
 /// recorded it (`spec/codegen.md` §9.5): from `offset` on, the code has
@@ -65,6 +67,10 @@ pub enum LocalPlace {
         /// Where the variable is in it.
         at: ValueLoc,
     },
+    /// One value of a `DIArgList` (WP-230, §6.32): a `Value` row whose
+    /// `at` is [`ValueLoc::Args`] is followed by that many of these, in
+    /// `DW_OP_LLVM_arg` order. Never a variable's row by itself.
+    ValueArg(ValueLoc),
     /// The code generator could not describe the row: the function is
     /// refused under this stable name.
     Refused(&'static str),
@@ -119,6 +125,9 @@ pub(crate) struct FnData {
 pub(crate) enum LocalWhat {
     /// A variable: frame offset, indirect, expression.
     Var { offset: i64, indirect: bool, expr: ExprId },
+    /// A variable declared on slots in fragments (WP-230, §6.32): its
+    /// pieces in `UnitPlan::frame_pieces`, by fragment offset.
+    Pieces { first: u32, count: u32 },
     /// A variable of a coroutine body (WP-108): its place, expression.
     CoroVar { place: crate::coro::CoroPlace, expr: ExprId },
     /// A variable the subprogram retains (`retainedNodes`) and no record
@@ -189,6 +198,20 @@ pub(crate) struct FnScratch {
     /// The instances of the variables described by value records
     /// (WP-162).
     pub(crate) groups: crate::loclists::Groups,
+    /// WP-230 (§6.32): `(node, inlinedAt, row)` of the slot declarations,
+    /// sorted, when the function has value rows or a declaration with an
+    /// expression; empty otherwise.
+    framed: Vec<(u32, u32, u32)>,
+}
+
+impl FnScratch {
+    /// The rows of [`FnScratch::framed`] of instance `(node, ia)`.
+    fn framed_of(&self, node: DiId, ia: LocId) -> &[(u32, u32, u32)] {
+        let key = (node.raw(), ia.raw());
+        let lo = self.framed.partition_point(|x| (x.0, x.1) < key);
+        let hi = lo + self.framed[lo..].partition_point(|x| (x.0, x.1) == key);
+        &self.framed[lo..hi]
+    }
 }
 
 /// The index of the scope keyed `(node, ia)`, or `NONE`.
@@ -288,6 +311,40 @@ pub(crate) fn check_expr(debug: &hod_ir::DebugInfo, expr: ExprId) -> Result<(), 
         }
     }
     Ok(())
+}
+
+/// [`check_expr`] for a declaration of a slot (WP-230, §6.32): an
+/// expression that is a fragment alone is a piece of the variable when
+/// its bits are whole bytes; any other with a fragment stays
+/// `debug:fragment`.
+pub(crate) fn check_declare_expr(
+    debug: &hod_ir::DebugInfo,
+    expr: ExprId,
+) -> Result<(), &'static str> {
+    match slot_fragment(debug, expr) {
+        Some(Ok(_)) => Ok(()),
+        Some(Err(name)) => Err(name),
+        None => check_expr(debug, expr),
+    }
+}
+
+/// The fragment `(offset, size)` in bits of a slot declaration's
+/// expression (§6.32): `None` without one, `Err` when it is not a
+/// fragment alone, or not of whole bytes.
+fn slot_fragment(
+    debug: &hod_ir::DebugInfo,
+    expr: ExprId,
+) -> Option<Result<(u64, u64), &'static str>> {
+    let mut ops = debug.ops(expr);
+    let first = ops.next()?;
+    let piece = match (first, ops.next()) {
+        (DiOp::Fragment(offset, size), None) if offset % 8 == 0 && size % 8 == 0 && size > 0 => {
+            Ok((offset, size))
+        }
+        _ if debug.ops(expr).any(|op| matches!(op, DiOp::Fragment(..))) => Err("debug:fragment"),
+        _ => return None,
+    };
+    Some(piece)
 }
 
 /// Writes the ops of `expr` (already checked) to `out`.
@@ -518,7 +575,24 @@ impl<'a> UnitPlan<'a> {
         let sp_id = f.subprogram;
         // A variable or label whose scope has no code is dropped, as
         // `llc` drops it.
+        let debug = self.debug;
+        let ia_of = |loc: LocId| debug.location(loc).map_or(LocId::NONE, |l| l.inlined_at);
+        frame_rows(f.vars, &mut s.framed, ia_of);
         for (row, v) in f.vars.iter().enumerate() {
+            // WP-230: a value of the `DIArgList` row before it.
+            if let LocalPlace::ValueArg(_) = v.place {
+                continue;
+            }
+            // WP-230 (§6.32): a variable declared on a slot in this
+            // instance is there for the whole function; `llc`'s
+            // `collectVariableInfo` skips its value records (the frame
+            // table's entities are `Processed` first).
+            if let LocalPlace::Value { .. } = v.place
+                && !s.framed.is_empty()
+                && !s.framed_of(v.node, ia_of(v.loc)).is_empty()
+            {
+                continue;
+            }
             let label = matches!(v.place, LocalPlace::Label(_));
             if let LocalPlace::Refused(name) = v.place {
                 return Err(unsupported(v.node, name));
@@ -537,22 +611,7 @@ impl<'a> UnitPlan<'a> {
                     if n.align != 0 && (n.arg != 0 || n.name.is_empty()) {
                         return Err(unsupported(v.node, "debug:variable-alignment"));
                     }
-                    // WP-221: a declared value's range has a declaration's
-                    // expression.
-                    if let LocalPlace::Frame(_)
-                    | LocalPlace::FrameIndirect(_)
-                    | LocalPlace::Coro(_)
-                    | LocalPlace::Value { at: ValueLoc::Address { .. }, .. } = v.place
-                        && let Err(name) = check_expr(self.debug, v.expr)
-                    {
-                        return Err(unsupported(v.node, name));
-                    }
-                    if let LocalPlace::Value { at, .. } = v.place
-                        && !matches!(at, ValueLoc::Address { .. })
-                        && let Err(name) = crate::loclists::check_value_expr(self.debug, v.expr)
-                    {
-                        return Err(unsupported(v.node, name));
-                    }
+                    check_row_expr(self.debug, v).map_err(|name| unsupported(v.node, name))?;
                     let (class, key) =
                         if n.arg != 0 { (0, u32::from(n.arg)) } else { (1, row as u32) };
                     (n.scope, class, key)
@@ -739,6 +798,10 @@ impl<'a> UnitPlan<'a> {
                 self.push(v.node, die, kind)
             };
             let what = match v.place {
+                // WP-230 (§6.32): a variable declared in fragments.
+                LocalPlace::Frame(_) if !s.framed.is_empty() => {
+                    self.slot_place(f, s, v, s.scopes[sc as usize].ia)?
+                }
                 LocalPlace::Frame(offset) => {
                     LocalWhat::Var { offset, indirect: false, expr: v.expr }
                 }
@@ -751,6 +814,9 @@ impl<'a> UnitPlan<'a> {
                 }
                 LocalPlace::Coro(place) => LocalWhat::CoroVar { place, expr: v.expr },
                 LocalPlace::Value { .. } => self.value_list(f.vars, &s.groups, row),
+                LocalPlace::ValueArg(_) => {
+                    unreachable!("a `DIArgList` value is not an entity (collect_entities)")
+                }
                 LocalPlace::Refused(RETAINED) => LocalWhat::Retained,
                 LocalPlace::Refused(name) => return Err(unsupported(v.node, name)),
             };
@@ -1119,6 +1185,7 @@ impl<'a> Writer<'a> {
         match (l.what, plan.debug.node(node)) {
             (
                 what @ (LocalWhat::Var { .. }
+                | LocalWhat::Pieces { .. }
                 | LocalWhat::CoroVar { .. }
                 | LocalWhat::Retained
                 | LocalWhat::List { .. }),
@@ -1210,6 +1277,116 @@ fn retained_row(s: &FnScratch, n: usize, row: u32) -> LocalRow {
     LocalRow { node, loc: LocId::NONE, expr: ExprId::EMPTY, place: LocalPlace::Refused(RETAINED) }
 }
 
+/// The refusal of a variable row's expression by its place.
+fn check_row_expr(debug: &hod_ir::DebugInfo, v: &LocalRow) -> Result<(), &'static str> {
+    match v.place {
+        // WP-230: a slot's may be in fragments (§6.32).
+        LocalPlace::Frame(_) => check_declare_expr(debug, v.expr),
+        // WP-221: a declared value's range has a declaration's
+        // expression.
+        LocalPlace::FrameIndirect(_)
+        | LocalPlace::Coro(_)
+        | LocalPlace::Value { at: ValueLoc::Address { .. }, .. } => check_expr(debug, v.expr),
+        // WP-230 (§6.32).
+        LocalPlace::Value { at: ValueLoc::Args { count }, .. } => {
+            crate::loclists::check_arglist_expr(debug, v.expr, count)
+        }
+        LocalPlace::Value { .. } => crate::loclists::check_value_expr(debug, v.expr),
+        _ => Ok(()),
+    }
+}
+
+/// WP-230 (§6.32): `framed` gets `(node, inlinedAt, row)` of each slot
+/// row of `vars`, sorted, when a row is a value's or a slot's with an
+/// expression (a fragment); it is left empty otherwise.
+fn frame_rows(
+    vars: &[LocalRow],
+    framed: &mut Vec<(u32, u32, u32)>,
+    ia_of: impl Fn(LocId) -> LocId,
+) {
+    framed.clear();
+    let needed = vars.iter().any(|v| match v.place {
+        LocalPlace::Value { .. } => true,
+        LocalPlace::Frame(_) => v.expr != ExprId::EMPTY,
+        _ => false,
+    });
+    if !needed {
+        return;
+    }
+    for (row, v) in vars.iter().enumerate() {
+        if let LocalPlace::Frame(_) = v.place {
+            framed.push((v.node.raw(), ia_of(v.loc).raw(), row as u32));
+        }
+    }
+    framed.sort_unstable();
+}
+
+impl UnitPlan<'_> {
+    /// The place of variable `v` declared on a slot in instance `ia`
+    /// (WP-230, §6.32). Declared without a fragment: the first
+    /// declaration's slot (§6.25). In fragments: `llc`'s frame table
+    /// keeps one entry per fragment (`DbgVariable::addMMIEntry`), and
+    /// `DwarfDebug` writes them by offset as one expression, each its
+    /// slot and `DW_OP_piece`; a repeated declaration of one fragment on
+    /// one slot is one piece. A fragment beside a whole declaration, or
+    /// two fragments that overlap, stay `debug:fragment`.
+    fn slot_place(
+        &mut self,
+        f: &FunctionInput<'_>,
+        s: &FnScratch,
+        v: LocalRow,
+        ia: LocId,
+    ) -> Result<LocalWhat, Error> {
+        let LocalPlace::Frame(offset) = v.place else {
+            return Err(bad(v.node, "variable"));
+        };
+        let whole = slot_fragment(self.debug, v.expr).is_none();
+        let first = self.frame_pieces.len();
+        let mut result = Ok(());
+        for &(.., row) in s.framed_of(v.node, ia) {
+            let Some(&LocalRow { place: LocalPlace::Frame(at), expr, .. }) =
+                f.vars.get(row as usize)
+            else {
+                continue;
+            };
+            match slot_fragment(self.debug, expr) {
+                None if whole => {}
+                Some(Ok(_)) if !whole => self.frame_pieces.push((at, expr)),
+                _ => result = Err(unsupported(v.node, "debug:fragment")),
+            }
+        }
+        if whole || result.is_err() {
+            self.frame_pieces.truncate(first);
+            return result.map(|()| LocalWhat::Var { offset, indirect: false, expr: v.expr });
+        }
+        let debug = self.debug;
+        let frag = |e: ExprId| match slot_fragment(debug, e) {
+            Some(Ok(p)) => p,
+            _ => (0, 0),
+        };
+        let tail = &mut self.frame_pieces[first..];
+        tail.sort_unstable_by_key(|&(at, e)| (frag(e), at, e.raw()));
+        let mut end = 0;
+        let mut kept = first;
+        for i in first..self.frame_pieces.len() {
+            let piece = self.frame_pieces[i];
+            if kept > first && self.frame_pieces[kept - 1] == piece {
+                continue;
+            }
+            let (bit, size) = frag(piece.1);
+            if bit < end {
+                self.frame_pieces.truncate(first);
+                return Err(unsupported(v.node, "debug:fragment"));
+            }
+            end = bit + size;
+            self.frame_pieces[kept] = piece;
+            kept += 1;
+        }
+        self.frame_pieces.truncate(kept);
+        Ok(LocalWhat::Pieces { first: first as u32, count: (kept - first) as u32 })
+    }
+}
+
 impl UnitPlan<'_> {
     /// `llc`'s `collectEntityInfo`, "retained nodes" (WP-111,
     /// `spec/dwarf.md` §6.4): a variable the subprogram retains and no
@@ -1260,6 +1437,24 @@ impl Writer<'_> {
         place_ops(&mut self.expr, what);
         let mut ops = std::mem::take(&mut self.expr);
         write_ops(plan, expr, &mut ops);
+        // WP-230 (§6.32): each fragment's slot and its size, after a
+        // `DW_OP_piece` of the bytes no declaration covers before it;
+        // nothing after the last.
+        if let LocalWhat::Pieces { first, count } = what {
+            let mut end = 0;
+            for &(offset, e) in &plan.frame_pieces[first as usize..(first + count) as usize] {
+                let Some(Ok((at, size))) = slot_fragment(plan.debug, e) else { continue };
+                if at > end {
+                    ops.push(DW_OP_PIECE);
+                    write_uleb(&mut ops, (at - end) / 8);
+                }
+                ops.push(DW_OP_FBREG);
+                write_sleb(&mut ops, offset);
+                ops.push(DW_OP_PIECE);
+                write_uleb(&mut ops, size / 8);
+                end = at + size;
+            }
+        }
         self.expr = ops;
         u32::from(!matches!(what, LocalWhat::Retained))
     }

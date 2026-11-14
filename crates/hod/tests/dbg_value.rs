@@ -355,7 +355,9 @@ fn expressions_are_written() {
         assert_eq!(ops("u"), ["DW_OP_constu 0x28, DW_OP_stack_value"], "{arch}");
         assert_eq!(
             ops("h"),
-            ["DW_OP_fbreg, DW_OP_deref, DW_OP_constu 0x1, DW_OP_shr, DW_OP_stack_value"],
+            // WP-230: `llc`'s `emitConstu` writes a small constant as a
+            // literal.
+            ["DW_OP_fbreg, DW_OP_deref, DW_OP_lit1, DW_OP_shr, DW_OP_stack_value"],
             "{arch}"
         );
         assert_eq!(ops("e"), ["DW_OP_fbreg"], "{arch}");
@@ -401,9 +403,10 @@ fn refusals_are_named() {
             hod_dwarf::DEBUG_DBG_VALUE_EXPR,
             "    #dbg_value(i32 %a, !37, !DIExpression(DW_OP_plus_uconst, 1), !40)\n",
         ),
+        // WP-230 (§6.32): a `DIArgList` that is not a computed value.
         (
             hod_cg::DEBUG_DBG_VALUE_ARGLIST,
-            "    #dbg_value(!DIArgList(i32 %a, i32 %n), !37, !DIExpression(DW_OP_LLVM_arg, 0, DW_OP_LLVM_arg, 1, DW_OP_plus, DW_OP_stack_value), !40)\n",
+            "    #dbg_value(!DIArgList(ptr %q, i32 %n), !37, !DIExpression(DW_OP_LLVM_arg, 0, DW_OP_LLVM_arg, 1, DW_OP_plus, DW_OP_deref), !40)\n",
         ),
     ];
     for triple in TRIPLES {
@@ -614,5 +617,153 @@ fn pieces_and_conversions() {
         );
         let dwo_info = output(Command::new(&dwarfdump).arg("--debug-info").arg(&dwo));
         assert!(!dwo_info.contains("DW_ATE_signed_32"), "{arch}: {dwo_info}");
+    }
+}
+
+/// WP-230 (§6.32): records whose values are a `DIArgList`, after one
+/// block of values with homes.
+fn arglists(triple: &str, split: bool) -> String {
+    let split_name = if split { ", splitDebugFilename: \"chain.dwo\"" } else { "" };
+    format!(
+        r#"target triple = "{triple}"
+
+declare void @use(i32)
+declare void @use64(i64)
+declare void @usep(ptr)
+
+define dso_local i32 @g(i32 noundef %n, ptr noundef %p, i64 noundef %k) !dbg !10 {{
+entry:
+  %a = add i32 %n, 1, !dbg !20
+  %w = sext i32 %n to i64, !dbg !20
+  br label %b, !dbg !20
+b:
+    #dbg_value(!DIArgList(ptr %p, i64 %k), !30, !DIExpression(DW_OP_LLVM_arg, 0, DW_OP_LLVM_arg, 1, DW_OP_constu, 4, DW_OP_mul, DW_OP_plus, DW_OP_stack_value), !40)
+    #dbg_value(!DIArgList(i32 %a, i32 %n), !31, !DIExpression(DW_OP_LLVM_arg, 0, DW_OP_LLVM_arg, 1, DW_OP_minus, DW_OP_stack_value), !40)
+    #dbg_value(!DIArgList(i32 %a, i32 %n), !32, !DIExpression(DW_OP_LLVM_arg, 0, DW_OP_LLVM_arg, 1, DW_OP_minus, DW_OP_constu, 1, DW_OP_shra, DW_OP_stack_value), !40)
+    #dbg_value(!DIArgList(i32 %a, i64 %w), !33, !DIExpression(DW_OP_LLVM_arg, 0, DW_OP_LLVM_convert, 32, DW_ATE_signed, DW_OP_LLVM_convert, 64, DW_ATE_signed, DW_OP_LLVM_arg, 1, DW_OP_plus, DW_OP_stack_value), !40)
+    #dbg_value(!DIArgList(i64 100, i32 -1), !34, !DIExpression(DW_OP_LLVM_arg, 0, DW_OP_LLVM_arg, 1, DW_OP_plus, DW_OP_stack_value), !40)
+    #dbg_value(!DIArgList(ptr %p, i64 poison), !35, !DIExpression(DW_OP_LLVM_arg, 0, DW_OP_LLVM_arg, 1, DW_OP_plus, DW_OP_stack_value), !40)
+    #dbg_value(ptr %p, !36, !DIExpression(DW_OP_LLVM_fragment, 0, 64), !40)
+    #dbg_value(!DIArgList(i64 %w, ptr %p), !36, !DIExpression(DW_OP_LLVM_arg, 1, DW_OP_LLVM_arg, 0, DW_OP_plus, DW_OP_stack_value, DW_OP_LLVM_fragment, 64, 64), !40)
+    #dbg_value(i64 %w, !37, !DIExpression(DW_OP_LLVM_arg, 0, DW_OP_plus_uconst, 2, DW_OP_stack_value), !40)
+    #dbg_value(!DIArgList(i32 %a, i32 %a), !38, !DIExpression(DW_OP_LLVM_arg, 0, DW_OP_LLVM_arg, 1, DW_OP_mul, DW_OP_stack_value), !40)
+  call void @use(i32 %a), !dbg !21
+  call void @use(i32 %n), !dbg !21
+  call void @usep(ptr %p), !dbg !21
+  call void @use64(i64 %k), !dbg !21
+  call void @use64(i64 %w), !dbg !21
+  ret i32 %a, !dbg !22
+}}
+
+!llvm.dbg.cu = !{{!0}}
+!llvm.module.flags = !{{!5, !6}}
+
+!0 = distinct !DICompileUnit(language: DW_LANG_C11, file: !1, producer: "clang", isOptimized: true, runtimeVersion: 0, emissionKind: FullDebug{split_name}, splitDebugInlining: false, nameTableKind: None)
+!1 = !DIFile(filename: "arglist.c", directory: "/hod/tests")
+!5 = !{{i32 7, !"Dwarf Version", i32 5}}
+!6 = !{{i32 2, !"Debug Info Version", i32 3}}
+!10 = distinct !DISubprogram(name: "g", scope: !1, file: !1, line: 1, type: !11, scopeLine: 1, flags: DIFlagPrototyped, spFlags: DISPFlagDefinition | DISPFlagOptimized, unit: !0)
+!11 = !DISubroutineType(types: !12)
+!12 = !{{!14, !14}}
+!14 = !DIBasicType(name: "int", size: 32, encoding: DW_ATE_signed)
+!15 = !DIBasicType(name: "unsigned long", size: 64, encoding: DW_ATE_unsigned)
+!16 = !DIBasicType(name: "long", size: 64, encoding: DW_ATE_signed)
+!17 = !DICompositeType(tag: DW_TAG_structure_type, name: "pair", file: !1, line: 1, size: 128, elements: !18)
+!18 = !{{}}
+!20 = !DILocation(line: 2, scope: !10)
+!21 = !DILocation(line: 3, scope: !10)
+!22 = !DILocation(line: 4, scope: !10)
+!30 = !DILocalVariable(name: "ix", scope: !10, file: !1, line: 5, type: !15)
+!31 = !DILocalVariable(name: "d", scope: !10, file: !1, line: 6, type: !14)
+!32 = !DILocalVariable(name: "half", scope: !10, file: !1, line: 7, type: !14)
+!33 = !DILocalVariable(name: "c", scope: !10, file: !1, line: 8, type: !16)
+!34 = !DILocalVariable(name: "k", scope: !10, file: !1, line: 9, type: !15)
+!35 = !DILocalVariable(name: "pz", scope: !10, file: !1, line: 10, type: !15)
+!36 = !DILocalVariable(name: "f", scope: !10, file: !1, line: 11, type: !17)
+!37 = !DILocalVariable(name: "one", scope: !10, file: !1, line: 12, type: !16)
+!38 = !DILocalVariable(name: "sq", scope: !10, file: !1, line: 13, type: !14)
+!40 = !DILocation(line: 5, scope: !10)
+"#
+    )
+}
+
+/// §6.32, as `llc` 19 and 22 write each shape under `SelectionDAG`
+/// (`spec/landed/dwarf/WP-230.md`; `DW_OP_fbreg` against `DW_OP_breg`,
+/// `DW_OP_deref_size` against `llc`'s `DW_OP_deref` of a narrow value):
+/// each value pushed where `DW_OP_LLVM_arg` names it, a constant
+/// sign-extended (an `unsigned long`'s `i32 -1` is all ones), an
+/// expression's small `DW_OP_constu` a literal; no entry when a value has
+/// no place or a narrow value meets `DW_OP_shra`; a fragment composed
+/// with a single record's; a single value named by `DW_OP_LLVM_arg`.
+/// Split, the conversions take `llc`'s legacy form.
+#[test]
+fn arglists_are_written() {
+    let Some(dwarfdump) = tool("llvm-dwarfdump") else { return };
+    let dir = Scratch::new("dbg-value-arglist");
+    for triple in TRIPLES {
+        let arch = triple.split('-').next().unwrap_or(triple);
+        let plain = dir.write(&format!("{arch}.o"), compile(&arglists(triple, false), None));
+        let dwo = dir.join(format!("{arch}-split.dwo"));
+        let split =
+            dir.write(&format!("{arch}-split.o"), compile(&arglists(triple, true), Some(&dwo)));
+        for file in [&plain, &split, &dwo] {
+            let verify = output(Command::new(&dwarfdump).arg("--verify").arg(file));
+            assert!(verify.contains("No errors."), "{arch}: {verify}");
+        }
+        let ops = |file: &Path, name: &str| named_ops(&entries(&dwarfdump, file, name));
+        assert_eq!(
+            ops(&plain, "ix"),
+            [
+                "DW_OP_fbreg, DW_OP_deref, DW_OP_fbreg, DW_OP_deref, DW_OP_lit4, DW_OP_mul, DW_OP_plus, DW_OP_stack_value"
+            ],
+            "{arch}"
+        );
+        assert_eq!(
+            ops(&plain, "d"),
+            [
+                "DW_OP_fbreg, DW_OP_deref_size 0x4, DW_OP_fbreg, DW_OP_deref_size 0x4, DW_OP_minus, DW_OP_stack_value"
+            ],
+            "{arch}"
+        );
+        assert!(ops(&plain, "half").is_empty(), "{arch}: {:?}", ops(&plain, "half"));
+        assert_eq!(
+            ops(&plain, "c"),
+            [
+                "DW_OP_fbreg, DW_OP_deref_size 0x4, DW_OP_convert DW_ATE_signed_32, DW_OP_convert DW_ATE_signed_64, DW_OP_fbreg, DW_OP_deref, DW_OP_plus, DW_OP_stack_value"
+            ],
+            "{arch}"
+        );
+        assert_eq!(
+            ops(&plain, "k"),
+            ["DW_OP_constu 0x64, DW_OP_lit0, DW_OP_not, DW_OP_plus, DW_OP_stack_value"],
+            "{arch}"
+        );
+        assert!(ops(&plain, "pz").is_empty(), "{arch}: {:?}", ops(&plain, "pz"));
+        assert_eq!(
+            ops(&plain, "f"),
+            [
+                "DW_OP_fbreg, DW_OP_piece 0x8, DW_OP_fbreg, DW_OP_deref, DW_OP_fbreg, DW_OP_deref, DW_OP_plus, DW_OP_stack_value, DW_OP_piece 0x8"
+            ],
+            "{arch}"
+        );
+        assert_eq!(
+            ops(&plain, "one"),
+            ["DW_OP_fbreg, DW_OP_deref, DW_OP_plus_uconst 0x2, DW_OP_stack_value"],
+            "{arch}"
+        );
+        assert_eq!(
+            ops(&plain, "sq"),
+            [
+                "DW_OP_fbreg, DW_OP_deref_size 0x4, DW_OP_fbreg, DW_OP_deref_size 0x4, DW_OP_mul, DW_OP_stack_value"
+            ],
+            "{arch}"
+        );
+        assert_eq!(
+            ops(&dwo, "c"),
+            [
+                "DW_OP_fbreg, DW_OP_deref_size 0x4, DW_OP_dup, DW_OP_constu 0x1f, DW_OP_shr, DW_OP_lit0, DW_OP_not, DW_OP_mul, DW_OP_constu 0x20, DW_OP_shl, DW_OP_or, DW_OP_fbreg, DW_OP_deref, DW_OP_plus, DW_OP_stack_value"
+            ],
+            "{arch}"
+        );
     }
 }

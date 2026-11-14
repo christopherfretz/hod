@@ -357,19 +357,27 @@ fn a_variable_declared_by_two_slots_is_located_by_the_first() {
     }
 }
 
-/// A second record of the variable that is not a slot is refused, by
-/// name, with the variable and its function.
+/// A value record of a variable also declared on a slot is not used
+/// (WP-230, `spec/dwarf.md` §6.32: `llc`'s frame table wins; refused as
+/// `debug:variable-twice` before): the variable is located by its slot.
 #[test]
-fn a_variable_declared_by_a_slot_and_a_value_is_refused() {
+fn a_variable_declared_by_a_slot_and_a_value_is_located_by_the_slot() {
+    let scratch = Scratch::new("wp195-slot-value");
     for triple in TRIPLES {
+        let name = format!("slot-value-{}", &triple[..6]);
         let text = module(TWICE, triple).replace(
             "    #dbg_declare(ptr %r2, !16, !DIExpression(), !18)\n  %c = add i32 %a, 2, !dbg !18\n",
             "  %c = add i32 %a, 2, !dbg !18\n    #dbg_value(i32 %c, !16, !DIExpression(), !18)\n",
         );
-        let (construct, detail) = refusal(&text);
-        assert_eq!(construct, "debug:variable-twice", "{triple}");
-        assert!(detail.starts_with("DILocalVariable (node "), "{triple}: {detail}");
-        assert!(detail.ends_with(") 'r' in function '_Z1fi'"), "{triple}: {detail}");
+        let ours = compare(&scratch, &name, &text);
+        if ours.is_empty() {
+            continue;
+        }
+        let once = text.replace("    #dbg_value(i32 %c, !16, !DIExpression(), !18)\n", "");
+        let object = compile(&once).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let path = scratch.write(&format!("{name}.once.o"), &object);
+        let dwarfdump = tool("llvm-dwarfdump").expect("dwarfdump");
+        assert_eq!(ours, tree(&dwarfdump, &path), "{name}: located by the slot");
     }
 }
 

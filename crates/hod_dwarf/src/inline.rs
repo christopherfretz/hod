@@ -599,7 +599,9 @@ impl UnitPlan<'_> {
             let mut tail: Vec<(u32, u32)> = self.locals[start..]
                 .iter()
                 .filter(|l| match l.what {
-                    LocalWhat::Var { .. } | LocalWhat::CoroVar { .. } => !value,
+                    LocalWhat::Var { .. }
+                    | LocalWhat::Pieces { .. }
+                    | LocalWhat::CoroVar { .. } => !value,
                     LocalWhat::List { .. } => value,
                     _ => false,
                 })
@@ -611,7 +613,9 @@ impl UnitPlan<'_> {
             tail.sort_unstable();
             let mut done = vec![false; tail.len()];
             for v in f.vars {
-                if matches!(v.place, crate::func::LocalPlace::Value { .. }) != value {
+                if matches!(v.place, crate::func::LocalPlace::ValueArg(_))
+                    || matches!(v.place, crate::func::LocalPlace::Value { .. }) != value
+                {
                     continue;
                 }
                 let node = v.node.raw();

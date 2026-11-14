@@ -115,9 +115,28 @@ fn record_refusals() {
     assert_eq!(check(&untyped), Err((0, "debug:variable-without-type")));
     let aligned = module(&[("line: 2, type: !9)", "line: 2, arg: 1, type: !9, align: 64)")], "");
     assert_eq!(check(&aligned), Err((0, "debug:variable-alignment")));
+    // WP-230 (§6.32): a slot's fragment of whole bytes is a piece; one
+    // of bits, or one after other operations, is not written yet.
     let fragment =
         module(&[("!20, !DIExpression()", "!20, !DIExpression(DW_OP_LLVM_fragment, 0, 16)")], "");
-    assert_eq!(check(&fragment), Err((0, "debug:fragment")));
+    assert_eq!(check(&fragment), Ok(()));
+    let bits =
+        module(&[("!20, !DIExpression()", "!20, !DIExpression(DW_OP_LLVM_fragment, 0, 12)")], "");
+    assert_eq!(check(&bits), Err((0, "debug:fragment")));
+    let after = module(
+        &[("!20, !DIExpression()", "!20, !DIExpression(DW_OP_deref, DW_OP_LLVM_fragment, 0, 16)")],
+        "",
+    );
+    assert_eq!(check(&after), Err((0, "debug:fragment")));
+    // A declaration of `poison` has no row, whatever its expression.
+    let poison = module(
+        &[(
+            "#dbg_declare(ptr %x, !20, !DIExpression()",
+            "#dbg_declare(ptr poison, !20, !DIExpression(DW_OP_LLVM_fragment, 0, 12)",
+        )],
+        "",
+    );
+    assert_eq!(check(&poison), Ok(()));
     let label = module(&[("line: 3)", "line: 3, isArtificial: true)")], "");
     // WP-098: every label is written (spec/dwarf.md §6.14).
     assert_eq!(check(&label), Ok(()));

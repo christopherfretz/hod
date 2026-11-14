@@ -37,6 +37,11 @@
 //! whole variable overlaps all of them), as `llc`'s
 //! `DbgEntityHistoryCalculator` does; `hod_dwarf` composes the pieces.
 //!
+//! A record whose values are a `DIArgList` (WP-230, §6.32) has the row
+//! [`ValueAt::Args`] and, after it, one [`VarPlace::ValueArg`] row per
+//! value, each placed by the rule above; `hod_dwarf` writes the
+//! expression with every value pushed where `DW_OP_LLVM_arg` names it.
+//!
 //! Ranges are never extended across blocks (LLVM's `LiveDebugValues`
 //! does that; follow-up in the landed record): where `llc` shows a value
 //! hod may show `<optimized out>`, never another value.
@@ -77,9 +82,10 @@ use crate::loc::{Key, Kind, Loc};
 use crate::record::{VarPlace, VarRow};
 use crate::target::Target;
 
-/// A `#dbg_value` whose location is a `DIArgList` (several values
-/// combined by `DW_OP_LLVM_arg`): not written yet.
-pub const DEBUG_DBG_VALUE_ARGLIST: &str = "debug:dbg-value-arglist";
+/// A `#dbg_value` whose location is a `DIArgList` hod does not write
+/// (`spec/dwarf.md` §6.32): its expression is not a computed value, or
+/// names a value the list does not have.
+pub use hod_dwarf::DEBUG_DBG_VALUE_ARGLIST;
 
 /// A `#dbg_value` in a coroutine body (WP-108): its frame is not the
 /// function's alone, and no producer of the corpus writes one.
@@ -111,6 +117,10 @@ pub enum ValueAt {
     /// At the address stored this many bytes from the function's DWARF
     /// frame base (WP-221).
     Address(i64),
+    /// Computed from a `DIArgList` of this many values (WP-230,
+    /// `spec/dwarf.md` §6.32): the row is followed by that many
+    /// [`VarPlace::ValueArg`] rows, each value's place.
+    Args(u32),
 }
 
 /// One range of a variable described by value records: code offsets
@@ -138,6 +148,10 @@ struct Pending {
     /// The bits of the variable the record describes (WP-225): its
     /// `DW_OP_LLVM_fragment`, or the whole variable.
     bits: Bits,
+    /// WP-230: for a `DIArgList` (or an expression with
+    /// `DW_OP_LLVM_arg`), its values are `ValueScratch::args[first..
+    /// first + count]`, as `(first, count)`; `value` is unused.
+    list: Option<(u32, u32)>,
 }
 
 /// The bits of a variable a record describes: `(offset, size)` of its
@@ -169,6 +183,8 @@ struct Declared {
 #[derive(Debug, Default)]
 pub(crate) struct ValueScratch {
     records: Vec<Pending>,
+    /// WP-230: the values of the records' `DIArgList`s.
+    args: Vec<Value>,
     /// WP-221: the declarations of instruction results, in record order.
     declared: Vec<Declared>,
     /// Whether no instruction of the block being emitted has been yet.
@@ -199,6 +215,7 @@ impl ValueScratch {
             v.capacity() * size_of::<T>()
         }
         bytes(&self.records)
+            + bytes(&self.args)
             + bytes(&self.declared)
             + bytes(&self.open)
             + bytes(&self.block_of)
@@ -216,6 +233,7 @@ impl<'a, T: Target> FnCx<'a, T> {
     pub(crate) fn value_records(&mut self) {
         let v = &mut self.s.dbg_values;
         v.records.clear();
+        v.args.clear();
         v.open.clear();
         v.block = 0;
         v.head = OPEN;
@@ -225,15 +243,8 @@ impl<'a, T: Target> FnCx<'a, T> {
             if record.kind != hod_ir::DbgRecordKind::Value {
                 continue;
             }
-            let refused = if coroutine {
-                Some(DEBUG_DBG_VALUE_COROUTINE)
-            } else if record.arg_list || record.values.len() != 1 {
-                Some(DEBUG_DBG_VALUE_ARGLIST)
-            } else {
-                None
-            };
-            if let Some(name) = refused {
-                self.out.vars.push(refused_row(&record, name));
+            if coroutine {
+                self.out.vars.push(refused_row(&record, DEBUG_DBG_VALUE_COROUTINE));
                 continue;
             }
             let debug = &self.module.debug;
@@ -242,14 +253,26 @@ impl<'a, T: Target> FnCx<'a, T> {
                 hod_ir::DiOp::Fragment(offset, size) => Some((offset, size)),
                 _ => None,
             });
-            self.s.dbg_values.records.push(Pending {
+            // WP-230 (§6.32): a `DIArgList`, or a value the expression
+            // names by `DW_OP_LLVM_arg`.
+            let v = &mut self.s.dbg_values;
+            let list = (record.arg_list
+                || record.values.len() != 1
+                || debug.ops(record.expr).any(|op| matches!(op, hod_ir::DiOp::Arg(_))))
+            .then(|| {
+                let first = v.args.len() as u32;
+                v.args.extend_from_slice(record.values);
+                (first, record.values.len() as u32)
+            });
+            v.records.push(Pending {
                 before: record.before.raw(),
                 var: record.var,
                 loc: record.loc,
                 expr: record.expr,
-                value: record.values[0],
+                value: record.values.first().copied().unwrap_or(Value::NONE),
                 ia,
                 bits,
+                list,
             });
         }
         self.s.dbg_values.declared.clear();
@@ -351,7 +374,11 @@ impl<'a, T: Target> FnCx<'a, T> {
                     k += 1;
                 }
             }
-            let place = if ends { ValueAt::None } else { self.value_at(r.value, inst)? };
+            let place = match r.list {
+                Some((_, count)) => ValueAt::Args(count),
+                None if ends => ValueAt::None,
+                None => self.value_at(r.value, inst)?,
+            };
             let end = if ends { offset } else { OPEN };
             // A record before a block's first instruction holds from the
             // block's first byte, unless its value is a `phi` of the
@@ -365,6 +392,19 @@ impl<'a, T: Target> FnCx<'a, T> {
                 expr: r.expr,
                 place: VarPlace::Value(ValueRange { start, end, at: place }),
             });
+            // WP-230 (§6.32): each value's place, in rows after it.
+            if let Some((first, count)) = r.list {
+                for k in first..first + count {
+                    let value = self.s.dbg_values.args[k as usize];
+                    let at = if ends { ValueAt::None } else { self.value_at(value, inst)? };
+                    self.out.vars.push(VarRow {
+                        var: r.var,
+                        loc: r.loc,
+                        expr: r.expr,
+                        place: VarPlace::ValueArg(at),
+                    });
+                }
+            }
             if !ends {
                 self.s.dbg_values.open.push((r.var, r.ia, r.bits, row));
             }
@@ -641,8 +681,12 @@ impl<'a, T: Target> FnCx<'a, T> {
         let t = self.target;
         let desc = self.frame_desc;
         for row in self.out.vars.get_mut(start..).unwrap_or_default() {
-            let VarPlace::Value(r) = &mut row.place else { continue };
-            r.at = match r.at {
+            let at = match &mut row.place {
+                VarPlace::Value(r) => &mut r.at,
+                VarPlace::ValueArg(at) => at, // WP-230
+                _ => continue,
+            };
+            *at = match *at {
                 ValueAt::Home(home, size) => t
                     .frame_base_offset(&desc, home)
                     .map_or(ValueAt::None, |offset| ValueAt::Frame(offset, size)),
@@ -692,15 +736,28 @@ fn refused_row(record: &DbgRecord<'_>, name: &'static str) -> VarRow {
 /// The bridge's place of a value row (`emit/lines.rs`): a home that was
 /// never resolved to the frame base is not a place the writer can name.
 pub(crate) fn local_place(r: ValueRange) -> hod_dwarf::LocalPlace {
-    use hod_dwarf::{LocalPlace, ValueLoc};
-    let at = match r.at {
+    match value_loc(r.at) {
+        Some(at) => hod_dwarf::LocalPlace::Value { start: r.start, end: r.end, at },
+        None => hod_dwarf::LocalPlace::Refused(crate::error::DEBUG_FRAME_PLACE),
+    }
+}
+
+/// The bridge's place of a `DIArgList` value's row (WP-230).
+pub(crate) fn local_arg_place(at: ValueAt) -> hod_dwarf::LocalPlace {
+    match value_loc(at) {
+        Some(at) => hod_dwarf::LocalPlace::ValueArg(at),
+        None => hod_dwarf::LocalPlace::Refused(crate::error::DEBUG_FRAME_PLACE),
+    }
+}
+
+fn value_loc(at: ValueAt) -> Option<hod_dwarf::ValueLoc> {
+    use hod_dwarf::ValueLoc;
+    Some(match at {
         ValueAt::Frame(offset, size) => ValueLoc::Frame { offset, size },
         ValueAt::Const { bits, width } => ValueLoc::Const { bits, width },
         ValueAt::None => ValueLoc::None,
         ValueAt::Address(offset) => ValueLoc::Address { offset },
-        ValueAt::Home(..) | ValueAt::HomeAddress(_) => {
-            return LocalPlace::Refused(crate::error::DEBUG_FRAME_PLACE);
-        }
-    };
-    LocalPlace::Value { start: r.start, end: r.end, at }
+        ValueAt::Args(count) => ValueLoc::Args { count },
+        ValueAt::Home(..) | ValueAt::HomeAddress(_) => return None,
+    })
 }

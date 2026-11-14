@@ -317,7 +317,8 @@ def catch_results(lines, list_path):
             if j + 2 < len(parts) and CATCH_DOTS_RE.match(parts[j + 2]):
                 failed.add(parts[i + 1].strip())
     # The cases that ran: duckdb's progress lines (`[n/N] (p%): <case>`);
-    # the case running when the program died has its output glued on.
+    # a case's own output (or the abort of the case running when the
+    # program died) can be glued on after its name.
     ran = [m.group(1) for m in (CATCH_PROGRESS_RE.match(p) for p in parts) if m]
     ran_set = set(ran)
     per = {}
@@ -327,7 +328,7 @@ def catch_results(lines, list_path):
     except FileNotFoundError:
         names = []
     for t in names:
-        if not ran or t in ran_set or any(r.startswith(t) for r in ran[-1:]):
+        if not ran or t in ran_set or any(r.startswith(t) for r in ran):
             per[t] = "Passed"
         else:
             per[t] = "Not Run"

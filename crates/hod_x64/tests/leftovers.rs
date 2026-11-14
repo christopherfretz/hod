@@ -689,14 +689,16 @@ fn wide_atomics_without_cx16_call_libatomic() {
 /// §5.6.10: an atomic load, store, `atomicrmw xchg` or `cmpxchg` whose
 /// alignment is below its size calls libatomic's generic routine
 /// (`__atomic_load`, `__atomic_store`, `__atomic_exchange`,
-/// `__atomic_compare_exchange`), as `llc` does. Every leg (hod plain and
+/// `__atomic_compare_exchange`), as `llc` does, and every other
+/// `atomicrmw` operation is `llc`'s `__atomic_compare_exchange` loop
+/// (WP-232, `common/generic_atomics.rs`). Every leg (hod plain and
 /// under every stress option, `llc` 22 and 19) is linked with `-latomic`
 /// and run on cells that are misaligned for their size; the driver checks
 /// the cell, the result and the bytes around the cell.
 #[test]
 fn under_aligned_atomics_run_against_libatomic() {
     use std::path::{Path, PathBuf};
-    let table = generic_table(false, false);
+    let table = generic_table(true, false);
     let module = |keep: &dyn Fn(&GenericFn) -> bool| {
         generic_module(&table, &aggr_gen::header(), "", aggr_gen::PIE_FLAGS, keep)
     };
@@ -732,7 +734,9 @@ fn under_aligned_atomics_run_against_libatomic() {
             let program = scratch.join(format!("{leg}-{}", linker.name));
             let mut inputs: Vec<&Path> = vec![driver.as_path()];
             inputs.extend(objects.iter().map(PathBuf::as_path));
-            inputs.push(Path::new("-latomic"));
+            // `llc` calls `fmaxf`, `fminf`, `fmax`, `fmin` for `fmax` and
+            // `fmin` on x86-64.
+            inputs.extend([Path::new("-latomic"), Path::new("-lm")]);
             toolchain.link_ok(linker, &["-pie"], &inputs, &program);
             let ran = toolchain.run(linker, &program);
             let out = ran.stdout_text();

@@ -235,10 +235,9 @@ int main() {
 const CONTAINERS_PRINTS: &str =
     "1 3 5 7 9 \na=2 b=1 c=1 \ncat dog \n3.250 0.333333\n0.1428571429\n";
 
-/// Why hod declines `MODULE_ASM` for the host: AArch64's assembler names
-/// the directive; x86-64 declines file-scope `asm` as a whole.
-const MODULE_ASM_REASON: &str =
-    if cfg!(target_arch = "aarch64") { "asm:directive/ident" } else { "module:asm" };
+/// Why hod declines `MODULE_ASM`: the assembler of either target names
+/// the directive (x86-64 reads file-scope `asm` since WP-204).
+const MODULE_ASM_REASON: &str = "asm:directive/ident";
 
 /// File-scope `asm` with a directive hod's assembler does not read
 /// (`.ident`, `asm:directive/ident`, `spec/asm.md` §9): a module hod

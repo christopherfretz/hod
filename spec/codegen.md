@@ -3919,14 +3919,24 @@ byte-identical to what it was.
    the bottom of the frame (§5.5), so its `stp` is the touch of the
    bottom page and the top is touched first. A `FRAME` with `FRAME + 1024
    <= P` is the unprobed prologue. Otherwise, with `k = (FRAME - 16) / P`
-   and `r = (FRAME - 16) % P`: `str xzr, [sp, #-16]!` (CFA `sp + 16`),
-   then for `k <= 4` (`llc`'s unroll limit) `k` times `sub sp, sp, #P` ·
-   `str xzr, [sp]` (CFA `sp + 16 + iP` after each `sub`), for `k > 4`
-   `sub x17, sp, #kP` (CFA `x17 + 16 + kP`) · `1: sub sp, sp, #P` · `str
-   xzr, [sp]` · `cmp sp, x17` · `b.ne 1b` (CFA register `sp`), then `r`
-   in one or two `sub`s (CFA `sp + FRAME`), then `stp x29, x30, [sp]` as
-   always. `x17` because `x16` may hold the incoming base and `x9`..`x15`
-   are `preserve_most`'s. The prologue reserves 36 bytes more. A dynamic
+   and `r = (FRAME - 16) % P`: for `k <= 4` (`llc`'s unroll limit) `str
+   xzr, [sp, #-16]!` (CFA `sp + 16`), `k` times `sub sp, sp, #P` · `str
+   xzr, [sp]` (CFA `sp + 16 + iP` after each `sub`), then `r` in one or
+   two `sub`s (CFA `sp + FRAME`). For `k > 4` the loop runs under a
+   temporary frame record (WP-194): `stp x29, x30, [sp, #-16]!` (the top
+   touch; CFA `sp + 16`, `x29` and `x30` at CFA `- 16` and `- 8`) · `mov
+   x29, sp` (CFA `x29 + 16`) · `sub x17, sp, #kP` · `1: sub sp, sp, #P` ·
+   `str xzr, [sp]` · `cmp sp, x17` · `b.ne 1b` · `r` in one or two `sub`s
+   (no row: the CFA does not follow `sp`) · `ldr x29, [x29]` (the
+   caller's `x29` back; CFA `sp + FRAME`). Either way `stp x29, x30,
+   [sp]` follows as always, and from it the usual rows. With the CFA on
+   `x29` an unwinder that emulates frame 0 instead of reading its rows
+   (lldb) follows the loop; with it on `sp` or `x17` it lost one page per
+   pass. Nothing reads the temporary record after the usual `stp`, so the
+   local area's top 16 bytes, which it overlaps, are not reserved;
+   nothing is written below `sp`. `x17` because `x16` may hold the
+   incoming base and `x9`..`x15` are `preserve_most`'s. The prologue
+   reserves 36 bytes more. A dynamic
    allocation: `1: sub sp, sp, #P` · `cmp sp, x16` · `b.ls 2f` · `str
    xzr, [sp]` · `b 1b` · `2: mov sp, x16` · `ldr xzr, [sp]`, `llc`'s loop.
    An outgoing argument area of more than 1024 bytes: `sub sp, sp, #c` ·
@@ -4080,6 +4090,50 @@ to the result's slot.
 
 Evidence: `spec/landed/codegen/WP-173.md` for the rules this reuses,
 `spec/landed/codegen/WP-190.md` for these.
+
+#### 5.6.30 The hardening pieces together (WP-194)
+
+Stack protectors (§5.6.24), branch tracking or protection (§5.6.25,
+§5.6.26) and stack probing (§5.6.27) compose with each other, with a
+dynamic area, `byval` and stack arguments, `nest`, `musttail`,
+`returns_twice`, `invoke` and varargs, and on x86-64 with
+`preserve_most`/`preserve_all`. Each piece keeps its own place and its
+own registers, so no combination is refused for being one.
+
+1. **x86-64 prologue:** `endbr64` (`cet::entry`, first) · `push rbp` ·
+   `mov rbp, rsp` · the pushes of the preserved set (§5.6.23) · the save
+   area and `sub rsp, FRAME`, written in `end` as the probed allocation
+   (its 105 reserved bytes cut with the rest) · the guard's entry store
+   and the low guard (`guard::reserve`, `Local(0)`) · the `xmm` saves of
+   `preserve_all`. Epilogue: the guard check · the `xmm` reloads · `lea
+   rsp, [rbp - 8n]` · the pops · `ret`. Registers: the guard's entry
+   uses `r10` and `r11`, its check `r10`; the probe loop and the dynamic
+   loop use `r11`. None of them is preserved by any convention, and the
+   preserved set is saved before any of them is written.
+2. **AArch64 prologue:** `bti c` or `paciasp`/`pacibsp` at offset 0
+   (`protect::entry`; its rows, `B key` at 0 and the negated RA state
+   after the signing instruction, are written first in `end`) · `[mov
+   x16, sp]` (the incoming base) · the allocation (§5.6.27 item 2: two
+   `sub`s, or the probes, or the looped shape under its temporary
+   record) · `stp x29, x30, [sp]` · `mov x29, sp` · the saves of
+   `preserve_most` and the coroutine's `x19` · the incoming base and
+   result slots · the guard's entry store. `guard::place` makes the
+   guard block last in the local area, at its top; the low guard of a
+   dynamic area is at `x29 - 16`. Epilogue: the guard check · `[mov sp,
+   x29]` · `ldp x29, x30, [sp]` · `add sp` · `autiasp`/`autibsp` (the
+   stack pointer is the entry's again) · `ret`, or the tail branch.
+   Registers: `x16` (the incoming base, the dynamic loop's bound), `x17`
+   (the probe loop's bound, the guard's scratch); the guard check saves
+   `x16` with `str x16, [sp, #-16]!` (a tail branch through `x16`
+   needs it), compares through both and reloads it, after the body and
+   before anything is restored. `x30` is signed
+   before the temporary record stores it, so the CFA the unwinder
+   authenticates it against is the entry stack pointer in every row.
+3. **Property notes:** the GNU property note is written from the module
+   flags as alone (BTI, PAC, GCS on AArch64; IBT, SHSTK on x86-64), and
+   is the same as `llc`'s for every flag set measured.
+
+Evidence: `spec/landed/codegen/WP-194.md`.
 
 ## 6. Control flow
 

@@ -69,7 +69,6 @@ int main() {
 //@ gdb-check: #0  guarded (...) at hardening_a64.cpp:39
 //@ gdb-check: 3 16
 //@ gdb-check: exited normally
-//@ xfail(lldb): lldb emulates frame 0 inside the probe loop (sp moves before x29 is set, spec/codegen.md §5.6.27) and loses the CFA one page per pass; .eh_frame is right
 //@ lldb: settings set frame-format "frame #${frame.index}: ${function.name-without-args}{ at ${line.file.basename}:${line.number}}\n"
 //@ lldb: breakpoint set --name deep --skip-prologue false
 //@ lldb: breakpoint set --file hardening_a64.cpp --line 39

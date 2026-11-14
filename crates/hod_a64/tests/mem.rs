@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use common::linking::{Toolchain, exit_code};
 use common::{assert_refused, chunk, code_words, compile_ll, ll_header, llc, parse, write_object};
-use hod_a64::{compile_module, mem};
+use hod_a64::compile_module;
 use hod_cg::{CgError, Options, RelocModel, Stress};
 use hod_interp::{Interp, Program, Val};
 use hod_mc_a64 as mc;
@@ -486,8 +486,10 @@ fn a_dead_volatile_load_is_emitted_once() {
 #[test]
 fn the_other_forms_are_refused_by_name() {
     assert_refused(&[(
-        "define <2 x ptr> @f(ptr %p, <2 x i64> %i) { %r = getelementptr i8, ptr %p, <2 x i64> %i\n ret <2 x ptr> %r }",
-        mem::PTRADD_VECTOR,
+        // WP-234: a vector `getelementptr` is lowered; an index vector of
+        // lanes that are not addressable is the vector group's refusal.
+        "define <2 x ptr> @f(ptr %p, ptr %q) { %i = load <2 x i33>, ptr %q\n %r = getelementptr i8, ptr %p, <2 x i33> %i\n ret <2 x ptr> %r }",
+        hod_a64::vector::ODD_ELEMENT,
     )]);
 }
 

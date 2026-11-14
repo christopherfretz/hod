@@ -33,7 +33,7 @@ use hod_interp::{Interp, Program, Val};
 use hod_ir::{Body, Module};
 use hod_mc_x64 as mc;
 use hod_testutil::{Scratch, run_with, tools_required};
-use hod_x64::{X64, mem};
+use hod_x64::X64;
 use linking::{Toolchain, exit_code};
 use mc::{Mem, Reg, Scale, Size};
 use mem_gen::{BUF, Func, GLOBAL, generate};
@@ -846,9 +846,11 @@ fn a_dead_volatile_load_is_emitted_once() {
 fn the_other_forms_are_refused_by_name() {
     assert_eq!(
         compile_ll(
-            "define void @f(ptr %p, ptr %q) {\n %i = load <2 x i64>, ptr %q\n %r = getelementptr i8, ptr %p, <2 x i64> %i\n store <2 x ptr> %r, ptr %q\n ret void }"
+            "define void @f(ptr %p, ptr %q) {\n %i = load <2 x i33>, ptr %q\n %r = getelementptr i8, ptr %p, <2 x i33> %i\n store <2 x ptr> %r, ptr %q\n ret void }"
         ),
-        Err(CgError::unsupported(mem::PTRADD_VECTOR))
+        // WP-234: a vector `getelementptr` is lowered; an index vector of
+        // lanes that are not addressable is the vector group's refusal.
+        Err(CgError::unsupported(hod_x64::vector::ODD_ELEMENT))
     );
 }
 

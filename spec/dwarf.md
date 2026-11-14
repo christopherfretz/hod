@@ -3550,6 +3550,26 @@ type, and the same operations as `llc` 22's own objects where they
 describe the value) and `refusals_are_named` (a conversion to 96 bits
 keeps the refusal). Evidence: `spec/landed/dwarf/WP-230.md`.
 
+### 6.35 Imports of an inlined function (implemented, WP-230)
+
+An imported declaration (`using n::map;`, §6.11) whose entity is a
+function definition the module only inlines was refused as
+`debug:import-entity` (8 of the 886 optimized modules:
+`tests/debug/inlined_import.cpp` and libc++'s `isnormal.pass`, `-O1`
+and `-O2`, both targets). `llc` 22's `constructImportedEntityDIE` names
+the entity's abstract instance whenever the function has one
+(`getAbstractScopeDIEs().lookup(SP)`), also when it has code of its own
+(a concrete DIE); otherwise `getOrCreateSubprogramDIE`. hod does the
+same (`import.rs` `import_target`, `imported_die`): imports are sealed
+after every function is added, so every abstract instance exists. A
+definition with neither code nor an abstract instance keeps
+`debug:import-entity`.
+
+**Tests.** `crates/hod/tests/inlined_import.rs` (the entity inlined
+only, and also placed out of line; both targets; trees equal to `llc`
+22's, the import naming the abstract instance). Evidence:
+`spec/landed/dwarf/WP-230.md`.
+
 ## 7. Speed and memory
 
 ### 7.1 Parallel emission and determinism

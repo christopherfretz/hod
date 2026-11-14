@@ -434,12 +434,40 @@ const MODULE: [SupportRow; 24] = [
         "any `frame-pointer` value: hod always keeps a frame pointer (`spec/codegen.md` §5)",
     ),
     // `BranchProtection` bit order.
-    row("module:branch-target-enforcement", todo(LATER), never(A64_ONLY), ""),
-    row("module:guarded-control-stack", todo(LATER), never(A64_ONLY), ""),
-    row("module:sign-return-address", todo(LATER), never(A64_ONLY), ""),
-    row("module:sign-return-address-all", todo(LATER), never(A64_ONLY), ""),
-    row("module:sign-return-address-with-bkey", todo(LATER), never(A64_ONLY), ""),
-    row("module:branch-protection-pauth-lr", todo(LATER), never(A64_ONLY), ""),
+    // WP-185: on AArch64 the flags decide `.note.gnu.property` (BTI,
+    // PAC, GCS bits) and, through `hod_ll`'s upgrade, the functions'
+    // attributes; on x86-64 `llc` ignores them.
+    both(
+        "module:branch-target-enforcement",
+        ON,
+        "AArch64: the BTI bit of `.note.gnu.property`; x86-64: ignored, as `llc` (WP-185)",
+    ),
+    both(
+        "module:guarded-control-stack",
+        ON,
+        "AArch64: the GCS bit of `.note.gnu.property`, no code change; x86-64: ignored (WP-185)",
+    ),
+    both(
+        "module:sign-return-address",
+        ON,
+        "AArch64: the PAC bit of `.note.gnu.property`; x86-64: ignored, as `llc` (WP-185)",
+    ),
+    both(
+        "module:sign-return-address-all",
+        ON,
+        "read with `sign-return-address` by `hod_ll`'s upgrade; x86-64: ignored (WP-185)",
+    ),
+    both(
+        "module:sign-return-address-with-bkey",
+        ON,
+        "read with `sign-return-address` by `hod_ll`'s upgrade; x86-64: ignored (WP-185)",
+    ),
+    row(
+        "module:branch-protection-pauth-lr",
+        todo(LATER),
+        ON,
+        "AArch64: `paciasppc` and the PC-modifier forms (FEAT_PAuth_LR); x86-64: ignored (WP-185)",
+    ),
     row(
         "module:cf-protection-branch",
         never(X64_ONLY),
@@ -604,15 +632,15 @@ const CC: [SupportRow; 26] = [
     row(
         "cc:preserve_mostcc",
         ON,
-        todo(X64),
-        "assigned as `ccc`; the callee also saves `x9`..`x15` (WP-095)",
+        ON,
+        "assigned as `ccc`; the callee also saves `x9`..`x15` (WP-095); x86-64: `rax`, `rcx`, `rdx`, `rsi`, `rdi`, `r8`..`r10` but its result's (WP-181)",
     ),
     // WP-101.
     row(
         "cc:preserve_allcc",
         ON,
-        todo(X64),
-        "assigned as `ccc`; the callee also saves `x9`..`x15` and `q8`..`q31` whole",
+        ON,
+        "assigned as `ccc`; the callee also saves `x9`..`x15` and `q8`..`q31` whole; x86-64: `preserve_mostcc`'s and `xmm0`..`xmm15` but its result's (WP-181)",
     ),
     row("cc:swiftcc", ON, todo(X64), "assigned as `ccc` (`spec/abi-a64.md` §1.2)"),
     row("cc:cxx_fast_tlscc", ON, todo(X64), "assigned as `ccc` (`spec/abi-a64.md` §1.2)"),
@@ -737,9 +765,13 @@ const ATTR_FLAG: [SupportRow; FnAttrs::FLAG_NAMES.len()] = [
         "an ordinary call; a body whose meaning depends on being inlined is declined \
          (`spec/cli.md` \"Always-inline\", WP-021)",
     ),
-    a64("attr:ssp", "spec/codegen.md §13", "open question: accept and ignore, or implement"),
-    a64("attr:sspreq", "spec/codegen.md §13", ""),
-    a64("attr:sspstrong", "spec/codegen.md §13", ""),
+    both(
+        "attr:ssp",
+        ON,
+        "a guard above the escaping slots, checked at every exit (`spec/codegen.md` §5.6.24, WP-183)",
+    ),
+    both("attr:sspreq", ON, "as `attr:ssp`, every function protected"),
+    both("attr:sspstrong", ON, "as `attr:ssp`"),
     row(
         "attr:presplitcoroutine",
         ON,
@@ -789,11 +821,35 @@ const ATTR_STRING: [SupportRow; FnStr::ALL.len()] = [
     a64("attr:patchable-function-entry", LATER, ""),
     a64("attr:patchable-function-prefix", LATER, ""),
     a64("attr:function-instrument", LATER, ""),
-    row("attr:branch-target-enforcement", todo(LATER), never(A64_ONLY), ""),
-    row("attr:sign-return-address", todo(LATER), never(A64_ONLY), ""),
-    row("attr:sign-return-address-key", todo(LATER), never(A64_ONLY), ""),
-    row("attr:branch-protection-pauth-lr", todo(LATER), never(A64_ONLY), ""),
-    row("attr:guarded-control-stack", todo(LATER), never(A64_ONLY), ""),
+    both(
+        "attr:branch-target-enforcement",
+        ON,
+        "AArch64: `bti c` at the entry, `bti j` where an indirect branch lands \
+         (`spec/codegen.md` §5.6.26); x86-64: ignored, as `llc` (WP-185)",
+    ),
+    both(
+        "attr:sign-return-address",
+        ON,
+        "AArch64: `paciasp`/`autiasp` with `DW_CFA_AARCH64_negate_ra_state`, `non-leaf` and \
+         `all` alike (every hod frame saves `x30`); x86-64: ignored (WP-185)",
+    ),
+    both(
+        "attr:sign-return-address-key",
+        ON,
+        "AArch64: `b_key` signs with `pacibsp`/`autibsp` under a CIE with `B`; x86-64: \
+         ignored (WP-185)",
+    ),
+    row(
+        "attr:branch-protection-pauth-lr",
+        todo(LATER),
+        ON,
+        "AArch64: FEAT_PAuth_LR; x86-64: ignored (WP-185)",
+    ),
+    both(
+        "attr:guarded-control-stack",
+        ON,
+        "no code change: hod returns only to the address its call left in `x30` (WP-185)",
+    ),
     both("attr:stack-probe-size", ON, "a parameter of `attr:probe-stack`, read with it (WP-186)"),
     both(
         "attr:probe-stack",
@@ -1659,8 +1715,8 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
     row(
         "inst:callbr",
         ON,
-        todo(X64),
-        "inline assembly with labels, `asm goto` (WP-103, `spec/codegen.md` §5.5.3)",
+        ON,
+        "inline assembly with labels, `asm goto` (WP-103, `spec/codegen.md` §5.5.3; x86-64: an empty template, WP-181, §5.6.23)",
     ),
     row("inst:invoke", ON, ON, ""),
     row("inst:resume", ON, ON, ""),
@@ -1717,8 +1773,8 @@ const CALL: [SupportRow; 4] = [
     row(
         "call:inline-asm",
         ON,
-        todo(X64),
-        "the callee is inline assembly of instructions: `hod_asm` (WP-103, `spec/asm.md`)",
+        ON,
+        "the callee is inline assembly of instructions: `hod_asm` (WP-103, `spec/asm.md`; x86-64: WP-187)",
     ),
     row(
         "call:inline-asm-empty",
@@ -3420,6 +3476,12 @@ const INTRINSIC_X86: &[SupportRow] = &[
     row("intrinsic:llvm.x86.sse.min.ss", never(X64_ONLY), on(X86_SSE), "SSE"),
     row("intrinsic:llvm.x86.sse.movmsk.ps", never(X64_ONLY), on(X86_SSE), "SSE"),
     row("intrinsic:llvm.x86.sse.sfence", never(X64_ONLY), on(X86_SSE), "SSE"),
+    row("intrinsic:llvm.x86.sse.ldmxcsr", never(X64_ONLY), on(X86_SSE), "SSE; WP-181"),
+    row("intrinsic:llvm.x86.sse.rcp.ps", never(X64_ONLY), on(X86_SSE), "SSE; WP-181"),
+    row("intrinsic:llvm.x86.sse.rcp.ss", never(X64_ONLY), on(X86_SSE), "SSE; WP-181"),
+    row("intrinsic:llvm.x86.sse.rsqrt.ps", never(X64_ONLY), on(X86_SSE), "SSE; WP-181"),
+    row("intrinsic:llvm.x86.sse.rsqrt.ss", never(X64_ONLY), on(X86_SSE), "SSE; WP-181"),
+    row("intrinsic:llvm.x86.sse.stmxcsr", never(X64_ONLY), on(X86_SSE), "SSE; WP-181"),
     row("intrinsic:llvm.x86.sse2.cmp.sd", never(X64_ONLY), on(X86_SSE), "SSE2"),
     row("intrinsic:llvm.x86.sse2.comieq.sd", never(X64_ONLY), on(X86_SSE), "SSE2"),
     row("intrinsic:llvm.x86.sse2.comige.sd", never(X64_ONLY), on(X86_SSE), "SSE2"),
@@ -3445,6 +3507,8 @@ const INTRINSIC_X86: &[SupportRow] = &[
     row("intrinsic:llvm.x86.sse2.cvttsd2si64", never(X64_ONLY), on(X86_SSE), "SSE2"),
     row("intrinsic:llvm.x86.sse2.lfence", never(X64_ONLY), on(X86_SSE), "SSE2"),
     row("intrinsic:llvm.x86.sse2.mfence", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.clflush", never(X64_ONLY), on(X86_SSE), "SSE2; WP-181"),
+    row("intrinsic:llvm.x86.sse2.maskmov.dqu", never(X64_ONLY), on(X86_SSE), "SSE2; WP-181"),
     row("intrinsic:llvm.x86.sse2.max.pd", never(X64_ONLY), on(X86_SSE), "SSE2"),
     row("intrinsic:llvm.x86.sse2.max.sd", never(X64_ONLY), on(X86_SSE), "SSE2"),
     row("intrinsic:llvm.x86.sse2.min.pd", never(X64_ONLY), on(X86_SSE), "SSE2"),

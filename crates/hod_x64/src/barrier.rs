@@ -2,7 +2,7 @@
 //! §2.3, `spec/codegen.md` §5.6.8 "Intrinsics (WP-128)"): optimization
 //! barriers such as `asm volatile("" : : "r,m"(x) : "memory")` and
 //! `asm("" : "+r"(x))`. A template that assembles to something is
-//! [`INLINE_ASM`]: hod has no x86 assembler for templates.
+//! [`template`]'s (WP-187); in a `callbr` it is [`INLINE_ASM`].
 //!
 //! **Owner: WP-128.** Tests: `tests/barrier.rs`. Entry: `target.rs`
 //! (`lower_call`). The decisions are `hod_a64::barrier`'s (WP-075); only
@@ -30,7 +30,14 @@
 //!   any of its names, `xmm`/`ymm`/`zmm` 0 to 31;
 //! - `sideeffect`, `alignstack`, `inteldialect` and `unwind` change
 //!   nothing; an `invoke` continues at its normal destination (the
-//!   template cannot throw).
+//!   template cannot throw);
+//! - a `callbr` (WP-181, `spec/codegen.md` §5.6.23) has one label
+//!   constraint `!i` per indirect destination, which takes no argument;
+//!   the template never jumps, so it continues at its fallthrough with
+//!   that edge's `phi`s, written here after the result (§4.5), as `llc`
+//!   builds it. Its indirect destinations
+//!   are blocks like any other (emitted, their labels bound, reached from
+//!   elsewhere or not at all): nothing is written for those edges.
 //!
 //! Which alternative of a multi-alternative constraint (`r|m`) `llc`
 //! takes is LLVM's choice by weights (`TargetLowering::ParseConstraints`
@@ -49,14 +56,18 @@ use hod_ir::{Const, Inst, MemFlags, Opcode, TypeId, TypeKind, Value, ValueKind};
 use crate::common::{branch, deferred_first, unsupported, value_ty};
 use crate::target::X64;
 
+pub mod template;
+
 /// An output the template leaves undefined: one no input is tied to, or
 /// an indirect one whose operand `llc` may give a register.
 pub const OUTPUT: &str = "x64:inline-asm-output";
 /// More than one effect: several tied outputs, a struct of results.
 pub const OUTPUTS: &str = "x64:inline-asm-outputs";
 /// A constraint this module does not read: an unknown code, a label
-/// (`!i`), more operands or alternatives than it keeps, an operand
-/// count that does not match the call.
+/// (`!i`) outside a `callbr` or a count of labels that is not the
+/// `callbr`'s count of indirect destinations, more operands or
+/// alternatives than it keeps, an operand count that does not match the
+/// call.
 pub const CONSTRAINT: &str = "x64:inline-asm-constraint";
 /// A clobber that names neither memory, the flags nor a register of the
 /// target.
@@ -68,8 +79,7 @@ pub const CLOBBER: &str = "x64:inline-asm-clobber";
 pub const OPERAND: &str = "x64:inline-asm-operand";
 /// A call of inline assembly with an operand bundle.
 pub const BUNDLE: &str = "x64:inline-asm-bundle";
-/// Inline assembly whose template assembles to something: hod has no
-/// x86 assembler for templates.
+/// A `callbr` whose template assembles to something.
 pub const INLINE_ASM: &str = "x64:inline-asm";
 
 /// Every name this module refuses with.
@@ -121,6 +131,9 @@ struct Ops {
     list: [Op; MAX_OPS],
     len: usize,
     direct_outputs: usize,
+    /// The label constraints (`!i`) of a `callbr`: they take no call
+    /// argument and name the indirect destinations in order.
+    labels: usize,
 }
 
 /// Whether `name` (between the braces of `~{...}`) is something an
@@ -218,7 +231,7 @@ fn parse_alt(text: &[u8]) -> CgResult<Alt> {
 impl Ops {
     /// Reads `constraints`. Clobbers are checked and dropped.
     fn parse(constraints: &[u8]) -> CgResult<Ops> {
-        let mut ops = Ops { list: [Op::default(); MAX_OPS], len: 0, direct_outputs: 0 };
+        let mut ops = Ops { list: [Op::default(); MAX_OPS], len: 0, direct_outputs: 0, labels: 0 };
         if constraints.is_empty() {
             return Ok(ops);
         }
@@ -229,6 +242,10 @@ impl Ops {
                 if !name.is_some_and(known_clobber) {
                     return unsupported(CLOBBER);
                 }
+                continue;
+            }
+            if part == b"!i" {
+                ops.labels += 1;
                 continue;
             }
             if ops.len == MAX_OPS {
@@ -475,7 +492,11 @@ pub fn asm<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>) -> CgResult<()> {
     };
     let asm = cx.module.asm(id);
     if !hod_ir::asm_template_is_empty(hod_ir::Arch::X86_64, asm.template) {
-        return unsupported(INLINE_ASM);
+        // WP-187: a `callbr` with a template stays refused.
+        if inst.opcode() == Opcode::CallBr {
+            return unsupported(INLINE_ASM);
+        }
+        return template::call(cx, inst);
     }
     if site.bundle_count() != 0 {
         return unsupported(BUNDLE);
@@ -486,7 +507,8 @@ pub fn asm<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>) -> CgResult<()> {
     }
     let args = site.args();
     let operands = ops.list[..ops.len].iter().filter(|op| op.arg.is_some()).count();
-    if operands != args.len() {
+    let labels = if inst.opcode() == Opcode::CallBr { site.indirect_dests().count() } else { 0 };
+    if operands != args.len() || ops.labels != labels {
         return unsupported(CONSTRAINT);
     }
     let effect = effect(cx, inst, site, &ops)?;
@@ -503,9 +525,13 @@ pub fn asm<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>) -> CgResult<()> {
             crate::mem::store(cx, inst, value, ptr, mem)?;
         }
     }
-    if inst.opcode() == Opcode::Invoke {
+    if matches!(inst.opcode(), Opcode::Invoke | Opcode::CallBr) {
+        // An empty template never jumps: a `callbr` goes on at its
+        // fallthrough, as `llc` builds it; its indirect destinations are
+        // entered only from elsewhere (their labels are bound where the
+        // blocks are emitted, a `blockaddress` of them included).
         let Some(normal) = site.normal_dest() else {
-            return cx.bug("an invoke without a normal destination");
+            return cx.bug("an invoke or callbr without a normal destination");
         };
         cx.phi_stores(normal)?;
         if !cx.falls_through(normal) {

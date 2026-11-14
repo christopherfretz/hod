@@ -773,19 +773,19 @@ fn wide_conversions_refused_by_name() {
 
 /// §5.6.8, §5.6.14 (9): `llc` 19 and 22 read the constraint letter `A`
 /// on x86-64 (`rax` up to 64 bits, `rdx:rax` for `i128`; unlike `a`,
-/// `b`, `c`, `d`, `S`, `D`, which they refuse), but hod's inline-assembly
-/// path lowers only empty templates, so `A` stays refused by its name,
-/// and a template such as `rdtsc` by its own.
+/// `b`, `c`, `d`, `S`, `D`, which they refuse), but hod does not place
+/// an operand by it: refused by its name, in an empty template and (WP-187)
+/// in one of instructions.
 #[test]
 fn the_constraint_letter_a_stays_refused() {
-    use hod_x64::barrier::{CONSTRAINT, INLINE_ASM};
+    use hod_x64::barrier::CONSTRAINT;
     let clobbers = "~{dirflag},~{fpsr},~{flags}";
     assert_refused(&[
         (
             &format!(
                 "define i64 @f() {{\n  %r = call i64 asm sideeffect \"rdtsc\", \"=A,{clobbers}\"()\n  ret i64 %r\n}}\n"
             ),
-            INLINE_ASM,
+            "asm:constraint/a",
         ),
         (
             &format!(

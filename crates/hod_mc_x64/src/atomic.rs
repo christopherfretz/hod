@@ -95,6 +95,13 @@ pub const fn sfence() -> Inst {
     inst
 }
 
+/// `CLFLUSH m8` (`0F AE /7`): writes back and invalidates the cache line
+/// holding `m` (WP-181).
+#[inline]
+pub const fn clflush_m(m: Mem) -> Inst {
+    digit_m(Op::two(0xae), 7, m)
+}
+
 /// `PAUSE` (`F3 90`).
 #[inline]
 pub const fn pause() -> Inst {

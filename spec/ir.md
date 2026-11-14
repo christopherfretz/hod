@@ -188,6 +188,13 @@ Two things a producer of LLVM IR must know:
 - `uwtable` and `frame-pointer` values that LLVM's verifier accepts and
   no LLVM version defines (3, 5, ...) are errors here.
 
+`classify` (§8) accepts the AArch64 branch-protection flags and the
+function attributes `branch-target-enforcement`, `sign-return-address`,
+`sign-return-address-key` and `guarded-control-stack` on both targets
+(WP-185): AArch64 implements them (`spec/codegen.md` §5.6.26), x86-64
+ignores them as `llc` does. `branch-protection-pauth-lr`, flag and
+attribute, stays refused on AArch64 (`module:`/`attr:branch-protection-pauth-lr`).
+
 ### 2.2 Symbols
 
 One `SymId` space, because code refers to all of them the same way: by
@@ -1001,7 +1008,9 @@ does not have is `Rejected`. The lists below are the table, in full.
   `branch-protection-pauth-lr` and `guarded-control-stack` are the two
   missing members of the `sign-return-address` family;
   `stack-protector-buffer-size` decides which functions `ssp` protects
-  and is on every function clang emits; `min-legal-vector-width` bounds
+  in LLVM and is on every function clang emits (hod reads it with the
+  attribute and protects a superset, `spec/codegen.md` §5.6.24: `ssp`,
+  `sspstrong` and `sspreq` are rows `ON` on both targets, WP-183); `min-legal-vector-width` bounds
   the vector registers an x86 function may use and is on every x86
   function clang emits; `no-jump-tables` forbids a code shape.
 

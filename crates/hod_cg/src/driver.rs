@@ -108,6 +108,25 @@ pub fn compile_function<T: Target>(
 
 /// Whether an instruction whose result has no use can be left out
 /// (§4.7): it has no effect besides its result.
+/// A `callbr` whose result a successor's `phi` takes, on an edge the
+/// successor list names more than once (an indirect destination that is
+/// the fallthrough, or one label twice): each edge is its own code path,
+/// and a lowering writes a successor's `phi`s once per terminator
+/// (§4.5, WP-181).
+const CALLBR_RESULT_REPEATED_EDGE: &str = "call:callbr-result-repeated-edge";
+
+/// The result of `inst` if it is a `callbr` with one.
+fn callbr_result(inst: Inst<'_>) -> Option<Value> {
+    (inst.opcode() == Opcode::CallBr && inst.ty() != TypeId::VOID).then(|| inst.result())
+}
+
+/// Whether a `phi` of `succ` takes `value` on the edge from `from`.
+fn takes(body: &Body, succ: BlockId, from: BlockId, value: Value) -> bool {
+    body.block(succ)
+        .phis()
+        .any(|phi| matches!(phi.kind(), InstKind::Phi(list) if list.value_for(from) == Some(value)))
+}
+
 fn has_no_effect(inst: Inst<'_>) -> bool {
     let op = inst.opcode();
     if op.is_binary() || op.is_cast() {
@@ -174,6 +193,7 @@ impl<'a, T: Target> FnCx<'a, T> {
         s.islands.clear();
         s.island_data.clear();
         s.dbg_labels.clear();
+        s.guard.reset();
         let epilogue = s.labels.create();
         let ri = *target.reg_info();
         let pool = if options.stress.min_pool {
@@ -237,6 +257,7 @@ impl<'a, T: Target> FnCx<'a, T> {
         self.mark_reachable()?;
         self.assign_own()?;
         self.coro_plan()?;
+        self.plan_guard()?; // WP-183: §5.6.24
         t.begin_function(self)?;
         self.coro_setup()?;
         self.layout_slots()?;
@@ -360,9 +381,25 @@ impl<'a, T: Target> FnCx<'a, T> {
     /// [`FnCx::enter_slots`].
     fn layout_slots(&mut self) -> CgResult<()> {
         let pointer = self.reg_bytes(Class::Gpr);
+        // WP-183, §5.6.24: the pointer slots of the guarded block first,
+        // so that they are near the frame base.
+        let guarded = self.s.guard.is_on();
+        for index in (0..self.body.slots().len()).filter(|_| guarded) {
+            if let Some(offset) = self.s.guard.slot_offset(index) {
+                let at = self.s.frame.alloc(u64::from(pointer), pointer.min(T::STACK_ALIGN))?;
+                self.s.guard.push_pointer(at, offset);
+            }
+        }
+        let mut next_guarded = 0;
         for (index, slot) in self.body.slots().iter().enumerate() {
             let place = if let Some(place) = self.coro_slot_place(index)? {
                 place
+            } else if self.s.guard.slot_offset(index).is_some() {
+                let Some(&(at, _)) = self.s.guard.pointers().get(next_guarded) else {
+                    return internal("a guarded slot without its pointer slot");
+                };
+                next_guarded += 1;
+                SlotPlace::Indirect(at)
             } else if slot.align() <= u64::from(T::STACK_ALIGN) {
                 SlotPlace::Direct(self.s.frame.alloc(slot.size(), slot.align() as u32)?)
             } else {
@@ -406,10 +443,30 @@ impl<'a, T: Target> FnCx<'a, T> {
         Ok(())
     }
 
+    /// §5.6.24: whether the function has a stack guard, and its guarded
+    /// block.
+    fn plan_guard(&mut self) -> CgResult<()> {
+        let SymbolKind::Function { attrs, .. } = self.module.symbol(self.body.symbol()).kind()
+        else {
+            return internal("a body whose symbol is no function");
+        };
+        let flags = self.module.fn_attrs(attrs).flags();
+        let body = self.body;
+        self.s.guard.plan(self.module, body, flags, T::STACK_ALIGN).map_err(CgError::unsupported)
+    }
+
     /// §5.1: the entry code that allocates the over-aligned slots.
     fn enter_slots(&mut self) -> CgResult<()> {
         let t = self.target;
+        if self.s.guard.is_on() {
+            // WP-183, §5.6.24: the guard, then the guarded block's
+            // pointers, before any dynamic allocation.
+            t.enter_guard(self)?;
+        }
         for (index, slot) in self.body.slots().iter().enumerate() {
+            if self.s.guard.slot_offset(index).is_some() {
+                continue;
+            }
             if let Some(&SlotPlace::Indirect(pointer)) = self.s.slots.get(index) {
                 t.dynamic_slot(self, pointer, slot.size(), slot.align())?;
             }
@@ -578,6 +635,26 @@ impl<'a, T: Target> FnCx<'a, T> {
         Ok(())
     }
 
+    /// §4.5: the `phi` stores of a terminator, for all its successors,
+    /// whichever is taken, before it is lowered. (An `invoke`'s are
+    /// written by the call sequence.) Those of a `callbr` that take its
+    /// result are left to its lowering, once the result exists (WP-181).
+    fn terminator_phi_stores(&mut self, inst: Inst<'a>) -> CgResult<()> {
+        let own = callbr_result(inst);
+        for succ in inst.successors() {
+            if let Some(result) = own
+                && takes(self.body, succ, self.block, result)
+            {
+                if inst.successors().filter(|&s| s == succ).count() > 1 {
+                    return Err(CgError::unsupported(CALLBR_RESULT_REPEATED_EDGE));
+                }
+                continue;
+            }
+            self.phi_stores(succ)?;
+        }
+        Ok(())
+    }
+
     /// One reachable block: its label, its `phi`s, its instructions.
     fn emit_block(&mut self, block: Block<'a>) -> CgResult<()> {
         let t = self.target;
@@ -630,11 +707,7 @@ impl<'a, T: Target> FnCx<'a, T> {
                 // WP-106: a suspend switch writes its edges itself.
             } else if !dead {
                 if inst.is_terminator() && inst.opcode() != Opcode::Invoke {
-                    // §4.5: for all successors, whichever is taken. An
-                    // `invoke`'s are written by the call sequence.
-                    for succ in inst.successors() {
-                        self.phi_stores(succ)?;
-                    }
+                    self.terminator_phi_stores(inst)?;
                 }
                 t.lower(self, inst)?;
                 if inst.opcode() == Opcode::Ret {
@@ -707,8 +780,19 @@ impl<'a, T: Target> FnCx<'a, T> {
                 CfiOp::DefCfa { reg: r, offset: o } => (reg, offset) = (Some(r), Some(o)),
                 CfiOp::DefCfaOffset(o) => offset = Some(o),
                 CfiOp::DefCfaRegister(r) => reg = Some(r),
-                CfiOp::Offset { .. } | CfiOp::Restore { .. } => {}
+                CfiOp::Offset { .. }
+                | CfiOp::Restore { .. }
+                | CfiOp::NegateRaState
+                | CfiOp::BKeyFrame => {}
             }
+        }
+        // WP-185: the return address's signing state is a flip; it is
+        // flipped back to the body's when the rows since differ in parity.
+        let flips = |rows: &[crate::record::CfiRow]| {
+            rows.iter().filter(|r| r.op == CfiOp::NegateRaState).count()
+        };
+        if flips(&self.out.cfi[start..end]) % 2 != flips(&self.out.cfi[start..]) % 2 {
+            self.cfi(CfiOp::NegateRaState);
         }
         match (reg, offset) {
             (Some(reg), Some(offset)) => self.cfi(CfiOp::DefCfa { reg, offset }),

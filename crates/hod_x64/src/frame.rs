@@ -29,6 +29,13 @@
 //! after restating `def_cfa rbp, 16`. Nothing in an exit depends on
 //! `FRAME`, and dynamic allocation needs nothing more.
 //!
+//! WP-181 (§5.6.23): a `preserve_mostcc` or `preserve_allcc` function
+//! also pushes [`PRESERVED`] (but its result's registers) right after
+//! `mov rbp, rsp`, before the save set, and a `preserve_allcc` one stores
+//! `xmm0`..`xmm15` (but its result's) in a local area after `sub rsp`;
+//! `8n` then counts every push. The exits load the `xmm` registers back
+//! and pop the extra registers after the save set.
+//!
 //! A local `Local(o)` is `[rbp + o - 8n - FRAME]`: emitted as `[rbp + o]`
 //! with a `disp32` (`common::frame_inst`) that [`end`] biases once `n`
 //! and `FRAME` are known, and writes as a `disp8` when it then fits
@@ -36,23 +43,121 @@
 //! `[rbp + 16 + n]`, so no incoming base is kept; an outgoing one
 //! `Outgoing(n)` is `[rsp + n]`.
 
+use hod_cg::abi::Place;
 use hod_cg::{
     CallTarget, CfiOp, CgError, CgResult, FnCx, FrameDesc, FrameRef, LIMIT_FRAME_SIZE, RegSet,
 };
+use hod_ir::{CallConv, SymbolKind};
 use hod_mc_x64 as mc;
-use hod_mc_x64::{Mem, Reg, Size};
+use hod_mc_x64::{FpSize, Mem, Reg, Size, Xmm};
 use hod_obj::X64Reloc;
 
 use crate::common::{
     INCOMING_BASE, R11, RBP, RSP, bias_local_sites, frame_inst, gp, put, put_reloc,
-    reset_local_sites,
+    reset_local_sites, unsupported,
 };
-use crate::reg::{DWARF_RBP, DWARF_RSP, dwarf, gpr};
+use crate::reg::{DWARF_RBP, DWARF_RSP, DWARF_XMM0, dwarf, gpr, is_fpr, number};
 use crate::target::X64;
 
 /// The callee-saved registers of the pool, in push order (§5.6): the
 /// save set is those of them the body used ([`saved_set`]).
 pub const SAVED: [Reg; 5] = [Reg::Rbx, Reg::R12, Reg::R13, Reg::R14, Reg::R15];
+
+/// The registers `preserve_mostcc` and `preserve_allcc` keep besides
+/// [`SAVED`] (LLVM's `CSR_64_RT_MostRegs`, `CSR_64_RT_AllRegs` with the
+/// `xmm` registers), in push order: a function of either convention
+/// pushes those its result is not returned in, whatever its body uses
+/// (every lowering may write them and every call clobbers them; `llc`
+/// pushes those its allocator touched). `r11` is not kept.
+pub const PRESERVED: [Reg; 8] =
+    [Reg::Rax, Reg::Rcx, Reg::Rdx, Reg::Rsi, Reg::Rdi, Reg::R8, Reg::R9, Reg::R10];
+
+/// A `musttail` exit of a `preserve_mostcc` or `preserve_allcc` function:
+/// its teardown would restore the argument registers the tail call
+/// passes its arguments in.
+pub const PRESERVE_TAIL_CALL: &str = "x64:preserve-cc-tail-call";
+/// A `preserve_mostcc` or `preserve_allcc` function whose result is
+/// returned in memory: LLVM 19 and 22 then keep sets that are not the
+/// rule's (`xmm0` and `xmm1` unsaved for four `double`s, `rax` restored
+/// over the address), so hod does not guess.
+pub const PRESERVE_RETURN_MEMORY: &str = "x64:preserve-cc-return-memory";
+/// A coroutine body of either convention: the coroutine frame's entry
+/// stubs build the plain frame (the AArch64 refusal's twin).
+pub const CORO_PRESERVE_CC: &str = "x64:coro-preserve-cc";
+
+/// Every name this module refuses with.
+pub const UNSUPPORTED: &[&str] = &[PRESERVE_TAIL_CALL, PRESERVE_RETURN_MEMORY, CORO_PRESERVE_CC];
+
+/// What a `preserve_mostcc` or `preserve_allcc` function saves beyond the
+/// save set (WP-181); all empty for another convention.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct Preserve {
+    /// The members of [`PRESERVED`] pushed, as a mask.
+    pub gprs: u8,
+    /// The `xmm` registers stored, as a mask by number.
+    pub xmms: u16,
+    /// Their area: 16 bytes each, by increasing number.
+    pub area: Option<FrameRef>,
+    /// The code offset right after their stores.
+    pub rows_at: u32,
+}
+
+/// Whether the function being compiled is `preserve_mostcc` or
+/// `preserve_allcc`.
+pub fn is_preserving(cx: &FnCx<'_, X64>) -> bool {
+    matches!(
+        cx.module.symbol(cx.body.symbol()).kind(),
+        SymbolKind::Function { cc: CallConv::PRESERVE_MOST | CallConv::PRESERVE_ALL, .. }
+    )
+}
+
+/// The registers the function keeps beyond the save set: [`PRESERVED`]
+/// and, for `preserve_allcc`, `xmm0`..`xmm15`, but those a part of its
+/// result is returned in (LLVM 19 and 22 alike: `rax` for a `void` or
+/// `sret` function too, whose caller then gets its own `rax` back).
+fn preserve_plan(cx: &FnCx<'_, X64>) -> CgResult<Preserve> {
+    let SymbolKind::Function { cc, .. } = cx.module.symbol(cx.body.symbol()).kind() else {
+        return Ok(Preserve::default());
+    };
+    if cc != CallConv::PRESERVE_MOST && cc != CallConv::PRESERVE_ALL {
+        return Ok(Preserve::default());
+    }
+    if cx.has_coro_frame() {
+        return unsupported(CORO_PRESERVE_CC);
+    }
+    let assignment = cx.fn_assignment();
+    if assignment.ret_memory.is_some() {
+        return unsupported(PRESERVE_RETURN_MEMORY);
+    }
+    let mut gprs = u8::MAX;
+    let mut xmms = if cc == CallConv::PRESERVE_ALL { u16::MAX } else { 0 };
+    for part in &assignment.ret {
+        if let Place::Reg(r) = part.place {
+            if let Some(i) = PRESERVED.iter().position(|&p| gpr(p) == r) {
+                gprs &= !(1 << i);
+            }
+            if is_fpr(r) {
+                xmms &= !(1 << number(r));
+            }
+        }
+    }
+    Ok(Preserve { gprs, xmms, area: None, rows_at: 0 })
+}
+
+/// The members of [`PRESERVED`] the function pushes, in push order.
+pub fn preserved(cx: &FnCx<'_, X64>) -> impl DoubleEndedIterator<Item = Reg> + Clone + use<> {
+    let mask = cx.state.frame.preserve.gprs;
+    PRESERVED.into_iter().enumerate().filter(move |&(i, _)| mask >> i & 1 != 0).map(|(_, r)| r)
+}
+
+/// The `xmm` registers the function stores, with their slots in the area.
+fn preserved_xmms(cx: &FnCx<'_, X64>) -> impl Iterator<Item = (u32, Xmm)> + use<> {
+    let mask = cx.state.frame.preserve.xmms;
+    (0..16u8)
+        .filter(move |&k| mask >> k & 1 != 0)
+        .enumerate()
+        .map(|(slot, k)| (16 * slot as u32, Xmm::new(k).expect("xmm0..xmm15")))
+}
 
 /// The bytes [`begin`] reserves after `mov rbp, rsp`: the five pushes
 /// (`rbx` one byte, `r12`..`r15` two) and `sub rsp, imm32`.
@@ -89,6 +194,8 @@ pub struct FrameState {
     /// The probe size, 0 when the function does not probe its stack
     /// (WP-186, `crate::probe`).
     pub probe: u32,
+    /// What a `preserve_mostcc`/`preserve_allcc` function also saves.
+    pub preserve: Preserve,
 }
 
 /// `Target::begin_function`: the prologue and its CFI rows.
@@ -103,6 +210,14 @@ pub fn begin(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
     cx.cfi(CfiOp::Offset { reg: DWARF_RBP, cfa_offset: -16 });
     put(cx, mc::mov_rr(Size::Q, RBP, RSP));
     cx.cfi(CfiOp::DefCfaRegister(DWARF_RBP));
+    // WP-181: the registers a preserving convention keeps besides.
+    cx.state.frame.preserve = preserve_plan(cx)?;
+    for reg in preserved(cx) {
+        put(cx, mc::push_r(reg));
+    }
+    for (index, reg) in preserved(cx).enumerate() {
+        cx.cfi(CfiOp::Offset { reg: dwarf(gpr(reg)), cfa_offset: -24 - 8 * index as i32 });
+    }
     // The largest prologue, rewritten and cut in `end`.
     cx.state.frame.saves_at = cx.offset();
     for &saved in &SAVED {
@@ -113,6 +228,16 @@ pub fn begin(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
     cx.state.frame.probe = crate::probe::size_of(cx);
     if cx.state.frame.probe != 0 {
         cx.emit(&[0xcc; crate::probe::RESERVE as usize]);
+    }
+    crate::guard::reserve(cx)?; // WP-183: the low guard, first in the local area
+    let xmms = cx.state.frame.preserve.xmms.count_ones();
+    if xmms != 0 {
+        let area = cx.alloc_slot(16 * u64::from(xmms), 16)?;
+        for (at, x) in preserved_xmms(cx) {
+            frame_inst(cx, area.offset_by(at), |m| mc::movup_mr(FpSize::S, m, x));
+        }
+        cx.state.frame.preserve.area = Some(area);
+        cx.state.frame.preserve.rows_at = cx.offset();
     }
     // WP-137: a coroutine's mode and frame words.
     crate::coro_body::enter(cx)?;
@@ -141,18 +266,34 @@ pub fn final_size(size: u32, saves: u32) -> CgResult<u32> {
 /// # Errors
 /// `limit:frame-size`; what binding the exits' labels reports.
 pub fn end(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
+    if cx.tail_exit_count() != 0 && is_preserving(cx) {
+        return unsupported(PRESERVE_TAIL_CALL);
+    }
+    crate::guard::place(cx)?; // WP-183: the guarded block, last in the local area
     let mask = saved_set(cx);
     cx.state.frame.saved = mask;
-    let count = mask.count_ones();
+    let extra = preserved(cx).count() as u32;
+    let count = mask.count_ones() + extra;
     let frame = final_size(cx.frame_size(), count)?;
     let below = 8 * count + frame;
     let desc = FrameDesc { frame_size: below, frame_base: DWARF_RBP };
     cx.state.frame.desc = desc;
-    prologue(cx, frame)?;
+    prologue(cx, frame, extra)?;
+    // WP-181: where the `xmm` registers are, from after their stores.
+    if let Some(area) = cx.state.frame.preserve.area {
+        let FrameRef::Local(o) = area else { return cx.bug("an xmm save area that is no local") };
+        let at = cx.state.frame.preserve.rows_at;
+        for (slot, x) in preserved_xmms(cx) {
+            let cfa_offset = (i64::from(o) + i64::from(slot)
+                - i64::from(below)
+                - i64::from(INCOMING_BASE)) as i32;
+            cx.cfi_at(at, CfiOp::Offset { reg: DWARF_XMM0 + u16::from(x.code()), cfa_offset })?;
+        }
+    }
     cx.bind(cx.epilogue())?;
     // WP-125: the `sret` or return-in-memory address back in `rax`.
     crate::call::before_return(cx);
-    teardown(cx);
+    teardown(cx)?;
     put(cx, mc::ret());
 
     for index in 0..cx.tail_exit_count() {
@@ -164,7 +305,7 @@ pub fn end(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
         cx.cfi(CfiOp::DefCfa { reg: DWARF_RBP, offset: INCOMING_BASE });
         // WP-125: `al` of a variadic function, as it arrived.
         crate::call::before_tail_exit(cx);
-        teardown(cx);
+        teardown(cx)?;
         cx.tail_branch_here(index, dwarf); // WP-113: `spec/dwarf.md` §6.19
         match exit.target {
             CallTarget::Sym(sym) => put_reloc(cx, mc::jmp_near(0), X64Reloc::Plt32, sym, 0)?,
@@ -172,6 +313,7 @@ pub fn end(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
         }
         cx.tail_branch_ends_here(index); // WP-163: `spec/dwarf.md` §6.21
     }
+    crate::guard::fail(cx)?; // WP-183: the failure call after the exits
     // Last: the exit sequences above may address locals too (WP-125).
     bias_local_sites(cx, -i64::from(below))?;
     cx.set_frame_desc(desc);
@@ -208,8 +350,9 @@ pub fn saved(cx: &FnCx<'_, X64>) -> impl DoubleEndedIterator<Item = Reg> + Clone
 
 /// The prologue's final form (§5.6.15), written over what [`begin`]
 /// reserved: the save set's pushes, `sub rsp, FRAME` (none for 0), the
-/// rest cut; the save rows after the last push.
-fn prologue(cx: &mut FnCx<'_, X64>, frame: u32) -> CgResult<()> {
+/// rest cut; the save rows after the last push, below the `extra`
+/// registers [`begin`] pushed first.
+fn prologue(cx: &mut FnCx<'_, X64>, frame: u32, extra: u32) -> CgResult<()> {
     let at = cx.state.frame.saves_at;
     let regs = saved(cx);
     let probe = cx.state.frame.probe;
@@ -225,7 +368,7 @@ fn prologue(cx: &mut FnCx<'_, X64>, frame: u32) -> CgResult<()> {
     // WP-186: `sub rsp, FRAME`, or its probes.
     len += crate::probe::write_allocation(&mut code[len..], frame, probe);
     for (index, reg) in regs.enumerate() {
-        let cfa_offset = -24 - 8 * index as i32;
+        let cfa_offset = -24 - 8 * (extra as i32 + index as i32);
         cx.cfi_at(at + pushed, CfiOp::Offset { reg: dwarf(gpr(reg)), cfa_offset })?;
     }
     cx.cut(at + len as u32, reserved - len as u32);
@@ -250,11 +393,19 @@ pub fn base_offset(desc: &FrameDesc, place: FrameRef) -> Option<i64> {
     }
 }
 
-/// The teardown every exit sequence starts with: the stack pointer back
-/// at the save area, the save set and `rbp` popped; `leave` when nothing
-/// is saved.
-fn teardown(cx: &mut FnCx<'_, X64>) {
-    let count = saved(cx).count();
+/// The teardown every exit sequence starts with: (WP-183) the stack
+/// guard checked before anything is popped, (WP-181) the `xmm`
+/// registers a `preserve_allcc` function stored loaded back, the stack
+/// pointer back at the save area, the save set, the extra registers and
+/// `rbp` popped; `leave` when nothing is saved.
+fn teardown(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
+    crate::guard::check(cx)?; // WP-183: the stack guard, before anything is popped
+    if let Some(area) = cx.state.frame.preserve.area {
+        for (at, x) in preserved_xmms(cx) {
+            frame_inst(cx, area.offset_by(at), |m| mc::movup_rm(FpSize::S, x, m));
+        }
+    }
+    let count = saved(cx).count() + preserved(cx).count();
     if count == 0 {
         put(cx, mc::leave());
     } else {
@@ -262,9 +413,13 @@ fn teardown(cx: &mut FnCx<'_, X64>) {
         for reg in saved(cx).rev() {
             put(cx, mc::pop_r(reg));
         }
+        for reg in preserved(cx).rev() {
+            put(cx, mc::pop_r(reg));
+        }
         put(cx, mc::pop_r(RBP));
     }
     cx.cfi(CfiOp::DefCfa { reg: DWARF_RSP, offset: 8 });
+    Ok(())
 }
 
 /// `Target::adjust_sp`: `lea rsp, [rsp + delta]`, flags kept, in steps

@@ -145,6 +145,7 @@ pub fn stubs(cx: &mut FnCx<'_, A64>) -> CgResult<()> {
         cx.cfi(CfiOp::Restore { reg: DWARF_FP });
         cx.cfi(CfiOp::Restore { reg: DWARF_LR });
         cx.cfi(CfiOp::Restore { reg: DWARF_X19 });
+        crate::protect::stub_entry(cx); // WP-185
         // The prologue, as `frame::begin` emitted and `frame::end`
         // patched it, with the same rows.
         crate::probe::put_allocation(cx, frame); // WP-186: the two `sub`s

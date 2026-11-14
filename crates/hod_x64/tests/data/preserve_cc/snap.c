@@ -1,0 +1,73 @@
+/* WP-181: what a `preserve_mostcc` or `preserve_allcc` callee keeps.
+ *
+ * `snap_<f>(in, out)` loads every general register but `rsp` and `rbp`
+ * and every `xmm` register from `in`, calls `<f>`, and stores them all
+ * to `out` (the x87 result too for an `x86_fp80` one): the layout is
+ * `rax rbx rcx rdx rsi rdi r8 r9 r10 r11 r12 r13 r14 r15` then `xmm0` to
+ * `xmm15`, 16 bytes each, then the x87 result. `clobber(x)` calls
+ * `probe()` (the driver), then writes every caller-saved register and
+ * returns `x`: a callee that does not restore what it must is caught by
+ * the snapshot, one whose unwind rows are wrong by `probe`.
+ */
+__asm__(
+    ".text\n"
+    ".globl clobber\n"
+    ".type clobber,@function\n"
+    "clobber:\n"
+    "  .cfi_startproc\n"
+    "  pushq %rdi\n"
+    "  .cfi_def_cfa_offset 16\n"
+    "  call probe@PLT\n"
+    "  popq %rax\n"
+    "  .cfi_def_cfa_offset 8\n"
+    "  movabsq $0x5aa5c33c0ff0e11e, %rcx\n"
+    "  movq %rcx, %rdx\n  movq %rcx, %rsi\n  movq %rcx, %rdi\n"
+    "  movq %rcx, %r8\n  movq %rcx, %r9\n  movq %rcx, %r10\n  movq %rcx, %r11\n"
+    "  movq %rcx, %xmm0\n  pshufd $0x44, %xmm0, %xmm0\n"
+    "  movdqa %xmm0, %xmm1\n  movdqa %xmm0, %xmm2\n  movdqa %xmm0, %xmm3\n"
+    "  movdqa %xmm0, %xmm4\n  movdqa %xmm0, %xmm5\n  movdqa %xmm0, %xmm6\n"
+    "  movdqa %xmm0, %xmm7\n  movdqa %xmm0, %xmm8\n  movdqa %xmm0, %xmm9\n"
+    "  movdqa %xmm0, %xmm10\n  movdqa %xmm0, %xmm11\n  movdqa %xmm0, %xmm12\n"
+    "  movdqa %xmm0, %xmm13\n  movdqa %xmm0, %xmm14\n  movdqa %xmm0, %xmm15\n"
+    "  ret\n"
+    "  .cfi_endproc\n"
+    ".size clobber, .-clobber\n"
+    ".macro SNAP name, x87\n"
+    ".globl snap_\\name\n"
+    ".type snap_\\name,@function\n"
+    "snap_\\name:\n"
+    "  .cfi_startproc\n"
+    "  pushq %rbp\n  .cfi_def_cfa_offset 16\n  .cfi_offset %rbp, -16\n"
+    "  movq %rsp, %rbp\n  .cfi_def_cfa_register %rbp\n"
+    "  pushq %rbx\n  pushq %r12\n  pushq %r13\n  pushq %r14\n  pushq %r15\n"
+    "  .cfi_offset %rbx, -24\n  .cfi_offset %r12, -32\n  .cfi_offset %r13, -40\n"
+    "  .cfi_offset %r14, -48\n  .cfi_offset %r15, -56\n"
+    "  pushq %rsi\n"
+    "  movq %rdi, %r11\n"
+    "  .irp n, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15\n"
+    "  movdqu 112+16*\\n(%r11), %xmm\\n\n"
+    "  .endr\n"
+    "  movq 0(%r11), %rax\n  movq 8(%r11), %rbx\n  movq 16(%r11), %rcx\n"
+    "  movq 24(%r11), %rdx\n  movq 32(%r11), %rsi\n  movq 40(%r11), %rdi\n"
+    "  movq 48(%r11), %r8\n  movq 56(%r11), %r9\n  movq 64(%r11), %r10\n"
+    "  movq 80(%r11), %r12\n  movq 88(%r11), %r13\n  movq 96(%r11), %r14\n"
+    "  movq 104(%r11), %r15\n  movq 72(%r11), %r11\n"
+    "  call \\name@PLT\n"
+    "  pushq %r11\n"
+    "  movq -48(%rbp), %r11\n"
+    "  movq %rax, 0(%r11)\n  movq %rbx, 8(%r11)\n  movq %rcx, 16(%r11)\n"
+    "  movq %rdx, 24(%r11)\n  movq %rsi, 32(%r11)\n  movq %rdi, 40(%r11)\n"
+    "  movq %r8, 48(%r11)\n  movq %r9, 56(%r11)\n  movq %r10, 64(%r11)\n"
+    "  movq %r12, 80(%r11)\n  movq %r13, 88(%r11)\n  movq %r14, 96(%r11)\n"
+    "  movq %r15, 104(%r11)\n  popq %rax\n  movq %rax, 72(%r11)\n"
+    "  .irp n, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15\n"
+    "  movdqu %xmm\\n, 112+16*\\n(%r11)\n"
+    "  .endr\n"
+    "  .if \\x87\n  fstpt 368(%r11)\n  .endif\n"
+    "  leaq -40(%rbp), %rsp\n"
+    "  popq %r15\n  popq %r14\n  popq %r13\n  popq %r12\n  popq %rbx\n  popq %rbp\n"
+    "  .cfi_def_cfa %rsp, 8\n"
+    "  ret\n"
+    "  .cfi_endproc\n"
+    ".endm\n"
+    SNAPS);

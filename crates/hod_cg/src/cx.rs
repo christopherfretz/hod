@@ -97,6 +97,8 @@ pub struct Scratch {
     pub(crate) key_rows: crate::key_rows::KeyScratch,
     /// The value records' tables (WP-162).
     pub(crate) dbg_values: crate::dbg_value::ValueScratch,
+    /// The stack guard (WP-183, §5.6.24).
+    pub(crate) guard: crate::guard::GuardPlan,
 }
 
 impl Default for Scratch {
@@ -131,6 +133,7 @@ impl Default for Scratch {
             dbg_labels: Vec::new(),
             key_rows: crate::key_rows::KeyScratch::default(),
             dbg_values: crate::dbg_value::ValueScratch::default(),
+            guard: crate::guard::GuardPlan::default(),
         }
     }
 }
@@ -543,6 +546,14 @@ impl<'a, T: Target> FnCx<'a, T> {
             Some(&place) => Ok(place),
             None => internal(format!("{slot:?} is not a slot of this body")),
         }
+    }
+
+    /// The function's stack guard and guarded block (§5.6.24, WP-183):
+    /// [`GuardPlan::is_on`](crate::GuardPlan::is_on) is false for a
+    /// function without one.
+    #[inline]
+    pub fn stack_guard(&self) -> &crate::guard::GuardPlan {
+        &self.s.guard
     }
 
     /// The size of the local area so far; final in `end_function`.

@@ -23,7 +23,7 @@
 //! | `abi` | WP-118, WP-140 | `assign`: where arguments and return values travel, on `hod_cg::abi`'s walk | `tests/abi`, `tests/vcall_i128.rs` |
 //! | `target` | WP-116, WP-140 | `X64`: the function's features, register description, classes, glue, the dispatch | `tests/skeleton.rs`, `tests/abi_followups.rs` |
 //! | `cet` | WP-184 | `cf-protection-branch`: `endbr64` at entries, address-taken blocks, landing pads, after `returns_twice` calls (§5.6.25) | `tests/cf_protection.rs` |
-//! | `frame` | WP-116 | prologue, exit sequences, CFI rows, frame addressing, dynamic slots, the call instruction | `tests/skeleton.rs` |
+//! | `frame` | WP-116 | prologue, exit sequences, CFI rows, frame addressing, dynamic slots, the call instruction, the `preserve_mostcc`/`preserve_allcc` saves (WP-181) | `tests/skeleton.rs`, `tests/preserve_cc.rs` |
 //! | `common` | WP-116 (shared) | moves, frame places, constants, symbol addresses, branches | `tests/skeleton.rs` |
 //! | `term` | WP-116 | `br`, `ret`, `unreachable` | `tests/skeleton.rs` |
 //! | `features` | WP-116, WP-117, WP-140 | the judged target features (§5.6.2), the function's (§5.6.9) | unit, `tests/abi_followups.rs` |
@@ -37,7 +37,7 @@
 //! | `fpintr` | WP-127, WP-128 | the floating-point intrinsics | `tests/fpintr.rs` |
 //! | `intrinsic` | WP-128 | the other intrinsics | `tests/intrinsic.rs` |
 //! | `x86` | WP-173 | the x86 target intrinsics `llvm.x86.*`, SSE to SSSE3 (§5.6.22) | `tests/x86_intrinsics.rs` |
-//! | `barrier` | WP-128 | inline assembly whose template assembles to nothing | `tests/barrier.rs` |
+//! | `barrier` | WP-128 | inline assembly whose template assembles to nothing, `callbr` of an empty template (WP-181) | `tests/barrier.rs`, `tests/callbr.rs` |
 //! | `x87` | WP-131 | `x86_fp80` arithmetic, compares, conversions and intrinsics | `tests/x87.rs` |
 //! | `vector` | WP-132 | `extractelement`, `insertelement`, `shufflevector` | `tests/vector.rs` |
 //! | `lanes` | WP-132 | element-wise operations and intrinsics on vectors (packed or lane by lane) | `tests/lanes.rs` |
@@ -64,6 +64,7 @@ pub mod features;
 pub mod float;
 pub mod fpintr;
 pub mod frame;
+pub mod guard;
 pub mod int;
 pub mod intrinsic;
 pub mod lanes;

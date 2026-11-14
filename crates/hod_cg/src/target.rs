@@ -363,6 +363,22 @@ pub trait Target: Sized + Sync {
         align: u64,
     ) -> CgResult<()>;
 
+    /// WP-183, §5.6.24: the entry code of a function with a stack guard
+    /// ([`FnCx::stack_guard`]): the guard value stored in the guarded
+    /// block's guard word (and in the low guard when the plan has one),
+    /// and the address of each slot of the block stored in its pointer
+    /// slot. The block's place is the target's, known in `end_function`,
+    /// which also emits the checks. Called after the entry code for the
+    /// arguments and before the over-aligned slots' (§5.1); it may write
+    /// scratch registers only. The default refuses the function.
+    ///
+    /// # Errors
+    /// [`SSP_TARGET`](crate::SSP_TARGET) by default.
+    fn enter_guard(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()> {
+        let _ = cx;
+        Err(crate::error::CgError::unsupported(crate::guard::SSP_TARGET))
+    }
+
     /// Writes `displacement` into the field of `kind` at offset `at` of
     /// `code`, the function's code so far (§6.2). The displacement is
     /// the label's offset minus `at`; what `at` points at (the

@@ -784,11 +784,16 @@ fn the_census_counts_occurrences_and_symbols() {
 fn inline_assembly_rows_of_wp_103() {
     let a64 = Support::shipped(Arch::Aarch64);
     let x64 = Support::shipped(Arch::X86_64);
-    for row in ["call:inline-asm", "inst:callbr", "module:asm"] {
-        assert_eq!(a64.supports(row), Some(true), "{row}");
-        assert_eq!(x64.supports(row), Some(false), "{row}");
-        assert!(x64.clone().with(row).is_some(), "{row}: x86-64 may switch it on");
-    }
+    // WP-187: x86-64 assembles templates of instructions too.
+    assert_eq!(a64.supports("call:inline-asm"), Some(true));
+    assert_eq!(x64.supports("call:inline-asm"), Some(true));
+    assert_eq!(a64.supports("module:asm"), Some(true));
+    assert_eq!(x64.supports("module:asm"), Some(false));
+    assert!(x64.clone().with("module:asm").is_some(), "x86-64 may switch it on");
+    // WP-181: `callbr` of an empty template on x86-64 (one with a
+    // template of instructions is refused by the target, WP-187).
+    assert_eq!(a64.supports("inst:callbr"), Some(true));
+    assert_eq!(x64.supports("inst:callbr"), Some(true));
 }
 
 // WP-128: the x86-64 intrinsics no other group takes, the overflow

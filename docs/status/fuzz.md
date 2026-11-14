@@ -91,11 +91,12 @@ DWARF and compares the lines. Natively, the `abi` profile's programs
 end in milliseconds; csmith's dominate their runs by the 5 s limit of
 the skipped seeds.
 
-**Refusals.** One reason, on AArch64 only: `abi:one-leaf-array` (11 of
-300 ABI programs, whole and mixed alike), an aggregate argument whose
-only leaf is an array, with a stack alignment LLVM's two AArch64
-instruction selectors disagree about (`crates/hod_a64/src/abi.rs`, `ONE_LEAF_ARRAY`). No
-refusal starts with `debug:`.
+**Refusals.** In the runs above one reason, on AArch64 only:
+`abi:one-leaf-array` (11 of 300 ABI programs, whole and mixed alike), an
+aggregate argument whose only leaf is an array, with a stack alignment
+LLVM's two AArch64 instruction selectors disagree about. WP-182 builds
+those as SelectionDAG passes them, and the `abi` profile now meets no
+refusal (300 of 300). No refusal starts with `debug:`.
 
 ## Debug
 

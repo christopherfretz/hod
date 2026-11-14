@@ -197,6 +197,7 @@ pub const CONSTRUCTORS: &[(&str, &[&str])] = &[
     ("mfence", &["mfence"]),
     ("lfence", &["lfence"]),
     ("sfence", &["sfence"]),
+    ("clflush_m", &["clflush"]),
     ("pause", &["pause"]),
     // system
     ("ud2", &["ud2"]),
@@ -252,6 +253,10 @@ pub const CONSTRUCTORS: &[(&str, &[&str])] = &[
     ("cvtss2sd_rm", &["cvtss2sd"]),
     ("cvtsd2ss_rr", &["cvtsd2ss"]),
     ("cvtsd2ss_rm", &["cvtsd2ss"]),
+    ("rcpss_rr", &["rcpss"]),
+    ("rsqrtss_rr", &["rsqrtss"]),
+    ("ldmxcsr_m", &["ldmxcsr"]),
+    ("stmxcsr_m", &["stmxcsr"]),
     // sse, WP-120
     ("mins_rr", &["mins*"]),
     ("maxs_rr", &["maxs*"]),
@@ -441,6 +446,9 @@ pub const CONSTRUCTORS: &[(&str, &[&str])] = &[
     ("movlp_mr", &["movlp*"]),
     ("movhp_mr", &["movhp*"]),
     ("pmovmskb_rr", &["pmovmskb"]),
+    ("rcpps_rr", &["rcpps"]),
+    ("rsqrtps_rr", &["rsqrtps"]),
+    ("maskmovdqu_rr", &["maskmovdqu"]),
     ("movmskp_rr", &["movmskp*"]),
     ("pextrw_rri", &["pextrw"]),
     ("pinsrw_rri", &["pinsrw"]),
@@ -456,6 +464,12 @@ pub const CONSTRUCTORS: &[(&str, &[&str])] = &[
     ("rdtscp", &["rdtscp"]),
     ("cpuid", &["cpuid"]),
     ("cld", &["cld"]),
+    // inline assembly (WP-187)
+    ("std", &["std"]),
+    ("hlt", &["hlt"]),
+    ("fwait", &["fwait", "wait"]),
+    ("syscall", &["syscall"]),
+    ("int_i", &["int", "int3"]),
     ("rep_movs", &["rep movs*"]),
     ("rep_stos", &["rep stos*"]),
     // processor state and extensions (WP-190)

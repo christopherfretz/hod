@@ -272,7 +272,13 @@ out like a home slot of its class (§2.2). The protocol:
 
 The driver does these stores before it lowers the terminator (for an
 `invoke`, the call sequence does them at their two places), so a
-terminator's lowering does not.
+terminator's lowering does not. The exception is a `callbr` whose result
+a successor's `phi` takes: the driver skips that successor and the
+`callbr`'s lowering stores its `phi`s on each edge to it, after the
+result has its location (WP-181). A successor so skipped that the
+`callbr` lists more than once is refused as
+`call:callbr-result-repeated-edge` (each listing is its own code path on
+AArch64, and a successor's stores are written once per terminator).
 
 No edge is ever split and no parallel copy is ever sequenced: the values
 read (locations) and the slots written (incoming slots) are disjoint, so
@@ -281,8 +287,8 @@ the "swap" and "lost copy" problems cannot occur, a conditional branch,
 that is not taken is dead (every edge into a block rewrites the slots
 before the block reads them).
 
-`invoke` is the one supported terminator whose result can be a
-successor's incoming value. Its unwind destination's incoming slots are
+`invoke` and `callbr` are the supported terminators whose result can be
+a successor's incoming value. Its unwind destination's incoming slots are
 written **before** the call (the result is not available on that edge); its normal destination's
 incoming slots are written **after** the call, once the result has its
 location.
@@ -2735,16 +2741,17 @@ sequence puts an instruction other than `mov`, `lea`, `movzx`/`movsx`,
   which front ends leave untranslated (`rdtsc` with `"=A"`), `llc` 19
   and 22 do read on x86-64: `rax` for a value of up to 64 bits (an
   `i64` `=A` after `rdtsc` is `rax` alone, without `edx`), `rdx:rax`
-  for `i128`, as an input, an output or a tied pair; hod lowers only
-  empty templates, so it keeps refusing `A` as
-  `x64:inline-asm-constraint` and a non-empty template as
-  `x64:inline-asm` (WP-144, `tests/leftovers.rs`).
+  for `i128`, as an input, an output or a tied pair; hod keeps refusing
+  `A`, as `x64:inline-asm-constraint` in an empty template and as
+  `asm:constraint/a` (names are lower-cased) in one of instructions (WP-144, WP-187,
+  `tests/leftovers.rs`).
 
 Refused names: `x64:intrinsic` (an intrinsic not listed), and also
 `x64:intrinsic-wide` (a width above 128, or i128 where only `Int` is
 on), `x64:intrinsic-vector`, `x64:mem-inline-length` (an `.inline` form
 with a variable length), `x64:frame-depth`, `x64:eh-typeid`,
-`x64:inline-asm` (a template that is not empty), and
+`x64:inline-asm` (a `callbr` whose template is not empty; other
+templates are §5.6.28's since WP-187), and
 `x64:inline-asm-{output,outputs,constraint,clobber,operand,bundle}`.
 
 Evidence: `crates/hod_x64/tests/intrinsic.rs` and `tests/barrier.rs`,
@@ -3538,14 +3545,9 @@ Evidence: `spec/landed/codegen/WP-171.md`.
    relocation) holds unchanged; the block rows it reads are moved by
    `shrink.rs` (§5.6.15), so the number is the one of the final code.
    Only the classification row was `x64:todo`.
-3. **Kept refused**: `inst:callbr` (an empty-template `callbr` needs
-   `barrier.rs` to take `!i` label constraints and branch to the normal
-   destination, the indirect ones being unreachable from an empty
-   template; any other template is `call:inline-asm`, x86-64 has no
-   assembler), `cc:preserve_mostcc` / `cc:preserve_allcc` (`abi:cc`: a
-   callee must save `rcx`, `rdx`, `rsi`, `rdi`, `r8`..`r10`, and for
-   `preserve_allcc` the `xmm` registers, in the prologue with their CFI,
-   `frame.rs`). Sizes and reasons: `spec/landed/codegen/WP-174.md`.
+3. **Kept refused** then: `inst:callbr`, `cc:preserve_mostcc` /
+   `cc:preserve_allcc`; built since WP-181 (§5.6.23). Sizes and reasons:
+   `spec/landed/codegen/WP-174.md`.
 
 #### 5.6.22 x86 target intrinsics, SSE to SSSE3 (WP-173)
 
@@ -3580,7 +3582,15 @@ result types are not LLVM's declaration is `x64:x86-intrinsic-signature`.
    written as 255 (each count at or above the lane width shifts out
    every bit, or fills with the sign for `psra`), a variable count is
    moved to `xmm15` by `movd` and the vector form used; `sfence`,
-   `lfence`, `mfence`. `pause` stays §5.6.19 (5).
+   `lfence`, `mfence`. `pause` stays §5.6.19 (5). WP-181:
+
+   | intrinsic | instruction |
+   |---|---|
+   | `sse.ldmxcsr(ptr)`, `sse.stmxcsr(ptr)` | `ldmxcsr [p]`, `stmxcsr [p]` |
+   | `sse2.clflush(ptr)` | `clflush [p]` |
+   | `sse.rcp.ps`, `sse.rsqrt.ps` | `rcpps`, `rsqrtps` in place (the hardware's approximation, the same instruction as `llc`'s) |
+   | `sse.rcp.ss`, `sse.rsqrt.ss` | `rcpss`, `rsqrtss` in place: lanes 1 to 3 of the operand kept |
+   | `sse2.maskmov.dqu(data, mask, ptr)` | `mov rax, rdi` · `mov rdi, p` · `maskmovdqu data, mask` · `mov rdi, rax` (the address is `rdi`; `rax` never holds a value) |
 2. **SSE3**, only in a function whose `target-features` enable `sse3`
    (the last item that implies it, `+sse3`, `+ssse3`, `+sse4.1`,
    `+sse4.2`, `+avx` or an AVX feature, or disables it, `-sse`, `-sse2`,
@@ -3604,14 +3614,166 @@ result types are not LLVM's declaration is `x64:x86-intrinsic-signature`.
 4. **Refused by name.** An SSE3 or SSSE3 intrinsic in a function without
    its feature is `intrinsic:` and its LLVM name, as `llc` cannot select
    it. Every `llvm.x86.*` name hod does not list is `intrinsic:` and its
-   name from `classify` (`spec/ir.md`): `sse.ldmxcsr`/`stmxcsr`, `sse.rcp.*`,
-   `sse.rsqrt.*`, `sse2.clflush`, `sse2.maskmov.dqu`, `sse3.monitor`/
-   `mwait` (no encoding in `hod_mc_x64`), the `x86_mmx` forms clang 19
+   name from `classify` (`spec/ir.md`): `sse3.monitor`/`mwait` (no
+   encoding in `hod_mc_x64`), the `x86_mmx` forms clang 19
    writes (`mmx.*`, `sse.cvtpi2ps`, ..., the 64-bit `ssse3.*`), and all of
    `sse41.*` and `sse42.*` but `sse42.crc32.*` (§5.6.29). AArch64 refuses
    every `llvm.x86.*` name.
 
 Evidence: `spec/landed/codegen/WP-173.md`.
+
+#### 5.6.23 `callbr` of an empty template, `preserve_mostcc` and `preserve_allcc` (WP-181)
+
+1. **`callbr` of an empty template** (`barrier.rs`, `inst:callbr` `ON`
+   on x86-64). The constraint string has one `!i` per indirect
+   destination, after the operands; a label takes no call argument and
+   any other count of labels (or a label on `call` or `invoke`) is
+   `x64:inline-asm-constraint`. The template never jumps, so the call is
+   §5.6.8's barrier (inputs evaluated, a tied output is its input)
+   followed by the fallthrough edge: its `phi`s and a branch unless the
+   fallthrough is the next block. Nothing is written for an indirect
+   edge: the indirect destinations are blocks like any other, emitted
+   because they are successors, entered only from elsewhere (a branch,
+   an `indirectbr` through their `blockaddress`), as `llc` builds them.
+   A template that assembles to something stays `x64:inline-asm` (no
+   assembler). A destination's `phi` that takes the result is written
+   on the fallthrough edge after the result (§4.5; the refusal
+   `x64:callbr-result-phi` of the first landing is retired: WP-181).
+   AArch64 builds `callbr` through its assembler (§5.5.3) and is not
+   changed.
+2. **`preserve_mostcc` and `preserve_allcc`** (`frame.rs`, `abi.rs`;
+   `cc:preserve_mostcc` and `cc:preserve_allcc` `ON` on x86-64).
+   `assign` gives both `ccc`'s assignment (`spec/abi-x64.md` §1.2).
+   *Callee:* after `mov rbp, rsp` the prologue pushes `rax`, `rcx`,
+   `rdx`, `rsi`, `rdi`, `r8`, `r9`, `r10` (`frame::PRESERVED`) but the
+   registers a part of the result is returned in, with their rows at
+   `-24`, `-32`, ...; the save set (§5.6.15) follows them, its rows
+   below; a `preserve_allcc` function then stores `xmm0`..`xmm15` but
+   the result's (`movups`) in a 16-aligned local area after `sub rsp`,
+   their rows (`DW_CFA_offset` of DWARF 17..32) after the last store.
+   Every exit loads the `xmm` registers back, then `lea rsp, [rbp -
+   8n]` (`n` counting every push), pops the save set, the extra
+   registers and `rbp`. This is LLVM 19's and 22's set, measured on
+   their `.cfi_offset` rows: `r11` is not kept; `rax` is kept in a
+   `void` or `sret` function (the caller's `rax` comes back over the
+   `sret` address), not for `i64`/`i32`/`i1`, `rax` and `rdx` not for
+   `i128`, `rax`, `rdx`, `rcx` not for three `i64`s, `xmm0` (`xmm1`)
+   not for a `float`, `double`, `<4 x float>` (two `double`s); an
+   `x86_fp80` result keeps them all. hod pushes every register of the
+   set, `llc` those its allocator touched: the caller cannot tell.
+   *Caller:* a call is a `ccc` call. The callee keeps a superset of
+   `ccc`'s callee-saved registers, so the code around it, which assumes
+   only `ccc`'s, is correct; it does not use what the callee keeps
+   beyond them.
+   *Refused:* a result returned in memory is
+   `x64:preserve-cc-return-memory` (LLVM 19 and 22 keep sets off the
+   rule there: `xmm0`/`xmm1` unsaved for four `double`s, the address
+   in `rax` popped over); a `musttail` exit from either is
+   `x64:preserve-cc-tail-call` (the teardown restores the registers the
+   tail call passes arguments in); a coroutine body is
+   `x64:coro-preserve-cc`. `swifttailcc`, `preserve_nonecc` and the
+   other conventions stay `abi:cc`.
+
+#### 5.6.24 Stack protectors (WP-183, both targets)
+
+`ssp`, `sspstrong` and `sspreq` (clang's `-fstack-protector`, `-strong`,
+`-all`; kiln passes them through) are built on both targets. The rules
+are target-neutral (`hod_cg::guard`); each target emits the code
+(`hod_x64::guard`, `hod_a64::guard`).
+
+1. **Which functions.** A function with one of the three attributes is
+   protected when it has `sspreq`, at least one body slot, or an
+   `alloca` instruction. LLVM (`StackProtector::requiresStackProtector`)
+   protects under `ssp` a function with a char array of at least
+   `"stack-protector-buffer-size"` bytes (in a struct too) or an
+   `alloca` of a non-constant or large count, and under `sspstrong` also
+   any array, any aggregate holding one and any local whose address is
+   taken; under `sspreq` every function. hod keeps no slot types
+   (`spec/ir.md` §5.2), so it cannot tell an array from a scalar; the
+   rule above is a superset of LLVM's for each attribute, which is what
+   matters (never weaker than `llc`), and costs one guard more in
+   functions `llc` leaves alone. `"stack-protector-buffer-size"` is read
+   with the attribute and changes nothing. A protected presplit
+   coroutine is refused, `ssp:coroutine` (its resume stubs enter the
+   body past the entry code); a target without the hook,
+   `ssp:target`.
+2. **Which slots move.** A slot **escapes** when its address is used
+   other than as the pointer operand of a `load` or `store` whose access
+   lies inside the slot (a `getelementptr`, a call argument, a stored
+   value, a `phi`, a cast, ...). Only an escaping slot can be written out
+   of bounds. The escaping slots of a protected function whose alignment
+   is at most the stack alignment form the **guarded block**, in body
+   order, each at its alignment from the block's start; the **guard
+   word** (8 bytes) follows the last slot at once, unaligned if need be,
+   so that a one-byte overflow of the last slot reaches it (`llc` may
+   leave padding there; hod never detects later than `llc`). The block is
+   rounded up to 16. Each slot of the block is addressed through a
+   pointer slot (`SlotPlace::Indirect`, as an over-aligned slot, §5.1);
+   the pointer slots are the first slots after `begin_function`'s. Its
+   variable's location is the pointer slot, dereferenced (§9.5). Slots
+   that do not escape stay where §5.1 puts them, below the block.
+3. **Where the block is.** The block is the local area's last
+   allocation, made in `end_function` before the frame size is read, so
+   it is at the top of the local area: on x86-64 right below the save
+   set (at most 8 bytes of padding between them, §5.6), on AArch64
+   right below the CFA (§5.5). A linear overflow of any slot of the block
+   reaches the guard word before the saved registers and the return
+   address (x86-64) or the caller's frame and frame record (AArch64).
+   Everything that is not in the block is below it.
+4. **The low guard.** A protected function with a dynamic area (an
+   `alloca` instruction or an over-aligned slot) has a second guard word
+   between that area and the rest of the frame: on x86-64 at `Local(0)`,
+   the first 16 bytes `begin_function` reserves; on AArch64 at
+   `[x29 - 16]`, 16 bytes the entry code takes below the frame record
+   (`sub sp, sp, #16`; the epilogue then restores `sp` from `x29`).
+   AArch64 needs it because hod's frame record is at the bottom of the
+   frame: without it, the overflow of a dynamic allocation would reach the
+   saved `lr` first. On x86-64 `llc` has no such word (a dynamic
+   allocation's overflow runs through the fixed objects before it reaches
+   the guard); hod's makes it stronger there.
+5. **The guard value.** x86-64 Linux: `fs:[0x28]` (the TCB's
+   `stack_guard`), read with `mov r10, fs:[0x28]`. AArch64 Linux: the
+   variable `__stack_chk_guard` through the GOT (`adrp`
+   `R_AARCH64_ADR_GOT_PAGE`, `ldr` `R_AARCH64_LD64_GOT_LO12_NC`, `ldr`),
+   under every relocation model and whatever the module's `PIC Level`,
+   as `llc` reads it in a PIC module. (`llc` reads it directly, `adrp`
+   `R_AARCH64_ADR_PREL_PG_HI21`, in a module without `PIC Level` even
+   under `-relocation-model=pic`, an object no PIE link accepts; the GOT
+   form links everywhere, and the linker relaxes it.) Both symbols are
+   `RuntimeFn` members (`StackChkGuard` is a variable, only addressed).
+   The module flags `stack-protector-guard`, `-guard-reg`,
+   `-guard-offset`, `-guard-symbol` (`-mstack-protector-guard*`) are
+   refused by their names, `module-flag:<name>` (§2.1 of `spec/ir.md`).
+6. **Entry code** (`Target::enter_guard`, after the arguments' entry
+   code and before the over-aligned slots', scratch registers only): the
+   value stored in the guard word and in the low guard, then each slot's
+   address in its pointer slot. The block's offset is not known yet: on
+   x86-64 the `lea r11, [rbp + disp32]` of its base is a local access
+   (§5.6) whose displacement `end_function` writes before biasing; on
+   AArch64 the guard word's address is made by `add x16, x29, #lo12` ·
+   `add x16, x16, #hi12, lsl #12`, patched in `end_function`, and each
+   slot's address is `x16` less its distance from the guard.
+7. **The check** starts every exit sequence (the epilogue and every tail
+   exit, so a `musttail` call is checked before its jump; a `noreturn`
+   call and `unreachable` have none; unwinding through a protected frame
+   checks nothing, as with `llc`). x86-64: `mov r10, [guard]` · `cmp r10,
+   fs:[0x28]` · `jne fail`, the same for the low guard; `r10` is free at
+   every exit (`r11` may hold an indirect tail callee), the flags are
+   dead. AArch64: `str x16, [sp, #-16]!` (an indirect tail callee is in
+   `x16`) · the value into `x16` · `ldr x17, [guard]` · `cmp x16, x17` ·
+   `b.ne fail` (and the low guard) · `ldr x16, [sp], #16`. The check
+   runs before the result is moved or anything is restored, so it
+   writes no register that holds a result or a tail call's argument.
+8. **The failure call** follows the last exit sequence: the body's CFA
+   rules restated (x86-64 `def_cfa rbp, 16`; AArch64 the body rows, as a
+   tail exit), then `call __stack_chk_fail` (`R_X86_64_PLT32`) or `bl
+   __stack_chk_fail` (`R_AARCH64_CALL26`), which does not return. No row
+   changes for it otherwise, and no call-site row covers it.
+9. **Intrinsics.** `llvm.stackprotector` and `llvm.stackguard` are not
+   written by clang or kiln; `classify` refuses them by name
+   (`intrinsic:llvm.stackprotector`, `intrinsic:llvm.stackguard`).
+
+Evidence: `spec/landed/codegen/WP-183.md`.
 
 #### 5.6.25 Indirect-branch tracking: `cf-protection-branch` (WP-184)
 
@@ -3670,6 +3832,56 @@ them there.
 
 Evidence: `spec/landed/codegen/WP-184.md`.
 
+#### 5.6.26 AArch64 branch protection (WP-185)
+
+`-mbranch-protection` as clang 19 and 22 and kiln write it. The module
+flags `branch-target-enforcement`, `sign-return-address`,
+`sign-return-address-all`, `sign-return-address-with-bkey` and
+`guarded-control-stack` (value 1, clang 19; value 2, clang 22: the
+functions carry the policy) become per-function attributes in `hod_ll`
+(`spec/ll.md` §7.3); from there the function attributes
+`"branch-target-enforcement"`, `"sign-return-address"` (`none`,
+`non-leaf`, `all`), `"sign-return-address-key"` (`a_key`, `b_key`) and
+`"guarded-control-stack"` decide (`hod_a64/src/protect.rs`). Any other
+value of the two strings is `a64:branch-protection-value`.
+`branch-protection-pauth-lr` (FEAT_PAuth_LR) stays refused on AArch64.
+x86-64 ignores every one of these names, as `llc` does.
+
+1. **Entry.** A signed function begins with `paciasp` (`hint #25`) or,
+   with the B key, `pacibsp` (`hint #27`); both are BTI landing pads for
+   calls, so no `bti c` follows. An unsigned function under BTI begins
+   with `bti c` (`hint #34`). Every function gets it, address taken or
+   not, as `llc` 19 does (`llc` 22 omits it for a local function whose
+   address is not taken): a linker veneer reaches a far callee by `br
+   x16`. hod's frame always saves `x30`, so `non-leaf` signs every
+   function, as `all` does (`llc` signs only functions that spill `x30`).
+2. **Exit.** Every return and every `musttail` exit authenticates before
+   leaving: `ldp x29, x30`, the stack restored, then `autiasp`
+   (`hint #29`) or `autibsp` (`hint #31`), then `ret`, `b` or `br x16`.
+   A coroutine's resume and destroy stubs (`coro_body.rs`) sign at
+   their own entry.
+3. **Landing pads in a function.** Under BTI, `bti j` (`hint #36`) begins
+   every block whose address is taken (`blockaddress`), every landing pad
+   (the unwinder branches to it; `llc` 22 does this, `llc` 19 does not),
+   and follows every call that returns twice (the call site's or the
+   callee's `returns_twice`: `longjmp` returns there by `br`). hod makes
+   no jump tables, so a `switch` needs none.
+4. **CFI.** A signed function has `DW_CFA_AARCH64_negate_ra_state` after
+   the sign instruction (offset 4) and after each `auti*sp`; a body
+   restated after an exit (§9.3) restores the signed state with another,
+   so the parity at every offset is the signing state. A B-key function's
+   FDE begins with `BKeyFrame`, which selects a CIE with augmentation `B`
+   (`spec/eh.md` §2.2, §4.5).
+5. **`llvm.returnaddress`.** The loaded address is stripped with
+   `xpaclri` (`hint #7`) through `x30`, always, as `llc` does.
+6. **The note.** Each object carries `.note.gnu.property` with
+   `GNU_PROPERTY_AARCH64_FEATURE_1_AND` (BTI 1, PAC 2, GCS 4, each from a
+   non-zero module flag), byte-equal to `llc` 19 and 22's
+   (`spec/object.md` "GNU property note"); no flag, no note. GCS changes
+   no code.
+
+Evidence: `spec/landed/codegen/WP-185.md`.
+
 #### 5.6.27 Stack probing (WP-186)
 
 A function with `"probe-stack"="inline-asm"` (`hod_ir::StackProbe::
@@ -3725,6 +3937,82 @@ byte-identical to what it was.
    `attr:stack-probe-size-value` (`spec/ir.md` §5.7).
 
 Evidence: `spec/landed/codegen/WP-186.md`.
+
+#### 5.6.28 Inline assembly with a template (WP-187)
+
+A call or `invoke` of inline assembly whose template is not empty is
+`crates/hod_x64/src/barrier/template.rs` (hook: `barrier::asm`); the
+template is substituted (`hod_asm::template`, `hod_asm::x64::print_operand`)
+and assembled (`hod_asm::x64::assemble`, `spec/asm.md` §10) before
+anything is emitted, so a template that refuses leaves no code. The
+sequence:
+
+1. Every input placed in a register or memory, and every pointer of an
+   indirect operand, is evaluated and stored to a 16-byte slot of its
+   own (one per distinct value).
+2. Every register value is displaced; every holdable register the
+   template may write (operand registers, clobbers) is taken. A taken
+   register is a used one, so the prologue saves `rbx` and `r12`..`r15`
+   among them (§5.6.15); `rax`, `rcx`, `rdx`, `r10`, `r11` and the SSE
+   registers hold no value across an instruction.
+3. Inputs are loaded into their registers (`movzx` for 1 and 2 bytes,
+   the 32-bit `mov` for 4, so an integer is zero-extended to 32 bits at
+   least; `movss`/`movsd`/`movups` for SSE); a memory operand's address
+   is put in its register (`lea` of the slot, or the pointer loaded).
+4. The template's bytes, with a relocation at each symbol field
+   (`spec/asm.md` §10.2 "Symbols") against the module's symbol of that
+   name (another name is `asm:symbol`).
+5. Register outputs are stored to their slots (`mov`, flags kept); flag
+   outputs are `setcc r11b`, `movzx`, stored; indirect register outputs
+   are copied from their slots through their pointers (`r11`, the value
+   in `r10` or `xmm15`).
+6. The result is loaded from its slot, or the struct of several results
+   copied field by field; an `invoke` continues at its normal
+   destination.
+
+Only frame accesses (`rbp`-relative, `rbx`-relative in a coroutine body)
+and the operand registers are touched between 3 and 5 besides the
+template, so `push`/`pop` inside a template keep the frame valid (the
+CFA is `rbp`-based throughout, §5.6.15).
+
+**Registers.** Every operand gets a register of its own, distinct from
+every other operand's and every clobber, except a tied input, which is
+its output's register; this satisfies `&` always. General registers in
+the order `rax`, `rcx`, `rdx`, `rsi`, `rdi`, `r8`..`r11`, `rbx`,
+`r12`..`r15` within the code's class (`Q`: `rax`..`rbx`; `R`: the
+legacy eight); SSE registers from `xmm0`. `{reg}` is that register;
+`rsp`, `rbp` operands or clobbers are `x64:inline-asm-frame-register`;
+a template that may write `rbx` in a coroutine body (its frame base,
+WP-137) is `x64:inline-asm-frame-base`.
+
+**Choice.** Of several alternatives, `llc`'s by weights (as §5.6.8, with
+the ranged immediates weighing 3 when the constant fits). Within one, as
+`llc`'s `ComputeConstraintToUse`: a flag output; an explicit register; a
+tied input's output register; an immediate code (or `X`) for a constant
+integer in range (a constant out of every range of an immediate-only
+alternative is `asm:constraint/range`); memory (`m`, `o`) unless the
+operand is a direct output or an output an input is tied to (`rm` on an
+input is memory, as `llc` takes it); otherwise a register (`X` of a
+floating-point or vector value: SSE).
+
+**Types.** A general register holds `i8`, `i16`, `i32`, `i64`, `ptr`,
+`float`, `double`; an SSE register `float`, `double`, `i32`, `i64`,
+`i128`, `fp128` and vectors of 4, 8 or 16 bytes; a tied pair must have
+the same size; a flag output is an integer. Otherwise
+`x64:inline-asm-operand-type`. More than 16 operands, 4 alternatives,
+or the registers of a class: `x64:inline-asm-operands`.
+
+**Refused.** `inteldialect` (`x64:inline-asm-intel`), `unwind` on an
+`invoke` (`x64:inline-asm-unwind`), a bundle (`x64:inline-asm-bundle`),
+a `callbr` with a template (`x64:inline-asm`), `asm goto` labels in a
+call, a symbol outside a memory operand (`asm:operand/symbol`), and
+`hod_asm`'s `asm:*` names.
+
+Evidence: `crates/hod_asm/tests/llvm_mc_x64.rs`,
+`crates/hod_x64/tests/inline_asm.rs` (execution against `llc` 19 and
+22 under the emulator; the `forced_*` templates' bytes, and the
+templates' relocations, equal to `llc`'s),
+summarized in `spec/landed/codegen/WP-187.md`.
 
 #### 5.6.29 x86 system and state intrinsics (WP-190)
 
@@ -5373,9 +5661,8 @@ pub enum CgError {
 - (Closed by WP-115.) Address-taken blocks without an `indirectbr` in
   their function (§9.6).
 
-- Stack protector attributes (`ssp`, `sspstrong`, `sspreq`): accept and
-  ignore (hod is a debug backend; the IR's meaning is unchanged) or
-  implement the canary. Until decided `classify` rejects them.
+- (Closed by WP-183.) Stack protector attributes (`ssp`, `sspstrong`,
+  `sspreq`): implemented, §5.6.24.
 - A register cache for home values within a block (keep the register
   after the store, forget it at the next call or label). Cuts reloads;
   adopt only on a `xtask bench` measurement.

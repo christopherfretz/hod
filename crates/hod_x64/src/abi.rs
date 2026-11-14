@@ -712,6 +712,15 @@ fn assign_signature(
     features: Features,
     out: &mut Assignment,
 ) -> Abi<()> {
+    // WP-181 (§1.2): `preserve_mostcc` and `preserve_allcc` pass and
+    // return as `ccc`; only the callee's saved set differs (`frame.rs`).
+    let as_c;
+    let sig = if matches!(sig.cc, CallConv::PRESERVE_MOST | CallConv::PRESERVE_ALL) {
+        as_c = Sig { cc: CallConv::C, ..*sig };
+        &as_c
+    } else {
+        sig
+    };
     if !cc_is_c(sig.cc) {
         return no(CC);
     }

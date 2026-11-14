@@ -20,7 +20,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 
 | group | constructs | aarch64 supported | not-implemented | rejected | x86_64 supported | not-implemented | rejected |
 |---|---|---|---|---|---|---|---|
-| `module` | 24 | 11 | 11 | 2 | 12 | 6 | 6 |
+| `module` | 24 | 16 | 6 | 2 | 18 | 6 | 0 |
 | `structor` | 2 | 2 | 0 | 0 | 2 | 0 | 0 |
 | `debug` | 5 | 4 | 1 | 0 | 4 | 1 | 0 |
 | `global` | 12 | 11 | 1 | 0 | 11 | 1 | 0 |
@@ -30,20 +30,20 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `comdat` | 5 | 2 | 0 | 3 | 2 | 0 | 3 |
 | `init` | 10 | 6 | 3 | 1 | 6 | 3 | 1 |
 | `function` | 6 | 6 | 0 | 0 | 6 | 0 | 0 |
-| `cc` | 26 | 6 | 7 | 13 | 3 | 13 | 10 |
-| `attr` | 62 | 29 | 30 | 3 | 27 | 27 | 8 |
+| `cc` | 26 | 6 | 7 | 13 | 5 | 11 | 10 |
+| `attr` | 62 | 36 | 23 | 3 | 35 | 24 | 3 |
 | `type` | 15 | 12 | 0 | 3 | 13 | 0 | 2 |
-| `inst` | 67 | 60 | 0 | 7 | 59 | 1 | 7 |
+| `inst` | 67 | 60 | 0 | 7 | 60 | 0 | 7 |
 | `mem` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `atomicrmw` | 21 | 21 | 0 | 0 | 21 | 0 | 0 |
-| `call` | 4 | 4 | 0 | 0 | 3 | 1 | 0 |
+| `call` | 4 | 4 | 0 | 0 | 4 | 0 | 0 |
 | `tail` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `bundle` | 10 | 0 | 5 | 5 | 0 | 5 | 5 |
 | `landingpad` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 522 | 347 | 7 | 168 | 296 | 10 | 216 |
-| total | 847 | 554 | 68 | 225 | 498 | 71 | 278 |
+| `intrinsic` | 530 | 347 | 7 | 176 | 304 | 10 | 216 |
+| total | 855 | 566 | 56 | 233 | 524 | 64 | 267 |
 
 ## `module`
 
@@ -61,12 +61,12 @@ Module properties (`ModuleProps`, §2.1) and module-level tables.
 | `module:large-data-threshold` | not-implemented | not-implemented | unplanned |
 | `module:uwtable` | supported | supported | the module's default unwind-table kind is not `none` (WP-049) |
 | `module:frame-pointer` | supported | supported | any `frame-pointer` value: hod always keeps a frame pointer (`spec/codegen.md` §5) |
-| `module:branch-target-enforcement` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
-| `module:guarded-control-stack` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
-| `module:sign-return-address` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
-| `module:sign-return-address-all` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
-| `module:sign-return-address-with-bkey` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
-| `module:branch-protection-pauth-lr` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
+| `module:branch-target-enforcement` | supported | supported | AArch64: the BTI bit of `.note.gnu.property`; x86-64: ignored, as `llc` (WP-185) |
+| `module:guarded-control-stack` | supported | supported | AArch64: the GCS bit of `.note.gnu.property`, no code change; x86-64: ignored (WP-185) |
+| `module:sign-return-address` | supported | supported | AArch64: the PAC bit of `.note.gnu.property`; x86-64: ignored, as `llc` (WP-185) |
+| `module:sign-return-address-all` | supported | supported | read with `sign-return-address` by `hod_ll`'s upgrade; x86-64: ignored (WP-185) |
+| `module:sign-return-address-with-bkey` | supported | supported | read with `sign-return-address` by `hod_ll`'s upgrade; x86-64: ignored (WP-185) |
+| `module:branch-protection-pauth-lr` | not-implemented | supported | unplanned. AArch64: `paciasppc` and the PC-modifier forms (FEAT_PAuth_LR); x86-64: ignored (WP-185) |
 | `module:cf-protection-branch` | rejected | supported | an x86 property. `endbr64` at every function entry but a `nocf_check` one, at address-taken blocks, landing pads, the `llvm.eh.sjlj.setjmp` resume point, coroutine entry stubs and after direct calls of `returns_twice` functions, then the IBT bit in `.note.gnu.property` (WP-184); `llc` 19 and 22 turn it on for any value, 0 included (WP-143), as `hod_ir` reads it (WP-144) |
 | `module:cf-protection-return` | rejected | supported | an x86 property. the shadow-stack bit in `.note.gnu.property`; the code does not change (WP-143); on for any value, 0 included, as `llc` (WP-144) |
 | `module:asm` | supported | not-implemented | module-level assembly of code and data: `hod_asm` (WP-112, `spec/asm.md` §9); what it does not read is refused by an `asm:*` name |
@@ -207,8 +207,8 @@ Calling conventions, of a body's function and of a call.
 | `cc:coldcc` | not-implemented | not-implemented | unplanned |
 | `cc:ghccc` | not-implemented | not-implemented | unplanned |
 | `cc:anyregcc` | not-implemented | not-implemented | unplanned |
-| `cc:preserve_mostcc` | supported | not-implemented | assigned as `ccc`; the callee also saves `x9`..`x15` (WP-095) |
-| `cc:preserve_allcc` | supported | not-implemented | assigned as `ccc`; the callee also saves `x9`..`x15` and `q8`..`q31` whole |
+| `cc:preserve_mostcc` | supported | supported | assigned as `ccc`; the callee also saves `x9`..`x15` (WP-095); x86-64: `rax`, `rcx`, `rdx`, `rsi`, `rdi`, `r8`..`r10` but its result's (WP-181) |
+| `cc:preserve_allcc` | supported | supported | assigned as `ccc`; the callee also saves `x9`..`x15` and `q8`..`q31` whole; x86-64: `preserve_mostcc`'s and `xmm0`..`xmm15` but its result's (WP-181) |
 | `cc:swiftcc` | supported | not-implemented | assigned as `ccc` (`spec/abi-a64.md` §1.2) |
 | `cc:cxx_fast_tlscc` | supported | not-implemented | assigned as `ccc` (`spec/abi-a64.md` §1.2) |
 | `cc:tailcc` | not-implemented | not-implemented | unplanned |
@@ -258,9 +258,9 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:nounwind` | supported | supported | its absence is `function:may-unwind` |
 | `attr:returns_twice` | supported | supported | on a body, a call, or a function called directly |
 | `attr:alwaysinline` | supported | supported | an ordinary call; a body whose meaning depends on being inlined is declined (`spec/cli.md` "Always-inline", WP-021) |
-| `attr:ssp` | not-implemented | not-implemented | spec/codegen.md §13. open question: accept and ignore, or implement |
-| `attr:sspreq` | not-implemented | not-implemented | spec/codegen.md §13 |
-| `attr:sspstrong` | not-implemented | not-implemented | spec/codegen.md §13 |
+| `attr:ssp` | supported | supported | a guard above the escaping slots, checked at every exit (`spec/codegen.md` §5.6.24, WP-183) |
+| `attr:sspreq` | supported | supported | as `attr:ssp`, every function protected |
+| `attr:sspstrong` | supported | supported | as `attr:ssp` |
 | `attr:presplitcoroutine` | supported | supported | one body, the frame in the heap; what the plan refuses is refused by its `coro:*` name (WP-106); with `-g`, its variables on the frame word (WP-108); a pre-opt module with one is accepted in place of `opt` + `llc`; with this row off, it is declined by its module level (WP-109, `spec/cli.md` "Pre-opt modules") |
 | `attr:sanitize_address` | not-implemented | not-implemented | unplanned |
 | `attr:sanitize_alloc_token` | not-implemented | not-implemented | unplanned |
@@ -282,11 +282,11 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:patchable-function-entry` | not-implemented | not-implemented | unplanned |
 | `attr:patchable-function-prefix` | not-implemented | not-implemented | unplanned |
 | `attr:function-instrument` | not-implemented | not-implemented | unplanned |
-| `attr:branch-target-enforcement` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
-| `attr:sign-return-address` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
-| `attr:sign-return-address-key` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
-| `attr:branch-protection-pauth-lr` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
-| `attr:guarded-control-stack` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
+| `attr:branch-target-enforcement` | supported | supported | AArch64: `bti c` at the entry, `bti j` where an indirect branch lands (`spec/codegen.md` §5.6.26); x86-64: ignored, as `llc` (WP-185) |
+| `attr:sign-return-address` | supported | supported | AArch64: `paciasp`/`autiasp` with `DW_CFA_AARCH64_negate_ra_state`, `non-leaf` and `all` alike (every hod frame saves `x30`); x86-64: ignored (WP-185) |
+| `attr:sign-return-address-key` | supported | supported | AArch64: `b_key` signs with `pacibsp`/`autibsp` under a CIE with `B`; x86-64: ignored (WP-185) |
+| `attr:branch-protection-pauth-lr` | not-implemented | supported | unplanned. AArch64: FEAT_PAuth_LR; x86-64: ignored (WP-185) |
+| `attr:guarded-control-stack` | supported | supported | no code change: hod returns only to the address its call left in `x30` (WP-185) |
 | `attr:stack-probe-size` | supported | supported | a parameter of `attr:probe-stack`, read with it (WP-186) |
 | `attr:probe-stack` | supported | supported | `inline-asm`: frames and `alloca`s probed page by page (`spec/codegen.md` §5.6.27, WP-186); other values are `attr:probe-stack-function` |
 | `attr:split-stack` | not-implemented | not-implemented | unplanned |
@@ -387,7 +387,7 @@ Instructions.
 | `inst:indirectbr` | supported | supported |  |
 | `inst:ret` | supported | supported |  |
 | `inst:unreachable` | supported | supported |  |
-| `inst:callbr` | supported | not-implemented | inline assembly with labels, `asm goto` (WP-103, `spec/codegen.md` §5.5.3) |
+| `inst:callbr` | supported | supported | inline assembly with labels, `asm goto` (WP-103, `spec/codegen.md` §5.5.3; x86-64: an empty template, WP-181, §5.6.23) |
 | `inst:invoke` | supported | supported |  |
 | `inst:resume` | supported | supported |  |
 | `inst:catchswitch` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
@@ -439,7 +439,7 @@ Kinds of callee.
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
 | `call:indirect` | supported | supported | the callee is a computed address |
-| `call:inline-asm` | supported | not-implemented | the callee is inline assembly of instructions: `hod_asm` (WP-103, `spec/asm.md`) |
+| `call:inline-asm` | supported | supported | the callee is inline assembly of instructions: `hod_asm` (WP-103, `spec/asm.md`; x86-64: WP-187) |
 | `call:inline-asm-empty` | supported | supported | the callee is inline assembly whose template assembles to nothing (`spec/ir.md` §2.3) |
 | `call:variadic` | supported | supported | a call through a variadic function type |
 
@@ -910,6 +910,12 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.x86.sse.min.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
 | `intrinsic:llvm.x86.sse.movmsk.ps` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
 | `intrinsic:llvm.x86.sse.sfence` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
+| `intrinsic:llvm.x86.sse.ldmxcsr` | rejected | supported (int, ptr, vector) | an x86 property. SSE; WP-181 |
+| `intrinsic:llvm.x86.sse.rcp.ps` | rejected | supported (int, ptr, vector) | an x86 property. SSE; WP-181 |
+| `intrinsic:llvm.x86.sse.rcp.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE; WP-181 |
+| `intrinsic:llvm.x86.sse.rsqrt.ps` | rejected | supported (int, ptr, vector) | an x86 property. SSE; WP-181 |
+| `intrinsic:llvm.x86.sse.rsqrt.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE; WP-181 |
+| `intrinsic:llvm.x86.sse.stmxcsr` | rejected | supported (int, ptr, vector) | an x86 property. SSE; WP-181 |
 | `intrinsic:llvm.x86.sse2.cmp.sd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
 | `intrinsic:llvm.x86.sse2.comieq.sd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
 | `intrinsic:llvm.x86.sse2.comige.sd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
@@ -935,6 +941,8 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.x86.sse2.cvttsd2si64` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
 | `intrinsic:llvm.x86.sse2.lfence` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
 | `intrinsic:llvm.x86.sse2.mfence` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.clflush` | rejected | supported (int, ptr, vector) | an x86 property. SSE2; WP-181 |
+| `intrinsic:llvm.x86.sse2.maskmov.dqu` | rejected | supported (int, ptr, vector) | an x86 property. SSE2; WP-181 |
 | `intrinsic:llvm.x86.sse2.max.pd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
 | `intrinsic:llvm.x86.sse2.max.sd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
 | `intrinsic:llvm.x86.sse2.min.pd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |

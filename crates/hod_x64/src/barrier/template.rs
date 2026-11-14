@@ -440,6 +440,8 @@ fn operand_types(
 fn gpr_bytes(cx: &FnCx<'_, X64>, ty: TypeId) -> Option<u8> {
     match cx.types().kind(ty) {
         TypeKind::Int(bits @ (8 | 16 | 32 | 64)) => Some((bits / 8) as u8),
+        // §14: an `i1` in a byte register, 0 or 1 (bit 0 of hod's).
+        TypeKind::Int(1) => Some(1),
         TypeKind::Ptr { addr_space: 0 } | TypeKind::Double => Some(8),
         TypeKind::Float => Some(4),
         _ => None,
@@ -630,11 +632,14 @@ fn decide(cx: &FnCx<'_, X64>, inst: Inst<'_>, ops: &Ops) -> CgResult<Plan> {
             let out = usize::from(alt.tied);
             plan.places[i] = match plan.places[out] {
                 Some(Place::Reg(r)) => {
+                    // §14: tied integers of different sizes share the
+                    // register, as LLVM allows (the output's width is
+                    // what is stored).
                     let same = |ty| {
                         if reg::is_x87(r) {
                             x87_size(cx, ty).map(|_| 0)
                         } else if reg::is_gpr(r) {
-                            gpr_bytes(cx, ty)
+                            gpr_bytes(cx, ty).map(|_| 0)
                         } else {
                             xmm_bytes(cx, ty).map(|b| b as u8)
                         }
@@ -974,6 +979,9 @@ fn emit<'a>(
                     }
                 } else {
                     load_into(cx, r, slot, bytes);
+                    if matches!(cx.types().kind(plan.tys[i]), TypeKind::Int(1)) {
+                        put(cx, mc::and_ri(Size::D, gp(r), 1));
+                    }
                 }
             }
             Some(Place::Mem(r)) => {

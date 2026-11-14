@@ -502,16 +502,33 @@ pub fn asm<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>) -> CgResult<()> {
         return unsupported(BUNDLE);
     }
     let ops = Ops::parse(asm.constraints)?;
-    if ops.direct_outputs > 1 || (ops.direct_outputs == 0) != (inst.ty() == TypeId::VOID) {
-        return unsupported(OUTPUTS);
-    }
     let args = site.args();
     let operands = ops.list[..ops.len].iter().filter(|op| op.arg.is_some()).count();
     let labels = if inst.opcode() == Opcode::CallBr { site.indirect_dests().count() } else { 0 };
     if operands != args.len() || ops.labels != labels {
         return unsupported(CONSTRAINT);
     }
-    let effect = effect(cx, inst, site, &ops)?;
+    let effect =
+        if ops.direct_outputs > 1 || (ops.direct_outputs == 0) != (inst.ty() == TypeId::VOID) {
+            Err(hod_cg::CgError::unsupported(OUTPUTS))
+        } else {
+            effect(cx, inst, site, &ops)
+        };
+    let effect = match effect {
+        Ok(effect) => effect,
+        // WP-204 (`spec/asm.md` §14): what one effect does not express
+        // (several outputs, an output of another type than its input, a
+        // tied pointer stored as an integer) is lowered as a template
+        // with no bytes: the inputs into their places, the outputs from
+        // them, as `llc` allocates them. A `callbr` keeps the refusal.
+        Err(e @ hod_cg::CgError::Unsupported { .. }) if inst.opcode() != Opcode::CallBr => {
+            return template::call(cx, inst).map_err(|t| match t {
+                hod_cg::CgError::Unsupported { .. } => e,
+                other => other,
+            });
+        }
+        Err(e) => return Err(e),
+    };
     deferred_first(cx, inst, None)?;
     match effect {
         Effect::None => {}

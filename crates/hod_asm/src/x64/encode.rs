@@ -162,6 +162,9 @@ fn fixed(name: &str) -> Option<Inst> {
         "sfence" => mc::sfence(),
         "int3" => mc::int3(),
         "ud2" => mc::ud2(),
+        // §14: what a function of module-level assembly ends with.
+        "ret" | "retq" => mc::ret(),
+        "leave" | "leaveq" => mc::leave(),
         "hlt" => mc::hlt(),
         "fwait" | "wait" => mc::fwait(),
         "cld" => mc::cld(),

@@ -13,6 +13,11 @@ use hod_testutil::{Scratch, run, tool};
 /// Bodies the assembler accepts. Each is assembled alone by hod; LLVM
 /// assembles them all in one file. A body's numeric labels are its own.
 const ACCEPTED: &[&str] = &[
+    // §14.
+    "ret",
+    "retq",
+    "leave",
+    "leaveq",
     // Without operands.
     "nop",
     "pause",

@@ -485,11 +485,10 @@ const MODULE: [SupportRow; 24] = [
         "the shadow-stack bit in `.note.gnu.property`; the code does not change (WP-143); on \
          for any value, 0 included, as `llc` (WP-144)",
     ),
-    row(
+    both(
         "module:asm",
         ON,
-        todo(X64),
-        "module-level assembly of code and data: `hod_asm` (WP-112, `spec/asm.md` §9); what it does not read is refused by an `asm:*` name",
+        "module-level assembly of code and data: `hod_asm` (WP-112 on AArch64, WP-204 on x86-64 with `.symver`, `spec/asm.md` §9, §14); what it does not read is refused by an `asm:*` name",
     ),
     both(
         "module:asm-symbols",

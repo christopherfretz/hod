@@ -13,14 +13,17 @@ use hod_obj::{Binding, Symbol, SymbolKind};
 use super::{ModuleEmitter, obj_err, unsupported, visibility};
 use crate::error::{CgError, CgResult};
 
-/// Refuses module-level assembly an assembler must read on x86-64
-/// ([`unsupported::MODULE_ASM`]); on AArch64 `hod_asm` reads it
-/// (`module_asm.rs`, WP-112).
+/// Refuses module-level assembly an assembler must read on a target
+/// `hod_asm` has no module assembler for ([`unsupported::MODULE_ASM`]);
+/// on AArch64 (WP-112) and x86-64 (WP-204) `hod_asm` reads it
+/// (`module_asm.rs`).
 ///
 /// # Errors
 /// [`unsupported::MODULE_ASM`].
 pub(super) fn check(module: &Module) -> CgResult<()> {
-    if module.module_asm().is_empty() || module.target().arch() == hod_ir::Arch::Aarch64 {
+    if module.module_asm().is_empty()
+        || matches!(module.target().arch(), hod_ir::Arch::Aarch64 | hod_ir::Arch::X86_64)
+    {
         return Ok(());
     }
     let mut effects = Vec::new();

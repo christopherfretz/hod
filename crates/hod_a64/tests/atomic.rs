@@ -644,6 +644,40 @@ fn llc_of(
     Some(output)
 }
 
+/// The disassembled lines of `object` that a Cortex-A53 (ARMv8.0) lacks:
+/// an LSE instruction, or one on a `half` register other than `ldr`,
+/// `str` and `fcvt` (FP16 arithmetic and moves).
+fn beyond_armv8_0(objdump: &std::path::Path, object: &std::path::Path) -> Vec<String> {
+    const LSE: [&str; 11] = [
+        "cas", "casp", "swp", "ldadd", "ldclr", "ldeor", "ldset", "ldsmax", "ldsmin", "ldumax",
+        "ldumin",
+    ];
+    let mut command = std::process::Command::new(objdump);
+    command.arg("-d").arg("--mattr=+lse,+fullfp16").arg(object);
+    let ran = hod_testutil::run_with(&mut command, &[], std::time::Duration::from_mins(1));
+    assert!(ran.success(), "{}", ran.stderr_text());
+    let half = |s: &str| {
+        s.split([' ', ',', '[', ']']).any(|w| {
+            w.len() > 1 && w.starts_with('h') && w[1..].bytes().all(|b| b.is_ascii_digit())
+        })
+    };
+    ran.stdout_text()
+        .lines()
+        .filter(|line| {
+            let mut fields = line.split('\t').skip(1);
+            let (Some(mnemonic), operands) = (fields.next(), fields.next().unwrap_or("")) else {
+                return false;
+            };
+            // `casal`, `ldaddl`, `swpab`: the base name and ordering and
+            // size suffixes.
+            let base = mnemonic.trim_end_matches(['a', 'l', 'b', 'h']);
+            LSE.iter().any(|l| base == *l || mnemonic == *l)
+                || (half(operands) && !matches!(mnemonic, "ldr" | "str" | "ldur" | "stur" | "fcvt"))
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
 /// §5.5.1 (WP-232): every under-aligned atomic access (load, store,
 /// `xchg`, `cmpxchg`, every other `atomicrmw` operation, and those whose
 /// value is the pointer itself) of `common/generic_atomics.rs`, under
@@ -704,6 +738,28 @@ fn under_aligned_atomics_run_against_libatomic() {
                 ran.status,
                 ran.stderr_text()
             );
+        }
+    }
+    // The hosted x86-64 lane runs these programs under `qemu-aarch64 -cpu
+    // cortex-a53` (ARMv8.0: no LSE, no FP16): no leg may hold an LSE
+    // instruction or a `half` form beyond the base loads, stores and
+    // conversions, whatever the feature set.
+    if let Some(objdump) = hod_testutil::tool("llvm-objdump") {
+        // The scan finds what it looks for: an aligned `ldaddal` and an
+        // FP16 `fadd`.
+        let probe = "define i32 @a(ptr %p, i32 %x) #0 {\n  %v = atomicrmw add ptr %p, i32 %x seq_cst\n  ret i32 %v\n}\ndefine half @h(half %x, half %y) #0 {\n  %v = fadd half %x, %y\n  ret half %v\n}\nattributes #0 = { \"target-features\"=\"+lse,+fullfp16\" }\n";
+        if let Some(object) = llc_of(&scratch, 22, "probe", &format!("{}{probe}", ll_header(22))) {
+            assert_eq!(beyond_armv8_0(&objdump, &object).len(), 2);
+        }
+        for (leg, objects) in &legs {
+            for object in objects.iter().chain([&driver]) {
+                let bad = beyond_armv8_0(&objdump, object);
+                assert!(
+                    bad.is_empty(),
+                    "{leg}: {} needs more than ARMv8.0:\n{bad:#?}",
+                    object.display()
+                );
+            }
         }
     }
     eprintln!(

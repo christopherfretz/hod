@@ -23,7 +23,7 @@ entry:
   ret i32 %c, !dbg !44
 }
 
-attributes #0 = { noinline nounwind optnone "frame-pointer"="non-leaf" }
+attributes #0 = { noinline nounwind optnone "frame-pointer"="all" }
 
 !llvm.dbg.cu = !{!0}
 !llvm.module.flags = !{!2, !3}
@@ -45,7 +45,7 @@ attributes #0 = { noinline nounwind optnone "frame-pointer"="non-leaf" }
 !27 = distinct !DICompositeType(tag: DW_TAG_structure_type, name: "L", scope: !30, file: !1, line: 3, size: 32, flags: DIFlagTypePassByValue, elements: !28, identifier: "_ZTSZN1P1wEvE1L")
 !28 = !{!29}
 !29 = !DIDerivedType(tag: DW_TAG_member, name: "v", scope: !27, file: !1, line: 3, baseType: !13, size: 32)
-!30 = distinct !DISubprogram(name: "w", linkageName: "_ZN1P1wEv", scope: !22, file: !1, line: 2, type: !25, scopeLine: 2, flags: DIFlagPrototyped, spFlags: DISPFlagDefinition, unit: !0, declaration: !24, retainedNodes: !4)
+!30 = distinct !DISubprogram(name: "w", linkageName: "_ZN1P1wEv", scope: !22, file: !1, line: 2, type: !25, scopeLine: 5, flags: DIFlagPrototyped, spFlags: DISPFlagDefinition, unit: !0, declaration: !24, retainedNodes: !4)
 !33 = !DILocation(line: 5, column: 14, scope: !30)
 !34 = !DILocation(line: 5, column: 5, scope: !30)
 !40 = distinct !DISubprogram(name: "main", scope: !1, file: !1, line: 8, type: !42, scopeLine: 8, flags: DIFlagPrototyped, spFlags: DISPFlagDefinition, unit: !0)

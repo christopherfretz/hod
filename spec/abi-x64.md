@@ -128,8 +128,11 @@ it); hod reproduces LLVM, it does not repair it.
    (an unknown CPU may have AVX-512; the answer is a refusal, never a
    wrong placement).
 2. Then each `+name`/`-name` of `"target-features"` in order: `+avx512*`
-   or `+avx10*` sets both; `+avx`, `+avx2`, `+fma`, `+f16c`, `+fma4`,
-   `+xop`, `+vaes`, `+vpclmulqdq` or any other `+avx*` sets `avx`;
+   or `+avx10*` sets both (and `+amx-avx512`, which `llc` 22 does not
+   make imply AVX-512: an over-approximation); `+avx`, `+avx2`, `+fma`,
+   `+f16c`, `+fma4`, `+xop`, `+vaes`, `+vpclmulqdq`, `+sha512`, `+sm3`,
+   `+sm4` (WP-201: `llc` 19 and 22 place a `<8 x float>` in `ymm0` under
+   each) or any other `+avx*` sets `avx`;
    `-sse`, `-sse2`, `-sse3`, `-ssse3`, `-sse4.1`, `-sse4.2` or `-avx`
    (what AVX implies) clears both; `-avx2`, `-fma`, `-f16c` or `-avx512f`
    (what AVX-512 implies) clears `avx512`.
@@ -139,6 +142,19 @@ take part (`hod_cg::Options` has no field for them). An over-approximation
 only refuses (`x64:wide-vector-abi`); an under-approximation would place a
 wide vector in `xmm` registers where LLVM uses one `ymm`, so the tables
 only list CPUs whose lack of AVX (or AVX-512) was checked against `llc`.
+**WP-201.** The tables now hold every CPU of the clang 19/22 and kiln
+`-march=` census whose AVX and AVX-512 `llc` 19 and 22 agree on (`opteron`,
+`athlon64`, ... without AVX; `arrowlake-s`, `wildcatlake` without AVX-512).
+`features_census::feature_conventions_agree_with_llc` checks the rule
+against `llc`'s own convention (argument and return registers, stack
+slots, call register masks of 26 signatures) under every census string,
+every feature enabled alone and every feature disabled on six CPUs: every
+signature `llc` places differently from a function without features is
+one `assign` refuses under the function's `Features`. The only other
+difference is `preserve_allcc`'s register mask under AVX, which keeps all
+of `ymm0`..`ymm15`; `llc`'s own callee does not honour it
+(`spec/codegen.md` §5.6.2).
+
 *Evidence:* `features::tests::features_that_decide_the_convention`;
 `abi_followups::cpu_tables_agree_with_llc` and
 `abi_followups::wide_vectors_follow_the_function` (hod's object mixed with

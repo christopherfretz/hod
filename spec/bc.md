@@ -461,11 +461,21 @@ the items (§5.7):
    as an empty tuple, as in `hod_ll`.
 3. **Compile units.** `llvm.dbg.cu`'s operands, each a DICompileUnit
    (else `debug:invalid`), are listed (`add_compile_unit`).
+   Then equal nodes are one node, as LLVM's bitcode reader makes them
+   (WP-228): `DebugInfo::unique_nodes(DiMark::default())` (`ir.md
+   §6.3`), and the module's handles are rewritten through the merge.
+   LLVM's writers never write two equal uniqued records, but its reader
+   unifies them when they occur (two BASIC_TYPE records with the distinct
+   bit cleared give one `DIBasicType`, and the two pointer records that
+   name them one pointer: `crates/hod_bc/tests/data/uniquing-llvm*.bc`).
 4. **Functions.** Each FUNCTION block is walked once, in file order
    (`debug::scan_function`): its METADATA block is read (strings and
    records, ids numbered from the module's count) and its
    METADATA_ATTACHMENT block's even-length record gives the `!dbg` of
-   the definition. Steps 1 and 2 run over the function's ids. What a
+   the definition. Steps 1 and 2 run over the function's ids, then
+   `unique_nodes` from a mark taken before them, so the function's
+   nodes merge with each other and with the module's (which are looked
+   up, not walked again) and the function's handles are rewritten. What a
    body needs of each id is kept in `DebugBits` (`ModuleBits::debug`):
    the handle of a node, location or expression, a value as metadata
    (type and value id), `!{}`, or a DIArgList's operands.

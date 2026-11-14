@@ -1450,16 +1450,78 @@ stored (`UInt`, `Int`, `Bool`, `Str`, `Node`, `List`, `Expr`, `Const`,
 - `reserve()` hands out an id whose node `define(id, node)` or
   `define_distinct(id, node)` gives later, once. This is how cycles are
   built (a class names its members, each member names the class) and how
-  a producer refers to `!7` before it has read it. A reserved node is
-  never the answer to a later `add`.
+  a producer refers to `!7` before it has read it. A node defined so is
+  not the answer to a later `add`, nor one node with an equal node,
+  until `unique_nodes` (below) has run over it.
 - A compile unit, and a subprogram that is a definition, must be distinct
   (`DiNode::must_be_distinct`); `add` and `define` refuse them.
+- `unique_nodes(since: DiMark) -> DiMerge` (WP-228) makes the nodes
+  from `since` on (`node_mark()` taken earlier; `DiMark::default()` is
+  the whole table) unique, as LLVM's parsers do when they read a module.
+  The rule:
+  - *Candidates* are the nodes from `since` on that are defined, not
+    distinct, not merged already and not `DiOther` (hod does not know
+    their content). A candidate any of whose references names itself
+    becomes distinct instead (LLVM's `storeDistinctInContext`:
+    `!6 = !{!6}` prints as `distinct`), and is not a candidate; a node
+    with the same content that names it stays apart from it.
+  - Two candidates are *one node* when they have the same kind, tag and
+    stored fields (the cells `add` compares), each reference compared by
+    the class of the node it names. The classes are the least such
+    partition: the walk goes over the strongly connected components of
+    the references among candidates, operands before users; a component
+    of one node is compared once (with the nodes before `since`, then
+    with the classes found so far); the nodes of a cycle are compared
+    in rounds, in id order, until a round merges nothing, and only then
+    become classes others are compared with. So duplicates that name
+    duplicates merge from the operands up, forward references included;
+    inside one cycle a merge can make another (`!0 = !{!1, !3}`,
+    `!1 = !{!0, !2}`, `!2 = !{!0}`, `!3 = !{!0, !4}`, `!4 = !{!0}`:
+    first `!2`/`!4`, then `!1`/`!3`); two cycles that are alike and share
+    no node are not merged (no node of one names a node of the other).
+    This is what `llvm-as | llvm-dis` 19 and 22 print for each of these
+    cases and for the bitcode reader (`crates/hod_ll/tests/uniquing.rs`,
+    `crates/hod_bc/tests/uniquing.rs`).
+  - `distinct` nodes are never merged, with each other or with an equal
+    uniqued node; the nodes they name are.
+  - The nodes before `since` are not merged: they must have been made
+    unique already (or be the first of the table), and a candidate equal
+    to one of them (found by `add`'s hash) joins its class.
+  - The *survivor* of a class is its lowest id (a node before `since`
+    when the class has one). Every other member gets the merged flag
+    (`is_merged`): it stays in the table, unnamed, `add` never returns
+    it and `complete` refuses it. Every reference cell of the nodes from
+    `since` on (merged ones included), the scope of every location from
+    `since` on (an interned one is entered again under its new content)
+    and the compile-unit list are rewritten to the survivor. The
+    survivors are entered in `add`'s table, so a later `add` of equal
+    content returns them.
+  - The result maps each id to its survivor (`DiMerge::get`); the
+    producer rewrites the ids it holds itself through it. It is empty
+    when nothing merged, and then no cell is written.
+  - Cost: near-linear in the cells of the new nodes, with no step that
+    compares every pair: one walk over the candidates' cells, one hash
+    and usually one probe per candidate and per component; a cycle costs
+    one more hash of its members per round, and a round is repeated only
+    when the previous one merged something. When nothing merges (the
+    usual case: producers write unique nodes) no cell is written, the
+    distinct nodes are not walked, and the hashes of the walk are those
+    the survivors are entered under. The rest is paid only on a merge.
+  - Not merged: locations (`DILocation`s are their own table, §6.5;
+    equal ones may stay two ids, which nothing can tell apart) and
+    expressions (interned, §6.4).
+  - Known divergence: a field hod drops when it reads (`map.rs`:
+    `DISubprogram.thisAdjustment`) is not compared, so two declarations
+    that differ only there would be one node in hod and two in LLVM.
 - `complete(id, node)` replaces a forward-declared composite type (with
   `DIFlagFwdDecl` and an `identifier`) by its definition with the same
   identifier, in place: every reference to `id` then names the
   definition. There is no uniquing by `identifier` otherwise (no ODR
-  uniquing): equal ids mean one node; equal content does not mean equal
-  ids.
+  uniquing, as in `llc`, which writes two structure DIEs for two
+  distinct composites with one identifier): equal ids mean one node;
+  equal content means one node only through `add` or `unique_nodes`, for
+  nodes that are not distinct. Two equal forward declarations are one
+  node; `complete` of the survivor completes it.
 - `add_compile_unit(unit)` appends to `!llvm.dbg.cu`; a unit that is not
   listed is not emitted.
 - A node may name only ids that exist (reserved or defined):

@@ -228,6 +228,13 @@ pub(crate) trait Field<'a>: Copy {
     /// Calls `visit` for every node the value names.
     #[inline]
     fn refs(&self, _visit: &mut dyn FnMut(DiId)) {}
+    /// Consumes the stored value from `dec` as [`Field::get`] does and
+    /// calls `visit` with the number of cells left in `dec` at each cell
+    /// that holds a node id (the uniquing pass, §6.3, rewrites them).
+    #[inline]
+    fn ref_cells<L: Layering>(dec: &mut Dec<'a, L>, _visit: &mut dyn FnMut(usize)) {
+        let _ = Self::get(dec);
+    }
 }
 
 macro_rules! number_field {
@@ -469,6 +476,11 @@ impl<'a> Field<'a> for Option<DiId> {
             visit(id);
         }
     }
+    #[inline]
+    fn ref_cells<L: Layering>(dec: &mut Dec<'a, L>, visit: &mut dyn FnMut(usize)) {
+        visit(dec.cells.len());
+        dec.word();
+    }
 }
 
 impl<'a> Field<'a> for &'a [DiId] {
@@ -518,6 +530,15 @@ impl<'a> Field<'a> for &'a [DiId] {
     #[inline]
     fn refs(&self, visit: &mut dyn FnMut(DiId)) {
         self.iter().filter(|id| !id.is_none()).for_each(|&id| visit(id));
+    }
+    fn ref_cells<L: Layering>(dec: &mut Dec<'a, L>, visit: &mut dyn FnMut(usize)) {
+        let list = Self::get(dec);
+        let left = dec.cells.len();
+        for (index, id) in list.iter().enumerate() {
+            if !id.is_none() {
+                visit(left + list.len() - index);
+            }
+        }
     }
 }
 
@@ -640,6 +661,13 @@ impl<'a> Field<'a> for DiBound {
         if let DiBound::Node(id) = *self {
             visit(id);
         }
+    }
+    fn ref_cells<L: Layering>(dec: &mut Dec<'a, L>, visit: &mut dyn FnMut(usize)) {
+        // The tag, then the value's low word (a node id) and high word.
+        if dec.cells.first().is_some_and(|tag| tag.raw() == 2) {
+            visit(dec.cells.len() - 1);
+        }
+        let _ = Self::get(dec);
     }
 }
 
@@ -889,6 +917,17 @@ macro_rules! nodes {
                         });
                     )*
                 }
+
+                #[allow(unused_assignments, unused_variables, reason = "the last field's bit is not read; a kind may have no field")]
+                fn ref_cells<L: Layering>(mask: u32, dec: &mut Dec<'a, L>, visit: &mut dyn FnMut(usize)) {
+                    let mut bit = 1u32;
+                    $(
+                        if mask & bit != 0 {
+                            <$fty as Field<'a>>::ref_cells(dec, visit);
+                        }
+                        bit <<= 1;
+                    )*
+                }
             }
         )*
 
@@ -959,6 +998,17 @@ macro_rules! nodes {
                 match self {
                     DiNode::Undefined => {}
                     $( DiNode::$variant(node) => node.refs(visit), )*
+                }
+            }
+
+            /// Walks the stored fields of a node of `kind` whose mask is
+            /// `mask` (`dec` holds the cells after the mask), calling
+            /// `visit` as [`Field::ref_cells`] does at every cell that
+            /// holds a node id. `dec` is left after the node's last cell.
+            pub(crate) fn ref_cells<L: Layering>(kind: DiKind, mask: u32, dec: &mut Dec<'a, L>, visit: &mut dyn FnMut(usize)) {
+                match kind {
+                    DiKind::Undefined => {}
+                    $( DiKind::$variant => <$name>::ref_cells(mask, dec, visit), )*
                 }
             }
         }

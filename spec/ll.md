@@ -741,6 +741,18 @@ read in place; a tuple named as a single node (a retained-nodes list
 named twice, say) is defined last. `!DIExpression(…)` and
 `!DILocation(…)` in place are read as their node would be.
 
+Then, as LLVM's parser, equal nodes are one node (WP-228): once every
+numbered node, every tuple and `!llvm.dbg.cu` are read, and before any
+body, `DebugInfo::unique_nodes(DiMark::default())` runs over the whole
+table (`ir.md §6.3`: the rule, cycles, self-references, `distinct`),
+and every node handle of the map is rewritten through its `DiMerge`. So
+a module that writes `!DIDerivedType(tag: DW_TAG_pointer_type,
+baseType: null, size: 64)` twice has one `void *` node, and one DIE, as
+`llc`'s; a body that names the second names the first. A node written
+in place in a field is `add`ed, and so is one with an equal numbered
+node after the pass. Nodes written in place in a body are `add`ed
+(found by content) and are not passed over again.
+
 As LLVM's parser, a field is named once, has a value of its shape, and
 the fields LLVM requires are present; the errors are LLVM's. As LLVM, an
 omitted `spFlags` (with no `isDefinition`) is a definition, and so is a

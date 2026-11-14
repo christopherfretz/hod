@@ -302,6 +302,17 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
         }
         scratch.lists.clear();
         self.dscratch = scratch;
+        // Equal nodes are one node, as LLVM's parser makes them
+        // (`spec/ir.md` §6.3): before anything outside the tables holds
+        // an id but the handles.
+        let merge = self.module.debug.unique_nodes(hod_ir::DiMark::default());
+        if !merge.is_empty() {
+            for handle in &mut self.dmap.handles {
+                if let Handle::Node(id) = handle {
+                    *id = merge.get(*id);
+                }
+            }
+        }
         Ok(())
     }
 

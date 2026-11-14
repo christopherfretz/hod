@@ -583,16 +583,32 @@ impl<L: Layering> InternTable<L> {
         debug_assert_ne!(id, EMPTY);
         // Grow at 3/4 load.
         if (self.len + 1) * 4 > self.slots.len() * 3 {
-            let old = std::mem::take(&mut self.slots);
-            self.slots = vec![Slot { hash: 0, id: EMPTY }; old.len() * 2].into();
-            for slot in old {
-                if slot.id != EMPTY {
-                    self.place(slot);
-                }
-            }
+            self.grow(self.slots.len() * 2);
         }
         self.place(Slot { hash, id });
         self.len += 1;
+    }
+
+    /// Makes room for `additional` more entries with one growth at most.
+    pub(crate) fn reserve(&mut self, additional: usize) {
+        let want = self.len + additional;
+        let mut size = self.slots.len();
+        while want * 4 > size * 3 {
+            size *= 2;
+        }
+        if size != self.slots.len() {
+            self.grow(size);
+        }
+    }
+
+    fn grow(&mut self, size: usize) {
+        let old = std::mem::take(&mut self.slots);
+        self.slots = vec![Slot { hash: 0, id: EMPTY }; size].into();
+        for slot in old {
+            if slot.id != EMPTY {
+                self.place(slot);
+            }
+        }
     }
 
     fn place(&mut self, slot: Slot) {

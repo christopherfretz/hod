@@ -4266,7 +4266,7 @@ own registers, so no combination is refused for being one.
 
 Evidence: `spec/landed/codegen/WP-194.md`.
 
-#### 5.6.33 x86 vector intrinsics past SSSE3 (WP-202)
+#### 5.6.33 x86 vector intrinsics past SSSE3 (WP-202, WP-207)
 
 The `llvm.x86.*` calls clang 19 and 22 write at `-O0` for the functions
 of `<smmintrin.h>`/`<nmmintrin.h>` (SSE4.1, SSE4.2), `<wmmintrin.h>`

@@ -932,9 +932,9 @@ fn gather_functions() -> (String, Vec<GFunc>) {
 fn gather_inputs(rng: &mut Rng, f: &GFunc, n: usize) -> Vec<[u8; GCASE]> {
     let (elem, lanes) = lanes_of(f.ret);
     let size: i64 = if matches!(elem, "double" | "i64") { 8 } else { 4 };
-    let (ielem, ilanes) = lanes_of(f.index);
+    let (ielem, index_lanes) = lanes_of(f.index);
     let isize: usize = if ielem == "i64" { 8 } else { 4 };
-    let used = lanes.min(ilanes);
+    let used = lanes.min(index_lanes);
     let mut sets = Vec::new();
     for i in 0..n {
         let mut set = [0u8; GCASE];

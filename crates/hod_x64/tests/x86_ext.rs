@@ -235,6 +235,28 @@ const AVX_COMPARES: &[Row] = &[
     ("llvm.x86.sse2.cmp.sd", D2, &[D2, D2, "i8"], "avx"),
 ];
 
+/// The AVX2 gathers (WP-207): pass-through, base, index, mask, scale.
+/// Run by [`x86_gathers_agree_with_llc`], whose inputs keep every address
+/// a lane reads inside a mapped table.
+const GATHERS: &[Row] = &[
+    ("llvm.x86.avx2.gather.d.d", I4, &[I4, "ptr", I4, I4, "i8"], "avx2"),
+    ("llvm.x86.avx2.gather.d.d.256", I8, &[I8, "ptr", I8, I8, "i8"], "avx2"),
+    ("llvm.x86.avx2.gather.d.q", Q2, &[Q2, "ptr", I4, Q2, "i8"], "avx2"),
+    ("llvm.x86.avx2.gather.d.q.256", Q4, &[Q4, "ptr", I4, Q4, "i8"], "avx2"),
+    ("llvm.x86.avx2.gather.q.d", I4, &[I4, "ptr", Q2, I4, "i8"], "avx2"),
+    ("llvm.x86.avx2.gather.q.d.256", I4, &[I4, "ptr", Q4, I4, "i8"], "avx2"),
+    ("llvm.x86.avx2.gather.q.q", Q2, &[Q2, "ptr", Q2, Q2, "i8"], "avx2"),
+    ("llvm.x86.avx2.gather.q.q.256", Q4, &[Q4, "ptr", Q4, Q4, "i8"], "avx2"),
+    ("llvm.x86.avx2.gather.d.ps", F4, &[F4, "ptr", I4, F4, "i8"], "avx2"),
+    ("llvm.x86.avx2.gather.d.ps.256", F8, &[F8, "ptr", I8, F8, "i8"], "avx2"),
+    ("llvm.x86.avx2.gather.d.pd", D2, &[D2, "ptr", I4, D2, "i8"], "avx2"),
+    ("llvm.x86.avx2.gather.d.pd.256", D4, &[D4, "ptr", I4, D4, "i8"], "avx2"),
+    ("llvm.x86.avx2.gather.q.ps", F4, &[F4, "ptr", Q2, F4, "i8"], "avx2"),
+    ("llvm.x86.avx2.gather.q.ps.256", F4, &[F4, "ptr", Q4, F4, "i8"], "avx2"),
+    ("llvm.x86.avx2.gather.q.pd", D2, &[D2, "ptr", Q2, D2, "i8"], "avx2"),
+    ("llvm.x86.avx2.gather.q.pd.256", D4, &[D4, "ptr", Q4, D4, "i8"], "avx2"),
+];
+
 /// Every feature of [`ROWS`], on every generated function.
 const FEATURES: &str = "+cx8,+fxsr,+mmx,+sse,+sse2,+x87,+sse3,+ssse3,+sse4.1,+sse4.2,+popcnt,\
                         +avx,+avx2,+fma,+f16c,+aes,+pclmul,+sha,+gfni";
@@ -723,7 +745,7 @@ fn feature_items(needs: &str) -> String {
 /// it builds; turned off again by a later item, refused.
 #[test]
 fn only_with_the_feature() {
-    for &(name, ret, params, needs) in ROWS {
+    for &(name, ret, params, needs) in ROWS.iter().chain(GATHERS) {
         let mut loads = String::new();
         let args: Vec<String> = params
             .iter()
@@ -799,7 +821,7 @@ fn only_with_the_feature() {
 fn rows_and_signatures() {
     let x64 = hod_ir::Support::shipped(hod_ir::Arch::X86_64);
     let a64 = hod_ir::Support::shipped(hod_ir::Arch::Aarch64);
-    for &(name, ..) in ROWS {
+    for &(name, ..) in ROWS.iter().chain(GATHERS) {
         let row = format!("intrinsic:{name}");
         assert_eq!(x64.supports(&row), Some(true), "{row}");
         assert_eq!(a64.supports(&row), Some(false), "{row}");
@@ -809,4 +831,315 @@ fn rows_and_signatures() {
                  %r = call i32 @llvm.x86.avx2.pmovmskb(<16 x i8> %v)\n  ret i32 %r\n}\n\
                  attributes #0 = { \"target-features\"=\"+avx2\" }\n";
     assert_eq!(compile(wrong), Err(CgError::unsupported(hod_x64::x86::SIGNATURE)));
+    // A gather's scale other than 1, 2, 4 or 8 (`llc` stops at it).
+    let scale = "declare <4 x i32> @llvm.x86.avx2.gather.d.d(<4 x i32>, ptr, <4 x i32>, <4 x i32>, i8)\n\
+                 define <4 x i32> @f(<4 x i32> %v, ptr %p) #0 {\n  \
+                 %r = call <4 x i32> @llvm.x86.avx2.gather.d.d(<4 x i32> %v, ptr %p, <4 x i32> %v, \
+                 <4 x i32> %v, i8 3)\n  ret <4 x i32> %r\n}\n\
+                 attributes #0 = { \"target-features\"=\"+avx2\" }\n";
+    assert_eq!(compile(scale), Err(CgError::unsupported(hod_x64::x86::SIGNATURE)));
+}
+
+/// The bytes of one gather case: pass-through, index and mask (32 bytes
+/// each), the base's offset into the table (`i64`, at 96) and whether the
+/// base is null (at 104).
+const GCASE: usize = 112;
+/// The mapped table: `TABLE` bytes between two pages the driver makes
+/// inaccessible, so that a lane read outside it faults.
+const TABLE: i64 = 8192;
+/// A guard page.
+const PAGE: i64 = 4096;
+
+/// How a gather function is called.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    /// Each operand its own value.
+    Plain,
+    /// A null base: the `q` indices absolute addresses, the `d` forms
+    /// with every lane masked off.
+    NullBase,
+    /// The mask is the pass-through value.
+    MaskIsSource,
+    /// The mask is the index value: a lane is read where its index is
+    /// negative (the base at the table's end).
+    MaskIsIndex,
+}
+
+/// One generated gather function.
+struct GFunc {
+    name: &'static str,
+    ret: &'static str,
+    index: &'static str,
+    scale: i64,
+    shape: Shape,
+}
+
+/// The module: `void @gN(ptr %in, ptr %base, ptr %out)` storing the
+/// result, the mask and the index (so that a mask the instruction clears
+/// is seen to keep its value).
+fn gather_functions() -> (String, Vec<GFunc>) {
+    let mut text = String::new();
+    let mut funcs = Vec::new();
+    for &(name, ret, params, _) in GATHERS {
+        let index = params[2];
+        writeln!(text, "declare {ret} @{name}({})", params.join(", ")).unwrap();
+        let mut shapes = vec![Shape::Plain, Shape::NullBase, Shape::MaskIsSource];
+        if index == ret {
+            shapes.push(Shape::MaskIsIndex);
+        }
+        for shape in shapes {
+            for scale in [1, 2, 4, 8] {
+                let k = funcs.len();
+                let (src, base, mask) = match shape {
+                    Shape::Plain => ("%src", "%base", "%mask"),
+                    Shape::NullBase => ("%src", "null", "%mask"),
+                    Shape::MaskIsSource => ("%mask", "%base", "%mask"),
+                    Shape::MaskIsIndex => ("%src", "%base", "%idx"),
+                };
+                let mask_ty = if shape == Shape::MaskIsIndex { index } else { ret };
+                writeln!(
+                    text,
+                    "define void @g{k}(ptr %in, ptr %base, ptr %out) #0 {{\n  \
+                     %pi = getelementptr i8, ptr %in, i64 32\n  \
+                     %pm = getelementptr i8, ptr %in, i64 64\n  \
+                     %src = load {ret}, ptr %in, align 1\n  \
+                     %idx = load {index}, ptr %pi, align 1\n  \
+                     %mask = load {ret}, ptr %pm, align 1\n  \
+                     %r = call {ret} @{name}({ret} {src}, ptr {base}, {index} %idx, \
+                     {mask_ty} {mask}, i8 {scale})\n  \
+                     store {ret} %r, ptr %out, align 1\n  \
+                     %om = getelementptr i8, ptr %out, i64 32\n  \
+                     store {ret} %mask, ptr %om, align 1\n  \
+                     %oi = getelementptr i8, ptr %out, i64 64\n  \
+                     store {index} %idx, ptr %oi, align 1\n  \
+                     ret void\n}}\n"
+                )
+                .unwrap();
+                funcs.push(GFunc { name, ret, index, scale, shape });
+            }
+        }
+    }
+    writeln!(text, "attributes #0 = {{ \"target-features\"=\"{FEATURES}\" }}").unwrap();
+    (text, funcs)
+}
+
+/// The inputs of gather function `f`. Each lane the gather reads (its
+/// mask element's sign set) addresses an element inside the table; each
+/// other lane addresses one in a guard page, or anywhere where the base
+/// is null: read, it faults. Bases at the start, inside (odd), in the
+/// middle and at the end of the table; negative indices; misaligned
+/// elements where the scale is below the element size.
+fn gather_inputs(rng: &mut Rng, f: &GFunc, n: usize) -> Vec<[u8; GCASE]> {
+    let (elem, lanes) = lanes_of(f.ret);
+    let size: i64 = if matches!(elem, "double" | "i64") { 8 } else { 4 };
+    let (ielem, ilanes) = lanes_of(f.index);
+    let isize: usize = if ielem == "i64" { 8 } else { 4 };
+    let used = lanes.min(ilanes);
+    let mut sets = Vec::new();
+    for i in 0..n {
+        let mut set = [0u8; GCASE];
+        let src = vector(rng, f.ret, None);
+        set[..src.len()].copy_from_slice(&src);
+        // Unused index and mask lanes random.
+        for b in &mut set[32..96] {
+            *b = rng.next() as u8;
+        }
+        let base_off: i64 = match f.shape {
+            Shape::MaskIsIndex => TABLE,
+            _ => *rng.pick(&[0, 1001, TABLE / 2, TABLE]),
+        };
+        let null = f.shape == Shape::NullBase;
+        for lane in 0..used {
+            let on = match i {
+                0 => true,
+                1 => false,
+                _ => rng.below(5) < 3,
+            } && !(null && isize == 4);
+            // The element's address, relative to the table.
+            // 8 bytes of margin: the index rounds the address down by
+            // less than the scale.
+            let target = if on {
+                8 + (rng.next() % (TABLE - size - 16) as u64) as i64
+            } else if rng.below(2) == 0 || f.shape == Shape::MaskIsIndex {
+                TABLE + 8 + (rng.next() % (PAGE - size - 16) as u64) as i64
+            } else {
+                -PAGE + 8 + (rng.next() % (PAGE - size - 16) as u64) as i64
+            };
+            // The index: the base's offset (none for a null base) plus the
+            // index times the scale, at or below the target.
+            let from = if null { 0 } else { base_off };
+            let index = (target - from).div_euclid(f.scale);
+            let at = 32 + lane * isize;
+            set[at..at + isize].copy_from_slice(&index.to_le_bytes()[..isize]);
+            if f.shape != Shape::MaskIsIndex {
+                let m = rng.next() & !(1 << (8 * size - 1));
+                let m = if on { m | 1 << (8 * size - 1) } else { m };
+                let at = 64 + lane * size as usize;
+                set[at..at + size as usize].copy_from_slice(&m.to_le_bytes()[..size as usize]);
+            }
+        }
+        if f.shape == Shape::MaskIsSource {
+            // The pass-through is the mask: keep the source bytes equal.
+            let (head, tail) = set.split_at_mut(64);
+            head[..32].copy_from_slice(&tail[..32]);
+        }
+        set[96..104].copy_from_slice(&base_off.to_le_bytes());
+        set[104] = u8::from(null);
+        sets.push(set);
+    }
+    sets
+}
+
+/// The gathers' C driver: maps the table between two inaccessible pages,
+/// fills it, and prints the 96 bytes each call stores.
+fn gather_driver(funcs: &[GFunc], sets: &[Vec<[u8; GCASE]>]) -> String {
+    let mut c = String::from("#include <stdio.h>\n#include <string.h>\n#include <sys/mman.h>\n");
+    for k in 0..funcs.len() {
+        writeln!(c, "void g{k}(const void *, const void *, void *);").unwrap();
+    }
+    c.push_str("typedef void (*fn)(const void *, const void *, void *);\n");
+    c.push_str("static const fn fns[] = {");
+    for k in 0..funcs.len() {
+        write!(c, "g{k},").unwrap();
+    }
+    c.push_str("};\n/* How many index lanes are 64 bits. */\nstatic const int q[] = {");
+    for f in funcs {
+        let lanes = if f.index.contains("i64") { lanes_of(f.index).1 } else { 0 };
+        write!(c, "{lanes},").unwrap();
+    }
+    c.push_str("};\n/* The scale: a null base's index is the address over it. */\n");
+    c.push_str("static const int scale[] = {");
+    for f in funcs {
+        write!(c, "{},", f.scale).unwrap();
+    }
+    writeln!(c, "}};\nstatic const unsigned char in[][{GCASE}] = {{").unwrap();
+    for set in sets.iter().flatten() {
+        c.push('{');
+        for byte in set {
+            write!(c, "{byte},").unwrap();
+        }
+        c.push_str("},\n");
+    }
+    writeln!(c, "}};\nstatic const int per = {};", sets[0].len()).unwrap();
+    write!(
+        c,
+        "int main(void) {{\n  \
+         unsigned char *map = mmap(0, {total}, PROT_READ | PROT_WRITE, \
+         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);\n  \
+         if (map == MAP_FAILED) return 2;\n  \
+         setvbuf(stdout, 0, _IOLBF, 0);\n  \
+         unsigned char *table = map + {PAGE};\n  \
+         unsigned long long s = 0x9e3779b97f4a7c15ull;\n  \
+         for (long i = 0; i < {TABLE}; i++) {{ s ^= s << 13; s ^= s >> 7; s ^= s << 17; \
+         table[i] = (unsigned char)s; }}\n  \
+         if (mprotect(map, {PAGE}, PROT_NONE) || mprotect(table + {TABLE}, {PAGE}, PROT_NONE)) \
+         return 3;\n  \
+         __builtin_cpu_init();\n  \
+         int have = __builtin_cpu_supports(\"avx2\");\n  \
+         for (unsigned f = 0; f < sizeof fns / sizeof *fns; f++)\n    \
+         for (int i = 0; i < per; i++) {{\n      \
+         if (!have) {{ printf(\"%u %d skip\\n\", f, i); continue; }}\n      \
+         unsigned char buf[{GCASE}] __attribute__((aligned(32)));\n      \
+         memcpy(buf, in[f * per + i], {GCASE});\n      \
+         long long off; memcpy(&off, buf + 96, 8);\n      \
+         const unsigned char *base = table + off;\n      \
+         if (buf[104]) {{\n        \
+         base = 0;\n        \
+         for (int k = 0; k < q[f]; k++) {{ long long v; memcpy(&v, buf + 32 + 8 * k, 8); \
+         v += (long long)table / scale[f]; memcpy(buf + 32 + 8 * k, &v, 8); }}\n      \
+         }}\n      \
+         unsigned char out[96] __attribute__((aligned(32)));\n      memset(out, 0, 96);\n      \
+         fns[f](buf, base, out);\n      \
+         if (buf[104]) for (int k = 0; k < q[f]; k++) {{ long long v; \
+         memcpy(&v, out + 64 + 8 * k, 8); v -= (long long)table / scale[f]; memcpy(out + 64 + 8 * k, &v, 8); }}\n      \
+         printf(\"%u %d \", f, i);\n      \
+         for (int k = 0; k < 96; k++) printf(\"%02x\", out[k]);\n      printf(\"\\n\");\n    }}\n  \
+         return 0;\n}}\n",
+        total = 2 * PAGE + TABLE
+    )
+    .unwrap();
+    c
+}
+
+/// §5.6.33 (6): every AVX2 gather, at every scale, computes what `llc`'s
+/// instruction computes, on LLVM 22 and 19, hod plain and stressed,
+/// under bfd and lld; no lane whose mask is clear is read (it would
+/// fault), and the mask and index values keep their bits.
+#[test]
+fn x86_gathers_agree_with_llc() {
+    let (body, funcs) = gather_functions();
+    let text = format!("{}{body}", ll_header());
+    let mut rng = Rng(0x0207);
+    let sets: Vec<Vec<[u8; GCASE]>> =
+        funcs.iter().map(|f| gather_inputs(&mut rng, f, 24)).collect();
+    let cases: usize = sets.iter().map(Vec::len).sum();
+
+    let (module, bodies) = parse(&text);
+    let scratch = Scratch::new("x64-x86-gather");
+    let mut legs = Vec::new();
+    for (mode, stress) in [("plain", Stress::default()), ("stress", Stress::ALL)] {
+        let object = hod_x64::compile_to_object(&module, &bodies, &pic(stress))
+            .unwrap_or_else(|e| panic!("hod {mode}: {e}"));
+        legs.push((format!("hod {mode}"), scratch.write(&format!("hod-{mode}.o"), object)));
+    }
+    for major in [22, 19] {
+        if let Some(object) = llc(&scratch, major, &format!("llc{major}"), &text) {
+            legs.push((format!("llc {major}"), object));
+        }
+    }
+    eprintln!(
+        "x86 gathers: {} intrinsics, {} functions, {cases} cases",
+        GATHERS.len(),
+        funcs.len()
+    );
+
+    let Some(toolchain) = Toolchain::x86_64(&scratch) else { return };
+    let toolchain = toolchain.with_emulated_cpu("max");
+    let driver = toolchain.compile_c(&scratch, "driver", &gather_driver(&funcs, &sets), &[]);
+    let mut runs: Vec<(String, String)> = Vec::new();
+    for (leg, object) in &legs {
+        for linker in toolchain.linkers.iter().filter(|l| matches!(l.name, "bfd" | "lld")) {
+            let program = scratch.join(format!("{}-{}", leg.replace(' ', "-"), linker.name));
+            let ran = toolchain.link_and_run(linker, &[], &[&driver, object], &program);
+            // The last line printed names the case before the one that
+            // stopped the program.
+            assert!(
+                ran.success(),
+                "{leg} {}: {:?} after {:?}\n{}",
+                linker.name,
+                ran.status,
+                ran.stdout_text().lines().last().map(|l| &l[..l.len().min(12)]),
+                ran.stderr_text()
+            );
+            runs.push((format!("{leg} ({})", linker.name), ran.stdout_text()));
+        }
+    }
+    let Some((reference_leg, reference)) =
+        runs.iter().find(|(leg, _)| leg.starts_with("llc 22")).or(runs.first())
+    else {
+        return;
+    };
+    assert_eq!(reference.lines().count(), cases, "{reference_leg}: one line per case");
+    let skipped = reference.lines().filter(|l| l.ends_with(" skip")).count();
+    let mut wrong = Vec::new();
+    for (leg, out) in &runs {
+        assert_eq!(out.lines().count(), cases, "{leg}: one line per case");
+        for (want, got) in reference.lines().zip(out.lines()) {
+            if want != got {
+                let f: usize = want.split(' ').next().unwrap().parse().unwrap();
+                let g = &funcs[f];
+                wrong.push(format!("{leg}: {} scale {}: want {want}, got {got}", g.name, g.scale));
+            }
+        }
+    }
+    eprintln!(
+        "x86 gathers: legs {:?}; {skipped} of {cases} cases skipped (no AVX2)",
+        runs.iter().map(|r| &r.0).collect::<Vec<_>>()
+    );
+    assert!(
+        wrong.is_empty(),
+        "{} disagreements:\n{}",
+        wrong.len(),
+        wrong[..wrong.len().min(40)].join("\n")
+    );
 }

@@ -897,6 +897,14 @@ combinations out (`tests/l1/avx.rs`, group `vex`).
 | `vpmovmskb_rr(width, r32, src)`, `vmovmskp_rr(double, width, r32, src)` | `66 0F D7`, `0F 50` / `66 0F 50` | |
 | `vcvtps2ph_rri(width, dst, src, imm8)` | `66 0F3A 1D /r ib`, `dst` (an `xmm`) in `ModRM.rm` | |
 | `vzeroupper()` | `C5 F8 77` | |
+| `gather(op: Gather, width, dst, m: Vsib, mask)` (WP-207) | `op dst, [base + index*scale + disp], mask` (`mask` in `vvvv`, a VSIB operand: always a `SIB` byte whose index is a vector register, `VEX.X` its bit 3, index 4 `xmm4`; the shortest displacement, `disp8` 0 for `rbp`/`r13`), map `0F38` `66`: `VPGATHERDD`/`DQ` `90` (W0/W1), `VPGATHERQD`/`QQ` `91`, `VGATHERDPS`/`DPD` `92`, `VGATHERQPS`/`QPD` `93`; `VEX.L` the wider of destination and index (`DQ`/`DPD`: an `xmm` index at both widths; `QD`/`QPS`: an `xmm` destination and mask at both widths) | `dst`, the index and `mask` three distinct registers (the processor's `#UD`) |
+
+The gathers' sweep is group `vex-gathers` (`tests/l1/avx.rs`): every
+member at both widths, every scale, bases `rax`, `rsp`, `rbp`, `rdi`,
+`r8`, `r12`, `r13`, `r15` with no, 8-bit and 32-bit displacements. Its
+assembly text has no size keyword: LLVM 19's Intel parser sizes a VSIB
+operand as the destination (`xmmword ptr`), LLVM 22's as an element
+(`dword ptr`), and both take the operand without one.
 
 ## Not provided
 

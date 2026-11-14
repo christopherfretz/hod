@@ -797,6 +797,23 @@ intrinsics! {
     X86Vgf2p8affineinvqb256 = "llvm.x86.vgf2p8affineinvqb.256" [],
     X86Vgf2p8mulb128 = "llvm.x86.vgf2p8mulb.128" [],
     X86Vgf2p8mulb256 = "llvm.x86.vgf2p8mulb.256" [],
+    // The AVX2 gathers (WP-207).
+    X86Avx2GatherDD = "llvm.x86.avx2.gather.d.d" [],
+    X86Avx2GatherDD256 = "llvm.x86.avx2.gather.d.d.256" [],
+    X86Avx2GatherDQ = "llvm.x86.avx2.gather.d.q" [],
+    X86Avx2GatherDQ256 = "llvm.x86.avx2.gather.d.q.256" [],
+    X86Avx2GatherDPs = "llvm.x86.avx2.gather.d.ps" [],
+    X86Avx2GatherDPs256 = "llvm.x86.avx2.gather.d.ps.256" [],
+    X86Avx2GatherDPd = "llvm.x86.avx2.gather.d.pd" [],
+    X86Avx2GatherDPd256 = "llvm.x86.avx2.gather.d.pd.256" [],
+    X86Avx2GatherQD = "llvm.x86.avx2.gather.q.d" [],
+    X86Avx2GatherQD256 = "llvm.x86.avx2.gather.q.d.256" [],
+    X86Avx2GatherQQ = "llvm.x86.avx2.gather.q.q" [],
+    X86Avx2GatherQQ256 = "llvm.x86.avx2.gather.q.q.256" [],
+    X86Avx2GatherQPs = "llvm.x86.avx2.gather.q.ps" [],
+    X86Avx2GatherQPs256 = "llvm.x86.avx2.gather.q.ps.256" [],
+    X86Avx2GatherQPd = "llvm.x86.avx2.gather.q.pd" [],
+    X86Avx2GatherQPd256 = "llvm.x86.avx2.gather.q.pd.256" [],
 }
 
 /// The most overload types an intrinsic on the list has.
@@ -871,7 +888,23 @@ impl<'a> Intrinsic<'a> {
             | I::X86Sse42Pcmpestric128
             | I::X86Sse42Pcmpestrio128
             | I::X86Sse42Pcmpestris128
-            | I::X86Sse42Pcmpestriz128 => &[4],
+            | I::X86Sse42Pcmpestriz128
+            | I::X86Avx2GatherDD
+            | I::X86Avx2GatherDD256
+            | I::X86Avx2GatherDQ
+            | I::X86Avx2GatherDQ256
+            | I::X86Avx2GatherDPs
+            | I::X86Avx2GatherDPs256
+            | I::X86Avx2GatherDPd
+            | I::X86Avx2GatherDPd256
+            | I::X86Avx2GatherQD
+            | I::X86Avx2GatherQD256
+            | I::X86Avx2GatherQQ
+            | I::X86Avx2GatherQQ256
+            | I::X86Avx2GatherQPs
+            | I::X86Avx2GatherQPs256
+            | I::X86Avx2GatherQPd
+            | I::X86Avx2GatherQPd256 => &[4],
             _ => &[],
         }
     }

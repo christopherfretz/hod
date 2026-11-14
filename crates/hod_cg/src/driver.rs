@@ -90,10 +90,19 @@ pub fn compile_function<T: Target>(
     let own = target.for_function(module, body);
     let target = own.as_ref().unwrap_or(target);
     let mut far = options.stress.far;
+    let mut block_slots = true;
     loop {
         let mut cx = FnCx::new(target, module, body, options, scratch, chunk, far);
+        cx.block_slots = block_slots;
         let result = cx.run();
-        let out_of_range = cx.out_of_range;
+        let (out_of_range, runs_twice) = (cx.out_of_range, cx.runs_twice);
+        if runs_twice {
+            // §5.1: code after a `returns_twice` call can run again after
+            // other blocks have run, so no slot is a block's alone.
+            chunk.truncate(mark);
+            block_slots = false;
+            continue;
+        }
         let Err(error) = result else { return Ok(()) };
         chunk.truncate(mark);
         if !out_of_range {
@@ -240,6 +249,8 @@ impl<'a, T: Target> FnCx<'a, T> {
             ret_last: false,
             ret_loc: LocId::NONE,
             coro: None,
+            block_slots: false,
+            runs_twice: false,
         }
     }
 
@@ -253,6 +264,8 @@ impl<'a, T: Target> FnCx<'a, T> {
         if body.block_count() == 0 || body.block_count() >= 1 << 30 {
             return internal("a body without a block, or with more blocks than labels");
         }
+        // Off until the first block (§5.1 "Value slots").
+        let block_slots = std::mem::take(&mut self.block_slots);
         self.key_lines = self.key_function();
         self.mark_reachable()?;
         self.assign_own()?;
@@ -261,6 +274,10 @@ impl<'a, T: Target> FnCx<'a, T> {
         t.begin_function(self)?;
         self.coro_setup()?;
         self.layout_slots()?;
+        // §5.1 "Value slots": no block slots in a coroutine body (its
+        // frame is split at suspend points, §7.6), nor where a
+        // `#dbg_value` range may claim a home (`spec/dwarf.md` §6.23).
+        self.block_slots = block_slots && self.coro.is_none() && !self.has_value_records();
         self.enter_arguments()?;
         self.enter_slots()?;
 
@@ -670,6 +687,7 @@ impl<'a, T: Target> FnCx<'a, T> {
         let id = block.id();
         self.block = id;
         self.skip_rest = false;
+        self.s.frame.begin_block(); // §5.1: the block slots are free
         self.bind(self.block_label(id))?;
         self.coro_block_start(id);
         let mut start = self.offset();

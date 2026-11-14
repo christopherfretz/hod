@@ -16,7 +16,7 @@
 //! that follows it in the same block, and nothing has to be reconciled
 //! at a block boundary.
 
-use hod_ir::{Inst, InstId, InstKind, TypeId, Value, ValueKind};
+use hod_ir::{Inst, InstId, InstKind, TypeId, TypeKind, Value, ValueKind};
 
 use crate::cx::FnCx;
 use crate::error::{CgError, CgResult, internal};
@@ -104,14 +104,58 @@ impl<'a, T: Target> FnCx<'a, T> {
         } else {
             Kind::Reg
         };
-        let width = self.reg_bytes(class) as u8;
-        let loc =
-            if kind == Kind::Home { Loc::Frame(self.value_slot(class, ty)?) } else { Loc::None };
+        let (width, loc) = if kind == Kind::Home {
+            let block = key.as_arg().is_none()
+                && !uses.used_outside_block()
+                && !uses.named_by_declare()
+                && self.block_slots
+                && self.body.inst(InstId::new(key.0)).opcode() != hod_ir::Opcode::Phi
+                && self.body.block(self.block).inst_range().contains(&key.0);
+            let slot = match self.takes_over(key, class, block)? {
+                Some(slot) => slot,
+                None => self.home_slot(class, ty, block)?,
+            };
+            (self.home_bytes(class, ty) as u8, Loc::Frame(slot))
+        } else {
+            (self.reg_bytes(class) as u8, Loc::None)
+        };
         let state = ValState { loc, kind, class, width, incoming: crate::loc::NO_SLOT };
         if let Some(entry) = self.state_mut(key) {
             *entry = state;
         }
         Ok(state)
+    }
+
+    /// The block slot an `insertvalue` result of class `Mem` that gets a
+    /// block slot itself takes over from its aggregate operand (§5.1
+    /// "Value slots"): the operand's, when the operand is an instruction
+    /// result of this block with a block slot and this is its only use.
+    /// The lowering copies the aggregate into the result's slot (nothing
+    /// when they are one) and then writes the field, and nothing reads
+    /// the operand afterwards.
+    fn takes_over(&self, key: Key, class: Class, block: bool) -> CgResult<Option<FrameRef>> {
+        if !block || class != Class::Mem {
+            return Ok(None);
+        }
+        let InstKind::InsertValue { agg, .. } = self.body.inst(InstId::new(key.0)).kind() else {
+            return Ok(None);
+        };
+        let Some(id) = agg.as_inst() else { return Ok(None) };
+        let uses = self.body.uses(id);
+        if uses.count() != 1
+            || uses.used_outside_block()
+            || uses.named_by_declare()
+            || self.body.inst(id).opcode() == hod_ir::Opcode::Phi
+            || !self.body.block(self.block).inst_range().contains(&id.raw())
+        {
+            return Ok(None);
+        }
+        match self.state(Key::inst(id.raw()))? {
+            ValState { kind: Kind::Home, class: Class::Mem, loc: Loc::Frame(slot), .. } => {
+                Ok(Some(slot))
+            }
+            _ => Ok(None),
+        }
     }
 
     /// A `#dbg_declare` of a stack slot plus a constant offset (a
@@ -130,8 +174,52 @@ impl<'a, T: Target> FnCx<'a, T> {
         Ok(())
     }
 
-    /// A new slot laid out for a value of `class` and type `ty` (§2.2):
-    /// a home slot, or an incoming slot.
+    /// The bytes of a home or incoming slot of a value of `class` and
+    /// type `ty` (§5.1 "Value slots"): an integer's store size rounded
+    /// up to a power of two, 4 for a `float`, 8 for a `double`, a
+    /// register's bytes for anything else of class `Gpr` or `Fpr`, and
+    /// always a register's bytes in a coroutine body (§7.6); zero for
+    /// `Mem`. A home is written and read with exactly these bytes.
+    #[inline]
+    pub(crate) fn home_bytes(&self, class: Class, ty: TypeId) -> u32 {
+        let full = self.reg_bytes(class);
+        if self.coro.is_some() {
+            return full;
+        }
+        let bytes = match (class, self.types().kind(ty)) {
+            (Class::Gpr, TypeKind::Int(bits)) => bits.div_ceil(8).next_power_of_two(),
+            (Class::Fpr, TypeKind::Float) => 4,
+            (Class::Fpr, TypeKind::Double) => 8,
+            _ => full,
+        };
+        bytes.min(full)
+    }
+
+    /// A new home or incoming slot for a value of `class` and type `ty`
+    /// (§5.1 "Value slots"): [`FnCx::home_bytes`] wide and aligned, in a
+    /// hole if one fits; a block slot if `block`.
+    pub(crate) fn home_slot(&mut self, class: Class, ty: TypeId, block: bool) -> CgResult<FrameRef> {
+        let (size, align) = match class {
+            Class::Gpr | Class::Fpr => {
+                let bytes = self.home_bytes(class, ty);
+                (u64::from(bytes), bytes.min(T::STACK_ALIGN))
+            }
+            Class::Mem => {
+                let types = self.types();
+                let align = types.align_of(ty).min(u64::from(T::STACK_ALIGN)).max(1);
+                (types.alloc_size_of(ty), align as u32)
+            }
+        };
+        if block {
+            self.s.frame.alloc_block(size, align)
+        } else {
+            self.s.frame.alloc_value(size, align)
+        }
+    }
+
+    /// A new slot laid out for a value of `class` and type `ty` (§2.2),
+    /// a register's bytes wide for `Gpr` and `Fpr`: a coroutine's shadow
+    /// home (§7.6).
     pub(crate) fn value_slot(&mut self, class: Class, ty: TypeId) -> CgResult<FrameRef> {
         match class {
             Class::Gpr | Class::Fpr => {
@@ -632,7 +720,16 @@ impl<'a, T: Target> FnCx<'a, T> {
     /// lowering whose code after it can run a second time and read a
     /// spill slot again (x86-64's `llvm.eh.sjlj.setjmp`).
     pub fn never_reuse_spill_slots(&mut self) {
+        self.code_runs_twice();
         self.s.frame.keep_spills();
+    }
+
+    /// Code that can run a second time is being emitted (§4.3, §5.1): a
+    /// function that gave out block slots is compiled again without.
+    pub(crate) fn code_runs_twice(&mut self) {
+        if self.block_slots {
+            self.runs_twice = true;
+        }
     }
 
     /// Displaces every register that holds a value and is not pinned.

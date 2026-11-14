@@ -1,9 +1,14 @@
 //! The frame allocator: `spec/codegen.md` §5.1 to §5.3.
 //!
-//! One **local area** per function, laid out by a bump allocator whose
-//! offsets only grow; its final size is known when the function has been
-//! emitted. The target turns a [`FrameRef`] into an addressing mode
-//! (§5.4).
+//! One **local area** per function, laid out by a bump allocator; its
+//! final size is known when the function has been emitted. The target
+//! turns a [`FrameRef`] into an addressing mode (§5.4).
+//!
+//! WP-198 (§5.1 "Value slots"): the bytes a bump skips to align a slot
+//! are kept as **holes**, which value slots (homes, incoming slots,
+//! spill slots) fill before the area grows; and **block slots**, the
+//! homes of values whose every use is in their own block, are handed
+//! out again in every block.
 
 use crate::error::{CgError, CgResult, LIMIT_FRAME_SIZE, internal};
 use crate::loc::Class;
@@ -69,7 +74,23 @@ pub struct Frame {
     /// an unused in-memory result): `(offset, size)`, free and in use.
     free_temps: Vec<(u32, u32)>,
     live_temps: Vec<(u32, u32)>,
+    /// The bytes alignment skipped and no slot uses yet: `(offset, len)`,
+    /// at most [`MAX_HOLES`] of them (§5.1).
+    holes: Vec<(u32, u32)>,
+    /// Block slots (§5.1): `(offset, size, stamp)`; a slot is taken in
+    /// the block whose stamp it holds, free in any other.
+    block_slots: Vec<(u32, u32, u32)>,
+    /// The stamp of the block being emitted: never 0 once a block began,
+    /// so a slot's stamp is never the current one before it is taken.
+    block_stamp: u32,
 }
+
+/// The most holes a frame remembers: a bound on the search a value slot
+/// makes; a hole that does not fit is never used, and costs nothing else.
+const MAX_HOLES: usize = 16;
+
+/// The largest value slot a hole is searched for: a register's bytes.
+const MAX_HOLE_SLOT: u64 = 16;
 
 impl Frame {
     /// An empty frame for a target whose stack alignment is `stack_align`
@@ -88,6 +109,9 @@ impl Frame {
         self.keep_spills = false;
         self.free_temps.clear();
         self.live_temps.clear();
+        self.holes.clear();
+        self.block_slots.clear();
+        self.block_stamp = 0;
     }
 
     /// The size of the local area so far, in bytes. Final once the
@@ -121,7 +145,83 @@ impl Frame {
             Some(end) if end <= u64::from(MAX_FRAME) => end,
             _ => return Err(CgError::unsupported(LIMIT_FRAME_SIZE)),
         };
+        if at > self.size && self.holes.len() < MAX_HOLES {
+            self.holes.push((self.size, at - self.size));
+        }
         self.size = end as u32;
+        Ok(FrameRef::Local(at))
+    }
+
+    /// A new value slot (§5.1 "Value slots"): as [`Frame::alloc`], but in
+    /// a hole alignment left when one fits (the lowest such place).
+    /// Never reused by this call.
+    ///
+    /// # Errors
+    /// As [`Frame::alloc`].
+    pub fn alloc_value(&mut self, size: u64, align: u32) -> CgResult<FrameRef> {
+        if size != 0 && size <= MAX_HOLE_SLOT && align.is_power_of_two() {
+            let size = size as u32;
+            let found = self.holes.iter().enumerate().find_map(|(index, &(at, len))| {
+                let start = at.next_multiple_of(align);
+                (start + size <= at + len).then_some((index, start))
+            });
+            if let Some((index, start)) = found {
+                let (at, len) = self.holes[index];
+                let (before, after) = (start - at, at + len - (start + size));
+                match (before, after) {
+                    (0, 0) => {
+                        self.holes.swap_remove(index);
+                    }
+                    (0, _) => self.holes[index] = (start + size, after),
+                    (_, 0) => self.holes[index] = (at, before),
+                    _ => {
+                        self.holes[index] = (at, before);
+                        if self.holes.len() < MAX_HOLES {
+                            self.holes.push((start + size, after));
+                        }
+                    }
+                }
+                return Ok(FrameRef::Local(start));
+            }
+        }
+        self.alloc(size, align)
+    }
+
+    /// A block begins (§5.1): every block slot is free in it.
+    #[inline]
+    pub(crate) fn begin_block(&mut self) {
+        self.block_stamp = self.block_stamp.wrapping_add(1).max(1);
+    }
+
+    /// A block slot of `size` bytes aligned to `align` (§5.1): one taken
+    /// in no block since the current one began, the smallest that holds
+    /// `size` bytes at that alignment; a new value slot otherwise. It is
+    /// the slot's until the block ends.
+    ///
+    /// # Errors
+    /// As [`Frame::alloc`].
+    pub(crate) fn alloc_block(&mut self, size: u64, align: u32) -> CgResult<FrameRef> {
+        let stamp = self.block_stamp;
+        let best = self
+            .block_slots
+            .iter()
+            .enumerate()
+            .filter(|&(_, &(at, have, taken))| {
+                taken != stamp && u64::from(have) >= size && at % align == 0
+            })
+            .min_by_key(|&(_, &(_, have, _))| have)
+            .map(|(index, _)| index);
+        if let Some(index) = best {
+            self.block_slots[index].2 = stamp;
+            return Ok(FrameRef::Local(self.block_slots[index].0));
+        }
+        let FrameRef::Local(at) = self.alloc_value(size, align)? else {
+            return internal("the allocator returned a slot outside the local area");
+        };
+        let Ok(have) = u32::try_from(size) else {
+            return Err(CgError::unsupported(LIMIT_FRAME_SIZE));
+        };
+        self.block_slots.push((at, have, stamp));
         Ok(FrameRef::Local(at))
     }
 
@@ -131,7 +231,7 @@ impl Frame {
         if let Some(at) = self.free_spills[spill_list(class)].pop() {
             return Ok(FrameRef::Local(at));
         }
-        self.alloc(u64::from(bytes), bytes.min(self.stack_align))
+        self.alloc_value(u64::from(bytes), bytes.min(self.stack_align))
     }
 
     /// Gives a spill slot back once its value's use has been emitted.
@@ -259,6 +359,51 @@ mod tests {
         assert_ne!(fresh, occupied);
         frame.free_spill(Class::Gpr, fresh);
         assert_ne!(frame.alloc_spill(Class::Gpr, 8).unwrap(), fresh);
+    }
+
+    /// §5.1 "Value slots" (WP-198): the bytes alignment skipped are
+    /// filled by value slots that fit, lowest first; a body slot
+    /// (`alloc`) never goes into a hole.
+    #[test]
+    fn value_slots_fill_alignment_holes() {
+        let mut frame = Frame::new(16);
+        assert_eq!(local(frame.alloc(1, 1)), 0);
+        assert_eq!(local(frame.alloc(8, 8)), 8); // hole 1..8
+        assert_eq!(local(frame.alloc(1, 1)), 16);
+        assert_eq!(local(frame.alloc(16, 16)), 32); // hole 17..32
+        assert_eq!(local(frame.alloc_value(4, 4)), 4);
+        assert_eq!(local(frame.alloc_value(1, 1)), 1);
+        assert_eq!(local(frame.alloc_value(2, 2)), 2);
+        assert_eq!(local(frame.alloc_value(8, 8)), 24);
+        assert_eq!(local(frame.alloc_value(8, 8)), 48); // no hole holds it
+        assert_eq!(local(frame.alloc(1, 1)), 56);
+        assert_eq!(local(frame.alloc_value(16, 16)), 64);
+        assert_eq!(local(frame.alloc_value(1, 1)), 17);
+        assert_eq!(frame.size(), 80);
+    }
+
+    /// §5.1 "Value slots" (WP-198): a block slot is the block's until the
+    /// next block begins; then any block may take it again, the smallest
+    /// that holds the size first.
+    #[test]
+    fn block_slots_are_reused_in_every_block() {
+        let mut frame = Frame::new(16);
+        frame.begin_block();
+        let a = local(frame.alloc_block(16, 8));
+        let b = local(frame.alloc_block(1, 1));
+        let c = local(frame.alloc_block(16, 8));
+        assert!(a != b && b != c && a != c);
+        let size = frame.size();
+        frame.begin_block();
+        assert_eq!(local(frame.alloc_block(1, 1)), b);
+        assert_eq!(local(frame.alloc_block(16, 8)), a);
+        assert_eq!(local(frame.alloc_block(8, 8)), c);
+        assert_eq!(frame.size(), size);
+        let d = local(frame.alloc_block(1, 1));
+        assert!(d != a && d != b && d != c);
+        frame.reset(16);
+        frame.begin_block();
+        assert_eq!(local(frame.alloc_block(4, 4)), 0);
     }
 
     /// §5.1: instruction-lifetime slots come back at the end of the

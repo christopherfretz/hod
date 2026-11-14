@@ -30,7 +30,7 @@ impl<'a, T: Target> FnCx<'a, T> {
             return Ok(FrameRef::Local(state.incoming));
         }
         let ty = self.body.inst(hod_ir::InstId::new(key.0)).ty();
-        let slot = self.value_slot(state.class, ty)?;
+        let slot = self.home_slot(state.class, ty, false)?;
         let FrameRef::Local(at) = slot else {
             return self.bug("an incoming slot outside the local area");
         };
@@ -103,7 +103,7 @@ impl<'a, T: Target> FnCx<'a, T> {
         ty: hod_ir::TypeId,
     ) -> CgResult<()> {
         let t = self.target;
-        let bytes = self.reg_bytes(class);
+        let bytes = self.home_bytes(class, ty);
         if Key::of(value).is_none() {
             if !matches!(value.kind(), ValueKind::Const(_) | ValueKind::Sym(_) | ValueKind::Slot(_))
             {
@@ -160,14 +160,15 @@ impl<'a, T: Target> FnCx<'a, T> {
                         };
                         size
                     } else {
-                        self.reg_bytes(state.class)
+                        self.home_bytes(state.class, phi.ty())
                     };
                     t.copy(self, home, slot, bytes);
                 }
                 (Kind::Reg, _) => {
                     let slot = self.incoming_slot(key)?;
                     let reg = self.alloc(state.class)?;
-                    t.load(self, reg, slot, self.reg_bytes(state.class));
+                    let bytes = self.home_bytes(state.class, phi.ty());
+                    t.load(self, reg, slot, bytes);
                     self.own(reg, key);
                 }
                 _ => return self.bug("a phi without a kind"),

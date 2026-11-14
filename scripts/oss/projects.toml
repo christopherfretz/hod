@@ -30,6 +30,8 @@
 #   test_timeout   seconds, default 1800
 #   vmem_kb        the address-space cap of one compile or test, default 3000000
 #   test_vmem_kb   optional: the test step's cap instead (at most 100000000)
+#   link_vmem_kb   optional: the cap of a link (a compiler call without -c/-S/-E;
+#                  default vmem_kb, at most 16000000)
 #   drop_flags     optional: compiler arguments the wrappers leave out of every
 #                  kiln command (a flag kiln does not accept that the project
 #                  hard-codes, e.g. highway's -fmerge-all-constants), in every mode
@@ -519,6 +521,8 @@ build_targets = ["unittest", "shell"]
 # for the per-case results), then kiln's test: the default (non-slow) cases.
 test = "test/unittest --list-test-names-only > catch-tests.log 2>/dev/null; DUCKDB_TEST_MAX_THREADS=4 SUMMARIZE_FAILURES=1 test/unittest"
 test_timeout = 14400
+# unittest links libduckdb_static.a (about 830 MB at -O0 -g0, several GB with -g).
+link_vmem_kb = 12000000
 c_compiler = "clang-19"
 wave = 4
 notes = "WP-223, from kiln's row (WP-799): release v1.5.6, default extensions (core_functions, parquet), not the amalgamation, DISABLE_UNITY so every source is a TU (shims/duckdb-no-unity.cmake: v1.5.6's allocator_jemalloc.cpp lacks an include then, clang 19 rejects it alike). The test is unittest with no arguments (the default, non-slow, Catch2 and sqllogictest cases), at most 4 threads per database; the per-case results come from Catch's failure headers and the --list-test-names-only list."

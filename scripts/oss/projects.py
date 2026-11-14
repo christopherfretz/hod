@@ -38,6 +38,7 @@ VMEM_MAX_KB = 6000000
 # The test step's cap may go higher, for a test that reserves address
 # space it never touches (mold reserves 8 GiB per arena, up to ten).
 TEST_VMEM_MAX_KB = 100000000
+LINK_VMEM_MAX_KB = 16000000
 CTEST_RE = re.compile(r"(\d+)% tests passed, (\d+) tests? failed out of (\d+)")
 # One ctest result line: `  3/12 Test  #3: name ....   Passed    0.01 sec`,
 # `***Failed`, `***Timeout`, `***Exception: SegFault`, `***Not Run`.
@@ -83,6 +84,11 @@ def load(path=TOML):
         p.setdefault("test_vmem_kb", p["vmem_kb"])
         if not (isinstance(p["test_vmem_kb"], int) and 0 < p["test_vmem_kb"] <= TEST_VMEM_MAX_KB):
             raise SystemExit(f"{path}: [{name}] test_vmem_kb must be an integer in 1..{TEST_VMEM_MAX_KB}")
+        # A link's cap (kiln-cxx's KILN_OSS_LINK_VMEM_KB): a big program's
+        # link maps every archive (duckdb's -O0 library is about 1 GB).
+        p.setdefault("link_vmem_kb", p["vmem_kb"])
+        if not (isinstance(p["link_vmem_kb"], int) and 0 < p["link_vmem_kb"] <= LINK_VMEM_MAX_KB):
+            raise SystemExit(f"{path}: [{name}] link_vmem_kb must be an integer in 1..{LINK_VMEM_MAX_KB}")
         if not (isinstance(p["test_timeout"], int) and p["test_timeout"] > 0):
             raise SystemExit(f"{path}: [{name}] test_timeout must be a positive integer")
     for name, p in data.items():
@@ -473,7 +479,7 @@ def main():
             sys.exit(f"projects.py: unknown project '{a.project}' (see {TOML})")
         p = data[a.project]
         q = shlex.quote
-        for k in ("url", "tag", "build", "cxx_std", "test", "c", "c_compiler", "source_subdir", "checkout", "test_timeout", "vmem_kb", "test_vmem_kb"):
+        for k in ("url", "tag", "build", "cxx_std", "test", "c", "c_compiler", "source_subdir", "checkout", "test_timeout", "vmem_kb", "test_vmem_kb", "link_vmem_kb"):
             print(f"P_{k.upper()}={q(str(p[k]))}")
         print(f"P_SUBMODULES={'1' if p['submodules'] else ''}")
         print("P_CONFIGURE=(" + " ".join(q(x) for x in p["configure"]) + ")")

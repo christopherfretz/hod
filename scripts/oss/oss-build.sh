@@ -211,6 +211,9 @@ find "$BUILD" -mindepth 1 -delete
 P_TEST="${P_TEST//@SRC@/$SRC}"
 export KILN_OSS_LOG="$BUILD/compile.jsonl"
 export KILN_OSS_VMEM_KB="${KILN_OSS_VMEM_KB:-$P_VMEM_KB}"
+# A link's cap: the row's link_vmem_kb when it sets one (else kiln-cxx
+# uses the compile cap), unless the environment (or the x86-64 lane) set it.
+[ "$P_LINK_VMEM_KB" = "$P_VMEM_KB" ] || export KILN_OSS_LINK_VMEM_KB="${KILN_OSS_LINK_VMEM_KB:-$P_LINK_VMEM_KB}"
 # The tests: the row's test_vmem_kb (default its vmem_kb), or
 # KILN_OSS_VMEM_KB when that is set to override the row.
 TEST_VMEM_KB="$P_TEST_VMEM_KB"

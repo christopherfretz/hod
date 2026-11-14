@@ -323,9 +323,8 @@ impl Jump {
     /// The bytes of the short (`near` false) or near form.
     pub(crate) fn len(self, near: bool) -> usize {
         match (self, near) {
-            (Jump::Call, _) => 5,
+            (Jump::Call, _) | (Jump::Jmp, true) => 5,
             (_, false) => 2,
-            (Jump::Jmp, true) => 5,
             (Jump::Jcc(_), true) => 6,
         }
     }

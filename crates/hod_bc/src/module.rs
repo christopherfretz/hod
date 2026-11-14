@@ -1327,6 +1327,12 @@ impl<'r, 'a> Build<'r, 'a> {
             }
             notes |= dx.notes;
         }
+        // Equal nodes are one node, as LLVM's reader makes them
+        // (`spec/ir.md` §6.3).
+        merge_handles(
+            &self.module.debug.unique_nodes(hod_ir::DiMark::default()),
+            &mut self.debug.module,
+        );
         self.dbg_cu = units;
         let dbg_kind = self.md_kinds.iter().find(|(_, name)| name == b"dbg").map(|&(id, _)| id);
         let mut ops = Vec::new();
@@ -1345,12 +1351,15 @@ impl<'r, 'a> Build<'r, 'a> {
             }
             local.handles.resize(local.slots.len(), Handle::None);
             let len = local.slots.len() as u64;
+            let mark = self.module.debug.node_mark();
             {
                 let mut dx = self.dx(&mut local);
                 dx.reserve(count, count + len)?;
                 dx.define(count, count + len)?;
                 notes |= dx.notes;
             }
+            // A function's nodes are uniqued with the module's too.
+            merge_handles(&self.module.debug.unique_nodes(mark), &mut local.handles);
             let (Ok(start), Ok(len32)) =
                 (u32::try_from(self.debug.local.len()), u32::try_from(len))
             else {
@@ -1447,6 +1456,19 @@ impl<'r, 'a> Build<'r, 'a> {
             }
         }
         ir(at, module_flag(&mut self.module, behavior, name, int, string, upgrade))
+    }
+}
+
+/// The handles of debug nodes `merge` merged, rewritten to the surviving
+/// nodes.
+fn merge_handles(merge: &hod_ir::DiMerge, handles: &mut [Handle]) {
+    if merge.is_empty() {
+        return;
+    }
+    for handle in handles {
+        if let Handle::Node(id) = handle {
+            *id = merge.get(*id);
+        }
     }
 }
 

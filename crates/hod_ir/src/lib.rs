@@ -141,4 +141,5 @@ pub use debug::node::{
     DiNamespace, DiNode, DiOther, DiShape, DiString, DiSubprogram, DiSubrange, DiSubroutineType,
     DiTemplateTypeParameter, DiTemplateValueParameter, DiTuple,
 };
+pub use debug::unique::{DiMark, DiMerge};
 pub use debug::{DebugInfo, DebugStats, DiAtom, DiLocation};

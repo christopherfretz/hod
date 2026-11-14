@@ -4,7 +4,10 @@
 # including its header (the unity TU got it from a neighbour; clang 19
 # rejects the file alike). At the end of the top directory, once every
 # subdirectory is added, that one source is given the header with -include.
-cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL
+function(hod_oss_duckdb_include)
+  set(opts -include duckdb/common/string_util.hpp)
   set_source_files_properties("${CMAKE_SOURCE_DIR}/src/common/allocator/allocator_jemalloc.cpp"
     DIRECTORY "${CMAKE_SOURCE_DIR}/src/common/allocator"
-    PROPERTIES COMPILE_OPTIONS "-include;duckdb/common/string_util.hpp"))
+    PROPERTIES COMPILE_OPTIONS "${opts}")
+endfunction()
+cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL hod_oss_duckdb_include)

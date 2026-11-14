@@ -3,9 +3,11 @@
 //! inlines was refused as `debug:import-entity`; one whose entity is
 //! also placed out of line named the concrete DIE. `llc` 22's
 //! `constructImportedEntityDIE` names the entity's abstract instance
-//! whenever there is one (`getAbstractScopeDIEs().lookup(SP)`).
+//! whenever there is one (`getAbstractScopeDIEs().lookup(SP)`). WP-236
+//! (§6.36): one whose entity is neither placed nor inlined was refused
+//! too; `llc` 22 makes the entity's abstract instance, without children.
 //!
-//! - `trees_equal_llc`: both shapes, both targets: the DIE tree (code
+//! - `trees_equal_llc`: the three shapes, both targets: the DIE tree (code
 //!   addresses and frame offsets masked, references by name) equals
 //!   `llc` 22's, both objects `--verify` clean, and the import names the
 //!   abstract instance.
@@ -57,11 +59,24 @@ const META: &str = r#"!llvm.dbg.cu = !{!2}
 !71 = !DIImportedEntity(tag: DW_TAG_imported_declaration, scope: !2, entity: !21, file: !3, line: 9)
 "#;
 
+/// `h`, which does not inline `map` (the third shape, WP-236).
+const H_ALONE: &str = r"define i32 @h(i32 %a) !dbg !53 {
+  %y = add i32 %a, 1, !dbg !56
+  ret i32 %y, !dbg !56
+}
+";
+
 const TRIPLES: [&str; 2] = ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"];
 
-fn module(triple: &str, out_of_line: bool) -> String {
-    let map = if out_of_line { MAP } else { "" };
-    format!("target triple = \"{triple}\"\n{map}{H}{META}")
+/// The shapes: `map` inlined only, also placed out of line, or (WP-236,
+/// `spec/dwarf.md` §6.36) neither placed nor inlined: `llc` 22 makes its
+/// abstract instance for the import, without its retained parameter.
+const SHAPES: [&str; 3] = ["inlined-only", "also-out-of-line", "imported-only"];
+
+fn module(triple: &str, shape: &str) -> String {
+    let map = if shape == "also-out-of-line" { MAP } else { "" };
+    let h = if shape == "imported-only" { H_ALONE } else { H };
+    format!("target triple = \"{triple}\"\n{map}{h}{META}")
 }
 
 fn compile(text: &str) -> Vec<u8> {
@@ -170,9 +185,9 @@ fn trees_equal_llc() {
     };
     let scratch = Scratch::new("inlined_import");
     for triple in TRIPLES {
-        for (shape, out_of_line) in [("inlined-only", false), ("also-out-of-line", true)] {
+        for shape in SHAPES {
             let name = format!("{}-{shape}", &triple[..triple.find('-').unwrap()]);
-            let text = module(triple, out_of_line);
+            let text = module(triple, shape);
             let ours = scratch.write(&format!("{name}.hod.o"), compile(&text));
             let input = scratch.write(&format!("{name}.ll"), &text);
             let theirs = scratch.join(format!("{name}.llc.o"));

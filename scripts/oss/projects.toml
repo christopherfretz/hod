@@ -489,8 +489,12 @@ submodules = true
 c = "clang"
 # Every dependency from its bundled submodule (abseil, protobuf, re2, zlib,
 # c-ares, BoringSSL, upb, googletest, benchmark). BoringSSL without its
-# assembly (OPENSSL_NO_ASM).
-configure = ["-DgRPC_BUILD_TESTS=ON", "-DgRPC_DOWNLOAD_ARCHIVES=OFF", "-DgRPC_ABSL_PROVIDER=module", "-DgRPC_PROTOBUF_PROVIDER=module", "-DgRPC_RE2_PROVIDER=module", "-DgRPC_ZLIB_PROVIDER=module", "-DgRPC_CARES_PROVIDER=module", "-DgRPC_SSL_PROVIDER=module", "-DOPENSSL_NO_ASM=ON", "-DgRPC_BUILD_GRPC_CSHARP_PLUGIN=OFF", "-DgRPC_BUILD_GRPC_NODE_PLUGIN=OFF", "-DgRPC_BUILD_GRPC_OBJECTIVE_C_PLUGIN=OFF", "-DgRPC_BUILD_GRPC_PHP_PLUGIN=OFF", "-DgRPC_BUILD_GRPC_PYTHON_PLUGIN=OFF", "-DgRPC_BUILD_GRPC_RUBY_PLUGIN=OFF", "-Dprotobuf_BUILD_TESTS=OFF", "-DABSL_PROPAGATE_CXX_STD=ON"]
+# assembly (OPENSSL_NO_ASM). GRPC_PORT_ISOLATED_RUNTIME: the tests pick their
+# ports themselves (test/core/test_util/port_ci.cc) instead of asking gRPC's
+# port server (tools/run_tests/start_port_server.py) on 127.0.0.1:32766;
+# without it server_builder_test and the four end2end suites fail in the
+# control ("gRPC tests require a helper port server").
+configure = ["-DCMAKE_CXX_FLAGS=-DGRPC_PORT_ISOLATED_RUNTIME", "-DgRPC_BUILD_TESTS=ON", "-DgRPC_DOWNLOAD_ARCHIVES=OFF", "-DgRPC_ABSL_PROVIDER=module", "-DgRPC_PROTOBUF_PROVIDER=module", "-DgRPC_RE2_PROVIDER=module", "-DgRPC_ZLIB_PROVIDER=module", "-DgRPC_CARES_PROVIDER=module", "-DgRPC_SSL_PROVIDER=module", "-DOPENSSL_NO_ASM=ON", "-DgRPC_BUILD_GRPC_CSHARP_PLUGIN=OFF", "-DgRPC_BUILD_GRPC_NODE_PLUGIN=OFF", "-DgRPC_BUILD_GRPC_OBJECTIVE_C_PLUGIN=OFF", "-DgRPC_BUILD_GRPC_PHP_PLUGIN=OFF", "-DgRPC_BUILD_GRPC_PYTHON_PLUGIN=OFF", "-DgRPC_BUILD_GRPC_RUBY_PLUGIN=OFF", "-Dprotobuf_BUILD_TESTS=OFF", "-DABSL_PROPAGATE_CXX_STD=ON"]
 build_targets = ["grpc", "grpc++", "grpc_cpp_plugin", "status_util_test", "time_util_test", "byte_buffer_test", "sockaddr_utils_test", "useful_test", "bitset_test", "status_helper_test", "json_test", "thread_quota_test", "grpc_byte_buffer_reader_test", "orphanable_test", "ref_counted_test", "env_test", "host_port_test", "string_ref_test", "channel_arguments_test", "proto_utils_test", "codegen_test_minimal", "server_builder_test", "alarm_test", "end2end_test", "async_end2end_test", "generic_end2end_test", "client_callback_end2end_test"]
 # The tests run from the source tree (end2end tests read
 # src/core/tsi/test_creds); a program that did not link is a missing test.

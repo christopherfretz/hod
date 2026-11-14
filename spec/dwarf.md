@@ -2815,7 +2815,8 @@ The expression of a record is checked before code generation:
   address, and the final deref is dropped), with the plain DWARF ops
   the `#dbg_declare` path writes in between; since WP-225 also
   `DW_OP_LLVM_convert` to a signed or unsigned integer of 1 to 64 bits
-  (not before a final `DW_OP_deref`) and a final byte-aligned
+  (since WP-230 also of 128 bits, §6.34; not before a final
+  `DW_OP_deref`) and a final byte-aligned
   `DW_OP_LLVM_fragment` (§6.31);
 - `debug:dbg-value-fragment`: a `DW_OP_LLVM_fragment` whose offset or
   size is not a whole number of bytes, or of size 0 (none in the
@@ -3159,7 +3160,7 @@ measured shape by shape against `llc` 19 and 22.
 **Checks** (`check_value_expr`, §6.23): a fragment must be the last op,
 byte aligned and of nonzero size (all 389,019 fragments of the census
 are); a convert must be to `DW_ATE_signed` or `DW_ATE_unsigned` of 1 to
-64 bits, and an expression with a convert may not end in
+64 bits (or 128, WP-230, §6.34), and an expression with a convert may not end in
 `DW_OP_deref`. Anything else keeps its refusal name.
 
 **Rows** (`crates/hod_cg/src/dbg_value.rs`). A record now closes only
@@ -3488,6 +3489,66 @@ parent checked). `crates/hod_a64/tests/dies_inline.rs` lost its
 refusals left have no hand-written module: a VLA bound of such a
 function, tried, names the concrete variable in both writers and is
 written. Evidence: `spec/landed/dwarf/WP-230.md`.
+
+### 6.34 Value records converted to 128 bits (implemented, WP-230)
+
+libc++'s `__itoa` at `-O1` and `-O2` describes an `unsigned __int128`
+by its narrower parts: `i32`, `i64` and `i8` values and constants
+widened by `DW_OP_LLVM_convert, N, DW_ATE_unsigned,
+DW_OP_LLVM_convert, 128, DW_ATE_unsigned` (also as the fragment `0,
+128` of a wider variable), `i128` values narrowed by a conversion to 32
+bits, and `DIArgList(i128 ..., ptr ...)` widened and joined by
+`DW_OP_or`. §6.31 refused a conversion over 64 bits: 12 of the 886
+optimized modules (§6.33's census). Measured with `llc` 19 and 22, both
+targets, at `-O0` (FastISel on x86-64, GlobalISel on AArch64) and with
+SelectionDAG:
+
+- a home's value widened: the value pushed as §6.31 pushes it (`llc`
+  names the home from the stack pointer and reads an 8-byte one by
+  `DW_OP_deref_size 0x8`), then `DW_OP_convert` of each conversion,
+  the last naming a base type `DW_ATE_unsigned_128` (or
+  `DW_ATE_signed_128`), `DW_AT_byte_size` 16, in the unit's base types
+  as §6.31's;
+- a widened constant: GlobalISel pushes it and writes every conversion
+  (`DW_OP_lit7, DW_OP_convert DW_ATE_unsigned_64, DW_OP_convert
+  DW_ATE_unsigned_128, DW_OP_stack_value`); FastISel and SelectionDAG
+  fold the conversions into an `i128` constant they then write as a bare
+  `DW_OP_stack_value`, which describes nothing;
+- an `i128` value: no location, alone or in an argument list, except
+  that x86-64's FastISel reads the low 8 bytes of a single `i128`'s
+  home before a narrowing conversion (`DW_OP_deref, DW_OP_convert
+  DW_ATE_unsigned_128, DW_OP_convert DW_ATE_unsigned_32, ...`);
+- split (§6.15), the legacy form of §6.31: a widening to 128 bits is
+  `emitLegacyZExt(64)` (`DW_OP_lit1, DW_OP_constu 64, DW_OP_shl,
+  DW_OP_lit1, DW_OP_minus, DW_OP_and`, which leaves a 64-bit value
+  unchanged) or `emitLegacySExt(64)`, the value staying 64 bits wide on
+  the expression stack.
+
+hod (`loclists.rs` `convertible`, `fold`, `located`,
+`base_type_name`): a conversion to 128 bits of a signed or unsigned
+integer passes the checks of §6.23 and §6.31 (any other width over 64
+keeps `debug:dbg-value-expr`). A home's value is written as `llc`
+writes it. A constant whose expression converts to 128 bits folds
+nothing: it is pushed (§6.32's constants) and every conversion written,
+as GlobalISel, on both targets. An `i128` value has no place (§6.23:
+only values of 8 to 64 bits have one), so neither it nor an argument
+list holding it gets an entry; x86-64's FastISel location of the low
+half is not matched (a missing entry where that `llc` has one; a
+follow-up could push the low 8 bytes and require a narrowing to at
+most 64 bits before any operation reading high bits). In a split unit
+an unsigned widening to 128 bits takes `llc`'s legacy form (the value
+is unchanged and a consumer zero-extends a stack value to the
+variable's size); a signed widening to 128 bits has no entry, because
+the legacy form leaves the sign in bit 63 and a consumer that
+zero-extends the stack value would show a negative value as a large
+positive one. The code generator tells the plan the unit is split
+before any function is added (`UnitPlan::set_split`).
+
+**Tests.** `crates/hod/tests/dbg_value.rs` `conversions_to_128_bits`
+(both targets, plain and split: each shape above, the 16-byte base
+type, and the same operations as `llc` 22's own objects where they
+describe the value) and `refusals_are_named` (a conversion to 96 bits
+keeps the refusal). Evidence: `spec/landed/dwarf/WP-230.md`.
 
 ## 7. Speed and memory
 

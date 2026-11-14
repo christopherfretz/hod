@@ -312,14 +312,15 @@ impl Error {
         };
         // WP-195: the node's name and the function it is in.
         if debug.contains(id) {
+            use std::fmt::Write as _;
             let (name, _) = name_and_scope(debug, id);
             if let Some(name) = name {
-                out.push_str(&format!(" '{}'", String::from_utf8_lossy(name)));
+                let _ = write!(out, " '{}'", String::from_utf8_lossy(name));
             }
             if let Some(f) = enclosing_function(debug, id) {
                 let (name, linkage) = function_names(debug, f);
                 if let Some(name) = linkage.or(name) {
-                    out.push_str(&format!(" in function '{}'", String::from_utf8_lossy(name)));
+                    let _ = write!(out, " in function '{}'", String::from_utf8_lossy(name));
                 }
             }
         }
@@ -333,10 +334,10 @@ impl Error {
 }
 
 /// A node's `name:` and `scope:` fields.
-fn name_and_scope<'a>(
-    debug: &'a hod_ir::DebugInfo,
+fn name_and_scope(
+    debug: &hod_ir::DebugInfo,
     id: hod_ir::DiId,
-) -> (Option<&'a [u8]>, Option<hod_ir::DiId>) {
+) -> (Option<&[u8]>, Option<hod_ir::DiId>) {
     let (mut name, mut scope) = (None, None);
     debug.node(id).each_field(&mut |field, value| match (field, value) {
         ("name", hod_ir::DiFieldOut::Str(s)) => name = Some(s),
@@ -380,6 +381,12 @@ fn enclosing_function(debug: &hod_ir::DebugInfo, mut id: hod_ir::DiId) -> Option
     None
 }
 
+impl From<hod_obj::Error> for Error {
+    fn from(e: hod_obj::Error) -> Self {
+        Self::Object(e)
+    }
+}
+
 #[cfg(test)]
 mod detail_tests {
     use super::*;
@@ -417,11 +424,5 @@ define void @_Z1fv() !dbg !3 {
         let e = Error::Unsupported { node: var.raw(), what: "a variable of this shape" };
         let detail = e.detail(debug).expect("a detail");
         assert!(detail.ends_with("'_Z1fv': a variable of this shape"), "{detail}");
-    }
-}
-
-impl From<hod_obj::Error> for Error {
-    fn from(e: hod_obj::Error) -> Self {
-        Self::Object(e)
     }
 }

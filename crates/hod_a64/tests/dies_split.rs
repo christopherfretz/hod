@@ -509,7 +509,10 @@ fn refusal(text: &str, split: SplitDwarf) -> Result<(), &'static str> {
     let (module, bodies) = parse(text);
     match compile_module(&module, &bodies, &options(split)) {
         Ok(_) => Ok(()),
-        Err(ModuleError::Emit(CgError::Unsupported { construct })) => Err(construct),
+        // A `debug:` refusal carries its node's detail (WP-195).
+        Err(ModuleError::Emit(
+            CgError::Unsupported { construct } | CgError::UnsupportedDetail { construct, .. },
+        )) => Err(construct),
         Err(e) => panic!("{e}"),
     }
 }

@@ -1030,7 +1030,8 @@ hod describes (`spec/codegen.md` §9.5): gdb prints `<optimized out>`,
 lldb `<no location, value may have been optimized out>`, under both. A
 retained label without a record is not written (no producer emits one
 at `-O0`); a function with an abstract instance and retained nodes is
-refused (`debug:retained-nodes`, §6.9).
+refused (`debug:retained-nodes`, §6.9), except a function only inlined
+whose retained nodes are its own imports (§6.25).
 
 **Lexical blocks** (`scope_ranges`). `llc`'s `LexicalScopes` over the
 function's transitions: for each transition with a location, the scopes
@@ -1094,7 +1095,8 @@ reports a `debug:*` name as itself and §6.5's unnamed shapes as
 | `debug:dbg-value-fragment`, `debug:dbg-value-expr` | a value record's expression with a fragment, or one §6.23 does not write (WP-162) |
 | `debug:dbg-value-arglist`, `debug:dbg-value-coroutine` | a value record with a `DIArgList`; one in a coroutine body (`hod_cg`, §6.23) |
 | `debug:expression` | any other op that is not a plain DWARF op |
-| `debug:variable-without-type`, `debug:variable-twice` | as named |
+| `debug:variable-without-type` | as named |
+| `debug:variable-twice` | a variable recorded twice in one instance of its scope, except slot after slot, which is located by the first (WP-195, §6.25) |
 | `debug:variable-alignment` | an `alignas` parameter, or an unnamed one; an `alignas` variable of an abstract instance (§6.9). A named local's `alignment` is written since WP-087 (family 88, in bytes, after `name`) |
 | `debug:label-attribute` | no longer refused: every label is written since WP-098 (§6.14) |
 | `debug:object-pointer` | two `this` parameters |
@@ -1525,7 +1527,7 @@ declaration's),
 | `debug:inlined-member` | an abstract instance of a member function whose declaration is WP-059's (not among its class's elements, or an out-of-line definition outside a class: `debug:specification` and kin, renamed) |
 | `debug:inlined-discriminator` | a call located in a `DILexicalBlockFile` with a discriminator (`llc` writes `DW_AT_GNU_discriminator`) |
 | `debug:inlined-foreign-unit` | code inlined from a subprogram of another unit |
-| `debug:retained-nodes` | an inlined subprogram with `retainedNodes` (`llc` makes abstract entities no record names) |
+| `debug:retained-nodes` | an inlined subprogram with `retainedNodes` (`llc` makes abstract entities no record names), except imports scoped in a subprogram that is only inlined (WP-195, §6.25) |
 | `debug:inlined-local-type` | a type local to a function with an abstract instance, or a variable a type names (a VLA bound) in one |
 | `debug:local-static` | a static scoped in a block, or in a subprogram that is not a definition of this unit, or whose early DIE no function filled by `seal()`, or read without the module (`UnitPlan::new`) |
 
@@ -2892,6 +2894,76 @@ its own range entry follows them. This was `debug:tls-location`.
 produces it, is in `spec/landed/dwarf/WP-189.md`: 35 probes of the
 constructs of WP-189's row, each through kiln++ and clang 19 and 22 for
 both targets, all compile under `--strict` and verify.
+
+### 6.25 More refusals real projects meet at `-O0 -g` (implemented, WP-195)
+
+Three refusals of kiln-built `-O0 -g` translation units of protobuf, and
+one of clang-built fmt. No abbreviation family is added.
+
+**A variable two slots declare** (`debug:variable-twice`). A macro whose
+expansion declares a condition variable (`while (const char *r =
+check(a, b)) { ...; break; }`, abseil's `ABSL_LOG_INTERNAL_CHECK_OP`)
+expanded twice on one line: kiln gives both expansions one
+`DILocalVariable` (it is not `distinct`, and the two have the same
+fields and no block of their own), declared by two `#dbg_declare`s of
+two `alloca`s. `llc`'s `collectVariableInfoFromMFTable` makes one
+entity of `(variable, inlinedAt)`, and `addFrameIndexExpr` keys its
+frame indices by fragment: neither record has one, so the first record
+in IR order keeps its slot and the second is dropped. hod does the same
+(`FnInline::first_of`): of the rows of one `(variable, inlinedAt)` in a
+function, a second slot row (`LocalPlace::Frame`) after a first slot
+row is skipped. Any other repetition (a slot and an indirect slot, a
+slot and a `#dbg_value`, a label twice) stays refused: `llc` merges
+those with rules hod does not model.
+
+**A function's static, its subprogram made while making it**
+(`debug:local-static`). A static scoped in a function placed in this
+unit (§6.9) gets the function's DIE early (`static_parent` →
+`subprogram_parent`). When the function is a member, its parent is its
+class, and making the class's member declarations can reach a type
+local to that same function (an `auto` member returning a local class
+or a lambda's closure type, protobuf's `io::Printer`):
+`local_type_parent` makes the function's early DIE first. The outer
+call then made a second one, which no function filled, and the unit was
+refused. `llc`'s `getOrCreateSubprogramDIE` looks the subprogram up
+again after making its context; so do `static_parent`, `add_function`
+and the call-site callee (`call_sites.rs`), each taking the DIE made
+meanwhile.
+
+**An inlined function's imports** (`debug:retained-nodes`). clang
+records a function-local `using` (`using n::map;` in an
+`always_inline` function, fmt's `format.cc`) as a `DIImportedEntity` in
+the subprogram's `retainedNodes`. When the function is only inlined,
+`llc`'s `endFunctionImpl` collects the retained nodes of each abstract
+scope into `LocalDeclsPerLS`, and the imports are written at the end of
+the unit (`DeferredLocalDecls`) as children of the abstract
+subprogram, after its other children. hod records each abstract
+instance with retained nodes when it makes it (`Inline::imports`) and
+writes its imports in `seal_imports`, before those of the function
+being added, in the order the abstract instances were made. Still
+refused: a retained variable or label of an inlined subprogram (`llc`
+makes abstract entities no record names), an import scoped in a block
+of it, and the retained nodes of a function that is also placed out of
+line (one DIE serves both, and `llc` writes the imports under the
+concrete one).
+
+**The detail of every `debug:` refusal.** `hod_dwarf::Error::detail`
+gives the node's kind, tag and number as before (§6.24), then its
+`name:` and the function it is in (the linkage name, else the name:
+the scope chain from the node through variables, labels, blocks,
+imports and types to the first `DISubprogram`), e.g. `DILocalVariable
+(node 10428) 'absl_log_internal_check_op_result' in function
+'_ZNK6google8protobuf10Descriptor5fieldEi'`; a named refusal's
+words are its name and are not repeated. The bridge (`hod_cg`
+`emit/lines.rs` `dwarf_err`) carries it by
+`CgError::UnsupportedDetail` for every named refusal, not only
+`debug:die-unsupported`.
+
+**Trees.** A pointer slot `llc` names from the stack pointer and
+dereferences (`DW_OP_breg31 +N, DW_OP_deref` on AArch64,
+`DW_OP_breg7 +N, DW_OP_deref` on x86-64), where hod names the frame
+base, is the permitted class `realigned frame` (§6.7) as the plain
+slot already was.
 
 ## 7. Speed and memory
 

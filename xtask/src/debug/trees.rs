@@ -318,8 +318,10 @@ fn location_class(
         // function's guarded block, which hod reaches through its pointer
         // slot and `llc` names directly.
         (SRET_HOD, IN_SLOT) if protected => Some("stack protector"),
-        (SRET_HOD | IN_SLOT, RSP_RELATIVE | SP_RELATIVE) => Some("realigned frame"),
-        (SRET_HOD, RSP_RELATIVE_DEREF | SP_RELATIVE_DEREF) => Some("realigned frame"),
+        // WP-195: also a pointer slot `llc` names from the stack pointer
+        // and dereferences.
+        (SRET_HOD | IN_SLOT, RSP_RELATIVE | SP_RELATIVE)
+        | (SRET_HOD, RSP_RELATIVE_DEREF | SP_RELATIVE_DEREF) => Some("realigned frame"),
         _ => None,
     }
 }

@@ -1072,7 +1072,11 @@ fn sys_driver(count: usize, inputs: &[[u64; 3]]) -> String {
            for (unsigned k = 0; k < 6; k++) {\n\
              uint64_t v[4]; int ok = 1;\n\
              for (int i = 0; i < 4; i++) {\n\
-               unsigned char o[16]; memset(o, 0xcc, 16); rs[k](o);\n\
+               unsigned char o[16]; int tries = 0;\n\
+               /* The hardware may have no value ready (carry clear, most often\n\
+                  `rdseed` on a busy host): draw again, as its users do. */\n\
+               do { memset(o, 0xcc, 16); rs[k](o); }\n\
+               while (u32(o + 8) != 1 && ++tries < 100000);\n\
                ok &= u32(o + 8) == 1; v[i] = 0;\n\
                memcpy(&v[i], o, k % 3 == 0 ? 2 : k % 3 == 1 ? 4 : 8);\n\
              }\n\

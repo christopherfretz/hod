@@ -3114,6 +3114,29 @@ targets; tree equal to `llc` 22's). The libc++ module itself is then
 refused for `debug:dbg-value-expr` (a value record's expression,
 outside this package).
 
+### 6.30 Two differences real runs found (implemented, WP-221)
+
+**The recorded command line** (`crates/hod_dwarf/src/producer.rs`).
+With `-grecord-command-line` (clang) or `-grecord-gcc-switches` (kiln,
+clang's alias) the front end records its command line as the compile
+unit's `flags:` (both readers keep it: `hod_ll` and `hod_bc`, the
+field `flags` of `DICompileUnit`). `llc` 19 and 22
+(`DwarfDebug::constructDwarfCompileUnit`, off Apple targets, which hod
+does not write for) write `DW_AT_producer` as the producer, one space
+and the flags, wherever the unit's producer is written: the ordinary
+unit (versions 5 and 4), the split unit of `.debug_info.dwo`, and the
+skeleton that stands alone (a unit with no split unit, §6.15); a
+skeleton with a split unit has no producer. With empty flags the
+producer is unchanged (an empty producer stays `""`); an empty producer
+with flags gives `" <flags>"`. `DW_AT_APPLE_flags` is not written (it is
+`llc`'s attribute for Apple targets only). The string is made once per
+unit plan (`UnitPlan::producer`, borrowed when there are no flags);
+modules without flags write the bytes they wrote before. Test:
+`crates/hod/tests/dwarf_producer.rs` (four unit shapes, four
+producer/flags combinations, both targets, against `llc` 19 and 22; the
+bitcode of `llvm-as` 19 and 22; clang 19 and 22 with
+`-grecord-command-line`, C and C++, split and not).
+
 ## 7. Speed and memory
 
 ### 7.1 Parallel emission and determinism

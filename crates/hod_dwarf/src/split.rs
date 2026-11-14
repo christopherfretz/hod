@@ -235,7 +235,7 @@ impl<'a> Writer<'a> {
     /// unit DIE.
     fn split_unit(
         &mut self,
-        u: &UnitInput<'_, 'a>,
+        u: &UnitInput<'a, 'a>,
         symbols: u32,
         dwo_name: &'a [u8],
     ) -> Result<Layout, Error> {
@@ -296,7 +296,7 @@ impl<'a> Writer<'a> {
             self.offsets[0] = HEADER as u32;
             let cu = &plan.cu;
             self.abbrev(code(fam::SPLIT_COMPILE_UNIT, 0, true));
-            self.strx(cu.producer)?;
+            self.strx(&plan.producer)?; // WP-221: §6.30
             self.info.extend_from_slice(&cu.language.to_le_bytes());
             self.strx(plan.name)?;
             self.strx(dwo_name)?;
@@ -637,7 +637,7 @@ fn skeleton<'a>(
     sec_offset(&mut info, Target::StrOffsets, 8);
     write_uleb(&mut info, u64::from(strings.index(plan.comp_dir)?));
     if alone {
-        write_uleb(&mut info, u64::from(strings.index(plan.cu.producer)?));
+        write_uleb(&mut info, u64::from(strings.index(&plan.producer)?)); // WP-221
         info.extend_from_slice(&plan.cu.language.to_le_bytes());
         write_uleb(&mut info, u64::from(strings.index(plan.name)?));
     } else {

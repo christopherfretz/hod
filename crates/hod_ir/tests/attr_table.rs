@@ -300,6 +300,8 @@ fn string_attributes_outside_the_td_and_unknown_names() {
         attr_class(AttrSyntax::String, b"sample-profile-suffix-elision-policy"),
         AttrClass::Dropped
     );
+    // WP-227: on the allocation functions of optimized modules.
+    assert_eq!(attr_class(AttrSyntax::String, b"alloc-family"), AttrClass::Dropped);
     // The two name spaces are separate, and a name with no row is rejected.
     for (syntax, name) in [
         (AttrSyntax::String, "nounwind"),

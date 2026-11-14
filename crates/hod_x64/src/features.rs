@@ -5,17 +5,26 @@
 //! hod emits the base x86-64 instruction set (SSE2, which every x86-64
 //! CPU runs) and never chooses an instruction by a feature. So a feature
 //! that only makes instructions *available* changes nothing hod emits,
-//! enabled or disabled, and is accepted: a module built for
-//! `-march=x86-64-v3` or `-march=native` is not declined as a whole
-//! (design 0006 §10.1). `target-cpu` is not a feature and is accepted
-//! with any value. A feature that changes what the code must keep (no
-//! SSE registers, a soft-float ABI, a mitigation hod does not apply) is
-//! refused by name. Everything else is unknown and refused: a feature
-//! hod has not judged is not assumed harmless.
+//! enabled or disabled, and is accepted: a module built for any
+//! `-march=` CPU clang 19 and 22 and kiln know (`x86-64-v2` to `-v4`,
+//! `nehalem` to the newest Intel and AMD cores) is not declined as a
+//! whole (design 0006 §10.1, WP-201). `target-cpu` and `tune-cpu` are not
+//! features and are accepted with any value, and so are the tuning
+//! features (`fast-*`, `slow-*`, `prefer-*`, ...). A feature that changes
+//! what the code must keep (no SSE registers, a soft-float or ILP32 ABI,
+//! another mode, a mitigation hod does not apply) is refused by name.
+//! Everything else is unknown and refused: a feature hod has not judged
+//! is not assumed harmless.
 //!
-//! Each judged feature is one line of [`JUDGED`] with its reason; a group
-//! package that implements what a refused feature asks for moves it.
-//! The parsing is target-neutral and moves to `hod_cg` (WP-117).
+//! Each feature of LLVM 19's and 22's x86 list is judged here: [`JUDGED`]
+//! (the baseline and the contract features), [`AVAILABLE`] (instructions
+//! only) and [`tuning`]. The evidence (WP-201) is `llc`'s own calling
+//! convention: for every feature, enabled alone and disabled on the
+//! richest CPUs, and for every CPU string of the census, `llc` 19 and 22
+//! place the arguments and results of a set of signatures and keep the
+//! registers across calls exactly as without features, except where
+//! [`of_function`]'s AVX and AVX-512 say otherwise, which the signature's
+//! assignment refuses (`tests/features_census.rs`).
 //!
 //! Two things a function's features decide besides instructions are
 //! [`of_function`]'s (`spec/codegen.md` §5.6.9): where a vector wider than
@@ -41,12 +50,36 @@ pub const RETPOLINE: &str = "attr:target-feature-retpoline";
 pub const HARDEN_SLS: &str = "attr:target-feature-harden-sls";
 /// `+lvi-*`: load-value-injection hardening hod does not do.
 pub const LVI: &str = "attr:target-feature-lvi";
+/// `+seses`: a speculation barrier before every load, store and
+/// conditional branch (and LVI's control-flow hardening), which hod does
+/// not emit.
+pub const SESES: &str = "attr:target-feature-seses";
+/// `+x32`: the ILP32 programming model (32-bit pointers), another ABI.
+pub const X32: &str = "attr:target-feature-x32";
+/// `+16bit-mode`, `+32bit-mode`, `-64bit-mode`, `-64bit`: code for
+/// another processor mode.
+pub const MODE: &str = "attr:target-feature-mode";
+/// `+tagged-globals`: a global's address is taken with a sequence that
+/// keeps a memory tag in its upper bits.
+pub const TAGGED_GLOBALS: &str = "attr:target-feature-tagged-globals";
 /// A feature hod has not judged, or an item that is not `+name` or
 /// `-name`.
 pub const UNKNOWN: &str = "attr:target-feature-unknown";
 
 /// Every reason [`check`] gives.
-pub const REASONS: [&str; 7] = [SOFT_FLOAT, NO_SSE, NO_X87, RETPOLINE, HARDEN_SLS, LVI, UNKNOWN];
+pub const REASONS: [&str; 11] = [
+    SOFT_FLOAT,
+    NO_SSE,
+    NO_X87,
+    RETPOLINE,
+    HARDEN_SLS,
+    LVI,
+    SESES,
+    X32,
+    MODE,
+    TAGGED_GLOBALS,
+    UNKNOWN,
+];
 
 /// A refused feature: the reason, and the item as written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,49 +99,93 @@ struct Judged {
     off: Option<&'static str>,
 }
 
-/// Accepted either way: it only makes instructions available.
-const fn available(name: &'static str) -> Judged {
-    Judged { name, on: None, off: None }
-}
-
-/// The judged features (design 0006 §2.7, §10.1), one line each.
+/// The features whose one sign changes what the code must keep (design
+/// 0006 §2.7, §10.1), one line each.
 const JUDGED: &[Judged] = &[
     // The x86-64 baseline: what clang and kiln write for every function.
     // Turning one off takes away what SysV passes floats in, or `x86_fp80`.
     Judged { name: "sse", on: None, off: Some(NO_SSE) },
     Judged { name: "sse2", on: None, off: Some(NO_SSE) },
     Judged { name: "x87", on: None, off: Some(NO_X87) },
-    available("mmx"),
-    available("fxsr"),
-    available("cmov"),
-    available("cx8"),
-    // Available only: hod's code uses none of these (design 0006 §10.1).
-    available("sse3"),
-    available("ssse3"),
-    available("sse4.1"),
-    available("sse4.2"),
-    available("popcnt"),
-    available("lzcnt"),
-    available("bmi"),
-    available("bmi2"),
-    available("fma"),
-    available("f16c"),
-    available("movbe"),
-    // `avx`, `avx2`: the instructions only. Whether a wide vector then
-    // travels in `ymm` is the argument assignment's (WP-118,
-    // `x64:wide-vector-abi`).
-    available("avx"),
-    available("avx2"),
-    // `cmpxchg16b`: X-atomic (WP-133) uses it inline with `+cx16` and
-    // libatomic without; either is correct.
-    available("cx16"),
-    // The other features of `-march=x86-64-v2` and `-v3`.
-    available("crc32"),
-    available("sahf"),
-    available("xsave"),
+    // The mode: the triple's, 64-bit.
+    Judged { name: "64bit", on: None, off: Some(MODE) },
+    Judged { name: "64bit-mode", on: None, off: Some(MODE) },
+    Judged { name: "32bit-mode", on: Some(MODE), off: None },
+    Judged { name: "16bit-mode", on: Some(MODE), off: None },
     // Contract features: off is what hod's code already keeps.
     Judged { name: "soft-float", on: Some(SOFT_FLOAT), off: None },
+    Judged { name: "x32", on: Some(X32), off: None },
+    Judged { name: "seses", on: Some(SESES), off: None },
+    Judged { name: "tagged-globals", on: Some(TAGGED_GLOBALS), off: None },
 ];
+
+/// Features that only make instructions (or registers no value of hod's
+/// travels in) available, accepted either way: LLVM 19's and 22's x86
+/// features but the baseline, the contract and the tuning ones. Notes:
+///
+/// - `avx`, `avx2`, the AVX-512 and AVX10 families, and what implies them
+///   (`fma`, `f16c`, `vaes`, `sha512`, ...): the instructions only. Where
+///   a wide vector or a vector of `i1` then travels is the signature's
+///   (`x64:wide-vector-abi`, [`of_function`]), and `vzeroupper` is not
+///   hod's to write (it never dirties the upper halves).
+/// - `cx16`: X-atomic (WP-133) uses `cmpxchg16b` inline with `+cx16` and
+///   libatomic's `__atomic_*_16` without; on a CPU with `cmpxchg16b`
+///   libatomic uses the same instruction, so either is lock-free and the
+///   two halves of a program agree.
+/// - APX (`egpr`, `ndd`, `ppx`, `push2pop2`, `ccmp`, `cf`, `nf`, `zu`):
+///   `r16`..`r31` are caller-saved and carry no argument; `llc` places
+///   every signature and keeps the same registers across calls with them.
+/// - `mmx`: no signature changes (LLVM passes `<1 x i64>` and `<2 x i32>`
+///   as SSE values either way).
+pub const AVAILABLE: &[&str] = &[
+    "mmx", "fxsr", "cmov", "cx8", "cx16", "nopl", "sahf", "popcnt", "lzcnt", "bmi", "bmi2", "movbe",
+    "crc32", "sse3", "ssse3", "sse4.1", "sse4.2", "sse4a", "avx", "avx2", "fma", "fma4", "f16c",
+    "xop", "tbm", "lwp", "adx", "aes", "pclmul", "vaes", "vpclmulqdq", "gfni", "sha", "sha512",
+    "sm3", "sm4", "xsave", "xsaveopt", "xsavec", "xsaves", "fsgsbase", "rdrnd", "rdseed", "rdpid",
+    "rdpru", "invpcid", "prfchw", "prefetchi", "clflushopt", "clwb", "clzero", "cldemote",
+    "movdiri", "movdir64b", "movrs", "mwaitx", "waitpkg", "pconfig", "pku", "ptwrite", "rtm",
+    "tsxldtrk", "serialize", "sgx", "shstk", "uintr", "usermsr", "enqcmd", "hreset", "kl",
+    "widekl", "wbnoinvd", "cmpccxadd", "raoint", "branch-hint", "evex512", "avx512f",
+    "avx512cd", "avx512dq", "avx512bw", "avx512vl", "avx512ifma", "avx512vbmi", "avx512vbmi2",
+    "avx512vnni", "avx512bitalg", "avx512vpopcntdq", "avx512bf16", "avx512fp16",
+    "avx512vp2intersect", "avx10.1", "avx10.1-256", "avx10.1-512", "avx10.2", "avx10.2-512",
+    "avxifma", "avxneconvert", "avxvnni", "avxvnniint8", "avxvnniint16", "amx-tile", "amx-int8",
+    "amx-bf16", "amx-fp16", "amx-complex", "amx-fp8", "amx-tf32", "amx-movrs", "amx-avx512",
+    "egpr", "ndd", "ppx", "push2pop2", "ccmp", "cf", "nf", "zu",
+];
+
+/// Tuning features LLVM 19 and 22 know by name: how `llc` chooses among
+/// correct sequences, nothing a caller or callee can tell. Besides these,
+/// every name of the families [`tuning`] lists.
+const TUNING: &[&str] = &[
+    "allow-light-256-bit",
+    "branchfusion",
+    "ermsb",
+    "faster-shift-than-shuffle",
+    "fsrm",
+    "idivl-to-divb",
+    "idivq-to-divl",
+    "inline-asm-use-gpr32",
+    "lea-sp",
+    "lea-uses-ag",
+    "macrofusion",
+    "pad-short-functions",
+    "sbb-dep-breaking",
+    "sse-unaligned-mem",
+    "use-glm-div-sqrt-costs",
+    "use-slm-arith-costs",
+    "vzeroupper",
+];
+
+/// Whether `name` is a tuning feature: one of [`TUNING`], or of a family
+/// LLVM names only tuning features with (`fast-*`, `slow-*`, `prefer-*`,
+/// `false-deps-*`, `tuning-*`, `no-bypass-delay*`).
+pub fn tuning(name: &str) -> bool {
+    TUNING.contains(&name)
+        || ["fast-", "slow-", "prefer-", "false-deps-", "tuning-", "no-bypass-delay"]
+            .iter()
+            .any(|family| name.starts_with(family))
+}
 
 /// Checks one feature string: items separated by `,`, each `+name` or
 /// `-name`; empty items are skipped (`-mattr` drops them, and LLVM's
@@ -166,6 +243,11 @@ const CPUS_WITHOUT_AVX: &[&str] = &[
     "tremont",
     "k8",
     "k8-sse3",
+    "opteron",
+    "opteron-sse3",
+    "athlon64",
+    "athlon64-sse3",
+    "athlon-fx",
     "amdfam10",
     "barcelona",
     "btver1",
@@ -188,6 +270,8 @@ const CPUS_WITHOUT_AVX512: &[&str] = &[
     "meteorlake",
     "gracemont",
     "arrowlake",
+    "arrowlake-s",
+    "wildcatlake",
     "lunarlake",
     "pantherlake",
     "sierraforest",
@@ -224,13 +308,21 @@ pub fn of_function(cpu: Option<&str>, features: Option<&str>) -> FnFeatures {
             Some(("-", name)) => (false, name),
             _ => continue,
         };
-        let is_avx512 = name.starts_with("avx512") || name.starts_with("avx10");
+        // `amx-avx512` does not imply AVX-512 in `llc` 22, but its name
+        // says it may: an over-approximation only refuses.
+        let is_avx512 =
+            name.starts_with("avx512") || name.starts_with("avx10") || name == "amx-avx512";
         match (on, name) {
             (_, "x87") => no_x87 = !on,
             // What implies AVX-512, and AVX-512 itself.
             (true, _) if is_avx512 => (avx, avx512) = (true, true),
-            // What implies AVX.
-            (true, "avx" | "avx2" | "fma" | "f16c" | "fma4" | "xop" | "vaes" | "vpclmulqdq") => {
+            // What implies AVX (`llc` 19 and 22 place a `<8 x float>` in
+            // `ymm0` under each, WP-201).
+            (
+                true,
+                "avx" | "avx2" | "fma" | "f16c" | "fma4" | "xop" | "vaes" | "vpclmulqdq" | "sha512"
+                | "sm3" | "sm4",
+            ) => {
                 avx = true;
             }
             (true, _) if name.starts_with("avx") => avx = true,
@@ -262,6 +354,9 @@ pub fn check_one(item: &str) -> Result<(), Refused<'_>> {
             Some(reason) => refuse(reason),
             None => Ok(()),
         };
+    }
+    if AVAILABLE.contains(&name) || tuning(name) {
+        return Ok(());
     }
     match mitigation(name) {
         // Off is what hod's code already keeps.
@@ -330,6 +425,14 @@ mod tests {
              +popcnt,+sahf,+sse,+sse2,+sse3,+sse4.1,+sse4.2,+ssse3,+x87,+xsave",
             "-avx,-avx2,-popcnt,-soft-float,-retpoline-indirect-calls,-harden-sls-ret",
             ",,+sse2,",
+            // `-march=haswell` (clang 19 and 22, kiln), WP-201.
+            "+avx,+avx2,+bmi,+bmi2,+cmov,+crc32,+cx16,+cx8,+f16c,+fma,+fsgsbase,+fxsr,+invpcid,\
+             +lzcnt,+mmx,+movbe,+pclmul,+popcnt,+rdrnd,+sahf,+sse,+sse2,+sse3,+sse4.1,+sse4.2,\
+             +ssse3,+x87,+xsave,+xsaveopt",
+            // AVX-512, APX, AMX: the instructions; tuning names.
+            "+avx512f,+avx512bw,+evex512,+avx10.2,+egpr,+ndd,+ppx,+push2pop2,+amx-tile,+amx-avx512",
+            "+prefer-256-bit,+fast-gather,+slow-3ops-lea,+false-deps-popcnt,+tuning-fast-imm-vector-shift,\
+             -vzeroupper,+no-bypass-delay-mov,+64bit,+64bit-mode,-32bit-mode,-x32,-seses",
         ] {
             assert_eq!(check(features), Ok(()), "{features}");
         }
@@ -347,6 +450,14 @@ mod tests {
             ("+retpoline-external-thunk", RETPOLINE),
             ("+harden-sls-ret", HARDEN_SLS),
             ("+lvi-cfi", LVI),
+            ("+lvi-load-hardening", LVI),
+            ("+seses", SESES),
+            ("+x32", X32),
+            ("+32bit-mode", MODE),
+            ("+16bit-mode", MODE),
+            ("-64bit-mode", MODE),
+            ("-64bit", MODE),
+            ("+tagged-globals", TAGGED_GLOBALS),
         ] {
             assert_eq!(reason(features), Some(expected), "{features}");
         }
@@ -356,9 +467,13 @@ mod tests {
     #[test]
     fn unknown_features_are_refused() {
         assert_eq!(
-            check("+sse2,+avx512f,+soft-float"),
-            Err(Refused { reason: UNKNOWN, feature: "+avx512f" })
+            check("+sse2,+avx512f,+frobnicate,+soft-float"),
+            Err(Refused { reason: UNKNOWN, feature: "+frobnicate" })
         );
+        // A name of a tuning family is a tuning feature; another prefix is
+        // not.
+        assert_eq!(reason("+fastest"), Some(UNKNOWN));
+        assert_eq!(reason("+3dnow"), Some(UNKNOWN));
         assert_eq!(check("sse2"), Err(Refused { reason: UNKNOWN, feature: "sse2" }));
         assert_eq!(reason("-no-such-feature"), Some(UNKNOWN));
         assert_eq!(reason("+"), Some(UNKNOWN));
@@ -397,6 +512,14 @@ mod tests {
         assert_eq!(abi(base, "+avx,-sse4.2"), (false, false));
         assert_eq!(abi(base, "+avx512f"), (true, true));
         assert_eq!(abi(base, "+avx512f,-avx2"), (true, false));
+        // WP-201: what implies AVX without the name.
+        assert_eq!(abi(base, "+sha512"), (true, false));
+        assert_eq!(abi(base, "+sm3"), (true, false));
+        assert_eq!(abi(base, "+sm4"), (true, false));
+        assert_eq!(abi(base, "+egpr,+amx-tile,+gfni,+cx16"), (false, false));
+        assert_eq!(abi(base, "+amx-avx512"), (true, true));
+        assert_eq!(abi(Some("arrowlake-s"), ""), (true, false));
+        assert_eq!(abi(Some("opteron"), ""), (false, false));
         assert_eq!(abi(Some("haswell"), ""), (true, false));
         assert_eq!(abi(Some("haswell"), "-avx"), (false, false));
         assert_eq!(abi(Some("skylake-avx512"), ""), (true, true));
@@ -413,6 +536,11 @@ mod tests {
         }
         for (i, judged) in JUDGED.iter().enumerate() {
             assert!(!JUDGED[..i].iter().any(|j| j.name == judged.name), "{}", judged.name);
+            assert!(!AVAILABLE.contains(&judged.name) && !tuning(judged.name), "{}", judged.name);
+        }
+        for (i, name) in AVAILABLE.iter().enumerate() {
+            assert!(!AVAILABLE[..i].contains(name), "{name}");
+            assert!(!tuning(name) && mitigation(name).is_none(), "{name}");
         }
     }
 }

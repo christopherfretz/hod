@@ -157,6 +157,7 @@ impl ModuleEmitter<'_> {
         }
         .map_err(|r| refused(r.0))?;
         let sections = self.asm_sections(&code)?;
+        self.asm_idents(&code.idents)?;
         let (ids, mut deferred) = self.asm_symbols(&code, &sections)?;
         for v in &code.symvers {
             match ids[v.sym as usize] {
@@ -184,6 +185,29 @@ impl ModuleEmitter<'_> {
             }
         }
         self.asm_deferred = Some(Box::new(deferred));
+        Ok(())
+    }
+
+    /// The `.ident` strings in `.comment`, as LLVM's assembler writes them
+    /// (`MCELFStreamer::emitIdent`): `SHT_PROGBITS`, `SHF_MERGE |
+    /// SHF_STRINGS`, entries of 1 byte, a NUL byte, then each string with
+    /// its NUL.
+    fn asm_idents(&mut self, idents: &[Vec<u8>]) -> CgResult<()> {
+        if idents.is_empty() {
+            return Ok(());
+        }
+        let kind = hod_obj::SectionKind::Elf {
+            sh_type: hod_obj::elf::SHT_PROGBITS,
+            sh_flags: hod_obj::elf::SHF_MERGE | hod_obj::elf::SHF_STRINGS,
+            sh_entsize: 1,
+        };
+        let id = self.obj.add_section(b".comment", kind, 1).map_err(obj_err)?;
+        let mut bytes = vec![0u8];
+        for s in idents {
+            bytes.extend_from_slice(s);
+            bytes.push(0);
+        }
+        self.obj.append_owned(id, bytes);
         Ok(())
     }
 

@@ -27,6 +27,8 @@ const MODULE: &str = r#"target triple = "TRIPLE"
 
 %struct.tag = type { i8 }
 
+@sym = dso_local global [8 x i8] zeroinitializer
+
 define dso_local i64 @count(ptr noundef %0, ptr noundef %1) !dbg !13 {
   %3 = alloca ptr, align 8
   %4 = alloca ptr, align 8
@@ -96,7 +98,11 @@ define dso_local i32 @kept(i32 noundef %0) !dbg !60 {
 "#;
 
 const TRIPLES: [&str; 2] = ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"];
-const ADDRESSES: [&str; 2] = ["poison", "undef"];
+/// WP-230 (§6.32): any other constant, and a symbol's address, are
+/// dropped the same way by `llc` 19 and 22 (`debug:declare-address`
+/// before).
+const ADDRESSES: [&str; 5] =
+    ["poison", "undef", "null", "@sym", "getelementptr (i8, ptr @sym, i64 4)"];
 
 fn module(triple: &str, address: &str) -> String {
     MODULE.replace("TRIPLE", triple).replace("ADDRESS", address)
@@ -207,8 +213,8 @@ fn trees_equal_llc() {
     };
     let scratch = Scratch::new("declare_undef");
     for triple in TRIPLES {
-        for address in ADDRESSES {
-            let name = format!("{}-{address}", &triple[..triple.find('-').unwrap()]);
+        for (k, address) in ADDRESSES.into_iter().enumerate() {
+            let name = format!("{}-{k}", &triple[..triple.find('-').unwrap()]);
             let text = module(triple, address);
             let ours = scratch.write(&format!("{name}.hod.o"), compile(&text).unwrap());
             let input = scratch.write(&format!("{name}.ll"), &text);

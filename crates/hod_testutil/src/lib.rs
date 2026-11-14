@@ -13,7 +13,12 @@
 //!
 //! [`target`] names a target's tools, system root and emulator, for the
 //! tests that link and run programs of another architecture.
+//!
+//! [`avx512`] decides whether a program needing AVX-512 runs: by
+//! `HOD_X64_AVX512_RUNNER`, or natively on an x86-64 processor whose
+//! flags have the features, and reports each decision.
 
+pub mod avx512;
 pub mod jobs;
 pub mod target;
 

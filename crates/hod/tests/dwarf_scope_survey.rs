@@ -176,6 +176,8 @@ fn add_functions(module: &Module, bodies: &[Body], plan: &mut UnitPlan<'_>, s: &
                             hod_cg::ValueAt::Address(offset) => {
                                 hod_dwarf::ValueLoc::Address { offset }
                             }
+                            // WP-230: a `DIArgList`'s row.
+                            hod_cg::ValueAt::Args(count) => hod_dwarf::ValueLoc::Args { count },
                             hod_cg::ValueAt::Home(..) | hod_cg::ValueAt::HomeAddress(_) => {
                                 return LocalRow {
                                     place: LocalPlace::Refused("debug:frame-place"),
@@ -187,6 +189,17 @@ fn add_functions(module: &Module, bodies: &[Body], plan: &mut UnitPlan<'_>, s: &
                         };
                         LocalPlace::Value { start: r.start, end: r.end, at }
                     }
+                    // WP-230: a `DIArgList`'s value (the bridge's
+                    // `hod_cg::dbg_value::local_arg_place`).
+                    VarPlace::ValueArg(at) => LocalPlace::ValueArg(match at {
+                        hod_cg::ValueAt::Frame(offset, size) => {
+                            hod_dwarf::ValueLoc::Frame { offset, size }
+                        }
+                        hod_cg::ValueAt::Const { bits, width } => {
+                            hod_dwarf::ValueLoc::Const { bits, width }
+                        }
+                        _ => hod_dwarf::ValueLoc::None,
+                    }),
                     VarPlace::Slot(_) | VarPlace::Indirect(_) => {
                         LocalPlace::Refused("debug:frame-place")
                     }

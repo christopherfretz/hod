@@ -16,13 +16,13 @@
 
 use hod_ir::{
     Body, DebugInfo, DiId, DiKind, DiNode, DiSubprogram, EmissionKind, ExprId, Module, SpFlags,
-    SymbolKind, Value,
+    SymbolKind, Value, ValueKind,
 };
 
 use crate::Error;
 use crate::abbrev::tag;
 use crate::die::{UnitPlan, unsupported};
-use crate::func::{DEF_FLAGS, DEF_SP_FLAGS, check_expr};
+use crate::func::{DEF_FLAGS, DEF_SP_FLAGS, check_declare_expr};
 use crate::inline::DEBUG_LOCAL_STATIC;
 use crate::scope::{IMPORT, IMPORT_SCOPE};
 
@@ -136,7 +136,13 @@ fn check_subprogram(sp: &DiSubprogram<'_>) -> Result<(), &'static str> {
 /// `UnitPlan::collect_entities`' refusals of a record, made whether or
 /// not its scope has code.
 fn check_records(debug: &DebugInfo, body: &Body) -> Result<(), &'static str> {
-    let declares = body.declares().iter().filter(|d| d.address != Value::NONE);
+    // WP-230 (§6.32): a declaration of a constant or a symbol has no row
+    // (`hod_cg` `driver.rs` `declares_constant`), whatever its
+    // expression; a slot's may be a fragment.
+    let declares = body.declares().iter().filter(|d| {
+        d.address != Value::NONE
+            && !matches!(d.address.kind(), ValueKind::Const(_) | ValueKind::Sym(_))
+    });
     let vars = body.slot_vars().iter().map(|v| (v.var, v.expr));
     for (var, expr) in vars.chain(declares.map(|d| (d.var, d.expr))) {
         check_variable(debug, var, expr)?;
@@ -156,7 +162,7 @@ fn check_variable(debug: &DebugInfo, var: DiId, expr: ExprId) -> Result<(), &'st
     if n.align != 0 && (n.arg != 0 || n.name.is_empty()) {
         return Err("debug:variable-alignment");
     }
-    check_expr(debug, expr)
+    check_declare_expr(debug, expr)
 }
 
 /// `UnitPlan::import_parent`'s and `import`'s refusals of a function's

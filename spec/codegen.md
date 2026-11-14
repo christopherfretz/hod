@@ -3000,8 +3000,21 @@ differences are listed below. x86-64 is TSO, so no ordering but
   as on AArch64.
 - **Volatile** changes nothing: an atomic volatile access is the same
   instruction, and a plain volatile access is not atomic (`mem.rs`).
-- **Refused, by name:** `x64:atomic-unaligned`, an access whose
-  alignment is below its size (`llc` calls `__atomic_*`);
+- **Below its size's alignment**, an access calls libatomic's generic
+  routine, as `llc`'s `AtomicExpand` does: a load
+  `__atomic_load(size, ptr, &ret, order)`, a store
+  `__atomic_store(size, ptr, &value, order)`, `atomicrmw xchg`
+  `__atomic_exchange(size, ptr, &value, &ret, order)`, `cmpxchg`
+  `__atomic_compare_exchange(size, ptr, &expected, &desired, success,
+  failure)`, the expected value in the result's slot (the routine writes
+  the cell's value there on failure) and its C `bool` the result's flag.
+  The values are in frame slots aligned to their size, the orders C's
+  `memory_order` numbers; `weak` changes nothing.
+- **Refused, by name:** `x64:atomic-unaligned`, an under-aligned
+  `atomicrmw` other than `xchg` (`llc` builds a
+  `__atomic_compare_exchange` loop, which hod does not), and an
+  under-aligned store, `xchg` or `cmpxchg` whose value operand is the
+  pointer operand itself;
   `x64:atomic-type`, an atomic of `fp128`, `x86_fp80`, a vector, an
   integer that is not 8, 16, 32, 64 or 128 bits, or an operation whose
   type does not fit it; `x64:atomic-bfloat-op`, `bfloat` arithmetic;
@@ -4625,10 +4638,13 @@ Design: `docs/design/0007-avx512.md`. Evidence:
    bytes on random inputs, small floats and doubles and special values,
    skipping a function whose features the CPU lacks
    (`__builtin_cpu_supports`) and failing when it skips all. Without the
-   variable it only links the program, **also under
-   `HOD_REQUIRE_TOOLS=1`**: no emulator on the hosts of this suite
-   executes AVX-512 (QEMU's user mode models none), so the variable is
-   the one way to run it, on an AVX-512 host:
+   variable it runs the program natively on an x86-64 processor whose
+   `/proc/cpuinfo` flags have `avx512f` (WP-229, `spec/harness.md` "CI"
+   item 8: the hosted x86-64 lane, when its runner has AVX-512, with the
+   outcome in the `test x64` job's summary), and otherwise only links it,
+   **also under `HOD_REQUIRE_TOOLS=1`**: no emulator on the hosts of this
+   suite executes AVX-512 (QEMU's user mode models none). On an AVX-512
+   host by hand:
    `HOD_REQUIRE_TOOLS=1 HOD_X64_AVX512_RUNNER=native cargo test -p hod_x64 --test x86_avx512`.
 3. **512-bit vectors and vectors of `i1` by value** (`spec/abi-x64.md`
    §1.3, §3.2, §4.3, §5.1, §8.7, §9.1): under AVX-512 whose conventions
@@ -6192,11 +6208,12 @@ Recorded only when the module has debug information.
   the instruction that follows it.
 - a record hod cannot describe exactly is a `VarPlace::Refused(name)`
   row; a `FullDebug` unit then refuses the function under that name:
-  `debug:dbg-value-arglist` (a `#dbg_value` of a `DIArgList`) and
-  `debug:dbg-value-coroutine` (one in a coroutine body), `debug:dbg-assign`, `debug:declare-address` (a `#dbg_declare` of a
-  constant, a symbol, or a value that never got a home; a declaration of
-  `undef` or `poison` gets no row at all, as `llc` drops it, WP-156,
-  `spec/dwarf.md` §6.22).
+  `debug:dbg-value-arglist` (a `#dbg_value` of a `DIArgList` hod cannot
+  write, `spec/dwarf.md` §6.32) and
+  `debug:dbg-value-coroutine` (one in a coroutine body), `debug:dbg-assign`, `debug:declare-address` (a `#dbg_declare` of
+  a value that never got a home; a declaration of a constant or a
+  symbol, `undef` and `poison` included, gets no row at all, as `llc`
+  drops it, WP-156, WP-230, `spec/dwarf.md` §6.22, §6.32).
 - `debug_calls` (`DebugCallRow`, WP-113, `spec/dwarf.md` §6.19): in a
   function whose subprogram has `DIFlagAllCallsDescribed`, one row per
   call instruction an IR `call` or `invoke` became, in lowering order:

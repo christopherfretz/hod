@@ -47,6 +47,14 @@
 //! `DW_OP_convert` of one of the unit's base type DIEs (its first
 //! children, in first use), or `llc`'s legacy extension in a split unit;
 //! a constant's leading conversions are folded into it.
+//!
+//! Argument lists (§6.32): a `ValueLoc::Args` row is followed by its
+//! values' `LocalPlace::ValueArg` rows; its entry is the expression with
+//! each `DW_OP_LLVM_arg` replaced by that value's push (`arglist_width`
+//! follows the stack to keep narrow values under low-bit operations).
+//! Constants are sign-extended and unsigned ones written by `llc`'s
+//! `emitConstu` (`write_constu`), the expression's own `DW_OP_constu`
+//! too.
 
 use std::collections::HashMap;
 
@@ -68,6 +76,12 @@ pub const DEBUG_DBG_VALUE_FRAGMENT: &str = "debug:dbg-value-fragment";
 /// a memory location that does not end in `DW_OP_deref`, or one with a
 /// conversion.
 pub const DEBUG_DBG_VALUE_EXPR: &str = "debug:dbg-value-expr";
+
+/// A `#dbg_value` with a `DIArgList` (or `DW_OP_LLVM_arg`) whose
+/// expression hod does not write (§6.32): one that is not a computed
+/// value (does not end in `DW_OP_stack_value`), or names a value the list
+/// does not have.
+pub const DEBUG_DBG_VALUE_ARGLIST: &str = "debug:dbg-value-arglist";
 
 /// Where a variable described by value records is over one range.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,6 +110,13 @@ pub enum ValueLoc {
         /// The offset from the frame base.
         offset: i64,
     },
+    /// The record's values are a `DIArgList` (WP-230, §6.32): the row is
+    /// followed by `count` rows [`LocalPlace::ValueArg`], the places of
+    /// the values `DW_OP_LLVM_arg` names.
+    Args {
+        /// How many values.
+        count: u32,
+    },
 }
 
 /// One located range of an instance, in the plan: code offsets of its
@@ -116,6 +137,9 @@ pub(crate) struct Range {
 pub(crate) struct Piece {
     at: ValueLoc,
     expr: ExprId,
+    /// For [`ValueLoc::Args`]: the first of its values' places in
+    /// `UnitPlan::value_args` (WP-230); 0 otherwise.
+    args: u32,
 }
 
 /// A located row of a variable described in fragments, while its
@@ -227,6 +251,47 @@ pub(crate) fn check_value_expr(
     }
 }
 
+/// Checks the expression of a record whose values are a `DIArgList` of
+/// `count` (WP-230, §6.32): the operations of [`check_value_expr`] and
+/// `DW_OP_LLVM_arg` of an index under `count`, ending in
+/// `DW_OP_stack_value` (before a fragment).
+pub(crate) fn check_arglist_expr(
+    debug: &hod_ir::DebugInfo,
+    expr: ExprId,
+    count: u32,
+) -> Result<(), &'static str> {
+    let mut last = None;
+    for op in debug.ops(expr) {
+        match op {
+            DiOp::Fragment(offset, size) => {
+                if offset % 8 != 0 || size % 8 != 0 || size == 0 {
+                    return Err(DEBUG_DBG_VALUE_FRAGMENT);
+                }
+                continue;
+            }
+            _ if last == Some(DiOp::StackValue) => return Err(DEBUG_DBG_VALUE_EXPR),
+            DiOp::Arg(k) if k >= u64::from(count) => return Err(DEBUG_DBG_VALUE_ARGLIST),
+            DiOp::Convert(bits, encoding)
+                if (1..=64).contains(&bits)
+                    && (encoding == u64::from(DW_ATE_SIGNED)
+                        || encoding == u64::from(DW_ATE_UNSIGNED)) => {}
+            DiOp::Convert(..)
+            | DiOp::TagOffset(_)
+            | DiOp::EntryValue(_)
+            | DiOp::ImplicitPointer
+            | DiOp::ExtractBitsSext(..)
+            | DiOp::ExtractBitsZext(..)
+            | DiOp::PushObjectAddress
+            | DiOp::Xderef
+            | DiOp::Other(_) => return Err(DEBUG_DBG_VALUE_EXPR),
+            DiOp::DerefSize(n) if n > 0xff => return Err(DEBUG_DBG_VALUE_EXPR),
+            _ => {}
+        }
+        last = Some(op);
+    }
+    if last == Some(DiOp::StackValue) { Ok(()) } else { Err(DEBUG_DBG_VALUE_ARGLIST) }
+}
+
 /// The name of the base type of a conversion (`llc`'s
 /// `createBaseTypeDIEs`: the encoding's name and the bits, e.g.
 /// `DW_ATE_signed_32`).
@@ -296,9 +361,12 @@ static BASE_TYPE_NAMES: [u8; NAMES_LEN] = {
 
 /// Writes one checked operation.
 fn write_op(op: DiOp, out: &mut Vec<u8>) {
+    if let DiOp::Constu(v) = op {
+        return write_constu(v, out);
+    }
     out.push(op.code() as u8);
     match op {
-        DiOp::Constu(v) | DiOp::PlusUconst(v) => write_uleb(out, v),
+        DiOp::PlusUconst(v) => write_uleb(out, v),
         DiOp::Consts(v) => write_sleb(out, v as i64),
         DiOp::DerefSize(n) => out.push(n as u8),
         _ => {}
@@ -408,13 +476,132 @@ fn computes(ops: impl Iterator<Item = DiOp>, width: u8) -> Option<u8> {
     Some(typed.unwrap_or(width))
 }
 
+/// What one entry of a `DIArgList` expression's stack holds (§6.32).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Held {
+    /// A value this many bits wide, pushed zero-extended: only its low
+    /// bits are right.
+    Narrow(u8),
+    /// A value of the stack's generic type, exact.
+    Full,
+    /// A typed value of this many bits (after `DW_OP_convert`).
+    Typed(u8),
+}
+
+/// Two operands' result kind: narrow if either is (the narrower), else
+/// typed if either is, else exact.
+fn join(a: Held, b: Held) -> Held {
+    match (a, b) {
+        (Held::Narrow(x), Held::Narrow(y)) => Held::Narrow(x.min(y)),
+        (Held::Narrow(x), _) | (_, Held::Narrow(x)) => Held::Narrow(x),
+        (Held::Typed(x), _) | (_, Held::Typed(x)) => Held::Typed(x),
+        _ => Held::Full,
+    }
+}
+
+/// The places of a `DIArgList` row's values: the rows after row `r`
+/// (WP-230, §6.32).
+fn arg_rows(vars: &[LocalRow], r: u32, at: ValueLoc) -> &[LocalRow] {
+    let ValueLoc::Args { count } = at else { return &[] };
+    let first = r as usize + 1;
+    vars.get(first..first + count as usize).unwrap_or_default()
+}
+
+/// The place of one `DIArgList` value's row.
+fn arg_loc(row: &LocalRow) -> ValueLoc {
+    match row.place {
+        LocalPlace::ValueArg(at) => at,
+        _ => ValueLoc::None,
+    }
+}
+
+/// Whether a `DIArgList` expression (checked, ending in
+/// `DW_OP_stack_value`) computes right on its values pushed as hod
+/// pushes them, and the width of its result (WP-230, §6.32): every value
+/// is a home or a constant; a value under 64 bits is pushed
+/// zero-extended, so it only meets operations whose low bits depend on
+/// their operands' low bits (as §6.23's `computes`), and a conversion of
+/// it reads no more than its bits. The stack is followed entry by entry.
+fn arglist_width(ops: impl Iterator<Item = DiOp>, args: &[LocalRow]) -> Option<u8> {
+    let mut stack = [Held::Full; 32];
+    let mut n = 0usize;
+    for op in ops {
+        let (pops, push) = match op {
+            DiOp::Arg(k) => {
+                let held = match arg_loc(args.get(k as usize)?) {
+                    ValueLoc::Frame { size, .. } if size < 8 => Held::Narrow(size * 8),
+                    ValueLoc::Const { width, .. } if width < 64 => Held::Narrow(width),
+                    ValueLoc::Frame { .. } | ValueLoc::Const { .. } => Held::Full,
+                    _ => return None,
+                };
+                (0, held)
+            }
+            DiOp::Constu(_) | DiOp::Consts(_) | DiOp::Lit0 => (0, Held::Full),
+            DiOp::StackValue => continue,
+            DiOp::Dup | DiOp::Over => {
+                let back = if op == DiOp::Dup { 1 } else { 2 };
+                (0, *stack.get(n.checked_sub(back)?)?)
+            }
+            DiOp::Swap | DiOp::Rot => {
+                let k = if op == DiOp::Swap { 2 } else { 3 };
+                let top = stack.get_mut(n.checked_sub(k)?..n)?;
+                top.rotate_right(1);
+                continue;
+            }
+            DiOp::Convert(to, _) => {
+                let x = *stack.get(n.checked_sub(1)?)?;
+                if matches!(x, Held::Narrow(w) if to > u64::from(w)) {
+                    return None;
+                }
+                (1, Held::Typed(to as u8))
+            }
+            DiOp::PlusUconst(_) | DiOp::Not | DiOp::Neg => (1, *stack.get(n.checked_sub(1)?)?),
+            DiOp::Abs | DiOp::Deref | DiOp::DerefSize(_) => {
+                let x = *stack.get(n.checked_sub(1)?)?;
+                if matches!(x, Held::Narrow(_)) {
+                    return None;
+                }
+                let held = match op {
+                    DiOp::Abs => x,
+                    DiOp::DerefSize(k) if k < 8 => Held::Narrow(k as u8 * 8),
+                    _ => Held::Full,
+                };
+                (1, held)
+            }
+            _ => {
+                // Binary.
+                let b = *stack.get(n.checked_sub(1)?)?;
+                let a = *stack.get(n.checked_sub(2)?)?;
+                let narrow = matches!(a, Held::Narrow(_)) || matches!(b, Held::Narrow(_));
+                if narrow && !low_bits_op(op) {
+                    return None;
+                }
+                (2, join(a, b))
+            }
+        };
+        n -= pops;
+        *stack.get_mut(n)? = push;
+        n += 1;
+    }
+    match *stack.get(n.checked_sub(1)?)? {
+        Held::Narrow(w) | Held::Typed(w) => Some(w),
+        Held::Full => Some(64),
+    }
+}
+
 /// Whether a range at `at` with expression `expr` gets an entry (or,
 /// for a fragment, a piece): §6.23, and for a fragment of `size` bits a
-/// value at least that wide (the piece is its low bits).
-fn located(debug: &hod_ir::DebugInfo, at: ValueLoc, expr: ExprId) -> bool {
+/// value at least that wide (the piece is its low bits). `args`: a
+/// `DIArgList`'s value rows (§6.32).
+fn located(debug: &hod_ir::DebugInfo, at: ValueLoc, expr: ExprId, args: &[LocalRow]) -> bool {
     let fits = |width: u8| fragment(debug, expr).is_none_or(|(_, size)| size <= u64::from(width));
     match (at, shape(debug, expr)) {
-        (ValueLoc::None, _) | (ValueLoc::Const { .. }, Shape::Memory) => false,
+        (ValueLoc::Args { .. }, Shape::Value) => {
+            arglist_width(body(debug, expr), args).is_some_and(|w| w > 0 && fits(w))
+        }
+        (ValueLoc::Args { .. } | ValueLoc::None, _) | (ValueLoc::Const { .. }, Shape::Memory) => {
+            false
+        }
         (ValueLoc::Address { .. }, _) => true,
         (ValueLoc::Frame { size, .. }, Shape::Empty) => fits(size * 8),
         (ValueLoc::Frame { size, .. }, Shape::Value) => {
@@ -456,10 +643,10 @@ impl UnitPlan<'_> {
                 else {
                     continue;
                 };
-                if end <= start || !located(debug, at, expr) {
+                if end <= start || !located(debug, at, expr, arg_rows(vars, r, at)) {
                     continue;
                 }
-                let piece = Piece { at, expr };
+                let piece = self.piece(vars, r, at, expr);
                 if self.value_ranges.len() > first as usize
                     && let Some(last) = self.value_ranges.last_mut()
                     && last.end == start
@@ -491,11 +678,12 @@ impl UnitPlan<'_> {
             else {
                 continue;
             };
-            if end <= start || !located(debug, at, expr) {
+            if end <= start || !located(debug, at, expr, arg_rows(vars, r, at)) {
                 continue;
             }
             let bits = fragment(debug, expr).unwrap_or((0, u64::MAX));
-            s.rows.push(PieceRow { start, end, row: r, bits, piece: Piece { at, expr } });
+            let piece = self.piece(vars, r, at, expr);
+            s.rows.push(PieceRow { start, end, row: r, bits, piece });
             s.bounds.extend([start, end]);
         }
         s.rows.sort_by_key(|p| (p.start, p.row));
@@ -536,6 +724,24 @@ impl UnitPlan<'_> {
             }
         }
         self.piece_scratch = s;
+    }
+
+    /// The piece of row `r` (located): a `DIArgList`'s value places join
+    /// `value_args`, or reuse the last ones when they are the same
+    /// (WP-230), so that equal entries compare equal.
+    fn piece(&mut self, vars: &[LocalRow], r: u32, at: ValueLoc, expr: ExprId) -> Piece {
+        let rows = arg_rows(vars, r, at);
+        if rows.is_empty() {
+            return Piece { at, expr, args: 0 };
+        }
+        let n = rows.len();
+        let len = self.value_args.len();
+        let same = len >= n
+            && self.value_args[len - n..].iter().zip(rows).all(|(&a, row)| a == arg_loc(row));
+        if !same {
+            self.value_args.extend(rows.iter().map(arg_loc));
+        }
+        Piece { at, expr, args: (self.value_args.len() - n) as u32 }
     }
 
     /// A new range holding `pieces`; the base types their conversions
@@ -647,7 +853,7 @@ impl Writer<'_> {
                     self.expr.push(DW_OP_PIECE);
                     write_uleb(&mut self.expr, (offset - done) / 8);
                 }
-                entry_ops(plan.debug, p, ty, &cv, &mut self.expr);
+                entry_ops(plan.debug, p, ty, &cv, &plan.value_args, &mut self.expr);
                 if let Some((offset, size)) = bits {
                     self.expr.push(DW_OP_PIECE);
                     write_uleb(&mut self.expr, size / 8);
@@ -725,49 +931,84 @@ struct Converts<'w> {
     dies: &'w [u32],
 }
 
+/// Pushes the value in a home `offset` bytes from the frame base, `size`
+/// bytes wide (zero-extended).
+fn push_home(offset: i64, size: u8, out: &mut Vec<u8>) {
+    out.push(DW_OP_FBREG);
+    write_sleb(out, offset);
+    if size == 8 {
+        out.push(DW_OP_DEREF);
+    } else {
+        out.push(DW_OP_DEREF_SIZE);
+        out.push(size);
+    }
+}
+
+/// Pushes a constant `width` bits wide for a variable whose type has
+/// encoding `ty` (§6.23, §6.31, §6.32). `llc` keeps a constant as its
+/// sign extension to 64 bits (`getSExtValue`), and writes it signed for
+/// a signed type and unsigned (`emitConstu`) for any other: an `i32 -1`
+/// of an `unsigned long` is all ones (WP-230 measured 19 and 22).
+fn push_const(mut bits: u64, width: u8, ty: Option<u8>, out: &mut Vec<u8>) {
+    // LLVM 22: a boolean's constant is 0 or 1; an `i1` is zero-extended
+    // (19 sign-extended it).
+    if ty == Some(DW_ATE_BOOLEAN) && bits != 0 {
+        bits = 1;
+    }
+    let shift = if width > 1 { 64 - u32::from(width) } else { 0 };
+    let value = ((bits << shift) as i64) >> shift;
+    if matches!(ty, Some(0x05 | 0x06)) {
+        out.push(DW_OP_CONSTS);
+        write_sleb(out, value);
+    } else {
+        write_constu(value as u64, out);
+    }
+}
+
+/// `llc`'s `DwarfExpression::emitConstu`, which writes every unsigned
+/// constant of a location, the expression's `DW_OP_constu` included:
+/// `DW_OP_litN` under 32, `DW_OP_lit0, DW_OP_not` for all ones,
+/// `DW_OP_constu` otherwise.
+fn write_constu(bits: u64, out: &mut Vec<u8>) {
+    if bits < 32 {
+        out.push(DW_OP_LIT0 + bits as u8);
+    } else if bits == u64::MAX {
+        out.extend_from_slice(&[DW_OP_LIT0, DW_OP_NOT]);
+    } else {
+        out.push(DW_OP_CONSTU);
+        write_uleb(out, bits);
+    }
+}
+
 /// The location of one piece (module doc), without its `DW_OP_piece`.
+/// `args`: the plan's `value_args` (§6.32).
 fn entry_ops(
     debug: &hod_ir::DebugInfo,
     p: &Piece,
     ty: Option<u8>,
     cv: &Converts<'_>,
+    args: &[ValueLoc],
     out: &mut Vec<u8>,
 ) {
     let shape = shape(debug, p.expr);
     let mut skip = 0;
     match p.at {
         ValueLoc::Frame { offset, size } => {
-            out.push(DW_OP_FBREG);
-            write_sleb(out, offset);
             if shape == Shape::Empty {
+                out.push(DW_OP_FBREG);
+                write_sleb(out, offset);
                 return;
             }
-            if size == 8 {
-                out.push(DW_OP_DEREF);
-            } else {
-                out.push(DW_OP_DEREF_SIZE);
-                out.push(size);
-            }
+            push_home(offset, size, out);
         }
         ValueLoc::Const { bits, width } => {
-            let (mut bits, width, k) = fold(debug, p.expr, bits, width);
+            let (bits, width, k) = fold(debug, p.expr, bits, width);
             skip = k;
-            // LLVM 22: a boolean's constant is 0 or 1; an `i1` is
-            // zero-extended (19 sign-extended it).
-            if ty == Some(DW_ATE_BOOLEAN) && bits != 0 {
-                bits = 1;
-            }
-            if matches!(ty, Some(0x05 | 0x06)) {
-                let shift = if width > 1 { 64 - u32::from(width) } else { 0 };
-                out.push(DW_OP_CONSTS);
-                write_sleb(out, ((bits << shift) as i64) >> shift);
-            } else if bits < 32 {
-                out.push(DW_OP_LIT0 + bits as u8);
-            } else {
-                out.push(DW_OP_CONSTU);
-                write_uleb(out, bits);
-            }
+            push_const(bits, width, ty, out);
         }
+        // WP-230 (§6.32): the values are pushed where `DW_OP_LLVM_arg`
+        // names them, in the loop below.
+        ValueLoc::Args { .. } => {}
         ValueLoc::None => return,
         ValueLoc::Address { offset } => {
             // WP-221: a declaration's expression, whole (`func::write_ops`).
@@ -787,6 +1028,13 @@ fn entry_ops(
             break; // the last `DW_OP_deref` is the memory location's own
         }
         match op {
+            // WP-230 (§6.32): a `DIArgList` value, as a single record's
+            // value is pushed (`located` checked every one has a place).
+            DiOp::Arg(i) => match args.get(p.args as usize + i as usize) {
+                Some(&ValueLoc::Frame { offset, size }) => push_home(offset, size, out),
+                Some(&ValueLoc::Const { bits, width }) => push_const(bits, width, ty, out),
+                _ => unreachable!("a located `DIArgList` value has a place (located)"),
+            },
             DiOp::Convert(bits, encoding) if cv.legacy => {
                 // `DwarfExpression::addExpression`: a widening pair is an
                 // extension, anything else waits for the next.

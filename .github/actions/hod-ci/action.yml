@@ -42,7 +42,10 @@ runs:
           "libc6-dev-$arch-cross" "libstdc++-14-dev-$arch-cross" >/dev/null
         # csmith: the random programs of `cargo xtask fuzz` (WP-154). Its
         # header is a package of its own that csmith only recommends.
-        csmith --version | head -1
+        # csmith writes `platform.info` into its current directory even
+        # for `--version`: run it outside the checkout, which
+        # `xtask/tests/fuzz_real.rs` checks stays free of that file.
+        (cd "$(mktemp -d)" && csmith --version | head -1)
         test -f /usr/include/csmith/csmith.h
         for t in clang++-19 clang++-22 llc-19 llc-22 ld.lld-22 ld.bfd mold gdb lldb-19 \
                  "$prefix-gcc" "$prefix-ld.bfd" "$emu"; do

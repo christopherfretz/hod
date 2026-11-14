@@ -172,6 +172,33 @@ pub fn print_operand(arg: Arg, modifier: Option<u8>, out: &mut String) -> Result
     Ok(())
 }
 
+/// Writes the symbol operand `name` + `addend` (a `Ws` or `s` operand,
+/// `spec/asm.md` §13) with `modifier` as `X86AsmPrinter` does: `$name+8`
+/// without one, `name+8` with `c`, `p` or `P` (`name`, `name-4` for the
+/// other addends).
+///
+/// # Errors
+/// `asm:modifier/<m>` for another modifier (`a`, which LLVM 19 and 22
+/// print differently, is one).
+pub fn print_symbol(
+    name: &str,
+    addend: i64,
+    modifier: Option<u8>,
+    out: &mut String,
+) -> Result<(), Refusal> {
+    use std::fmt::Write as _;
+    match modifier {
+        None => out.push('$'),
+        Some(b'c' | b'p' | b'P') => {}
+        Some(m) => return Err(reason::modifier(&char::from(m).to_string())),
+    }
+    out.push_str(name);
+    if addend != 0 {
+        write!(out, "{addend:+}").map_err(|_| Refusal(other::TEMPLATE))?;
+    }
+    Ok(())
+}
+
 /// The relocation of a symbol field, as LLVM's assembler chooses it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RefKind {
@@ -196,6 +223,9 @@ pub enum RefKind {
     DtpOff32,
     /// `sym` without `%rip` or specifier: `R_X86_64_32S`.
     Abs32S,
+    /// `.reloc ., BFD_RELOC_NONE, sym`: `R_X86_64_NONE`, a field of no
+    /// bytes (a reference that keeps `sym` linked).
+    None,
 }
 
 /// A symbol field of assembled code, zero in the code.
@@ -417,6 +447,12 @@ pub fn assemble(
             if pending.is_some() {
                 return Err(Refusal(op_reason::FORM));
             }
+            if name == ".reloc" {
+                let at = bytes.len();
+                pending_refs.push(reloc(rest, at)?);
+                items.push(Item::Bytes { at, len: 0 });
+                continue;
+            }
             let Some(size) = data_size(&name) else { return Err(reason::directive(&name)) };
             let at = bytes.len();
             data(size, rest, &mut bytes)?;
@@ -496,8 +532,13 @@ fn place_refs(
     refs: &mut Vec<Ref>,
 ) -> Result<(), Refusal> {
     for p in pending_refs {
+        // A `.reloc` field is the empty item at its offset.
         let Some((i, start)) = items.iter().enumerate().find_map(|(i, item)| match *item {
-            Item::Bytes { at, len } if (at..at + len).contains(&p.at) => Some((i, at)),
+            Item::Bytes { at, len }
+                if (at..at + len).contains(&p.at) || (len == 0 && at == p.at) =>
+            {
+                Some((i, at))
+            }
             _ => None,
         }) else {
             return Err(Refusal(op_reason::SYMBOL));
@@ -507,6 +548,35 @@ fn place_refs(
         refs.push(Ref { offset, kind: p.kind, name: p.name, addend: p.addend });
     }
     Ok(())
+}
+
+/// `.reloc ., BFD_RELOC_NONE, sym[+-c]` (or `R_X86_64_NONE`), the one
+/// form of the directive inline assembly writes (`spec/asm.md` §13): an
+/// `R_X86_64_NONE` field of no bytes at byte `at` of the buffer.
+///
+/// # Errors
+/// `asm:operand/expression` for an offset other than `.`;
+/// `asm:directive/reloc` for another relocation; `asm:operand/symbol` for
+/// a target that names no symbol.
+fn reloc(operands: &str, at: usize) -> Result<Pending, Refusal> {
+    let mut parts = operands.splitn(3, ',').map(trim);
+    let (Some(offset), Some(kind), Some(target)) = (parts.next(), parts.next(), parts.next())
+    else {
+        return Err(Refusal(op_reason::SYNTAX));
+    };
+    if offset != "." {
+        return Err(Refusal(op_reason::EXPRESSION));
+    }
+    if kind != "BFD_RELOC_NONE" && kind != "R_X86_64_NONE" {
+        return Err(reason::directive(".reloc"));
+    }
+    let mut c = Cursor::new(target);
+    let v = c.expr()?;
+    if !c.at_end() {
+        return Err(Refusal(op_reason::SYNTAX));
+    }
+    let Some(Name::Sym(name)) = v.name else { return Err(Refusal(op_reason::SYMBOL)) };
+    Ok(Pending { at, kind: RefKind::None, name: name.to_string(), addend: v.constant })
 }
 
 /// A branch to a numeric local label, not prefixed.
@@ -736,6 +806,12 @@ mod tests {
         assert_eq!(asm("fstcw (%rax)").unwrap(), [0x9b, 0xd9, 0x38]);
         assert_eq!(asm("fstsw").unwrap(), [0x9b, 0xdf, 0xe0]);
         assert_eq!(asm("lock fstsw").err(), Some(Refusal(op_reason::FORM)));
+        // §13: `.reloc`, a field of no bytes.
+        let (code, refs) = with_refs("nop\n.reloc ., BFD_RELOC_NONE, foo+8\nnop").unwrap();
+        assert_eq!(code, [0x90, 0x90]);
+        assert_eq!(refs, [Ref { offset: 1, kind: RefKind::None, name: "foo".into(), addend: 8 }]);
+        let far = format!("jmp 1f\n{}.reloc ., BFD_RELOC_NONE, g\n1:", ".quad 0\n".repeat(16));
+        assert_eq!(with_refs(&far).unwrap().1[0].offset, 5 + 128);
     }
 
     #[test]
@@ -745,6 +821,15 @@ mod tests {
             print_operand(a, m, &mut s).map(|()| s)
         };
         assert_eq!(p(Arg::Gp(0, 4), None).unwrap(), "%eax");
+        let sym = |a, m| {
+            let mut s = String::new();
+            print_symbol("g", a, m, &mut s).map(|()| s)
+        };
+        assert_eq!(sym(0, None).unwrap(), "$g");
+        assert_eq!(sym(8, Some(b'p')).unwrap(), "g+8");
+        assert_eq!(sym(-4, Some(b'c')).unwrap(), "g-4");
+        assert_eq!(sym(4, Some(b'P')).unwrap(), "g+4");
+        assert_eq!(sym(0, Some(b'a')).err(), Some(reason::modifier("a")));
         assert_eq!(p(Arg::Gp(6, 1), None).unwrap(), "%sil");
         assert_eq!(p(Arg::Gp(9, 8), Some(b'k')).unwrap(), "%r9d");
         assert_eq!(p(Arg::Gp(3, 4), Some(b'q')).unwrap(), "%rbx");

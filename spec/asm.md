@@ -425,7 +425,8 @@ The lowering is `spec/codegen.md` §5.6.28. In short:
   with x86's codes: `r`, `l`, `q` (any general register), `Q` (`rax`,
   `rcx`, `rdx`, `rbx`), `R` (the legacy eight), `x`, `v` (SSE), `m`,
   `o`, `X`, `i`, `n`, `e`, `Z`, `I`..`O` (ranged immediates), `{reg}`,
-  `{@cc<cond>}`, digits, `|` alternatives, `=`, `+`, `&`, `*`, `%`.
+  `{@cc<cond>}`, `Ws` (clang's `^Ws`) and `s` (a symbol plus a constant
+  offset, §13), digits, `|` alternatives, `=`, `+`, `&`, `*`, `%`.
   `llc` refuses `a`, `b`, `c`, `d`, `S`, `D` and `g` in IR (front ends
   write `{ax}` and `imr`), so hod refuses them as
   `asm:constraint/<letter>`; so is `A`, `t`, `u`, `f`, `y`, `p`.
@@ -519,3 +520,38 @@ function's `target-features` (it assembles `prefetchw`, `crc32b`,
 The x87 register operands (`fsqrt` with `=t`, `fpatan` with `{st}`,
 found in 4 templates) are refused before the body is read, as
 `asm:constraint/t`, `asm:constraint/st` (§11).
+
+**Symbol operands (`Ws`).** protobuf's `port.h` (x86-64 Linux, clang 19
+and up) keeps a type's default instance alive with
+`asm(".reloc ., BFD_RELOC_NONE, %p0" :: "Ws"(&instance))`; front ends
+write the constraint `Ws` (kiln) or `^Ws` (clang), and `llc` reads both.
+The census's template 220. hod takes:
+
+- **The operand**: a global (`ptr @g`), or a constant `getelementptr`
+  of one (`@g` plus a byte offset). Any other value is
+  `asm:constraint/s`. A symbol whose name needs quoting, or a private
+  one (`llc` prints `.L` names hod's object does not keep), is
+  `asm:operand/symbol`. `s` alone reads the same; `Wd` and `s` are
+  refused by clang for x86, so no front end writes them.
+- **Printing**, as `llc` 22 and 19 print it: `$0` is `$g+8`; `${0:p}`,
+  `${0:c}` and `${0:P}` are `g+8` (no offset when it is 0, `g-4` when it
+  is negative). `${0:a}` is `asm:modifier/a` (LLVM 19 prints `g-4`,
+  LLVM 22 `g-4(%rip)`); other modifiers are refused as for registers.
+  `i` with a symbol stays `asm:operand/symbol` (§13 table).
+- **`.reloc ., BFD_RELOC_NONE, sym+off`** (or `R_X86_64_NONE`): an
+  `R_X86_64_NONE` relocation at the current offset, with the addend, and
+  no bytes. Another offset than `.` is `asm:operand/expression`; another
+  relocation kind is `asm:directive/reloc`; a local label as the target
+  is `asm:operand/symbol`.
+
+The relocations are `llc` 22's and 19's (PIC in
+`symbol_fields_are_llcs_relocations`; static too in the record's
+check); `leaq ${1:p}(%rip), %rax` with
+`Ws` is `llc`'s bytes and relocation (`forced_ws_address`). One
+difference: `llc` 22 given clang's `^Ws` for a static build writes the
+`.reloc` of `@g` plus 8 without the 8 when the IR is clang's; kiln's `Ws`
+and every PIC build keep it, as hod does always.
+
+On AArch64 the same header writes the plain `asm("" :: "r"(p))` (its
+`.reloc` path is x86-64 only); the `S` constraint stays
+`asm:constraint/s` there.

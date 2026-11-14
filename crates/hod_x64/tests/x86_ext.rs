@@ -26,7 +26,6 @@
 mod linking;
 
 #[path = "common/float_gen.rs"]
-#[allow(dead_code, reason = "a shared helper: not every function is used here")]
 mod float_gen;
 
 use std::fmt::Write as _;
@@ -385,10 +384,8 @@ fn functions() -> (String, Vec<Func>) {
             for s in 0..4 {
                 writeln!(loads, "  %s{s} = getelementptr i8, ptr %in, i64 {}", 32 * s).unwrap();
             }
-            let mut slot = 0;
-            for &p in params.iter().filter(|p| p.starts_with('<')) {
+            for (slot, &p) in params.iter().filter(|p| p.starts_with('<')).enumerate() {
                 writeln!(loads, "  %v{slot} = load {p}, ptr %s{slot}, align 1").unwrap();
-                slot += 1;
             }
             writeln!(
                 loads,
@@ -554,7 +551,7 @@ fn inputs(rng: &mut Rng, f: &Func, n: usize) -> Vec<[u8; CASE]> {
             }
             set[32 * slot..32 * slot + bytes.len()].copy_from_slice(&bytes);
         }
-        let count = if i < COUNTS.len() { COUNTS[i] } else { rng.next() as u32 % 70 };
+        let count = COUNTS.get(i).copied().unwrap_or_else(|| rng.next() as u32 % 70);
         set[AT_COUNT..AT_COUNT + 4].copy_from_slice(&count.to_le_bytes());
         for k in 0..2 {
             let len = *rng.pick(&LENGTHS);
@@ -599,7 +596,7 @@ fn driver(funcs: &[Func], sets: &[Vec<[u8; CASE]>]) -> String {
         write!(c, "{bits},").unwrap();
     }
     c.push_str("};\nstatic const unsigned char in[][");
-    write!(c, "{CASE}] __attribute__((aligned(32))) = {{\n").unwrap();
+    writeln!(c, "{CASE}] __attribute__((aligned(32))) = {{").unwrap();
     for set in sets.iter().flatten() {
         c.push('{');
         for byte in set {

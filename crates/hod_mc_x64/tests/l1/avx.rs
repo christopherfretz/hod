@@ -194,7 +194,7 @@ pub fn vex_forms(b: &mut Batch) {
         }
     }
     // The compares: the predicate in the mnemonic, as LLVM prints it.
-    const PREDS: [&str; 32] = [
+    let preds: [&str; 32] = [
         "eq", "lt", "le", "unord", "neq", "nlt", "nle", "ord", "eq_uq", "nge", "ngt", "false",
         "neq_oq", "ge", "gt", "true", "eq_os", "lt_oq", "le_oq", "unord_s", "neq_us", "nlt_uq",
         "nle_uq", "ord_s", "eq_us", "nge_uq", "ngt_uq", "false_os", "neq_os", "ge_oq", "gt_oq",
@@ -204,7 +204,7 @@ pub fn vex_forms(b: &mut Batch) {
         [(V3Imm::Cmpps, "ps"), (V3Imm::Cmppd, "pd"), (V3Imm::Cmpss, "ss"), (V3Imm::Cmpsd, "sd")]
     {
         for w in Width::ALL.into_iter().filter(|&w| op.allows(w)) {
-            for (p, pred) in (0u8..).zip(PREDS) {
+            for (p, pred) in (0u8..).zip(preds) {
                 let mn = format!("vcmp{pred}{suffix}");
                 for (d, a, s) in [(0, 1, 2), (9, 10, 3), (15, 8, 12)] {
                     emit_as!(

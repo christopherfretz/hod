@@ -460,6 +460,7 @@ pub fn intrinsic<'a>(
     Some(lower(cx, inst, which, args, ret, params, op))
 }
 
+#[allow(clippy::too_many_lines, reason = "one arm per kind of row")]
 fn lower<'a>(
     cx: &mut FnCx<'a, X64>,
     inst: Inst<'a>,

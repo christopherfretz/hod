@@ -50,6 +50,8 @@ macro_rules! intrinsics {
 
         impl Intrinsic<'_> {
             /// Every known intrinsic.
+            // A constant promoted to static memory, never on the stack.
+            #[allow(clippy::large_stack_arrays)]
             pub const ALL: &'static [Intrinsic<'static>] = &[$(Intrinsic::$variant,)+];
 
             /// The position in [`Intrinsic::ALL`]; `None` for `Other`.
@@ -824,7 +826,18 @@ impl<'a> Intrinsic<'a> {
         match self {
             I::Memcpy | I::MemcpyInline | I::Memmove | I::Memset | I::MemsetInline => &[3],
             I::FrameAddress | I::ReturnAddress | I::UbsanTrap | I::X86Xabort => &[0],
-            I::Ctlz | I::Cttz | I::Abs | I::IsFpClass | I::VectorExtract => &[1],
+            I::Ctlz
+            | I::Cttz
+            | I::Abs
+            | I::IsFpClass
+            | I::VectorExtract
+            | I::X86Sse41RoundPs
+            | I::X86Sse41RoundPd
+            | I::X86AesniAeskeygenassist
+            | I::X86AvxRoundPd256
+            | I::X86AvxRoundPs256
+            | I::X86Vcvtps2ph128
+            | I::X86Vcvtps2ph256 => &[1],
             I::Prefetch | I::ObjectSize => &[1, 2, 3],
             I::VectorInsert
             | I::X86SseCmpSs
@@ -852,13 +865,6 @@ impl<'a> Intrinsic<'a> {
             | I::X86Vgf2p8affineqb256
             | I::X86Vgf2p8affineinvqb128
             | I::X86Vgf2p8affineinvqb256 => &[2],
-            I::X86Sse41RoundPs
-            | I::X86Sse41RoundPd
-            | I::X86AesniAeskeygenassist
-            | I::X86AvxRoundPd256
-            | I::X86AvxRoundPs256
-            | I::X86Vcvtps2ph128
-            | I::X86Vcvtps2ph256 => &[1],
             I::X86Sse42Pcmpestrm128
             | I::X86Sse42Pcmpestri128
             | I::X86Sse42Pcmpestria128

@@ -654,12 +654,23 @@ impl<'a> UnitPlan<'a> {
             // slots name in one instance of its scope is one entry of
             // `llc`'s frame table, which keeps the first record's slot
             // (`addFrameIndexExpr` keys its set by fragment, and these
-            // have none); any other repetition is refused.
-            let frame = matches!(v.place, LocalPlace::Frame(_));
-            match s.inl.first_of(v.node, ia, frame) {
-                None => {}
-                Some(true) if frame => continue,
-                Some(_) => return Err(unsupported(v.node, "debug:variable-twice")),
+            // have none). WP-236 (§6.36): a second declaration of the
+            // same stored address with the same expression describes
+            // the variable as the first does and adds nothing. Any other
+            // repetition is refused.
+            if let Some(first) = s.inl.first_of(v.node, ia, row as u32) {
+                let Some(&prev) = f.vars.get(first as usize) else {
+                    return Err(bad(v.node, "variable"));
+                };
+                match (prev.place, v.place) {
+                    (LocalPlace::Frame(_), LocalPlace::Frame(_)) => continue,
+                    (LocalPlace::FrameIndirect(at), LocalPlace::FrameIndirect(again))
+                        if at == again && prev.expr == v.expr =>
+                    {
+                        continue;
+                    }
+                    _ => return Err(unsupported(v.node, "debug:variable-twice")),
+                }
             }
             s.ents.push((index, class, key, row as u32));
             self.abstract_entity(&mut s.inl, v.node, scope, class, key);

@@ -23,7 +23,9 @@
 # Environment:
 #   HOD_DEBUG_TARGET  aarch64 (default: the host, natively) or x86_64
 #                     (scripts/libcxx-x64-kiln.sh: cross, tests under qemu)
-#   HOD_DEBUG_FLAGS   the flags added to every invocation (default: -g)
+#   HOD_DEBUG_FLAGS   the flags added to every invocation (default when
+#                     unset: -g; set and empty, HOD_DEBUG_FLAGS=, adds
+#                     nothing: the suite without -g, WP-233)
 #   HOD_SHIM          the shim directory, from `cargo xtask shim --kiln`
 #                     (required for hybrid and strict)
 #   HOD_KILN          kiln++ (default: <workspace>/.build/target-kiln/release/kiln++)
@@ -108,7 +110,7 @@ log="$dir/$name.log"
 {
     grep oom_kill /sys/fs/cgroup/memory.events || true
     date
-    echo "target $target, flags ${HOD_DEBUG_FLAGS:--g}, next $HOD_DEBUG_NEXT${HOD_X64_KILN:+ then $HOD_X64_KILN}${HOD_LIBCXX_KILN:+, hod $HOD_LIBCXX_KILN}"
+    echo "target $target, flags '${HOD_DEBUG_FLAGS--g}', next $HOD_DEBUG_NEXT${HOD_X64_KILN:+ then $HOD_X64_KILN}${HOD_LIBCXX_KILN:+, hod $HOD_LIBCXX_KILN}"
 } > "$log"
 cd "$ws/kiln"
 # shellcheck disable=SC1091

@@ -1262,6 +1262,150 @@ pub fn store_wide(cx: &mut FnCx<'_, X64>, x: Xmm, dst: FrameRef, bytes: u32) {
     put(cx, mc::lea(Size::Q, Reg::Rsp, Mem::base(Reg::Rsp, shift)));
 }
 
+// ---- the masked memory intrinsics (WP-208) ----
+
+/// A call of `llvm.masked.load`, `llvm.masked.store`,
+/// `llvm.masked.expandload` or `llvm.masked.compressstore`
+/// (`spec/codegen.md` §5.6.35), whatever the function's features: lane by
+/// lane, each lane whose mask bit is set copied through `r11` between
+/// memory and the vector's image, as `llc` scalarizes them without
+/// AVX-512. A lane whose bit is clear touches no memory. `load` and
+/// `store` address lane `i` at `ptr + i * size`; `expandload` and
+/// `compressstore` the `k`-th set lane at `ptr + k * size` (a cursor in
+/// `rax` for a variable mask). The alignment (LLVM 19's `i32` operand,
+/// LLVM 22's attribute) is not needed: every access is one lane.
+///
+/// A constant mask copies its set lanes only; a variable one is tested
+/// bit by bit (`bt`, `jae`). `None` for any other intrinsic.
+///
+/// Refusals: [`VECTOR`] for a call whose operands are not the
+/// intrinsic's, [`MASK_WIDE`] for a mask of more than 64 lanes, and what
+/// [`lanes`] refuses for the vector.
+pub fn masked<'a>(
+    cx: &mut FnCx<'a, X64>,
+    inst: Inst<'a>,
+    which: hod_ir::Intrinsic<'a>,
+    args: &'a [Value],
+) -> Option<CgResult<()>> {
+    use hod_ir::Intrinsic as I;
+    let call = match (which, args) {
+        (I::MaskedLoad, &[ptr, _, mask, pass] | &[ptr, mask, pass]) => {
+            Masked { load: true, packed: false, ptr, mask, vector: pass }
+        }
+        (I::MaskedStore, &[value, ptr, _, mask] | &[value, ptr, mask]) => {
+            Masked { load: false, packed: false, ptr, mask, vector: value }
+        }
+        (I::MaskedExpandLoad, &[ptr, mask, pass]) => {
+            Masked { load: true, packed: true, ptr, mask, vector: pass }
+        }
+        (I::MaskedCompressStore, &[value, ptr, mask]) => {
+            Masked { load: false, packed: true, ptr, mask, vector: value }
+        }
+        (I::MaskedLoad | I::MaskedStore | I::MaskedExpandLoad | I::MaskedCompressStore, _) => {
+            return Some(unsupported(VECTOR));
+        }
+        _ => return None,
+    };
+    Some(masked_lanes(cx, inst, call))
+}
+
+/// The operands of a masked memory intrinsic: `vector` is the
+/// pass-through of a load, the stored value of a store; `packed` the
+/// expand and compress forms.
+#[derive(Clone, Copy)]
+struct Masked {
+    load: bool,
+    packed: bool,
+    ptr: Value,
+    mask: Value,
+    vector: Value,
+}
+
+/// [`masked`] once the operands are known.
+fn masked_lanes<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, call: Masked) -> CgResult<()> {
+    let types = cx.types();
+    let vector_ty = value_ty(cx, call.vector);
+    let mask_ty = value_ty(cx, call.mask);
+    let ptr_ty = value_ty(cx, call.ptr);
+    let n = match (types.kind(vector_ty), crate::mask::mask_lanes(types, mask_ty)) {
+        (TypeKind::Vector { len, .. }, Some(n)) if n == len => n,
+        _ => return unsupported(VECTOR),
+    };
+    if !matches!(types.kind(ptr_ty), TypeKind::Ptr { .. })
+        || (call.load && inst.ty() != vector_ty)
+        || (!call.load && inst.ty() != TypeId::VOID)
+    {
+        return unsupported(VECTOR);
+    }
+    if n > crate::mask::MAX_MASK {
+        return unsupported(MASK_WIDE);
+    }
+    let lanes = lanes(cx, vector_ty)?;
+    deferred_first(cx, inst, None)?;
+    let bits = match call.mask.kind() {
+        ValueKind::Const(id) => match crate::mask::const_bits(cx, id, n) {
+            Some(bits) => Some(bits),
+            None => return unsupported(crate::common::CONSTANT),
+        },
+        _ => None,
+    };
+    let p = cx.use_reg(call.ptr)?;
+    let m = if bits.is_none() { Some(cx.use_reg(call.mask)?) } else { None };
+    // The vector's image: the result's slot or a scratch image holding
+    // the pass-through for a load, the stored value's for a store.
+    let (image, result) = if call.load && lanes.shape.class == Class::Mem {
+        let r = cx.def_mem(inst)?;
+        write_mem(cx, r, call.vector, store_bytes(&lanes)?)?;
+        (r, false)
+    } else {
+        (image(cx, call.vector, &lanes, 0)?, call.load)
+    };
+    if call.packed && bits.is_none() {
+        put(cx, mc::mov_rr(Size::Q, RAX, gp(p)));
+    }
+    let mut k = 0;
+    for lane in 0..n {
+        let skip = match (bits, m) {
+            (Some(bits), _) if bits >> lane & 1 == 0 => continue,
+            (Some(_), _) => None,
+            (None, Some(m)) => {
+                let skip = cx.new_label();
+                put(cx, mc::bt_ri(Size::Q, gp(m), lane as u8));
+                crate::common::branch_cond(cx, Cond::Ae, skip)?;
+                Some(skip)
+            }
+            (None, None) => return cx.bug("a masked lane loop without a mask"),
+        };
+        let memory = match (call.packed, skip) {
+            (true, Some(_)) => Mem::base(RAX, 0),
+            (true, None) => Mem::base(gp(p), (k * lanes.bytes()) as i32),
+            (false, _) => Mem::base(gp(p), lanes.offset(lane) as i32),
+        };
+        let place = image.offset_by(lanes.offset(lane));
+        let bytes = lanes.bytes();
+        if call.load {
+            put(cx, gpr_load(R11, memory, bytes));
+            frame_inst(cx, place, |at| mc::mov_mr(lanes.size(), at, R11));
+        } else {
+            frame_inst(cx, place, |at| gpr_load(R11, at, bytes));
+            put(cx, mc::mov_mr(lanes.size(), memory, R11));
+        }
+        k += 1;
+        if let Some(skip) = skip {
+            if call.packed {
+                put(cx, mc::add_ri(Size::Q, RAX, i64::from(bytes)));
+            }
+            cx.bind(skip)?;
+        }
+    }
+    if result {
+        let rd = cx.def_reg(inst)?;
+        reload(cx, xm(rd), &lanes, image);
+        return cx.finish(inst, rd);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

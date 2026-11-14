@@ -159,3 +159,7 @@ pub use tls::*;
 // x87 (WP-119).
 pub mod x87;
 pub use x87::*;
+
+// EVEX and the opmask instructions (WP-208).
+pub mod evex;
+pub use evex::*;

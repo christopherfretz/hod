@@ -814,6 +814,14 @@ intrinsics! {
     X86Avx2GatherQPs256 = "llvm.x86.avx2.gather.q.ps.256" [],
     X86Avx2GatherQPd = "llvm.x86.avx2.gather.q.pd" [],
     X86Avx2GatherQPd256 = "llvm.x86.avx2.gather.q.pd.256" [],
+    // The masked memory intrinsics (WP-208): generic, but what clang 19
+    // and 22 emit for the AVX-512 masked loads, stores, expand loads and
+    // compress stores. LLVM 19 passes the alignment of `load`/`store` as
+    // an `i32` operand, LLVM 22 as the pointer's `align` attribute.
+    MaskedLoad = "llvm.masked.load" [Ret, P(0)],
+    MaskedStore = "llvm.masked.store" [P(0), P(1)],
+    MaskedExpandLoad = "llvm.masked.expandload" [Ret],
+    MaskedCompressStore = "llvm.masked.compressstore" [P(0)],
 }
 
 /// The most overload types an intrinsic on the list has.

@@ -1367,6 +1367,12 @@ const INTRINSICS: &[(&str, &str)] = &[
     ("llvm.aarch64.neon.vsri.v1i64", "<1 x i64> (<1 x i64>, <1 x i64>, i32)"),
     ("llvm.aarch64.sisd.fabd.f64", "double (double, double)"),
     ("llvm.aarch64.sisd.fcvtxn", "float (double)"),
+    // WP-208: LLVM 22's signatures (LLVM 19's `i32` alignment operand
+    // of `load` and `store` is upgraded away by LLVM 22).
+    ("llvm.masked.load.v16f32.p0", "<16 x float> (ptr, <16 x i1>, <16 x float>)"),
+    ("llvm.masked.store.v8i64.p0", "void (<8 x i64>, ptr, <8 x i1>)"),
+    ("llvm.masked.expandload.v4i32", "<4 x i32> (ptr, <4 x i1>, <4 x i32>)"),
+    ("llvm.masked.compressstore.v64i8", "void (<64 x i8>, ptr, <64 x i1>)"),
 ];
 
 /// Names on the list that LLVM 22 upgrades to other IR on reading (so

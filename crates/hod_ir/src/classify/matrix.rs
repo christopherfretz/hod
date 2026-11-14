@@ -3452,6 +3452,8 @@ const INTRINSIC_A64: &[SupportRow] = &[
 /// the list, then WP-190's system and state ones. Above SSE2 (and for
 /// WP-190's above the baseline) the lowering refuses a function whose
 /// `target-features` do not enable the feature, by the intrinsic's name.
+/// Last, the generic masked memory intrinsics of WP-208, which the list
+/// keeps after the x86 ones.
 const INTRINSIC_X86: &[SupportRow] = &[
     row("intrinsic:llvm.x86.sse.cmp.ss", never(X64_ONLY), on(X86_SSE), "SSE"),
     row("intrinsic:llvm.x86.sse.comieq.ss", never(X64_ONLY), on(X86_SSE), "SSE"),
@@ -3877,7 +3879,15 @@ const INTRINSIC_X86: &[SupportRow] = &[
         on(X86_SSE),
         "AVX2 gather (WP-207)",
     ),
+    row("intrinsic:llvm.masked.load", todo(LATER), on(MASKED), "lane by lane (WP-208)"),
+    row("intrinsic:llvm.masked.store", todo(LATER), on(MASKED), "lane by lane (WP-208)"),
+    row("intrinsic:llvm.masked.expandload", todo(LATER), on(MASKED), "lane by lane (WP-208)"),
+    row("intrinsic:llvm.masked.compressstore", todo(LATER), on(MASKED), "lane by lane (WP-208)"),
 ];
+
+/// The value classes of the masked memory intrinsics' signatures
+/// (WP-208): the pointer, LLVM 19's alignment, the mask and the vectors.
+const MASKED: &[TypeClass] = &[TypeClass::Int, TypeClass::Ptr, TypeClass::Vector];
 
 /// The value classes of the x86 system and state intrinsics' signatures
 /// (WP-190): integers, pointers and the `{iN, iM}` results.

@@ -85,11 +85,14 @@ fn missing_sizes_are_named() {
     }
 }
 
-/// §6.8: a type scoped in a function that has no DIE (here, a retained
-/// type of a function that was not placed) is refused by name.
+/// §6.8: a type scoped in a block of a function that has no DIE (here, a
+/// retained type of a function that was not placed) is refused by name.
+/// One scoped in the function itself is under its abstract instance since
+/// WP-195 (§6.26).
 #[test]
 fn function_local_types_are_refused() {
-    let body = "!3 = !DIDerivedType(tag: DW_TAG_typedef, name: \"t\", scope: !4, file: !1, line: 3, baseType: !9)\n\
+    let body = "!3 = !DIDerivedType(tag: DW_TAG_typedef, name: \"t\", scope: !7, file: !1, line: 3, baseType: !9)\n\
+        !7 = distinct !DILexicalBlock(scope: !4, file: !1, line: 3, column: 1)\n\
         !4 = distinct !DISubprogram(name: \"f\", scope: !1, file: !1, line: 2, type: !5, scopeLine: 2, spFlags: DISPFlagDefinition, unit: !0)\n\
         !5 = !DISubroutineType(types: !6)\n\
         !6 = !{null}\n";

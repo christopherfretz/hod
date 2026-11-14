@@ -8,12 +8,11 @@
 //! and the type is its child; the function, placed later, fills that DIE.
 //! That is the early DIE functions' statics already get (WP-085,
 //! [`UnitPlan::static_parent`]) when the module has the function's code.
-//! A type local to a function without code here (`llc` 22 puts it under
-//! the abstract instance of a function that is only inlined, `llc` 19
-//! under an empty subprogram of its own, and a local type of an abstract
-//! instance is refused anyway, `debug:inlined-local-type`), to a block, or
-//! to a function that is not a definition of this unit stays refused as
-//! [`LOCAL_TYPE_SCOPE`].
+//! A type local to a function without code here is a child of the
+//! function's abstract instance, made there and then as `llc` 22 makes it
+//! (WP-195, §6.26; `llc` 19 makes an empty subprogram instead). A type
+//! local to a block, or to a function that is not a definition of this
+//! unit, stays refused as [`LOCAL_TYPE_SCOPE`].
 
 use hod_ir::{
     Body, DebugInfo, DiId, DiKind, DiNode, DiSubprogram, EmissionKind, ExprId, Module, SpFlags,
@@ -40,9 +39,8 @@ impl UnitPlan<'_> {
         if let Some(d) = crate::local_type::abstract_parent(self, scope) {
             return Ok(d);
         }
-        if !self.inline.has_body(scope) {
-            return Err(unsupported(of, LOCAL_TYPE_SCOPE));
-        }
+        // WP-195 (§6.26): a function without code here gets its abstract
+        // instance, as its static does (`static_parent`).
         self.static_parent(of, scope).map_err(|e| match e {
             Error::Unsupported { what: DEBUG_LOCAL_STATIC, .. } => {
                 unsupported(of, LOCAL_TYPE_SCOPE)

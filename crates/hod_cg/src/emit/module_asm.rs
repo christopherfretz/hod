@@ -30,8 +30,8 @@ use hod_asm::module::{
 };
 use hod_ir::{Linkage, SymId, SymbolKind as IrKind, TlsModel};
 use hod_obj::{
-    A64Reloc, Binding, RelocKind, SectionId, Symbol, SymbolId, SymbolKind, SymbolPlace,
-    Visibility, X64Reloc,
+    A64Reloc, Binding, RelocKind, SectionId, Symbol, SymbolId, SymbolKind, SymbolPlace, Visibility,
+    X64Reloc,
 };
 
 use super::section::{Found, Kind, NO_GROUP};

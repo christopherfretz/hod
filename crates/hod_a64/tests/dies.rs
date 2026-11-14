@@ -242,10 +242,11 @@ fn refusals_are_named() {
         (
             "debug:fragment",
             one_function(
-                "    #dbg_declare(ptr %a, !14, !DIExpression(DW_OP_LLVM_fragment, 0, 16), !15)",
+                // WP-230 (§6.32): a fragment of whole bytes is written.
+                "    #dbg_declare(ptr %a, !14, !DIExpression(DW_OP_LLVM_fragment, 0, 12), !15)",
                 PLAIN_SP,
             ),
-            "a fragment",
+            "a fragment of bits",
         ),
         (
             "debug:declare-address",

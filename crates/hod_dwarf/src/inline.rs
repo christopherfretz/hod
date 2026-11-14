@@ -599,7 +599,9 @@ impl UnitPlan<'_> {
             let mut tail: Vec<(u32, u32)> = self.locals[start..]
                 .iter()
                 .filter(|l| match l.what {
-                    LocalWhat::Var { .. } | LocalWhat::CoroVar { .. } => !value,
+                    LocalWhat::Var { .. }
+                    | LocalWhat::Pieces { .. }
+                    | LocalWhat::CoroVar { .. } => !value,
                     LocalWhat::List { .. } => value,
                     _ => false,
                 })

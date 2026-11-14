@@ -1100,12 +1100,12 @@ reports a `debug:*` name as itself and §6.5's unnamed shapes as
 | `debug:specification` | a member definition whose declaration is not among its class's elements (`llc` makes it on demand; member templates) |
 | `debug:specification-type` | a definition whose return type differs from its declaration's |
 | `debug:foreign-scope` | a variable or row in another function's scope |
-| `debug:fragment` | a `DW_OP_LLVM_fragment` in a declared variable's expression |
+| `debug:fragment` | a `DW_OP_LLVM_fragment` in a declared variable's expression, except a fragment of whole bytes alone on a slot (WP-230, §6.32) |
 | `debug:dbg-value-fragment`, `debug:dbg-value-expr` | a value record's expression with a fragment that is not byte aligned, or one §6.23 and §6.31 do not write (WP-162, WP-225) |
 | `debug:dbg-value-arglist`, `debug:dbg-value-coroutine` | a value record with a `DIArgList`; one in a coroutine body (`hod_cg`, §6.23) |
 | `debug:expression` | any other op that is not a plain DWARF op |
 | `debug:variable-without-type` | as named |
-| `debug:variable-twice` | a variable recorded twice in one instance of its scope, except slot after slot, which is located by the first (WP-195, §6.25) |
+| `debug:variable-twice` | a variable recorded twice in one instance of its scope, except slot after slot, which is located by the first (WP-195, §6.25), or by its fragments, and value records beside a slot, which are not used (WP-230, §6.32) |
 | `debug:variable-alignment` | an `alignas` parameter, or an unnamed one; an `alignas` variable of an abstract instance (§6.9). A named local's `alignment` is written since WP-087 (family 88, in bytes, after `name`) |
 | `debug:label-attribute` | no longer refused: every label is written since WP-098 (§6.14) |
 | `debug:object-pointer` | two `this` parameters |
@@ -1559,7 +1559,8 @@ declaration's),
 **`#dbg_value`** was refused (`debug:dbg-value`) until WP-162, which
 writes location lists for it (§6.23). `-O0` input from clang 19, clang
 22 and kiln++ has none; their `#dbg_declare` expressions are empty or
-`DW_OP_deref`, so `debug:fragment` stays refused.
+`DW_OP_deref`, so `debug:fragment` stays refused (but for a slot's
+fragment of whole bytes, which optimized input has, §6.32).
 
 **Tests** (`crates/hod_a64/tests/`, data in `data/dies_inline/`):
 - `dies_inline.rs`:
@@ -3400,13 +3401,46 @@ local whose storage clang promoted to a constant global
 `debug:declare-address` stays for an address the policy keeps in a
 register.
 
+**A declaration of a slot in fragments** (`crates/hod_dwarf/src/func.rs`
+`slot_place`). SROA, splitting part of an aggregate into values, leaves
+the rest declared on a slot as a fragment:
+`#dbg_declare(ptr %v, !t, !DIExpression(DW_OP_LLVM_fragment, 32, 96))`
+(294 records in the census, beside value records of the fragment
+0..32). Measured with `llc` 19 and 22 on both targets, in all three
+selectors, on a hand-written module: the variable's fragments on slots
+make one location (an `exprloc`, not a list), by fragment offset, each
+`DW_OP_fbreg o, DW_OP_piece n`, after `DW_OP_piece` of the bytes no
+fragment covers before it, and nothing for the bytes after the last
+(`DW_OP_piece 0x8, DW_OP_fbreg o, DW_OP_piece 0x4` for the bits 64..96
+of 128); a variable declared on a slot, with or without a fragment, has
+that location only, and its value records in the same instance are not
+used (`llc`'s frame table entities are `Processed` before the value
+history, `DwarfDebug::collectVariableInfo`; hod refused this as
+`debug:variable-twice` before); a fragment declared at `poison` is
+dropped as any constant address, and its value records describe the
+variable. hod writes the same: a declaration expression that is a
+fragment of whole bytes alone is accepted (the early check, §6.13, and
+`collect_entities`), the slots of one instance are gathered by fragment
+offset into `UnitPlan::frame_pieces` (`LocalWhat::Pieces`), and a
+repeated declaration of one fragment on one slot is one piece. Still
+`debug:fragment`: a fragment of bits (`DW_OP_bit_piece` in `llc`), a
+fragment after other operations, a fragment beside a whole declaration
+of the variable, and two fragments that overlap; and a fragment on a
+declared value (§6.30) or a coroutine variable.
+
 **Tests.** `crates/hod/tests/dbg_value.rs` `arglists_are_written` (both
 targets, plain and split: a scaled index, a narrow difference, `shra`
 on narrow values left out, a conversion of a narrow value, constants,
 `poison`, a fragment beside a single record's, a single value named by
 `DW_OP_LLVM_arg`, one value named twice) and `refusals_are_named`;
-session `tests/debug/dbg_value_arglist.c` (clang `-O1`: a pointer and a
-difference described by argument lists). Evidence:
+`crates/hod/tests/declare_undef.rs` (the constant addresses);
+`crates/hod/tests/declare_fragment.rs` (fragments on slots, a variable
+with a slot's fragment and value records, a fragment at `poison`, both
+targets, against `llc` 22; the refusals); sessions
+`tests/debug/dbg_value_arglist.c` (clang `-O1`: a pointer and a
+difference described by argument lists) and
+`tests/debug/declare_fragment.c` (an insertion sort's element whose
+array stays in memory). Evidence:
 `spec/landed/dwarf/WP-230.md`.
 
 ## 7. Speed and memory

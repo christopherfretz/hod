@@ -26,7 +26,7 @@ for rel in "$@"; do
     fi
     js="$HOD_OSS_ROOT/$HOD_X64_PREFIX$f/logs/unit-$stage-$name.json"
     rm -f "$js"
-    (cd "$(dirname "$b")" && ulimit -v 8000000 && timeout "${HOD_X64_UNIT_TIMEOUT:-7200}" nice -n 10 "$HOD_X64_QEMU" -L "$HOD_X64_SYSROOT" "$b" --gtest_output="json:$js" \
+    (cd "$(dirname "$b")" && ulimit -v 8000000 && timeout "${HOD_X64_UNIT_TIMEOUT:-7200}" nice -n 10 python3 "$HOD_OSS_TOKEN_PY" "$HOD_X64_QEMU" -L "$HOD_X64_SYSROOT" "$b" --gtest_output="json:$js" \
       > "$HOD_OSS_ROOT/$HOD_X64_PREFIX$f/logs/unit-$stage-$name.log" 2>&1)
     rc=$?
     python3 - "$js" "$rc" > "$lst" <<'EOF'

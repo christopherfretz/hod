@@ -39,6 +39,13 @@ case "$name" in
   *) echo "wrap.sh: run me as kiln-{hod,llc}-{cxx,cc}, not $name" >&2; exit 2 ;;
 esac
 tree="$HOD_OSS_ROOT/${HOD_X64_PREFIX:-llvm-x64-}$flavour"
+# One token of the lanes pool per compile or link (WP-222): ninja is not
+# a jobserver client, so the wrapper takes it (../llvm/lane-token.py,
+# MAKEFLAGS from env.sh) and hod inside counts it as its implicit one.
+if [ -z "${HOD_OSS_TOKEN:-}" ]; then
+  export HOD_OSS_TOKEN=1
+  exec python3 "$(dirname "$(readlink -f "$0")")/../llvm/lane-token.py" "$0" "$@"
+fi
 mkdir -p "$tree/logs"
 export KILN_OSS_LOG="$tree/logs/tu.jsonl"
 export KILN_OSS_PHASE="${HOD_OSS_PHASE:-build}"

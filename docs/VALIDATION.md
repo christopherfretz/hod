@@ -298,6 +298,14 @@ with the cross settings:
   (`LLVM_CONFIG_PATH`, `LLVM_NM`, `LLVM_READOBJ`), so no `NATIVE`
   sub-build is configured;
 - links get 16 GB of address space (mold maps -O0 archives whole);
+- job slots (WP-222, both `scripts/oss/llvm/` and `llvm-x64/`): ninja is
+  not a jobserver client, so the compiler wrapper takes one token of the
+  real-project pool (`MAKEFLAGS`, set by the scripts' `env.sh` to
+  `/run/hod/lanes.fifo`) per compile or link, and `lit.sh` (4) and
+  `unittests.sh` (1) take theirs, through `scripts/oss/llvm/lane-token.py`:
+  a blocking read of one byte per token, the same bytes written back once
+  on every exit (also SIGINT, SIGTERM, SIGHUP); hod inside counts the
+  first as its implicit slot. ninja's `-j` stays the upper bound;
 - tests: the container has no `binfmt_misc` entry, so unit-test binaries
   run as `qemu-x86_64 -L /usr/x86_64-linux-gnu <binary>`
   (`unittests.sh`), and `qemu-tools.sh` replaces each x86-64 tool of

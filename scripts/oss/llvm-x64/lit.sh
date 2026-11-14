@@ -27,7 +27,7 @@ for slice in "$@"; do
     js="$HOD_OSS_ROOT/$HOD_X64_PREFIX$f/logs/lit-$key.json"
     rm -f "$js"
     start=$(date +%s)
-    (ulimit -v 16000000 && timeout 10800 nice -n 10 python3 "$b/bin/llvm-lit" -sv -j 4 -o "$js" "${paths[@]:-$b/$slice}" \
+    (ulimit -v 16000000 && timeout 10800 nice -n 10 python3 "$HOD_OSS_TOKEN_PY" -n 4 python3 "$b/bin/llvm-lit" -sv -j 4 -o "$js" "${paths[@]:-$b/$slice}" \
       > "$HOD_OSS_ROOT/$HOD_X64_PREFIX$f/logs/lit-$key.log" 2>&1)
     rc=$?
     echo "lit-$key $start $(date +%s) $rc" >> "$HOD_OSS_ROOT/$HOD_X64_PREFIX$f/logs/stages.txt"

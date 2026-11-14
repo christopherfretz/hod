@@ -51,6 +51,7 @@ CATCH_ALL_RE = re.compile(r"^All tests passed \(\d+ assertions? in (\d+) test ca
 CATCH_RULE_RE = re.compile(r"^-{79}\s*$")
 CATCH_DOTS_RE = re.compile(r"^\.{79}\s*$")
 CATCH_LIST = "catch-tests.log"
+CATCH_PROGRESS_RE = re.compile(r"^\[\d+/\d+\] \(\d+%\): (.+)$")
 # The reason name of a hod refusal as a directory name (hod-shim's rule).
 SAFE_RE = re.compile(r"[^A-Za-z0-9:_.+-]")
 
@@ -285,7 +286,13 @@ def catch_results(lines, list_path):
     case of `list_path` (the row's `--list-test-names-only` output, when
     the test command wrote one) not failed is `Passed`. A progress line
     ending in a carriage return is split there."""
-    parts = [p for l in lines for p in l.split("\r")]
+    parts = []
+    for p in (p for l in lines for p in l.split("\r")):
+        # A failed case's rule printed after a progress line without its newline.
+        if len(p) > 79 and p.endswith("-" * 79) and not CATCH_RULE_RE.match(p):
+            parts += [p[:-79], "-" * 79]
+        else:
+            parts.append(p)
     totals = None
     for i in range(len(parts) - 1, -1, -1):
         m = CATCH_RE.match(parts[i].strip())
@@ -309,12 +316,21 @@ def catch_results(lines, list_path):
             # The rule after the name (and its sections), then file:line and dots.
             if j + 2 < len(parts) and CATCH_DOTS_RE.match(parts[j + 2]):
                 failed.add(parts[i + 1].strip())
+    # The cases that ran: duckdb's progress lines (`[n/N] (p%): <case>`);
+    # the case running when the program died has its output glued on.
+    ran = [m.group(1) for m in (CATCH_PROGRESS_RE.match(p) for p in parts) if m]
+    ran_set = set(ran)
     per = {}
     try:
         with open(list_path, encoding="utf-8", errors="replace") as f:
-            per = {l.strip(): "Passed" for l in f if l.strip()}
+            names = [l.strip() for l in f if l.strip()]
     except FileNotFoundError:
-        pass
+        names = []
+    for t in names:
+        if not ran or t in ran_set or any(r.startswith(t) for r in ran[-1:]):
+            per[t] = "Passed"
+        else:
+            per[t] = "Not Run"
     for t in failed:
         per[t] = "Failed"
     return totals[0], totals[1], per

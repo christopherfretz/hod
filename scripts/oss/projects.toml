@@ -523,6 +523,10 @@ test = "test/unittest --list-test-names-only > catch-tests.log 2>/dev/null; DUCK
 test_timeout = 14400
 # unittest links libduckdb_static.a (about 830 MB at -O0 -g0, several GB with -g).
 link_vmem_kb = 12000000
+# Under 3 GB the control's unittest runs out of address space (16 MB block
+# allocations fail, thread creation EAGAIN, an abort in a concurrent test):
+# jemalloc and duckdb's threads reserve far more address space than they use.
+test_vmem_kb = 16000000
 c_compiler = "clang-19"
 wave = 4
 notes = "WP-223, from kiln's row (WP-799): release v1.5.6, default extensions (core_functions, parquet), not the amalgamation, DISABLE_UNITY so every source is a TU (shims/duckdb-no-unity.cmake: v1.5.6's allocator_jemalloc.cpp lacks an include then, clang 19 rejects it alike). The test is unittest with no arguments (the default, non-slow, Catch2 and sqllogictest cases), at most 4 threads per database; the per-case results come from Catch's failure headers and the --list-test-names-only list."

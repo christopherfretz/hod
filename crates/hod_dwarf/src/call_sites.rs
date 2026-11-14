@@ -267,6 +267,11 @@ impl UnitPlan<'_> {
             return Err(unsupported(callee, DEBUG_CALL_SITE_ORIGIN));
         }
         let parent = self.subprogram_parent(callee, &c)?;
+        // WP-195: made meanwhile, through its declaration (§6.25).
+        let made = self.slot[callee.index()];
+        if made != NONE {
+            return Ok(made);
+        }
         let die = self.push(callee, parent, Kind::Subprogram);
         self.inline.mark_early(die);
         self.calls.early.push(die);

@@ -290,6 +290,11 @@ const RSP_RELATIVE: &str = "DW_AT_location DW_OP_breg7";
 /// slot of a realigned frame from `x29`, so `llc` names it from `sp`
 /// (DWARF 31) while the frame base stays `DW_OP_reg29`.
 const SP_RELATIVE: &str = "DW_AT_location DW_OP_breg31";
+/// WP-195: the same for a variable whose address is in a slot (an sret
+/// or byval pointer, an over-aligned slot), `llc` naming the slot from
+/// `rsp` or `sp`, hod from the frame base.
+const RSP_RELATIVE_DEREF: &str = "DW_AT_location DW_OP_breg7, DW_OP_deref";
+const SP_RELATIVE_DEREF: &str = "DW_AT_location DW_OP_breg31, DW_OP_deref";
 
 /// The class that permits hod's location `h` where `llc` writes `l` in
 /// a DIE tagged `tag` (`spec/dwarf.md` §6.7 and §6.17), if any. `lists`:
@@ -313,7 +318,10 @@ fn location_class(
         // function's guarded block, which hod reaches through its pointer
         // slot and `llc` names directly.
         (SRET_HOD, IN_SLOT) if protected => Some("stack protector"),
-        (SRET_HOD | IN_SLOT, RSP_RELATIVE | SP_RELATIVE) => Some("realigned frame"),
+        // WP-195: also a pointer slot `llc` names from the stack pointer
+        // and dereferences.
+        (SRET_HOD | IN_SLOT, RSP_RELATIVE | SP_RELATIVE)
+        | (SRET_HOD, RSP_RELATIVE_DEREF | SP_RELATIVE_DEREF) => Some("realigned frame"),
         _ => None,
     }
 }
@@ -993,6 +1001,19 @@ mod tests {
             );
         }
         assert_eq!(location_class("DW_TAG_member", IN_SLOT, SP_RELATIVE, false, false), None);
+    }
+
+    /// WP-195: a variable whose address is in a slot, the slot named
+    /// from `sp` or `rsp` by `llc`; a direct slot there is a difference.
+    #[test]
+    fn realigned_indirect_places_are_permitted() {
+        for l in [RSP_RELATIVE_DEREF, SP_RELATIVE_DEREF] {
+            assert_eq!(
+                location_class("DW_TAG_variable", SRET_HOD, l, false, false),
+                Some("realigned frame")
+            );
+            assert_eq!(location_class("DW_TAG_variable", IN_SLOT, l, false, false), None);
+        }
     }
 
     #[test]

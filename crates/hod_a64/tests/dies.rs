@@ -200,6 +200,11 @@ const PLAIN_SP: &str = "!10 = distinct !DISubprogram(name: \"f\", linkageName: \
 fn refusal(text: &str) -> CgError {
     let (module, bodies) = parse(text);
     match compile_to_object(&module, &bodies, &Options::default()) {
+        // A `debug:` refusal carries its node's detail (WP-195).
+        Err(
+            ModuleError::Emit(CgError::UnsupportedDetail { construct, .. })
+            | ModuleError::Function { error: CgError::UnsupportedDetail { construct, .. }, .. },
+        ) => CgError::unsupported(construct),
         Err(ModuleError::Emit(e) | ModuleError::Function { error: e, .. }) => e,
         other => panic!("{:?}\n{text}", other.map(|b| b.len())),
     }

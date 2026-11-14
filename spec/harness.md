@@ -4025,7 +4025,12 @@ root.
 
 **Pages.** `oss-report.py status` prints `docs/status/oss.md`: a row per
 project and flavour (TUs, objects, built by hod, fell back, not offered,
-the hybrid and strict builds, passed/total tests per mode, the tests that
+the hybrid and strict builds: `TUs` are the build step's, from the
+wrapper's log; `objects` are the `-c` jobs of kiln's statistics log, which
+spans the build and the test steps, so a TU compiled for two targets is
+two objects, a test step's compiles are counted, and a job kiln's front end
+rejected appears as `(n no backend)`; compile-and-link jobs are not
+objects; passed/total tests per mode, the tests that
 do worse or better than the control, the hod binary of the hod and
 strict builds, by file name (a frozen copy is `hod-<commit>`), and the
 kiln commit of the row's builds, each report's `kiln`: `$HOD_OSS_KILN`,

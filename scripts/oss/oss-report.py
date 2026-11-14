@@ -136,6 +136,15 @@ def diff_tests(ctl, r):
     return worse, better
 
 
+def objects_cell(c):
+    """The statistics log's object jobs, with those no back end ran for
+    (kiln's front end rejected them) named, since no other column counts them."""
+    if not c:
+        return "-"
+    none = c.get("backends", {}).get("none", 0)
+    return f"{c.get('objects', '-')} ({none} no backend)" if none else f"{c.get('objects', '-')}"
+
+
 def hod_cell(*rs):
     """The hod binaries of the hod and strict builds (a frozen copy's name
     carries its commit: `hod-<sha>`)."""
@@ -193,7 +202,7 @@ def status_rows(reps, notes=None):
             elif reran:
                 diffs.append(", ".join(f"note {n}" for n in reran))
             out.append(
-                f"| {p} | {fl} | {ref['tus']['total']} | {c.get('objects', '-')} | {be.get('hod', '-') if c else '-'} | "
+                f"| {p} | {fl} | {ref['tus']['total']} | {objects_cell(c)} | {be.get('hod', '-') if c else '-'} | "
                 f"{fell if c else '-'} | {no if c else '-'} | {build_cell(h)} | {build_cell(s)} | "
                 f"{test_cell(l)} | {test_cell(h)} | {test_cell(s)} | {'; '.join(diffs) or '-'} | {hod_cell(h, s)} | {kiln_cell(l, h, s)} |"
             )
@@ -466,8 +475,15 @@ def main():
         "(docs/VALIDATION.md \"Real projects (L9)\"): each project built through its own "
         "build system with kiln at `-O0` (flavour `O0`) and `-O0 -g` (`O0g`), three ways: "
         "`llc` (kiln's LLVM back end, the control), `hod` (kiln with hod, falling back to llc "
-        "where hod declines), `strict` (no fallback). `objects`: the objects kiln made in the "
-        "hybrid build; `fell back`: offered to hod and declined or failed; `not offered`: "
+        "where hod declines), `strict` (no fallback). `TUs`: the translation units of the build "
+        "step (the compile wrapper's log). `objects`: the object jobs (`-c`) in kiln's statistics "
+        "log of the hybrid build, which covers the build and the test steps, so it counts a TU "
+        "compiled for several targets once per target and the compiles a project's tests run "
+        "(compile-failure tests, package tests); `no backend` among them: jobs kiln's front end "
+        "rejected before any back end ran (a compile-failure test's expected rejection), "
+        "counted in no later column. Compile-and-link jobs (`kiln++ x.cc -o prog`) are not "
+        "objects and are not counted. `built by hod`: objects whose `backend` is `hod`; "
+        "`fell back`: offered to hod and declined or failed; `not offered`: "
         "kiln took the LLVM route itself (an `opt` trigger). Tests: passed/total (ctest).",
     ]
     hosts = sorted({r.get("host", "") for r in reps.values()} - {""})

@@ -3941,8 +3941,17 @@ It needs the network (it clones) and never runs in the gate.
 
 **Rows.** `scripts/oss/projects.toml` has kiln's format: a row copied
 from kiln's file works unchanged (the keys the lane does not use are
-accepted and ignored), but only `build = "cmake"` rows are driven; any
-other build system is an error naming the row.
+accepted and ignored), but only `build = "cmake"` and `build =
+"autotools"` rows are driven; any other build system is an error naming
+the row. An autotools row (WP-223) runs the project's `configure` in
+`source_subdir` from the build tree, with `CC`, `CXX` the wrappers',
+`CFLAGS` the flavour's and `CXXFLAGS` the flavour's with `-std=c++<cxx_std>`
+(and `--prefix` for a dependency build, installed by `make install`); it
+builds natively only and takes no `deps`. A test log that is Catch2's
+console output (duckdb's `unittest`) is read for its totals and the
+failed cases' names; the row's test command writes the list of every case
+(`--list-test-names-only`) to `catch-tests.log`, and the cases of it that
+did not fail are the passed ones.
 
 **One build** (`oss-build.sh <project> --mode M --flavour F`) is a tree
 `<root>/build/<project>/<F>-<M>/` (`<root>`: `$HOD_OSS_ROOT`, else

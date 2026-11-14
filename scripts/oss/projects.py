@@ -3,7 +3,7 @@
 
 A port of kiln's scripts/oss/projects.py (kiln:spec/landed/harness/
 WP-666.md): the same projects.toml format, the same `shell` and
-`report-json` commands, reduced to the cmake rows the lane drives, and a
+`report-json` commands, reduced to the cmake and autotools rows the lane drives, and a
 report that adds the lane's mode and flavour, hod's census of the build
 and the project's per-test results.
 
@@ -28,7 +28,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 TOML = os.path.join(HERE, "projects.toml")
 
 REQUIRED = ("url", "tag", "build", "cxx_std", "test")
-BUILDS = ("cmake",)
+BUILDS = ("cmake", "autotools")
 MODES = ("llc", "hod", "strict")
 FLAVOURS = {"O0": "-O0 -g0", "O0g": "-O0 -g"}
 # What a build is for (oss-build.sh --target): aarch64 native, x86_64
@@ -62,7 +62,7 @@ def load(path=TOML):
         if missing:
             raise SystemExit(f"{path}: [{name}] lacks {', '.join(missing)}")
         if p["build"] not in BUILDS:
-            raise SystemExit(f"{path}: [{name}] build must be one of {BUILDS} (the lane drives cmake rows only)")
+            raise SystemExit(f"{path}: [{name}] build must be one of {BUILDS} (the lane drives cmake and autotools rows)")
         p.setdefault("configure", [])
         p.setdefault("build_targets", [])
         p.setdefault("c_compiler", "clang-19")
@@ -244,8 +244,32 @@ def test_results(log_path):
     catch = catch_results(lines, os.path.join(os.path.dirname(log_path), CATCH_LIST))
     if catch:
         return catch
+    icu = icu_results(lines)
+    if icu:
+        return icu
     last = next((l.strip() for l in reversed(lines) if l.strip()), "")
     return last, None, per
+
+
+def icu_results(lines):
+    """ICU4C's `make check` (test/Makefile's check-recursive): the last
+    `ALL TESTS SUMMARY:` block, `All tests OK: <suites>` or `ok: <suites>`
+    then `===== ERRS: <suites>`, one status per test suite (intltest,
+    cintltst, iotest, ...). None for another log."""
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i].strip() != "ALL TESTS SUMMARY:":
+            continue
+        per = {}
+        for l in lines[i + 1:i + 3]:
+            for prefix, status in (("All tests OK:", "Passed"), ("ok:", "Passed"), ("===== ERRS:", "Failed")):
+                if l.startswith(prefix):
+                    per.update({t: status for t in l[len(prefix):].split()})
+        if not per:
+            return None
+        failed = sum(1 for s in per.values() if s != "Passed")
+        return lines[i + 1].strip() + (f"; {lines[i + 2].strip()}" if failed else ""), \
+            {"passed": len(per) - failed, "failed": failed, "total": len(per)}, per
+    return None
 
 
 def catch_results(lines, list_path):

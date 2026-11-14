@@ -12,7 +12,8 @@
 #
 #   url            git URL (cloned with --depth 1 --branch <tag>)
 #   tag            pinned release tag
-#   build          cmake (the only build system the lane drives today)
+#   build          cmake, or autotools (a committed or generated `configure`
+#                  in source_subdir, run out of source; native builds only)
 #   cxx_std        CMAKE_CXX_STANDARD
 #   configure      extra configure flags, a list
 #   build_targets  optional list of make targets (default: all)
@@ -518,3 +519,19 @@ test_timeout = 14400
 c_compiler = "clang-19"
 wave = 4
 notes = "WP-223, from kiln's row (WP-799): release v1.5.6, default extensions (core_functions, parquet), not the amalgamation, DISABLE_UNITY so every source is a TU. The test is unittest with no arguments (the default, non-slow, Catch2 and sqllogictest cases), at most 4 threads per database; the per-case results come from Catch's failure headers and the --list-test-names-only list."
+
+[icu4c]
+url = "https://github.com/unicode-org/icu"
+tag = "release-79.1"
+build = "autotools"
+source_subdir = "icu4c/source"
+checkout = "icu"
+cxx_std = 17
+c = "kiln"
+configure = ["--disable-samples", "--enable-tests"]
+# ICU's own test suites (test/Makefile's check-recursive: intltest,
+# cintltst, iotest, ...); the result is the ALL TESTS SUMMARY block.
+test = "make -k check"
+test_timeout = 7200
+wave = 4
+notes = "WP-223. ICU4C through its committed configure (autotools row), out of source; C (common's C parts, stubdata, cintltst) through kiln-cc. Tests: make check, one result per suite."

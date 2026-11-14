@@ -5,7 +5,7 @@
 # hod's real-project lane (docs/VALIDATION.md "Real projects (L11)",
 # spec/harness.md "Real projects"). A port of kiln's scripts/oss/oss-build.sh
 # (kiln:spec/landed/harness/WP-666.md): builds one row of
-# scripts/oss/projects.toml through its own build system (cmake) with kiln
+# scripts/oss/projects.toml through its own build system (cmake, or autotools) with kiln
 # as the compiler (scripts/oss/kiln-cxx, and scripts/oss/kiln-cc for a
 # `c = "kiln"` row), runs its tests, and writes
 # <root>/build/<project>/<flavour>-<mode>/report.json. Changed from kiln's:
@@ -264,23 +264,38 @@ T0=$(date +%s.%N)
 BUILD_RC="" TEST_RC=""
 export KILN_OSS_PHASE=configure
 backend_env configure
+if [ "$P_BUILD" = autotools ]; then
+  # Out of source, the project's own configure (kiln's autotools rows,
+  # WP-920 there), told the compilers and the flavour's flags; native only,
+  # and no deps (nothing to point it at).
+  if [ "$TARGET" != aarch64 ] || [ ${#PREFIXES[@]} -gt 0 ]; then
+    echo "oss-build: $PROJECT: an autotools row builds natively and without deps" > "$BUILD/configure.log"; CONF_RC=2
+  else
+    (cd "$BUILD" && nice -n 10 "$SRCDIR/configure" CC="$P_C_COMPILER" CXX="$HERE/kiln-cxx" \
+      CFLAGS="$FLAGS" CXXFLAGS="$FLAGS -std=c++$P_CXX_STD" ${INSTALL:+"--prefix=$INSTALL"} \
+      "${P_CONFIGURE[@]}") > "$BUILD/configure.log" 2>&1
+    CONF_RC=$?
+  fi
+else
 nice -n 10 cmake --fresh -S "$SRCDIR" -B "$BUILD" -G "Unix Makefiles" \
   -DCMAKE_CXX_COMPILER="$HERE/kiln-cxx" -DCMAKE_C_COMPILER="$P_C_COMPILER" \
   -DCMAKE_CXX_STANDARD="$P_CXX_STD" -DCMAKE_BUILD_TYPE=Debug \
   "-DCMAKE_CXX_FLAGS_DEBUG=$FLAGS" "-DCMAKE_C_FLAGS_DEBUG=$FLAGS" \
   "${XCONF[@]}" "${P_CONFIGURE[@]}" > "$BUILD/configure.log" 2>&1
 CONF_RC=$?
+fi
 echo "oss-build: configure rc=$CONF_RC ($BUILD/configure.log)"
 
 if [ "$CONF_RC" = 0 ]; then
   export KILN_OSS_PHASE=build
   backend_env build
-  nice -n 10 make -C "$BUILD" clean > /dev/null 2>&1
+  [ "$P_BUILD" = autotools ] || nice -n 10 make -C "$BUILD" clean > /dev/null 2>&1
   nice -n 10 make -k "${JFLAG[@]}" -C "$BUILD" "${P_BUILD_TARGETS[@]}" > "$BUILD/build.log" 2>&1
   BUILD_RC=$?
   echo "oss-build: build rc=$BUILD_RC ($BUILD/build.log)"
   if [ -n "$INSTALL" ]; then
-    [ "$BUILD_RC" = 0 ] && nice -n 10 cmake --install "$BUILD" >> "$BUILD/build.log" 2>&1 && date -u > "$INSTALL/.oss-installed" || BUILD_RC=1
+    inst=(cmake --install "$BUILD"); [ "$P_BUILD" != autotools ] || inst=(make -C "$BUILD" install)
+    [ "$BUILD_RC" = 0 ] && nice -n 10 "${inst[@]}" >> "$BUILD/build.log" 2>&1 && date -u > "$INSTALL/.oss-installed" || BUILD_RC=1
     echo "oss-build: install into $INSTALL rc=$BUILD_RC"
   fi
   if [ -n "$RUN_TEST" ]; then

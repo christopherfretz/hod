@@ -255,14 +255,21 @@ pub struct ModuleCode {
     pub symbols: Vec<Symbol>,
     /// The `.symver` directives, in order.
     pub symvers: Vec<Symver>,
+    /// The strings of the `.ident` directives, in order. LLVM's assembler
+    /// (`MCELFStreamer::emitIdent`) writes them to `.comment`
+    /// (`SHF_MERGE | SHF_STRINGS`, entries of 1 byte): a NUL byte before
+    /// the first, each NUL-terminated. The bytes as written between the
+    /// quotes: no escape is read.
+    pub idents: Vec<Vec<u8>>,
 }
 
 impl ModuleCode {
     /// Whether the text writes nothing but symbol effects: no byte, no
-    /// alignment beyond `.text`'s own, no label.
+    /// alignment beyond `.text`'s own, no label, no `.ident`.
     pub fn is_empty(&self) -> bool {
         self.sections.iter().all(|s| s.size == 0 && s.relocs.is_empty())
             && self.symbols.iter().all(|s| s.def == Def::Undefined)
+            && self.idents.is_empty()
     }
 }
 
@@ -843,6 +850,7 @@ impl State<'_> {
             ".quad" | ".xword" | ".8byte" => self.values(rest, 8),
             ".ascii" => self.strings(rest, false),
             ".asciz" | ".string" => self.strings(rest, true),
+            ".ident" => self.ident(rest),
             ".zero" => {
                 let mut c = Cursor::new(rest);
                 let n = c.constant()?;
@@ -1048,6 +1056,37 @@ impl State<'_> {
             }
             self.data(&bytes)?;
         }
+        Ok(())
+    }
+
+    /// `.ident "string"`: recorded for `.comment` ([`ModuleCode::idents`]);
+    /// the current section is not touched. The bytes are the ones between
+    /// the quotes as written: LLVM's parser takes the token's text and
+    /// reads no escape (`ELFAsmParser::parseDirectiveIdent`), so a
+    /// backslash and the byte after it are two bytes of the string.
+    fn ident(&mut self, rest: &str) -> R<()> {
+        let parts = split_commas(rest);
+        let [part] = parts.as_slice() else {
+            return fail(op_reason::FORM);
+        };
+        let inner = part
+            .strip_prefix('"')
+            .and_then(|t| t.strip_suffix('"'))
+            .filter(|_| part.len() >= 2)
+            .ok_or(Refusal(op_reason::SYNTAX))?;
+        // The lexer ends a string at the first quote no backslash
+        // precedes: one inside, or a backslash before the last, is not
+        // one string.
+        let bytes = inner.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'\\' if i + 1 < bytes.len() => i += 2,
+                b'\\' | b'"' => return fail(op_reason::SYNTAX),
+                _ => i += 1,
+            }
+        }
+        self.out.idents.push(bytes.to_vec());
         Ok(())
     }
 
@@ -1400,5 +1439,27 @@ mod tests {
     fn directives_only_is_empty() {
         assert!(asm(".globl u\n.hidden u").unwrap().is_empty());
         assert!(!asm("nop").unwrap().is_empty());
+    }
+
+    /// `.ident "string"` records the string for `.comment`, in order, on
+    /// both targets, and leaves the current section alone; it is not an
+    /// empty text. One string operand only.
+    #[test]
+    fn ident_strings() {
+        // No escape is read: the bytes between the quotes, as `llc` keeps
+        // them.
+        let m = asm(".ident \"a tool 1.0\"\n.ident \"b\\x41\\\"c\"\nnop").unwrap();
+        assert_eq!(m.idents, vec![b"a tool 1.0".to_vec(), b"b\\x41\\\"c".to_vec()]);
+        assert!(asm(".ident \"a\\\"").is_err());
+        assert!(asm(".ident \"a\"b\"").is_err());
+        assert_eq!(m.sections.len(), 1);
+        assert_eq!(m.sections[0].name, ".text");
+        assert!(!asm(".ident \"x\"").unwrap().is_empty());
+        let mut x = ModuleCode::default();
+        assemble_module_x64(".ident \"x\"\n.globl _ZSt21ios_base_library_initv", &mut x).unwrap();
+        assert_eq!(x.idents, vec![b"x".to_vec()]);
+        assert!(asm(".ident").is_err());
+        assert!(asm(".ident \"a\", \"b\"").is_err());
+        assert!(asm(".ident a").is_err());
     }
 }

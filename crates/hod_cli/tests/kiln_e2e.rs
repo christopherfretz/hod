@@ -237,14 +237,14 @@ const CONTAINERS_PRINTS: &str =
 
 /// Why hod declines `MODULE_ASM`: the assembler of either target names
 /// the directive (x86-64 reads file-scope `asm` since WP-204).
-const MODULE_ASM_REASON: &str = "asm:directive/ident";
+const MODULE_ASM_REASON: &str = "asm:directive/uleb128";
 
 /// File-scope `asm` with a directive hod's assembler does not read
-/// (`.ident`, `asm:directive/ident`, `spec/asm.md` §9): a module hod
+/// (`.uleb128`, `asm:directive/uleb128`, `spec/asm.md` §9): a module hod
 /// declines, so the fallback path stays tested.
 const MODULE_ASM: &str = r#"
 #include <cstdio>
-asm(".globl hod_e2e_marker\n.set hod_e2e_marker, 0x2a\n.ident \"hod e2e\"");
+asm(".globl hod_e2e_marker\n.set hod_e2e_marker, 0x2a\n.uleb128 42");
 [[gnu::always_inline]] inline int twice(int value) { return value + value; }
 int main() {
     std::printf("module asm %d\n", twice(21));

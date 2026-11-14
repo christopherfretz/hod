@@ -148,6 +148,13 @@ const CASES: &[(&str, &str, &str)] = &[
         "define void @D() {\n  ret void\n}\n@V = global i32 3\n",
     ),
     ("directives-on-declaration", ".weak U\n.text\nbl U\n", "declare void @U()\n"),
+    // WP-231 (`spec/asm.md` §9): `.ident` strings go to `.comment`, in
+    // order, whatever section is current.
+    (
+        "ident",
+        ".ident \"first tool 1.0\"\n.data\n.globl iv\niv: .long 7\n.ident \"second\\twith \\x41 and \\\" kept\"\n",
+        "define void @user() {\n  ret void\n}\n",
+    ),
     // WP-212 (`spec/asm.md` §15): `.symver` as on x86-64 (the case of
     // the same name in [`X64_CASES`]).
     (
@@ -420,6 +427,12 @@ const X64_CASES: &[(&str, &str, &str)] = &[
         "define void @D() {\n  ret void\n}\n@V = global i32 3\n",
     ),
     ("directives-on-declaration", ".weak U\n.text\ncall U\n", "declare void @U()\n"),
+    // WP-231: as the AArch64 case of the same name.
+    (
+        "ident",
+        ".ident \"first tool 1.0\"\n.data\n.globl iv\niv: .long 7\n.ident \"second\\twith \\x41 and \\\" kept\"\n",
+        "define void @user() {\n  ret void\n}\n",
+    ),
     // `.symver`: an alias of a defined name, a rename with `@@@` or of
     // an undefined name, nothing for an unreferenced undefined one.
     // (`@@@` renames a text label here: the borrowed code of a module

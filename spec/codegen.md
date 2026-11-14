@@ -1723,7 +1723,7 @@ It lowers the AArch64 target intrinsics on `hod_ir`'s list (§5.5,
 `bfcvtn`, `bfcvtn2`, `bfdot`, `bfmlalb`, `bfmlalt`, `bfmmla`) are on the
 list with a matrix row that is not supported, so they stay
 `intrinsic:<name>` (vectors of `bfloat` are not lowered; the scalar is,
-WP-095 below).
+WP-095 below; the structure loads and stores move them, §5.6.34).
 
 - **Target features.** Like `crc32` (WP-084), an intrinsic is lowered
   whatever the function's `target-features` say: a feature is
@@ -4366,6 +4366,83 @@ without them: the code of the x86-64 baseline is unchanged).
    `llvm.x86.*` name not listed. AArch64 refuses every `llvm.x86.*` name.
 
 Evidence: `spec/landed/codegen/WP-202.md`.
+
+#### 5.6.34 The AArch64 intrinsic headers, built and refused (WP-205)
+
+What reaches the back end from every function and function-like macro of
+`<arm_neon.h>`, `<arm_fp16.h>` and `<arm_acle.h>` that clang 19 or 22
+compiles at `-O0` (one wrapper each, the features clang asks for added;
+`crates/hod_a64/tests/data/neon_census/census.py`), and what hod does
+with it (`census.tsv` there: one line per `llvm.*` name or IR
+instruction, the header functions that reach it, how many hod builds).
+A function counts as built when `hod --strict` writes an object for it
+under every clang that compiles it.
+
+| group | functions | built before | built after | refused |
+|---|---|---|---|---|
+| arithmetic | 810 | 810 | 810 | 0 |
+| load-store | 746 | 746 | 746 | 0 |
+| convert | 659 | 623 | 659 | 0 |
+| lane | 496 | 496 | 496 | 0 |
+| saturating | 371 | 369 | 371 | 0 |
+| compare | 302 | 302 | 302 | 0 |
+| fp8, lut, faminmax | 275 | 184 | 184 | 91 |
+| shift | 210 | 210 | 210 | 0 |
+| bf16 | 169 | 108 | 156 | 13 |
+| polynomial | 145 | 145 | 145 | 0 |
+| pairwise, reduce, table | 244 | 244 | 244 | 0 |
+| complex (`fcma`) | 70 | 70 | 70 | 0 |
+| min-max | 52 | 48 | 52 | 0 |
+| dot, matrix multiply | 39 | 25 | 25 | 14 |
+| rdm, fp16fml | 60 | 60 | 60 | 0 |
+| sha2, sha3, aes, crc | 46 | 46 | 46 | 0 |
+| sm3, sm4 | 9 | 0 | 9 | 0 |
+| ACLE scalar | 31 | 21 | 30 | 1 |
+| ACLE system | 19 | 9 | 9 | 10 |
+| all | 4753 | 4516 | 4624 | 129 |
+
+The fp8 group's 184 built are its functions without an fp8 type (the
+`mf8` loads, stores and lane moves, which are bytes). 130 header
+functions compile under neither clang for AArch64 (the AArch32 DSP and
+coprocessor functions, `__arm_rsr`/`__arm_wsr` and the MTE macros with
+non-constant operands, `vcmla*_f64`); they are not counted.
+
+Built by WP-205 (each by §5.5.1's NEON rules unless said):
+
+1. **`sm3partw1`, `sm3partw2`, `sm3tt1a`/`1b`/`2a`/`2b`, `sm4e`** tied
+   to the first operand (`mov` into the destination first, as the other
+   tied crypto forms); `sm3ss1` and `sm4ekey` three- and two-register.
+   `sm3tt*`'s `i64` is the lane of the third operand, 0 to 3; any other
+   is `a64:intrinsic-immediate`.
+2. **Half precision scalars** (`FEAT_FP16`, the single-precision word
+   with `ftype` 3): `fcvt{a,m,n,p,z}{s,u}` of `half` to `i32`/`i64`
+   into a general register; to `i16` the scalar SIMD form `fcvt* h, h`
+   (saturating to 16 bits) and its `fmov w` (zero-extended), which is
+   `llc` 22's (19 cannot select it); `vcvtfp2fx{s,u}` of `half` to
+   `i32`/`i64` the 16-bit fixed point `fcvtz{s,u} h, h, #n`, and
+   `vcvtfx{s,u}2fp` from `i32`/`i64` `{s,u}cvtf h, h, #n` of the
+   integer's low 16 bits, as `llc`; `n` 1 to 16, else
+   `a64:intrinsic-immediate`; `fmax`, `fmin`, `fmaxnm`, `fminnm` `.f16`.
+3. **`frint32x`, `frint32z`, `frint64x`, `frint64z`** of `float` and
+   `double` (`FEAT_FRINTTS`, the scalar forms of the vector names
+   already built); **`fjcvtzs`** (`FEAT_JSCVT`, `double` to `i32`).
+4. **Vectors of `bfloat` in the structure loads and stores** (`ld1x2`
+   to `ld1x4`, `ld2` to `ld4`, their `lane` and `r` forms, `st1x2` to
+   `st4lane`): moved as 16-bit integer lanes, the bits unchanged.
+5. **A vector constant whose other lanes are `poison` or `undef`** is a
+   splat of its defined lanes where an immediate is read from one
+   (clang's `vqshlub_n_s8`/`vqshluh_n_s16` set lane 0 only).
+
+Refused by name (`intrinsic:<name>`), on purpose: the fp8 names and
+`set.fpmr` (FEAT_FP8, the `fpm` register), `vluti2`/`vluti4q` (FEAT_LUT),
+`famax`/`famin` (FEAT_FAMINMAX), `llvm.vector.insert`/`extract` (only the
+fp8 functions write them), `rndr`/`rndrrs`, `gcspopm`/`gcsss`
+(`__gcspr` is `a64:named-register`), `ld64b`/`st64b*`, `chkfeat`,
+`ldxr`/`stxr` of `__swp`, and the scalar `bfcvt` of clang 19's
+`vcvth_bf16_f32` (clang 22 writes `fptrunc`, built). SVE, SME and
+scalable types stay refused as before.
+
+Evidence: `spec/landed/codegen/WP-205.md`.
 
 ## 6. Control flow
 

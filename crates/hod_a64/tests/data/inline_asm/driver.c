@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <stdio.h>
+#include <sys/auxv.h>
 #include <unistd.h>
 int64_t sys_getpid(void); int64_t sys_write0(int64_t, void*);
 void* thread_pointer(void); int64_t counter(void); int64_t fpcr_roundtrip(void);
@@ -126,10 +127,15 @@ int main(void) {
   CHECK(hwy_fcvtzu_d(-3.0) == 0); CHECK(hwy_fcvtzu_d(1e19) == 10000000000000000000ull);
   CHECK(hwy_fcmeq_d(1.5) == -1); CHECK(hwy_fcmeq_d(__builtin_nan("")) == 0);
   CHECK(eq4(hwy_fcmeq4s(v), -1, -1, -1, 0));
-  f16x8 h = {1, -2.5, 100, __builtin_nanf(""), 0, -0.0, 7.75, 65504};
-  i16x8 eh = hwy_fcmeq8h(h), zh = hwy_fcvtzs8h(h);
-  CHECK(eh[0] == -1 && eh[3] == 0 && eh[5] == -1 && eh[7] == -1);
-  CHECK(zh[0] == 1 && zh[1] == -2 && zh[2] == 100 && zh[3] == 0 && zh[6] == 7 && zh[7] == INT16_MAX);
+  /* The `8h` forms are FP16 (ARMv8.2): run where the processor has them
+     (HWCAP_ASIMDHP, bit 10 of AT_HWCAP). The emulated baseline, a
+     cortex-a53, does not. */
+  if (getauxval(AT_HWCAP) & (1ul << 10)) {
+    f16x8 h = {1, -2.5, 100, __builtin_nanf(""), 0, -0.0, 7.75, 65504};
+    i16x8 eh = hwy_fcmeq8h(h), zh = hwy_fcvtzs8h(h);
+    CHECK(eh[0] == -1 && eh[3] == 0 && eh[5] == -1 && eh[7] == -1);
+    CHECK(zh[0] == 1 && zh[1] == -2 && zh[2] == 100 && zh[3] == 0 && zh[6] == 7 && zh[7] == INT16_MAX);
+  }
   f32x4 r = {2.5f, 3.5f, -2.5f, 2.6f}; CHECK(eq4(cv_fcvtns(r), 2, 4, -2, 3));
   u64x2 acc = {5, 1ull << 63}; u32x2 ua = {0xffffffffu, 3}, ub = {0xffffffffu, 0x80000000u};
   u64x2 um = xxh_umlal(acc, ua, ub);

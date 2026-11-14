@@ -1100,7 +1100,7 @@ reports a `debug:*` name as itself and §6.5's unnamed shapes as
 | `debug:variable-alignment` | an `alignas` parameter, or an unnamed one; an `alignas` variable of an abstract instance (§6.9). A named local's `alignment` is written since WP-087 (family 88, in bytes, after `name`) |
 | `debug:label-attribute` | no longer refused: every label is written since WP-098 (§6.14) |
 | `debug:object-pointer` | two `this` parameters |
-| `debug:local-type-scope` | a function-local type reached before its function was added, when the type is scoped in a block, or the function has no code in this module (in `types.rs`, `early.rs`; §6.12) |
+| `debug:local-type-scope` | a function-local type reached before its function was added, when the type is scoped in a block, or in a subprogram that is not a definition of this unit (in `types.rs`, `early.rs`; §6.12, §6.26) |
 
 Inlined code and functions' statics are §6.9's (WP-085), with its own
 refusals. `LineTablesOnly` and `DebugDirectivesOnly` units are §6.10 (WP-061).
@@ -1780,10 +1780,9 @@ code span, a symbol or a global's address it made wrong).
 - a function-local type the unit retains (clang lists the typedef of an
   explicit cast in `retainedTypes`) reached before its function: the
   function's concrete DIE is made early, as for its statics (§6.9),
-  when the module has its code. A type local to a block, or to a
-  function without code here, stays `debug:local-type-scope` (`llc` 22
-  puts the latter under the abstract instance, `llc` 19 under an empty
-  subprogram);
+  when the module has its code. A type local to a function without
+  code here is under the function's abstract instance (WP-195, §6.26);
+  one local to a block stays `debug:local-type-scope`;
 - an unnamed local (a catch parameter without a name): a `variable`
   without `DW_AT_name` (family 87);
 - an `alignas` local: `DW_AT_alignment` in bytes after `name` (family
@@ -2009,8 +2008,8 @@ parameter twice: the second declaration was the `phi`'s.
   agree). In an abstract instance a variable's type is made before the
   variable's DIE (`constructVariableDIE` adds the variable to its scope
   after its attributes), so a local type comes before the variable that
-  names it. A type reached before the instance exists stays
-  `debug:local-type-scope`.
+  names it. A type reached before the instance exists makes it (WP-195,
+  §6.26).
 - *An optimized unit* (`optimized_unit.c`): `DISPFlagOptimized` writes
   nothing more off Apple targets (it was already accepted). clang marks
   every definition of such a unit `DIFlagAllCallsDescribed`, and for
@@ -2964,6 +2963,27 @@ dereferences (`DW_OP_breg31 +N, DW_OP_deref` on AArch64,
 `DW_OP_breg7 +N, DW_OP_deref` on x86-64), where hod names the frame
 base, is the permitted class `realigned frame` (§6.7) as the plain
 slot already was.
+
+### 6.26 A type local to a function without code (implemented, WP-195)
+
+A type whose scope is a function definition of this unit that has no
+code in the module (a typedef in a member template only named, protobuf's
+`Arena::Own<MessageLite>`, reached as a retained cast type or a template
+argument; the lambda of an `always_inline` function reached before any
+call of it is inlined) was `debug:local-type-scope`. `llc` 22's
+`getOrCreateContextDIE` makes the function's abstract instance there and
+then: a `subprogram` with `DW_AT_specification` (a member) or its name
+and type (a free function), its template parameters and
+`DW_AT_inline (DW_INL_inlined)`, placed after the declaration's class
+and types; the type is its first child. When the function is inlined
+later in the unit, its inlined code fills that same instance, the
+parameters after the type. hod's `local_type_parent` now takes the path
+a function's static takes (`static_parent`: `check_inlined`, then
+`create_abstract`), so the unit is the same. `llc` 19 writes an empty
+`subprogram` without attributes instead; hod follows 22. Still refused:
+a type local to a block, or to a subprogram that is not a definition of
+this unit, and every case `check_inlined` refuses (retained variables,
+another unit's subprogram).
 
 ## 7. Speed and memory
 

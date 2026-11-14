@@ -684,6 +684,15 @@ impl UnitPlan<'_> {
         for d in &self.dies[1..] {
             let p = self.dies[d.parent as usize];
             let owner = match p.kind {
+                // WP-230 (§6.33): a type under the concrete DIE of a
+                // function with an abstract instance was reached before
+                // that instance existed (a retained type, the early DIE of
+                // §6.12); `llc`'s `getOrCreateContextDIE` left it there
+                // too, and the instance's variables name it. One reached
+                // later is under the instance (`UnitPlan::context`).
+                Kind::Subprogram if !matches!(d.kind, Kind::TemplateParam | Kind::Imported) => {
+                    continue;
+                }
                 Kind::Subprogram => p.node,
                 Kind::Block => match self.debug.subprogram_of(p.node) {
                     Some(sp) => sp,

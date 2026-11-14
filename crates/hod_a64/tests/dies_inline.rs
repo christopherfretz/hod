@@ -242,7 +242,7 @@ fn refusals_are_named() {
     let base = hand(22);
     let (module, bodies) = parse(&base);
     compile_to_object(&module, &bodies, &Options::default()).expect("the base case");
-    let cases: [(&str, String, &str); 5] = [
+    let cases: [(&str, String, &str); 4] = [
         (
             "debug:inlined-discriminator",
             hand_with(&[(
@@ -286,20 +286,9 @@ fn refusals_are_named() {
             ]),
             "a static scoped in an inlined function's block",
         ),
-        (
-            "debug:inlined-local-type",
-            hand_with(&[
-                (
-                    "define dso_local i32 @split",
-                    "define dso_local i32 @_Z6calleei(i32 %v) !dbg !12 {\nentry:\n  %v.addr = alloca i32, align 4\n  store i32 %v, ptr %v.addr, align 4\n    #dbg_declare(ptr %v.addr, !31, !DIExpression(), !37)\n  ret i32 %v, !dbg !37\n}\n\ndefine dso_local i32 @split",
-                ),
-                (
-                    "line: 1, type: !6)\n!32",
-                    "line: 1, type: !36)\n!36 = !DIDerivedType(tag: DW_TAG_typedef, name: \"T\", scope: !12, file: !7, line: 1, baseType: !6)\n!37 = !DILocation(line: 1, column: 1, scope: !12)\n!32",
-                ),
-            ]),
-            "a type local to a function out of line and inlined",
-        ),
+        // `debug:inlined-local-type`: a typedef local to a function out of
+        // line and inlined was refused here until WP-230 (§6.33); it is
+        // written since (`crates/hod/tests/inlined_local_type.rs`).
     ];
     for (name, text, what) in &cases {
         assert_eq!(refusal(text), CgError::unsupported(name), "{what}");

@@ -1553,7 +1553,7 @@ declaration's),
 | `debug:inlined-discriminator` | a call located in a `DILexicalBlockFile` with a discriminator (`llc` writes `DW_AT_GNU_discriminator`) |
 | `debug:inlined-foreign-unit` | code inlined from a subprogram of another unit |
 | `debug:retained-nodes` | an inlined subprogram with `retainedNodes` that hod does not write: an import in a block of it, or a retained import or label of a function also placed out of line (imports scoped in a subprogram only inlined since WP-195, §6.25; variables and labels since WP-210, §6.29) |
-| `debug:inlined-local-type` | a type local to a function with an abstract instance, or a variable a type names (a VLA bound) in one |
+| `debug:inlined-local-type` | a variable a type names (a VLA bound) in a function with an abstract instance, or a type local to a block of one that has no abstract block (narrowed by WP-230, §6.33) |
 | `debug:local-static` | a static scoped in a block, or in a subprogram that is not a definition of this unit, or whose early DIE no function filled by `seal()`, or read without the module (`UnitPlan::new`) |
 
 **`#dbg_value`** was refused (`debug:dbg-value`) until WP-162, which
@@ -3442,6 +3442,52 @@ difference described by argument lists) and
 `tests/debug/declare_fragment.c` (an insertion sort's element whose
 array stays in memory). Evidence:
 `spec/landed/dwarf/WP-230.md`.
+
+### 6.33 Local types of a function placed out of line and inlined (implemented, WP-230)
+
+A function with code in the module that is also inlined somewhere in
+it (a libc++ template the optimizer kept out of line, such as
+`std::midpoint<float>`) has a concrete DIE and an abstract instance.
+hod refused every DIE other than a local entity under such a concrete
+DIE as `debug:inlined-local-type` (75 of the 886 optimized modules of
+the census after §6.32): mostly template parameters, which
+`seal_definition` wrote under the concrete DIE, and the typedefs and
+classes local to the function. Measured with `llc` 22 on both targets
+and `llc` 19 on AArch64, on hand-written modules (the function first, the inlining
+function first, a typedef retained by the unit):
+
+- `finishSubprogramDefinition` gives the concrete DIE of a function
+  with an abstract instance `DW_AT_abstract_origin` only, so the
+  template parameters are the instance's alone (made with it, §6.14).
+  hod's `seal` skips `seal_definition` for such a function.
+- `getOrCreateContextDIE` takes the abstract instance of a local
+  type's subprogram, or the abstract DIE of its block, whenever that
+  DIE exists, even if the function has a concrete DIE too; only a type
+  reached before the instance is made (a type the unit retains, reached
+  at `beginModule`, the early DIE of §6.12) stays under the concrete
+  DIE, and the instance's variables name it there. `UnitPlan::context`
+  now asks `abstract_parent` first for a subprogram or a block scope;
+  `check_local_types` accepts a type under a concrete DIE (it can only
+  have been placed before the instance), and still refuses a template
+  parameter or an import there.
+
+`llc` 19 differs only where it already did: it writes no
+`DW_AT_abstract_origin` on the concrete lexical blocks of such a
+function. Still `debug:inlined-local-type`: a variable named by a type
+(a VLA bound) in a function with an abstract instance, and a type local
+to a block of one whose block has no abstract DIE (`llc` asserts there:
+"Missed lexical block DIE in abstract tree").
+
+**Tests.** `crates/hod/tests/inlined_local_type.rs` (a template with a
+parameter pack, a typedef local to it and a structure local to one of
+its blocks, placed out of line and inlined: the function first, the
+inlining function first, and the typedef retained by the unit; both
+targets; trees equal to `llc` 22's, `--verify` clean, and each type's
+parent checked). `crates/hod_a64/tests/dies_inline.rs` lost its
+`debug:inlined-local-type` row (that typedef is written now); the two
+refusals left have no hand-written module: a VLA bound of such a
+function, tried, names the concrete variable in both writers and is
+written. Evidence: `spec/landed/dwarf/WP-230.md`.
 
 ## 7. Speed and memory
 

@@ -105,12 +105,11 @@ fn reloc_kind(kind: AsmReloc, x64: bool) -> RelocKind {
         AsmReloc::X64(X::TpOff32) => X64Reloc::TpOff32,
         AsmReloc::X64(X::DtpOff32) => X64Reloc::DtpOff32,
         AsmReloc::X64(X::Abs32S) => X64Reloc::Abs32S,
-        AsmReloc::X64(X::None) => X64Reloc::None,
         AsmReloc::Abs64 => X64Reloc::Abs64,
         AsmReloc::Abs32 => X64Reloc::Abs32,
         AsmReloc::Abs16 => X64Reloc::Abs16,
         // The x86-64 assembler writes no AArch64 field.
-        AsmReloc::Code(_) => X64Reloc::None,
+        AsmReloc::X64(X::None) | AsmReloc::Code(_) => X64Reloc::None,
     };
     k.into()
 }

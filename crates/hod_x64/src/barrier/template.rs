@@ -805,7 +805,7 @@ fn x87_stack(ops: &Ops, plan: &Plan, clobbers: u8) -> CgResult<X87Stack> {
         }
     }
     stack.popped = stack.uses & (stack.defs | clobbers);
-    if [stack.uses, stack.defs, stack.popped].iter().any(|&m| m == 2) {
+    if [stack.uses, stack.defs, stack.popped].contains(&2) {
         return Err(refused(reason::constraint("st")));
     }
     Ok(stack)
@@ -1013,10 +1013,10 @@ fn emit<'a>(
         }) else {
             return cx.bug("an x87 input without an operand");
         };
-        let (Some(slot), Some(size)) = (plan.slots[i], x87_size(cx, plan.tys[i])) else {
+        let (Some(slot), Some(width)) = (plan.slots[i], x87_size(cx, plan.tys[i])) else {
             return cx.bug("an x87 input without a slot");
         };
-        frame_inst(cx, slot, |m| mc::fld_m(size, m));
+        frame_inst(cx, slot, |m| mc::fld_m(width, m));
     }
     // A memory output that is not indirect has no memory to point at:
     // `decide` never makes one.
@@ -1055,10 +1055,10 @@ fn emit<'a>(
         }) else {
             return cx.bug("an x87 output without an operand");
         };
-        let (Some(slot), Some(size)) = (plan.slots[i], x87_size(cx, plan.tys[i])) else {
+        let (Some(slot), Some(width)) = (plan.slots[i], x87_size(cx, plan.tys[i])) else {
             return cx.bug("an x87 output without a slot");
         };
-        frame_inst(cx, slot, |m| mc::fstp_m(size, m));
+        frame_inst(cx, slot, |m| mc::fstp_m(width, m));
     }
     for _ in 0..X87Stack::count(stack.uses) - X87Stack::count(stack.popped) {
         put(cx, mc::fstp_st(mc::St::St0));

@@ -576,7 +576,8 @@ in the addend; a GOT field keeps the symbol (a `.L` name is
 relocated, iterated to the least fixed point. `asm::check` admits
 x86-64; the classify row `module:asm` is on for both targets.
 
-**`.symver name, base@V`** (`@`, `@@`, `@@@`), applied after every module
+**`.symver name, base@V`** (`@`, `@@`, `@@@`; x86-64 only, AArch64 still
+refuses it as `asm:directive/symver`), applied after every module
 symbol is defined, as `llvm-mc` 19 and 22 do: a defined name gets an
 alias `base@V` (`base@@V`) with its section, value, size, type, binding
 and visibility, the name kept; `@@@` renames a defined name `base@@V`;

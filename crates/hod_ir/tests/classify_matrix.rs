@@ -788,8 +788,8 @@ fn inline_assembly_rows_of_wp_103() {
     assert_eq!(a64.supports("call:inline-asm"), Some(true));
     assert_eq!(x64.supports("call:inline-asm"), Some(true));
     assert_eq!(a64.supports("module:asm"), Some(true));
-    assert_eq!(x64.supports("module:asm"), Some(false));
-    assert!(x64.clone().with("module:asm").is_some(), "x86-64 may switch it on");
+    // WP-204: x86-64 reads module assembly as well (`spec/asm.md` §14).
+    assert_eq!(x64.supports("module:asm"), Some(true));
     // WP-181: `callbr` of an empty template on x86-64 (one with a
     // template of instructions is refused by the target, WP-187).
     assert_eq!(a64.supports("inst:callbr"), Some(true));

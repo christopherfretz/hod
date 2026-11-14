@@ -171,6 +171,8 @@ pub fn stubs(cx: &mut FnCx<'_, A64>) -> CgResult<()> {
         store_gpr_at(cx, MemSize::X, X16.zr(), &mut mode);
         let mut word = Cursor::frame(cx, words.frame, X17);
         store_gpr_at(cx, MemSize::X, Reg::X0.zr(), &mut word);
+        // WP-183, §5.6.24: a protected coroutine's guard, again.
+        crate::guard::stub_enter(cx)?;
         // WP-108 (debug hook): the stub's `prologue_end`.
         cx.coro_stub_ready();
         mov_imm(cx, Size::W, Reg::X0, which as u64);

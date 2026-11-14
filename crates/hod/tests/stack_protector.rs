@@ -8,8 +8,10 @@
 //! - A protected function's object calls `__stack_chk_fail` (and reads
 //!   `__stack_chk_guard` on AArch64); the same module without the
 //!   attributes names neither.
-//! - A protected presplit coroutine is refused by name, `ssp:coroutine`,
-//!   with its function.
+//! - A protected presplit coroutine is built (its resume and destroy
+//!   stubs store the guard again) and calls `__stack_chk_fail`; the
+//!   coroutine plan refuses before the guard does any coroutine that would
+//!   need the low guard (`ssp:coroutine`).
 
 use std::time::Duration;
 
@@ -82,16 +84,16 @@ fn a_protected_function_calls_the_failure_routine() {
 }
 
 #[test]
-fn a_protected_presplit_coroutine_is_refused_by_name() {
+fn a_protected_presplit_coroutine_is_built() {
     let seed = include_str!("../../../tests/ir/coro/done-22.ll");
-    let seed = seed.replace("presplitcoroutine uwtable", "presplitcoroutine sspstrong uwtable");
+    let protected =
+        seed.replace("presplitcoroutine uwtable", "presplitcoroutine sspstrong uwtable");
+    assert_ne!(protected, seed, "the seed's attribute group moved");
     for (triple, layout) in TARGETS {
-        let text = with_target(&seed, triple, layout);
-        let error = try_compile(text.as_bytes()).expect_err("a protected coroutine is refused");
-        let hod::CompileError::Unsupported(unsupported) = error else {
-            panic!("not a decline: {error}");
-        };
-        assert_eq!(unsupported.construct.name(), "ssp:coroutine", "{triple}");
-        assert_eq!(unsupported.function.as_deref(), Some("_Z4uptoi"), "{triple}");
+        let object = compile(with_target(&protected, triple, layout).as_bytes());
+        assert!(names(&object, "__stack_chk_fail"), "{triple}");
+        assert!(names(&object, "_Z4uptoi.resume"), "{triple}");
+        let plain = compile(with_target(seed, triple, layout).as_bytes());
+        assert!(!names(&plain, "__stack_chk_fail"), "{triple}");
     }
 }

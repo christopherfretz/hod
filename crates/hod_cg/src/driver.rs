@@ -433,7 +433,16 @@ impl<'a, T: Target> FnCx<'a, T> {
         };
         let flags = self.module.fn_attrs(attrs).flags();
         let body = self.body;
-        self.s.guard.plan(self.module, body, flags, T::STACK_ALIGN).map_err(CgError::unsupported)
+        // A coroutine's heap slots (§7.6) are not on the machine stack.
+        let heap: Vec<bool> = match self.coro {
+            Some(_) => (0..body.slots().len()).map(|index| self.coro_heap_planned(index)).collect(),
+            None => Vec::new(),
+        };
+        let heap = |index: usize| heap.get(index).copied().unwrap_or(false);
+        self.s
+            .guard
+            .plan(self.module, body, flags, T::STACK_ALIGN, heap)
+            .map_err(CgError::unsupported)
     }
 
     /// §5.1: the entry code that allocates the over-aligned slots.

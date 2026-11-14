@@ -147,6 +147,8 @@ pub fn stubs(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
         put(cx, mc::mov_rr(Size::Q, RBX, Reg::Rdi));
         put(cx, mc::mov_mi(Size::Q, mode, 1));
         put(cx, mc::mov_mr(Size::Q, word, Reg::Rdi));
+        // WP-183, §5.6.24: a protected coroutine's guard, again.
+        crate::guard::stub_enter(cx)?;
         // WP-108 (debug hook): the stub's `prologue_end`.
         cx.coro_stub_ready();
         put(cx, mc::mov_ri(Size::D, Reg::Rax, which as i64));

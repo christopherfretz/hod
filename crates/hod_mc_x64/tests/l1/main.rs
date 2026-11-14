@@ -76,6 +76,8 @@ pub const GROUPS: &[Group] = &[
     // SSE4 and VEX (WP-202).
     ("three-byte-maps", avx::legacy),
     ("vex", avx::vex_forms),
+    // The AVX2 gathers (WP-207).
+    ("vex-gathers", avx::gathers),
 ];
 
 fn check(group: &str) {
@@ -125,4 +127,6 @@ differential! {
     // WP-202.
     three_byte_maps_match_llvm => "three-byte-maps";
     vex_matches_llvm => "vex";
+    // WP-207.
+    vex_gathers_match_llvm => "vex-gathers";
 }

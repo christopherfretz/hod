@@ -511,6 +511,10 @@ const REFUSED: &[(&str, &str)] = &[
     ("movabsq $sym, %rcx", "asm:operand/symbol"),
     (".cfi_remember_state", "asm:directive/cfi_remember_state"),
     ("fsqrt", "asm:mnemonic/fsqrt"),
+    (".reloc .+4, BFD_RELOC_NONE, sym", "asm:operand/expression"),
+    (".reloc ., R_X86_64_PC32, sym", "asm:directive/reloc"),
+    (".reloc ., BFD_RELOC_NONE, 1f\n1:", "asm:operand/symbol"),
+    (".reloc ., BFD_RELOC_NONE", "asm:operand/syntax"),
     (".byte 256", "asm:operand/range"),
     (".short 0x10000", "asm:operand/range"),
     ("int $256", "asm:operand/range"),
@@ -587,6 +591,11 @@ const SYMBOLIC: &[&str] = &[
     "lock xaddl %eax, S(%rip)",
     "lock; incl S(%rip)",
     "jmp 1f\nmovq S@gottpoff(%rip), %rax\n1:",
+    // §13: `.reloc` (protobuf's `StrongReferenceToType`, a `Ws` operand).
+    "nop\n.reloc ., BFD_RELOC_NONE, S",
+    "nop\n.reloc ., BFD_RELOC_NONE, S+8",
+    "nop\n.reloc ., R_X86_64_NONE, S-4\nnop",
+    "jmp 1f\n.quad 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0\n.reloc ., BFD_RELOC_NONE, S\n1:",
 ];
 
 const fn elf_name(kind: RefKind) -> &'static str {
@@ -600,6 +609,7 @@ const fn elf_name(kind: RefKind) -> &'static str {
         RefKind::TpOff32 => "R_X86_64_TPOFF32",
         RefKind::DtpOff32 => "R_X86_64_DTPOFF32",
         RefKind::Abs32S => "R_X86_64_32S",
+        RefKind::None => "R_X86_64_NONE",
     }
 }
 

@@ -12,6 +12,9 @@
 //!   scoped in it (a function-local `using`) has them under its abstract
 //!   instance; it was `debug:retained-nodes`, and a retained variable, or
 //!   a function also placed out of line, still is;
+//! - a type local to a function without code here (or only inlined, and
+//!   reached first) is under the function's abstract instance; it was
+//!   `debug:local-type-scope` (§6.26);
 //! - a `debug:` refusal's detail names the node and its function.
 //!
 //! Each module's DIE tree is compared with `llc` 22's (`-O0
@@ -177,6 +180,48 @@ attributes #0 = { noinline nounwind optnone "frame-pointer"="all" }
 !30 = !DILocation(line: 1, column: 34, scope: !22)
 !31 = !DILocation(line: 1, column: 46, scope: !22)
 !32 = !DILocation(line: 1, column: 39, scope: !22)
+"#;
+
+/// `struct A { template <class U> void own(int *) { typedef int T; } };`
+/// whose `own<int>` has no code here, `T *` retained (a cast's type).
+const LOCAL_TYPE_NO_CODE: &str = r#"target triple = "TRIPLE"
+
+define dso_local i32 @main() #0 !dbg !40 {
+entry:
+  %p = alloca ptr, align 8
+    #dbg_declare(ptr %p, !45, !DIExpression(), !41)
+  ret i32 0, !dbg !41
+}
+
+attributes #0 = { noinline nounwind optnone "frame-pointer"="all" }
+
+!llvm.dbg.cu = !{!0}
+!llvm.module.flags = !{!2, !3}
+
+!0 = distinct !DICompileUnit(language: DW_LANG_C_plus_plus_14, file: !1, producer: "kiln", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug, retainedTypes: !19, splitDebugInlining: false, nameTableKind: None)
+!1 = !DIFile(filename: "own.cpp", directory: "/hod/tests")
+!2 = !{i32 7, !"Dwarf Version", i32 5}
+!3 = !{i32 2, !"Debug Info Version", i32 3}
+!4 = !{}
+!13 = !DIBasicType(name: "int", size: 32, encoding: DW_ATE_signed)
+!19 = !{!20}
+!20 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !21, size: 64)
+!21 = !DIDerivedType(tag: DW_TAG_typedef, name: "T", scope: !30, file: !1, line: 3, baseType: !13)
+!22 = distinct !DICompositeType(tag: DW_TAG_structure_type, name: "A", file: !1, line: 1, size: 8, flags: DIFlagTypePassByValue, elements: !23, identifier: "_ZTS1A")
+!23 = !{!24}
+!24 = !DISubprogram(name: "own", linkageName: "_ZN1A3ownEPi", scope: !22, file: !1, line: 2, type: !25, scopeLine: 2, flags: DIFlagPublic | DIFlagPrototyped, spFlags: 0, templateParams: !50)
+!25 = !DISubroutineType(types: !26)
+!26 = !{null, !27, !28}
+!27 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !22, size: 64, flags: DIFlagArtificial | DIFlagObjectPointer)
+!28 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !13, size: 64)
+!30 = distinct !DISubprogram(name: "own", linkageName: "_ZN1A3ownEPi", scope: !22, file: !1, line: 2, type: !25, scopeLine: 2, flags: DIFlagPrototyped, spFlags: DISPFlagDefinition, unit: !0, declaration: !24, retainedNodes: !4, templateParams: !50)
+!40 = distinct !DISubprogram(name: "main", scope: !1, file: !1, line: 6, type: !42, scopeLine: 6, flags: DIFlagPrototyped, spFlags: DISPFlagDefinition, unit: !0)
+!41 = !DILocation(line: 6, column: 14, scope: !40)
+!42 = !DISubroutineType(types: !43)
+!43 = !{!13}
+!45 = !DILocalVariable(name: "p", scope: !40, file: !1, line: 7, type: !20)
+!50 = !{!51}
+!51 = !DITemplateTypeParameter(name: "U", type: !13)
 "#;
 
 fn module(template: &str, triple: &str) -> String {
@@ -370,5 +415,31 @@ fn other_retained_nodes_of_inlined_functions_are_refused() {
             "define linkonce_odr dso_local i32 @_Z1fi(i32 %0) #0 !dbg !19 {\n  ret i32 %0, !dbg !34\n}\n\nattributes #0",
         ) + "!34 = !DILocation(line: 2, column: 1, scope: !19)\n";
         assert_eq!(refusal(&text).0, "debug:retained-nodes", "{triple}: out of line too");
+    }
+}
+
+/// A type local to a function without code in the unit is a child of the
+/// function's abstract instance (`llc` 22's `getOrCreateContextDIE`,
+/// §6.26); it was `debug:local-type-scope`.
+#[test]
+fn a_type_local_to_a_function_without_code_is_under_its_abstract_instance() {
+    let scratch = Scratch::new("wp195-local-type");
+    for triple in TRIPLES {
+        let name = format!("local-type-{}", &triple[..6]);
+        let ours = compare(&scratch, &name, &module(LOCAL_TYPE_NO_CODE, triple));
+        if ours.is_empty() {
+            continue;
+        }
+        assert_eq!(count(&ours, "DW_AT_inline\t(DW_INL_inlined)"), 1, "{name}\n{ours:?}");
+        assert_eq!(count(&ours, "DW_TAG_typedef"), 1, "{name}\n{ours:?}");
+        // The same type in a function only inlined, reached first: the
+        // inlined code fills the instance.
+        let text = module(IMPORT, triple)
+            .replace("nameTableKind: None)\n!1 =", "nameTableKind: None, retainedTypes: !40)\n!1 =")
+            .replace("!20 = !{!21}", "!20 = !{}")
+            + "!40 = !{!41}\n!41 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !42, size: 64)\n\
+               !42 = !DIDerivedType(tag: DW_TAG_typedef, name: \"T\", scope: !19, file: !1, line: 2, baseType: !13)\n";
+        let ours = compare(&scratch, &format!("{name}-inlined"), &text);
+        assert_eq!(count(&ours, "DW_AT_inline\t(DW_INL_inlined)"), 1, "{name}\n{ours:?}");
     }
 }

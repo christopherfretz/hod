@@ -40,11 +40,14 @@ pub const HARDEN_SLS: &str = "attr:target-feature-harden-sls";
 pub const ERRATUM: &str = "attr:target-feature-erratum";
 /// `+v8r`: the R profile, a different memory system.
 pub const PROFILE: &str = "attr:target-feature-profile";
+/// `+tpidr-el1`, `+tpidr-el2`, `+tpidr-el3`, `+tpidrro-el0`: the thread
+/// pointer is another register than `TPIDR_EL0`, which hod's TLS reads.
+pub const THREAD_POINTER: &str = "attr:target-feature-thread-pointer";
 use hod_cg::features::FeatureTable;
 pub use hod_cg::features::{Refused, UNKNOWN};
 
 /// Every reason [`check`] gives.
-pub const REASONS: [&str; 11] = [
+pub const REASONS: [&str; 12] = [
     SOFT_FLOAT,
     NO_NEON,
     STRICT_ALIGN,
@@ -55,6 +58,7 @@ pub const REASONS: [&str; 11] = [
     HARDEN_SLS,
     ERRATUM,
     PROFILE,
+    THREAD_POINTER,
     UNKNOWN,
 ];
 
@@ -218,7 +222,73 @@ const AVAILABILITY: &[&str] = &[
     "frint3264",
     "sme-mop4",
     "sme-tmop",
+    // WP-201: the rest of LLVM 19's and 22's instruction and system
+    // register features (`clrbhb`, `hcx` and `specres2` are in what
+    // clang 22 writes for `-mcpu=` of current cores).
+    "clrbhb",
+    "hcx",
+    "specres2",
+    "b16b16",
+    "btie",
+    "cmh",
+    "f16f32dot",
+    "f16f32mm",
+    "f16mm",
+    "gcie",
+    "lscp",
+    "mops-go",
+    "mpamv2",
+    "mtetc",
+    "nmi",
+    "poe2",
+    "sme2p3",
+    "ssve-fexpa",
+    "sve-aes2",
+    "sve-b16mm",
+    "sve2p3",
+    "tev",
+    "tlbid",
+    "v9.7a",
+    "CONTEXTIDREL2",
+    "apple-a7-sysreg",
 ];
+
+/// Tuning features LLVM 19 and 22 know by name: how `llc` chooses among
+/// correct sequences, nothing a caller or callee can tell. Besides these,
+/// every name of the families [`tuning`] lists (`zcm*` and `zcz*`, the
+/// zero-cycle register moves and zeroing clang 22 writes for Apple cores,
+/// among them).
+const TUNING: &[&str] = &[
+    "addr-lsl-slow-14",
+    "aggressive-fma",
+    "aggressive-interleaving",
+    "alternate-sextload-cvt-f32-pattern",
+    "alu-lsl-fast",
+    "arith-bcc-fusion",
+    "arith-cbz-fusion",
+    "ascend-store-address",
+    "balance-fp-ops",
+    "cmp-bcc-fusion",
+    "enable-select-opt",
+    "exynos-cheap-as-move",
+    "force-32bit-jump-tables",
+    "ldp-aligned-only",
+    "stp-aligned-only",
+    "max-interleave-factor-4",
+    "predictable-select-expensive",
+    "prfm-slc-target",
+    "store-pair-suppress",
+];
+
+/// Whether `name` is a tuning feature: one of [`TUNING`], or of a family
+/// LLVM names only tuning features with (`fuse-*`, `slow-*`, `zcm*`,
+/// `zcz*`, `no-zcz*`, `use-*`, `disable-*`, `avoid-*`).
+pub fn tuning(name: &str) -> bool {
+    TUNING.contains(&name)
+        || ["fuse-", "slow-", "zcm", "zcz", "no-zcz", "use-", "disable-", "avoid-"]
+            .iter()
+            .any(|family| name.starts_with(family))
+}
 
 /// hod's AArch64 table: `fp-armv8` and `neon` required, the
 /// [`AVAILABILITY`] features, the [`contract`] ones.
@@ -235,7 +305,7 @@ const TABLE: FeatureTable = FeatureTable {
 /// The first item hod's code is not correct under, with its reason (one
 /// of [`REASONS`]).
 pub fn check(features: &str) -> Result<(), Refused<'_>> {
-    TABLE.check(features)
+    features.split(',').filter(|item| !item.is_empty()).try_for_each(check_one)
 }
 
 /// One item of a feature string.
@@ -243,7 +313,10 @@ pub fn check(features: &str) -> Result<(), Refused<'_>> {
 /// # Errors
 /// As [`check`].
 pub fn check_one(item: &str) -> Result<(), Refused<'_>> {
-    TABLE.check_one(item)
+    match item.split_at_checked(1) {
+        Some(("+" | "-", name)) if tuning(name) => Ok(()),
+        _ => TABLE.check_one(item),
+    }
 }
 
 /// The reason of a feature that changes the contract of the code, if
@@ -254,6 +327,7 @@ fn contract(name: &str) -> Option<&'static str> {
         "tagged-globals" => TAGGED_GLOBALS,
         "execute-only" => EXECUTE_ONLY,
         "v8r" => PROFILE,
+        "tpidr-el1" | "tpidr-el2" | "tpidr-el3" | "tpidrro-el0" => THREAD_POINTER,
         _ if name.starts_with("reserve-") => RESERVE,
         _ if name.starts_with("call-saved-") => CALL_SAVED,
         _ if name.starts_with("harden-sls-") => HARDEN_SLS,
@@ -283,6 +357,9 @@ mod tests {
             "-outline-atomics,-lse,+sve,+sme",
             "-strict-align,-reserve-x18,-execute-only",
             ",,+neon,",
+            // WP-201: clang 22's `-mcpu=apple-m4` and `-mcpu=neoverse-v3`.
+            "+clrbhb,+hcx,+specres2,+zcm-fpr128,+zcz,+zcz-gpr64,-zcm-gpr32,+fuse-aes,+slow-paired-128",
+            "-tpidr-el1",
         ] {
             assert_eq!(check(features), Ok(()), "{features}");
         }
@@ -304,6 +381,8 @@ mod tests {
             ("+harden-sls-retbr", HARDEN_SLS),
             ("+fix-cortex-a53-835769", ERRATUM),
             ("+v8r", PROFILE),
+            ("+tpidr-el1", THREAD_POINTER),
+            ("+tpidrro-el0", THREAD_POINTER),
         ] {
             assert_eq!(reason(features), Some(expected), "{features}");
         }
@@ -320,6 +399,8 @@ mod tests {
         assert_eq!(reason("-no-such-feature"), Some(UNKNOWN));
         assert_eq!(reason("+"), Some(UNKNOWN));
         assert_eq!(reason("+NEON"), Some(UNKNOWN));
+        // A tuning family's prefix alone is not a name of it.
+        assert_eq!(reason("+fused"), Some(UNKNOWN));
         // The first refusal of the string is the answer.
         assert_eq!(reason("+strict-align,+bogus"), Some(STRICT_ALIGN));
     }

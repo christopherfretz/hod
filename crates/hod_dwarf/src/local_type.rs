@@ -5,8 +5,9 @@
 //! makes the type its child; `llc` 19 and 22 agree. In the abstract
 //! instance a variable's type is made before the variable is added to
 //! its scope (`constructVariableDIE`), so the type precedes it. A type
-//! reached before the abstract instance exists (`llc` would make another
-//! subprogram DIE) stays `debug:local-type-scope`.
+//! reached before the abstract instance exists makes it (WP-195,
+//! `spec/dwarf.md` §6.26), as `llc` 22 does; the inlined code then
+//! fills it.
 
 use hod_ir::DiId;
 

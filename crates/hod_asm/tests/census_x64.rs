@@ -128,6 +128,13 @@ const CENSUS: &[Row] = &[
     row("leaq 0(%rip),%rax;", "abseil symbolize_test.cc (2)", 2, Ok(0)),
     row("lea 0(%rip), %rax", "sanitizer_stacktrace.h", 1, Ok(0)),
     row("leaq LLVMRTDyldTLSSpace@tpoff, %rax", "llvm-rtdyld.cpp", 1, Ok(1)),
+    // `Ws` of a type's default instance (`${0:p}`, an `R_X86_64_NONE`).
+    row(
+        ".reloc ., BFD_RELOC_NONE, _ZN6proto231_Message_default_instance_E",
+        "protobuf port.h StrongReferenceToType (DownCastMessage)",
+        1,
+        Ok(1),
+    ),
     // x87 and SSE control.
     row("fwait", "libc FEnvImpl.h, llvm-exegesis, kiln-built modules (5)", 7, Ok(0)),
     row("fnstcw (%rax)", "glibc fpu_control.h, libc FEnvImpl.h, fp_mode.c", 3, Ok(0)),

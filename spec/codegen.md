@@ -1506,9 +1506,28 @@ the class-based arms.
 - **`fence`**: `dmb ishld` for `acquire`, `dmb ish` otherwise;
   `syncscope("singlethread")` emits nothing (a compiler barrier: hod
   does not reorder).
-- **Refused, by name:** `a64:atomic-unaligned`, an access whose
-  alignment is below its size (LLVM calls `__atomic_*` there; hod has no
-  such call yet); `a64:atomic-type`, an atomic of `fp128`, a vector, an
+- **Below its size's alignment** (WP-232), an access calls libatomic's
+  generic routine, as `llc` 22 and 19 do for `aarch64-unknown-linux-gnu`
+  with the default features, `+lse` and `+outline-atomics` alike (no
+  exclusive, LSE or `__aarch64_*` sequence: each needs an aligned cell):
+  a load `__atomic_load(size, ptr, &ret, order)`, a store
+  `__atomic_store(size, ptr, &value, order)`, `atomicrmw xchg`
+  `__atomic_exchange(size, ptr, &value, &ret, order)`, `cmpxchg`
+  `__atomic_compare_exchange(size, ptr, &expected, &desired, success,
+  failure)` with the expected value in the result's slot and the
+  returned `bool` stored as its flag; every other `atomicrmw` is the
+  `expandAtomicRMWToCmpXchg` loop: a plain load of the cell into the old
+  value's slot, then on each pass the new value from that slot and the
+  operand's (the aligned loops' `int_new`, `float_new`, `wide_new`) into
+  a slot of its own and `__atomic_compare_exchange(size, ptr, &old,
+  &new, order, failure)`, `failure` the strongest ordering `order`
+  allows, until bit 0 of the result is set (`tbz`, as `llc`). Values
+  are in frame slots aligned to their size, orders C's `memory_order`
+  numbers; a value operand that is the pointer itself is also copied to
+  a slot the pointer argument is loaded from. The loop keeps everything
+  in slots (the pointer too) and displaces every register before it.
+- **Refused, by name:** `a64:atomic-unaligned` is no longer returned
+  (WP-232); `a64:atomic-type`, an atomic of `fp128`, a vector, an
   integer that is not 8, 16, 32, 64 or 128 bits, or an operation whose
   type does not fit it; `a64:atomic-bfloat-op`, `bfloat` arithmetic
   (`xchg`, loads and stores of `bfloat` are lowered).
@@ -3010,12 +3029,24 @@ differences are listed below. x86-64 is TSO, so no ordering but
   the cell's value there on failure) and its C `bool` the result's flag.
   The values are in frame slots aligned to their size, the orders C's
   `memory_order` numbers; `weak` changes nothing.
-- **Refused, by name:** `x64:atomic-unaligned`, an under-aligned
-  `atomicrmw` other than `xchg` (`llc` builds a
-  `__atomic_compare_exchange` loop, which hod does not), and an
-  under-aligned store, `xchg` or `cmpxchg` whose value operand is the
-  pointer operand itself;
-  `x64:atomic-type`, an atomic of `fp128`, `x86_fp80`, a vector, an
+  Every other `atomicrmw` is `llc`'s `expandAtomicRMWToCmpXchg` loop
+  (WP-232): a plain load of the cell into the old value's slot, then on
+  each pass the new value computed from that slot and the operand's (the
+  aligned loop's code: `int_new`, `float_op`, `wide_new`; `half` in
+  `float` through the inline conversions) into a slot of its own, and
+  `__atomic_compare_exchange(size, ptr, &old, &new, order, failure)`
+  until it returns true, `failure` the strongest ordering `order` allows
+  (`getStrongestFailureOrdering`: `release` and `monotonic` give
+  `monotonic`, `acq_rel` `acquire`). The pointer is in a slot too, and
+  every register is displaced before the loop, so the call displaces
+  nothing. `llc` calls `__extendhfsf2`/`__truncsfhf2` in a `half` loop;
+  hod's conversions are inline, with the same results.
+  A value operand that is the pointer itself (a store of `ptr %p` to
+  `%p`, its `xchg`, a `cmpxchg` with it as the expected or the new
+  value) is stored to its slot and to a slot of its own, the call's
+  pointer argument loaded from that one, as on AArch64.
+- **Refused, by name:** `x64:atomic-unaligned` is no longer returned
+  (WP-232); `x64:atomic-type`, an atomic of `fp128`, `x86_fp80`, a vector, an
   integer that is not 8, 16, 32, 64 or 128 bits, or an operation whose
   type does not fit it; `x64:atomic-bfloat-op`, `bfloat` arithmetic;
   `x64:atomic-float-op` and `x64:atomic-libatomic` are no longer

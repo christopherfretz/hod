@@ -751,9 +751,25 @@ fn mutations_are_caught_by_the_processor() {
         let object = write_object(&dir, &format!("m{n}.o"), &emitted);
         let exe = dir.join(format!("m{n}"));
         link(&toolchain, bfd, &[&driver, &object], &exe, &[]);
-        let ran = toolchain.run(bfd, &exe);
-        assert_eq!(exit_code(&ran), None, "{what}: not killed: {}", ran.stdout_text());
-        eprintln!("{what}: exit {:?}, status {:?}", exit_code(&ran), ran.status);
+        // The keys are new in every process, and under some keys a
+        // mutation goes unseen: the code of a signed return address is
+        // zero under 1 key in 128 (it has 7 bits, with 48-bit addresses
+        // and tagging on), and the address is then right unstripped, as
+        // an unwinder without the negate rows takes it. So a mutation is
+        // caught when one run of a few is killed; one the processor never
+        // sees survives them all.
+        let runs = 4;
+        let mut survived = Vec::new();
+        let killed = (0..runs).any(|_| {
+            let ran = toolchain.run(bfd, &exe);
+            eprintln!("{what}: exit {:?}, status {:?}", exit_code(&ran), ran.status);
+            let killed = exit_code(&ran).is_none();
+            if !killed {
+                survived.push(ran.stdout_text());
+            }
+            killed
+        });
+        assert!(killed, "{what}: not killed in {runs} runs: {survived:?}");
     }
 }
 

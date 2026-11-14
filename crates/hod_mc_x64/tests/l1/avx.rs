@@ -435,3 +435,71 @@ pub fn vex_forms(b: &mut Batch) {
     }
     emit!(b, vzeroupper(), "vzeroupper");
 }
+
+/// The AVX2 gathers (WP-207): every member at both widths, the
+/// destination, index and mask over registers on both sides of the
+/// extension bit (three distinct ones; the checked form refuses two the
+/// same), every scale, and bases and displacements at the `ModRM`/`SIB`
+/// special cases (`rsp`, `rbp`, `r12`, `r13`; none, `disp8`, `disp32`).
+pub fn gathers(b: &mut Batch) {
+    for &op in Gather::ALL {
+        let mn = op.mnemonic();
+        // No size keyword: LLVM 19 sizes the operand as the destination,
+        // LLVM 22 as an element; both take it without one.
+        for w in Width::ALL {
+            let dw = if op.dst_is_y(w) { Width::Y } else { Width::X };
+            let iw = if op.index_is_y(w) { Width::Y } else { Width::X };
+            let text = |d: u8, base: u8, i: u8, scale: Scale, disp: i32, m: u8| {
+                let f = scale.factor();
+                let index = if f == 1 { vr(iw, i) } else { format!("{f}*{}", vr(iw, i)) };
+                let disp = match disp {
+                    0 => String::new(),
+                    d if d < 0 => format!(" - {}", -i64::from(d)),
+                    d => format!(" + {d}"),
+                };
+                format!(
+                    "{mn} {}, [{} + {index}{disp}], {}",
+                    vr(dw, d),
+                    reg(Size::Q, base),
+                    vr(dw, m)
+                )
+            };
+            for d in SOME {
+                for i in SOME {
+                    for m in SOME {
+                        if d == i || d == m || i == m {
+                            continue;
+                        }
+                        for scale in Scale::ALL {
+                            let vsib = Vsib { base: r(0), index: x(i), scale, disp: 0 };
+                            emit_as!(
+                                b,
+                                mn,
+                                try_gather(op, w, x(d), vsib, x(m)),
+                                "{}",
+                                text(d, 0, i, scale, 0, m)
+                            );
+                        }
+                    }
+                }
+            }
+            for base in [0, 4, 5, 7, 8, 12, 13, 15] {
+                for disp in [0, 8, -128, 127, 128, -200, 0x1234_5678] {
+                    let vsib = Vsib { base: r(base), index: x(9), scale: Scale::S8, disp };
+                    emit_as!(
+                        b,
+                        mn,
+                        try_gather(op, w, x(3), vsib, x(14)),
+                        "{}",
+                        text(3, base, 9, Scale::S8, disp, 14)
+                    );
+                }
+            }
+            // Two operands the same register: the processor faults.
+            let vsib = |i| Vsib { base: r(0), index: x(i), scale: Scale::S1, disp: 0 };
+            reject!(b, try_gather(op, w, x(1), vsib(1), x(2)));
+            reject!(b, try_gather(op, w, x(1), vsib(2), x(1)));
+            reject!(b, try_gather(op, w, x(1), vsib(2), x(2)));
+        }
+    }
+}

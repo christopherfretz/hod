@@ -16,14 +16,16 @@
 //! - [`Fma`]: the `213` forms of FMA3 (`dst = a·dst ± b`);
 //! - the moves `vmovdqu`, the mask extractions to a general register, the
 //!   conversion `vcvtps2ph` (its destination in `ModRM.rm`), the masked
-//!   loads and stores, and `vzeroupper`.
+//!   loads and stores, and `vzeroupper`;
+//! - [`Gather`]: the AVX2 gathers `op dst, [base + index*scale + disp],
+//!   mask` with a [`Vsib`] operand (WP-207).
 //!
 //! The prefix is `C5` where it can express the instruction, `C4`
 //! otherwise, as LLVM's assembler chooses (`crate::inst::vex`). A form
 //! that exists in one width only refuses the other (the checked forms).
 
-use crate::inst::{Inst, Rm, VexOp, imm, vex, vex_bare};
-use crate::reg::{Mem, Reg, Xmm};
+use crate::inst::{Inst, Rm, VexOp, imm, vex, vex_bare, vex_vsib};
+use crate::reg::{Mem, Reg, Scale, Xmm};
 
 /// The vector width of a VEX instruction.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -437,4 +439,56 @@ pub const fn vcvtps2ph_rri(width: Width, dst: Xmm, src: Xmm, imm8: u8) -> Inst {
 #[inline]
 pub const fn vzeroupper() -> Inst {
     vex_bare(VexOp { map: 1, pp: 0, w: false, l: false, opcode: 0x77 })
+}
+
+vex_family! {
+    /// The AVX2 gathers `op dst, vsib, mask` (`mask` in `VEX.vvvv`): each
+    /// element of `dst` whose `mask` element has its sign bit set loaded
+    /// from `base + index[i]*scale + disp`, the others kept; `mask` cleared.
+    /// `VEX.L` is the wider of the two: the `d`-index forms with 64-bit
+    /// elements (`vgatherdpd`, `vpgatherdq`) take an `xmm` index at both
+    /// widths, the `q`-index forms with 32-bit elements (`vgatherqps`,
+    /// `vpgatherqd`) an `xmm` destination and mask at both widths.
+    Gather {
+        Pgatherdd = (2, 1, false, 0x90, XY, "vpgatherdd"),
+        Pgatherdq = (2, 1, true, 0x90, XY, "vpgatherdq"),
+        Pgatherqd = (2, 1, false, 0x91, XY, "vpgatherqd"),
+        Pgatherqq = (2, 1, true, 0x91, XY, "vpgatherqq"),
+        Gatherdps = (2, 1, false, 0x92, XY, "vgatherdps"),
+        Gatherdpd = (2, 1, true, 0x92, XY, "vgatherdpd"),
+        Gatherqps = (2, 1, false, 0x93, XY, "vgatherqps"),
+        Gatherqpd = (2, 1, true, 0x93, XY, "vgatherqpd"),
+    }
+}
+
+impl Gather {
+    /// Whether the index is a `ymm` at width `width` (else an `xmm`).
+    pub const fn index_is_y(self, width: Width) -> bool {
+        width.l() && !matches!(self, Gather::Pgatherdq | Gather::Gatherdpd)
+    }
+
+    /// Whether the destination and mask are `ymm`s at width `width`.
+    pub const fn dst_is_y(self, width: Width) -> bool {
+        width.l() && !matches!(self, Gather::Pgatherqd | Gather::Gatherqps)
+    }
+}
+
+/// A VSIB memory operand `[base + index*scale + disp]`: `index` a vector
+/// register, each of its elements an offset.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Vsib {
+    pub base: Reg,
+    pub index: Xmm,
+    pub scale: Scale,
+    pub disp: i32,
+}
+
+checked! {
+    /// `op dst, vsib, mask` of the [`Gather`] family. The processor
+    /// faults (`#UD`) when two of `dst`, the index and `mask` are the same
+    /// register: the precondition.
+    pub fn gather / try_gather(op: Gather, width: Width, dst: Xmm, m: Vsib, mask: Xmm)
+    requires dst.code() != m.index.code() && dst.code() != mask.code()
+        && m.index.code() != mask.code();
+    { vex_vsib(op.op(width), dst.code(), mask.code(), m.base, m.index.code(), m.scale, m.disp) }
 }

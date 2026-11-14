@@ -4266,7 +4266,7 @@ own registers, so no combination is refused for being one.
 
 Evidence: `spec/landed/codegen/WP-194.md`.
 
-#### 5.6.33 x86 vector intrinsics past SSSE3 (WP-202)
+#### 5.6.33 x86 vector intrinsics past SSSE3 (WP-202, WP-207)
 
 The `llvm.x86.*` calls clang 19 and 22 write at `-O0` for the functions
 of `<smmintrin.h>`/`<nmmintrin.h>` (SSE4.1, SSE4.2), `<wmmintrin.h>`
@@ -4360,12 +4360,42 @@ without them: the code of the x86-64 baseline is unchanged).
    a predicate of 8 to 31 in a function with AVX are `vcmpss`/`vcmpsd`
    with the whole predicate, as `llc`'s (the legacy encoding reads
    three bits, which is right only without AVX).
-5. **Refused by name** (`classify`): the gathers (`avx2.gather.*`, 16
-   names), every AVX-512, AVX10, VAES, VPCLMULQDQ and 512-bit GFNI name
-   (counted in `spec/landed/codegen/WP-202.md`), and every other
-   `llvm.x86.*` name not listed. AArch64 refuses every `llvm.x86.*` name.
+5. **Refused by name** (`classify`): every AVX-512, AVX10, VAES,
+   VPCLMULQDQ and 512-bit GFNI name (counted in
+   `spec/landed/codegen/WP-202.md`), the generic `llvm.masked.gather`
+   (clang 19 and 22 and kiln write the `avx2.gather.*` names for the
+   header functions under `+avx2`), and every other `llvm.x86.*` name not
+   listed. AArch64 refuses every `llvm.x86.*` name.
+6. **The AVX2 gathers** (WP-207; need `avx2`): `avx2.gather.{d,q}.{d,q,
+   ps,pd}` and their `.256`, 16 names, operands pass-through, base
+   pointer, index, mask and the scale (an `immarg`; other than 1, 2, 4
+   or 8 is `x64:x86-intrinsic-signature`, where `llc` stops). One
+   `vpgatherdd`/`vpgatherdq`/`vpgatherqd`/`vpgatherqq`/`vgatherdps`/
+   `vgatherdpd`/`vgatherqps`/`vgatherqpd` with the VSIB operand
+   `[base + index*scale]`, `VEX.L` set where the destination or the index
+   is a `ymm` (`.256`: the `d` index of 64-bit elements is an `xmm`, the
+   destination of the `q` index with 32-bit elements is an `xmm`). The
+   instruction requires its destination, index and mask in three
+   distinct registers and clears the mask, whose IR value stays as it
+   was:
+   - the destination is `xmm14`/`ymm14`, the pass-through copied (or
+     loaded from its slot) into it first, its register given back at
+     once;
+   - a 128-bit index or mask is used in its own register (§4.2: a
+     register operand may be overwritten; the same value as index and
+     mask gives the mask a copy in `xmm15`); a 256-bit one is loaded
+     from its slot into `ymm15`;
+   - when both are 256 bits, the index is loaded into a temporary of the
+     pool (no register value of the class is pinned by these operands);
+   - the base in its general register (a constant, as `null`, in a
+     temporary); a 256-bit result is stored from `ymm14` to its slot, a
+     128-bit one moved into the index's (or the mask's) register and
+     finished there, so at most two registers of the class are pinned.
+   No register is reserved beyond §2.1's scratch registers, and no
+   function without a gather changes. Lanes whose mask element's sign is
+   clear are not read.
 
-Evidence: `spec/landed/codegen/WP-202.md`.
+Evidence: `spec/landed/codegen/WP-202.md`, `spec/landed/codegen/WP-207.md`.
 
 ## 6. Control flow
 

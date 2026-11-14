@@ -42,8 +42,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `landingpad` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 703 | 347 | 7 | 349 | 477 | 10 | 216 |
-| total | 1028 | 566 | 56 | 406 | 697 | 64 | 267 |
+| `intrinsic` | 719 | 347 | 7 | 365 | 493 | 10 | 216 |
+| total | 1044 | 566 | 56 | 422 | 713 | 64 | 267 |
 
 ## `module`
 
@@ -1233,6 +1233,22 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.x86.vgf2p8affineinvqb.256` | rejected | supported (int, ptr, vector) | an x86 property. GFNI (WP-202) |
 | `intrinsic:llvm.x86.vgf2p8mulb.128` | rejected | supported (int, ptr, vector) | an x86 property. GFNI (WP-202) |
 | `intrinsic:llvm.x86.vgf2p8mulb.256` | rejected | supported (int, ptr, vector) | an x86 property. GFNI (WP-202) |
+| `intrinsic:llvm.x86.avx2.gather.d.d` | rejected | supported (int, ptr, vector) | an x86 property. AVX2 gather (WP-207) |
+| `intrinsic:llvm.x86.avx2.gather.d.d.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX2 gather (WP-207) |
+| `intrinsic:llvm.x86.avx2.gather.d.q` | rejected | supported (int, ptr, vector) | an x86 property. AVX2 gather (WP-207) |
+| `intrinsic:llvm.x86.avx2.gather.d.q.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX2 gather (WP-207) |
+| `intrinsic:llvm.x86.avx2.gather.d.ps` | rejected | supported (int, ptr, vector) | an x86 property. AVX2 gather (WP-207) |
+| `intrinsic:llvm.x86.avx2.gather.d.ps.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX2 gather (WP-207) |
+| `intrinsic:llvm.x86.avx2.gather.d.pd` | rejected | supported (int, ptr, vector) | an x86 property. AVX2 gather (WP-207) |
+| `intrinsic:llvm.x86.avx2.gather.d.pd.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX2 gather (WP-207) |
+| `intrinsic:llvm.x86.avx2.gather.q.d` | rejected | supported (int, ptr, vector) | an x86 property. AVX2 gather (WP-207) |
+| `intrinsic:llvm.x86.avx2.gather.q.d.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX2 gather (WP-207) |
+| `intrinsic:llvm.x86.avx2.gather.q.q` | rejected | supported (int, ptr, vector) | an x86 property. AVX2 gather (WP-207) |
+| `intrinsic:llvm.x86.avx2.gather.q.q.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX2 gather (WP-207) |
+| `intrinsic:llvm.x86.avx2.gather.q.ps` | rejected | supported (int, ptr, vector) | an x86 property. AVX2 gather (WP-207) |
+| `intrinsic:llvm.x86.avx2.gather.q.ps.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX2 gather (WP-207) |
+| `intrinsic:llvm.x86.avx2.gather.q.pd` | rejected | supported (int, ptr, vector) | an x86 property. AVX2 gather (WP-207) |
+| `intrinsic:llvm.x86.avx2.gather.q.pd.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX2 gather (WP-207) |
 
 ## Structural rules
 

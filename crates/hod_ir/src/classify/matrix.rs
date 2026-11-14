@@ -3801,6 +3801,82 @@ const INTRINSIC_X86: &[SupportRow] = &[
     row("intrinsic:llvm.x86.vgf2p8affineinvqb.256", never(X64_ONLY), on(X86_SSE), "GFNI (WP-202)"),
     row("intrinsic:llvm.x86.vgf2p8mulb.128", never(X64_ONLY), on(X86_SSE), "GFNI (WP-202)"),
     row("intrinsic:llvm.x86.vgf2p8mulb.256", never(X64_ONLY), on(X86_SSE), "GFNI (WP-202)"),
+    row("intrinsic:llvm.x86.avx2.gather.d.d", never(X64_ONLY), on(X86_SSE), "AVX2 gather (WP-207)"),
+    row(
+        "intrinsic:llvm.x86.avx2.gather.d.d.256",
+        never(X64_ONLY),
+        on(X86_SSE),
+        "AVX2 gather (WP-207)",
+    ),
+    row("intrinsic:llvm.x86.avx2.gather.d.q", never(X64_ONLY), on(X86_SSE), "AVX2 gather (WP-207)"),
+    row(
+        "intrinsic:llvm.x86.avx2.gather.d.q.256",
+        never(X64_ONLY),
+        on(X86_SSE),
+        "AVX2 gather (WP-207)",
+    ),
+    row(
+        "intrinsic:llvm.x86.avx2.gather.d.ps",
+        never(X64_ONLY),
+        on(X86_SSE),
+        "AVX2 gather (WP-207)",
+    ),
+    row(
+        "intrinsic:llvm.x86.avx2.gather.d.ps.256",
+        never(X64_ONLY),
+        on(X86_SSE),
+        "AVX2 gather (WP-207)",
+    ),
+    row(
+        "intrinsic:llvm.x86.avx2.gather.d.pd",
+        never(X64_ONLY),
+        on(X86_SSE),
+        "AVX2 gather (WP-207)",
+    ),
+    row(
+        "intrinsic:llvm.x86.avx2.gather.d.pd.256",
+        never(X64_ONLY),
+        on(X86_SSE),
+        "AVX2 gather (WP-207)",
+    ),
+    row("intrinsic:llvm.x86.avx2.gather.q.d", never(X64_ONLY), on(X86_SSE), "AVX2 gather (WP-207)"),
+    row(
+        "intrinsic:llvm.x86.avx2.gather.q.d.256",
+        never(X64_ONLY),
+        on(X86_SSE),
+        "AVX2 gather (WP-207)",
+    ),
+    row("intrinsic:llvm.x86.avx2.gather.q.q", never(X64_ONLY), on(X86_SSE), "AVX2 gather (WP-207)"),
+    row(
+        "intrinsic:llvm.x86.avx2.gather.q.q.256",
+        never(X64_ONLY),
+        on(X86_SSE),
+        "AVX2 gather (WP-207)",
+    ),
+    row(
+        "intrinsic:llvm.x86.avx2.gather.q.ps",
+        never(X64_ONLY),
+        on(X86_SSE),
+        "AVX2 gather (WP-207)",
+    ),
+    row(
+        "intrinsic:llvm.x86.avx2.gather.q.ps.256",
+        never(X64_ONLY),
+        on(X86_SSE),
+        "AVX2 gather (WP-207)",
+    ),
+    row(
+        "intrinsic:llvm.x86.avx2.gather.q.pd",
+        never(X64_ONLY),
+        on(X86_SSE),
+        "AVX2 gather (WP-207)",
+    ),
+    row(
+        "intrinsic:llvm.x86.avx2.gather.q.pd.256",
+        never(X64_ONLY),
+        on(X86_SSE),
+        "AVX2 gather (WP-207)",
+    ),
 ];
 
 /// The value classes of the x86 system and state intrinsics' signatures

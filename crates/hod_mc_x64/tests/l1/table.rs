@@ -548,6 +548,8 @@ pub const CONSTRUCTORS: &[(&str, &[&str])] = &[
     ("vmovmskp_rr", &["vmovmsk*"]),
     ("vcvtps2ph_rri", &["vcvtps2ph"]),
     ("vzeroupper", &["vzeroupper"]),
+    // WP-207: the gathers.
+    ("gather", &["v*"]),
     // tls
     ("tls_gd_lea", &["lea"]),
     ("tls_gd_call", &["call"]),

@@ -252,6 +252,8 @@ enum Op {
     Cvtps2ph,
     /// `vzeroupper`.
     Zeroupper,
+    /// An AVX2 gather: pass-through, pointer, index, mask, scale (WP-207).
+    Gather(mc::Gather),
 }
 
 const fn v3(op: V3) -> Op {
@@ -1084,6 +1086,118 @@ fn row(which: Intrinsic<'_>) -> Option<Row> {
         I::X86Vgf2p8mulb256 => {
             ("intrinsic:llvm.x86.vgf2p8mulb.256", Y, &[Y, Y], Need::GfniAvx, v3(V3::Gf2p8mulb))
         }
+        I::X86Avx2GatherDD => (
+            "intrinsic:llvm.x86.avx2.gather.d.d",
+            X,
+            &[X, P, X, X, I8],
+            Need::Avx2,
+            Op::Gather(mc::Gather::Pgatherdd),
+        ),
+        I::X86Avx2GatherDD256 => (
+            "intrinsic:llvm.x86.avx2.gather.d.d.256",
+            Y,
+            &[Y, P, Y, Y, I8],
+            Need::Avx2,
+            Op::Gather(mc::Gather::Pgatherdd),
+        ),
+        I::X86Avx2GatherDQ => (
+            "intrinsic:llvm.x86.avx2.gather.d.q",
+            X,
+            &[X, P, X, X, I8],
+            Need::Avx2,
+            Op::Gather(mc::Gather::Pgatherdq),
+        ),
+        I::X86Avx2GatherDQ256 => (
+            "intrinsic:llvm.x86.avx2.gather.d.q.256",
+            Y,
+            &[Y, P, X, Y, I8],
+            Need::Avx2,
+            Op::Gather(mc::Gather::Pgatherdq),
+        ),
+        I::X86Avx2GatherQD => (
+            "intrinsic:llvm.x86.avx2.gather.q.d",
+            X,
+            &[X, P, X, X, I8],
+            Need::Avx2,
+            Op::Gather(mc::Gather::Pgatherqd),
+        ),
+        I::X86Avx2GatherQD256 => (
+            "intrinsic:llvm.x86.avx2.gather.q.d.256",
+            X,
+            &[X, P, Y, X, I8],
+            Need::Avx2,
+            Op::Gather(mc::Gather::Pgatherqd),
+        ),
+        I::X86Avx2GatherQQ => (
+            "intrinsic:llvm.x86.avx2.gather.q.q",
+            X,
+            &[X, P, X, X, I8],
+            Need::Avx2,
+            Op::Gather(mc::Gather::Pgatherqq),
+        ),
+        I::X86Avx2GatherQQ256 => (
+            "intrinsic:llvm.x86.avx2.gather.q.q.256",
+            Y,
+            &[Y, P, Y, Y, I8],
+            Need::Avx2,
+            Op::Gather(mc::Gather::Pgatherqq),
+        ),
+        I::X86Avx2GatherDPs => (
+            "intrinsic:llvm.x86.avx2.gather.d.ps",
+            X,
+            &[X, P, X, X, I8],
+            Need::Avx2,
+            Op::Gather(mc::Gather::Gatherdps),
+        ),
+        I::X86Avx2GatherDPs256 => (
+            "intrinsic:llvm.x86.avx2.gather.d.ps.256",
+            Y,
+            &[Y, P, Y, Y, I8],
+            Need::Avx2,
+            Op::Gather(mc::Gather::Gatherdps),
+        ),
+        I::X86Avx2GatherDPd => (
+            "intrinsic:llvm.x86.avx2.gather.d.pd",
+            X,
+            &[X, P, X, X, I8],
+            Need::Avx2,
+            Op::Gather(mc::Gather::Gatherdpd),
+        ),
+        I::X86Avx2GatherDPd256 => (
+            "intrinsic:llvm.x86.avx2.gather.d.pd.256",
+            Y,
+            &[Y, P, X, Y, I8],
+            Need::Avx2,
+            Op::Gather(mc::Gather::Gatherdpd),
+        ),
+        I::X86Avx2GatherQPs => (
+            "intrinsic:llvm.x86.avx2.gather.q.ps",
+            X,
+            &[X, P, X, X, I8],
+            Need::Avx2,
+            Op::Gather(mc::Gather::Gatherqps),
+        ),
+        I::X86Avx2GatherQPs256 => (
+            "intrinsic:llvm.x86.avx2.gather.q.ps.256",
+            X,
+            &[X, P, Y, X, I8],
+            Need::Avx2,
+            Op::Gather(mc::Gather::Gatherqps),
+        ),
+        I::X86Avx2GatherQPd => (
+            "intrinsic:llvm.x86.avx2.gather.q.pd",
+            X,
+            &[X, P, X, X, I8],
+            Need::Avx2,
+            Op::Gather(mc::Gather::Gatherqpd),
+        ),
+        I::X86Avx2GatherQPd256 => (
+            "intrinsic:llvm.x86.avx2.gather.q.pd.256",
+            Y,
+            &[Y, P, Y, Y, I8],
+            Need::Avx2,
+            Op::Gather(mc::Gather::Gatherqpd),
+        ),
         _ => return None,
     })
 }
@@ -1417,7 +1531,105 @@ fn lower<'a>(
             put(cx, mc::vzeroupper());
             Ok(())
         }
+        Op::Gather(op) => gather(cx, inst, args, op, (ret, params[2]), imm(cx)?),
     }
+}
+
+/// An AVX2 gather (§5.6.33 (6)): `args` the pass-through, the pointer,
+/// the index, the mask; `shape` the widths of the result (and mask) and
+/// of the index. The destination is `xmm14`/`ymm14`, the pass-through
+/// copied in. A 128-bit mask or index is used in its own register (the
+/// gather clears the mask; a register operand may be overwritten), a
+/// 256-bit one is loaded from its slot into `ymm15`, and when both are 256
+/// bits the index goes to a temporary of the pool (no register value is
+/// pinned then). The three are distinct registers, as the instruction
+/// requires. A 128-bit result is finished in an operand's register, so at
+/// most two vector registers are pinned at once.
+fn gather<'a>(
+    cx: &mut FnCx<'a, X64>,
+    inst: Inst<'a>,
+    args: &'a [Value],
+    op: mc::Gather,
+    (ret, index): (K, K),
+    scale: u8,
+) -> CgResult<()> {
+    let scale = match scale {
+        1 => mc::Scale::S1,
+        2 => mc::Scale::S2,
+        4 => mc::Scale::S4,
+        8 => mc::Scale::S8,
+        // LLVM's verifier lets any `i8` through; `llc` stops at it.
+        _ => return unsupported(super::SIGNATURE),
+    };
+    let (src, ptr, idx, mask) = (args[0], args[1], args[2], args[3]);
+    let width = if ret == K::Y || index == K::Y { Width::Y } else { Width::X };
+    // The pass-through into `xmm14`/`ymm14` first: its register, when it
+    // has one of its own, is given back at once.
+    if ret == K::Y {
+        let s = cx.use_mem(src)?;
+        load_y(cx, XMM14, s);
+    } else if src != idx && src != mask {
+        let s = cx.use_reg(src)?;
+        put(cx, mc::movdqa_rr(XMM14, xm(s)));
+        cx.release(src);
+        cx.free_temp(s);
+    }
+    // The index and the mask: registers, distinct.
+    let (ri, rm) = match (index, ret) {
+        (K::X, K::X) => {
+            let [ri, rm] = xregs(cx, [idx, mask])?;
+            (Some(ri), Some(rm))
+        }
+        (K::X, _) => (Some(cx.use_reg(idx)?), None),
+        (_, K::X) => (None, Some(cx.use_reg(mask)?)),
+        _ => (None, None),
+    };
+    if ret == K::X && (src == idx || src == mask) {
+        let s = if src == idx { ri } else { rm };
+        let Some(s) = s else { return cx.bug("a gather's pass-through register") };
+        put(cx, mc::movdqa_rr(XMM14, xm(s)));
+    }
+    let mut temp = None;
+    let (index_reg, mask_reg) = match (ri, rm) {
+        (Some(ri), Some(rm)) if ri == rm => {
+            // The same value: the mask a copy in `xmm15`.
+            put(cx, mc::movdqa_rr(XMM15, xm(rm)));
+            (xm(ri), XMM15)
+        }
+        (Some(ri), Some(rm)) => (xm(ri), xm(rm)),
+        (Some(ri), None) => {
+            let m = cx.use_mem(mask)?;
+            load_y(cx, XMM15, m);
+            (xm(ri), XMM15)
+        }
+        (None, Some(rm)) => {
+            let i = cx.use_mem(idx)?;
+            load_y(cx, XMM15, i);
+            (XMM15, xm(rm))
+        }
+        (None, None) => {
+            let (i, m) = (cx.use_mem(idx)?, cx.use_mem(mask)?);
+            let t = cx.temp(Class::Fpr)?;
+            temp = Some(t);
+            load_y(cx, xm(t), i);
+            load_y(cx, XMM15, m);
+            (xm(t), XMM15)
+        }
+    };
+    let base = cx.use_reg(ptr)?;
+    let at = mc::Vsib { base: gp(base), index: index_reg, scale, disp: 0 };
+    put(cx, mc::gather(op, width, XMM14, at, mask_reg));
+    if let Some(t) = temp {
+        cx.free_temp(t);
+    }
+    if ret == K::Y {
+        let r = def_y(cx, inst, ret)?;
+        return store_y(cx, inst, r);
+    }
+    // In the index's or the mask's register: no third one is pinned.
+    let Some(out) = ri.or(rm) else { return cx.bug("a 128-bit gather without a register") };
+    put(cx, mc::movdqa_rr(xm(out), XMM14));
+    cx.finish(inst, out)
 }
 
 /// The registers of the 128-bit `args` (one register for a value given

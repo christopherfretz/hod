@@ -42,6 +42,14 @@ CTEST_RE = re.compile(r"(\d+)% tests passed, (\d+) tests? failed out of (\d+)")
 # One ctest result line: `  3/12 Test  #3: name ....   Passed    0.01 sec`,
 # `***Failed`, `***Timeout`, `***Exception: SegFault`, `***Not Run`.
 CTEST_LINE_RE = re.compile(r"^\s*\d+/\d+ Test\s+#\d+: (\S+) \.+\s*(\S.*?)\s+[\d.]+ sec\s*$")
+# Catch2 v2's totals (duckdb's unittest, kiln's CATCH_RE), its all-passed
+# line, and the rules around a failed test case's header; the list of the
+# cases a row's test command writes (`unittest --list-test-names-only`).
+CATCH_RE = re.compile(r"^test cases:\s*(\d+)\s*\|\s*(\d+) passed\s*\|\s*(\d+) failed")
+CATCH_ALL_RE = re.compile(r"^All tests passed \(\d+ assertions? in (\d+) test cases?\)")
+CATCH_RULE_RE = re.compile(r"^-{79}\s*$")
+CATCH_DOTS_RE = re.compile(r"^\.{79}\s*$")
+CATCH_LIST = "catch-tests.log"
 # The reason name of a hod refusal as a directory name (hod-shim's rule).
 SAFE_RE = re.compile(r"[^A-Za-z0-9:_.+-]")
 
@@ -233,8 +241,53 @@ def test_results(log_path):
         if m:
             total, failed = int(m.group(3)), int(m.group(2))
             return line.strip(), {"passed": total - failed, "failed": failed, "total": total}, per
+    catch = catch_results(lines, os.path.join(os.path.dirname(log_path), CATCH_LIST))
+    if catch:
+        return catch
     last = next((l.strip() for l in reversed(lines) if l.strip()), "")
     return last, None, per
+
+
+def catch_results(lines, list_path):
+    """A Catch2 (v2) console log (duckdb's unittest): (totals line, counts,
+    {test case: status}) or None. A failed case's header is the dashed
+    rule, its name, another rule, its location and a dotted rule; every
+    case of `list_path` (the row's `--list-test-names-only` output, when
+    the test command wrote one) not failed is `Passed`. A progress line
+    ending in a carriage return is split there."""
+    parts = [p for l in lines for p in l.split("\r")]
+    totals = None
+    for i in range(len(parts) - 1, -1, -1):
+        m = CATCH_RE.match(parts[i].strip())
+        if m:
+            total, passed, failed = (int(x) for x in m.groups())
+            totals = (parts[i].strip(), {"passed": passed, "failed": failed, "total": total})
+            break
+        m = CATCH_ALL_RE.match(parts[i].strip())
+        if m:
+            total = int(m.group(1))
+            totals = (parts[i].strip(), {"passed": total, "failed": 0, "total": total})
+            break
+    if totals is None:
+        return None
+    failed = set()
+    for i in range(len(parts) - 3):
+        if CATCH_RULE_RE.match(parts[i]) and parts[i + 1].strip() and not CATCH_RULE_RE.match(parts[i + 1]):
+            j = i + 1
+            while j < len(parts) and not CATCH_RULE_RE.match(parts[j]):
+                j += 1
+            # The rule after the name (and its sections), then file:line and dots.
+            if j + 2 < len(parts) and CATCH_DOTS_RE.match(parts[j + 2]):
+                failed.add(parts[i + 1].strip())
+    per = {}
+    try:
+        with open(list_path, encoding="utf-8", errors="replace") as f:
+            per = {l.strip(): "Passed" for l in f if l.strip()}
+    except FileNotFoundError:
+        pass
+    for t in failed:
+        per[t] = "Failed"
+    return totals[0], totals[1], per
 
 
 # One ctest test whose command is a path (CTestTestfile.cmake, as CMake

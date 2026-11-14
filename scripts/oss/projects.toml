@@ -498,3 +498,23 @@ test = "mkdir -p whole && emu=$(sed -n 's/^CMAKE_CROSSCOMPILING_EMULATOR:[A-Z]*=
 test_timeout = 10800
 test_vmem_kb = 16000000
 notes = "WP-211. gRPC with every dependency bundled (submodules): libgrpc, libgrpc++ and grpc_cpp_plugin (protoc built from the bundled protobuf), plus 24 test programs (core unit tests and the C++ end2end suites end2end_test, async_end2end_test, generic_end2end_test, client_callback_end2end_test); C (BoringSSL without asm, c-ares, zlib, upb, address_sorting) through kiln-cc."
+
+# ---------------------------------------------------------------- WP-223
+# Real projects, fourth set (native AArch64 host).
+
+[duckdb]
+url = "https://github.com/duckdb/duckdb"
+tag = "v1.5.6"
+build = "cmake"
+cxx_std = 17
+c = "kiln"
+# kiln's row, without the unity build (every source its own object).
+configure = ["-DBUILD_UNITTESTS=ON", "-DBUILD_SHELL=ON", "-DDISABLE_UNITY=1"]
+build_targets = ["unittest", "shell"]
+# The list of the test cases first (catch-tests.log, projects.py reads it
+# for the per-case results), then kiln's test: the default (non-slow) cases.
+test = "test/unittest --list-test-names-only > catch-tests.log 2>/dev/null; DUCKDB_TEST_MAX_THREADS=4 SUMMARIZE_FAILURES=1 test/unittest"
+test_timeout = 14400
+c_compiler = "clang-19"
+wave = 4
+notes = "WP-223, from kiln's row (WP-799): release v1.5.6, default extensions (core_functions, parquet), not the amalgamation, DISABLE_UNITY so every source is a TU. The test is unittest with no arguments (the default, non-slow, Catch2 and sqllogictest cases), at most 4 threads per database; the per-case results come from Catch's failure headers and the --list-test-names-only list."

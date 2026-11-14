@@ -118,35 +118,29 @@ const CENSUS: &[Row] = &[
     // `zstd_decompress_block.c`, cmake's and mold's copies), counted
     // here by WP-216, are all under `#if defined(__GNUC__) &&
     // defined(__x86_64__)`: x86-64 templates, `census_x64.rs` (§17).
-    // Stays refused.
-    row(
-        "fmla v8.4s, v9.4s, v10.s[0]",
-        "eigen NEON GeneralBlockPanelKernel.h",
-        8,
-        No("asm:mnemonic/fmla"),
-    ),
-    row(
-        "fcvtzs v8.4s, v9.4s",
-        "highway arm_neon-inl.h (and .2d, .4h, .8h)",
-        5,
-        No("asm:operand/vector"),
-    ),
-    row("fcvtzu v8.4s, v9.4s", "highway arm_neon-inl.h", 5, No("asm:operand/vector")),
-    row("fcmeq v8.8h, v9.8h, v9.8h", "highway arm_neon-inl.h", 5, No("asm:operand/vector")),
-    row("fcvtns v8.4s, v9.4s", "opencv intrin_neon.hpp", 1, No("asm:operand/vector")),
-    row("umlal v8.2d, v9.2s, v10.2s", "xxhash.h (zstd copies)", 3, No("asm:mnemonic/umlal")),
+    // Advanced SIMD on vector operands (§20). The `4h`/`8h` forms need
+    // `fullfp16`, `pmull`/`pmull2` of `1d`/`2d` need `aes`: the census
+    // bodies are assembled with every feature, as the projects' functions
+    // that hold them are compiled.
+    row("fmla v8.4s, v9.4s, v10.s[0]", "eigen NEON GeneralBlockPanelKernel.h", 8, Ok),
+    row("fcvtzs v8.4s, v9.4s", "highway arm_neon-inl.h (and .2d, .4h, .8h)", 5, Ok),
+    row("fcvtzu v8.4s, v9.4s", "highway arm_neon-inl.h (and .2d, .4h, .8h)", 5, Ok),
+    row("fcmeq v8.8h, v9.8h, v9.8h", "highway arm_neon-inl.h", 5, Ok),
+    row("fcvtns v8.4s, v9.4s", "opencv intrin_neon.hpp", 1, Ok),
+    row("umlal v8.2d, v9.2s, v10.2s", "xxhash.h (zstd copies)", 3, Ok),
     row(
         "pmull v8.1q, v9.1d, v10.1d",
         "abseil crc32_x86_arm_combined_simd.h (and grpc's copy)",
         2,
-        No("asm:mnemonic/pmull"),
+        Ok,
     ),
     row(
         "pmull2 v8.1q, v9.2d, v10.2d",
         "abseil crc32_x86_arm_combined_simd.h (and grpc's copy)",
         2,
-        No("asm:mnemonic/pmull2"),
+        Ok,
     ),
+    // Stays refused.
     row(
         ".arch_extension  crypto",
         "abseil randen_hwaes.cc (grpc's bloaty copy)",
@@ -157,7 +151,7 @@ const CENSUS: &[Row] = &[
     row(".inst 0xd4200000", "psnip debug-trap (opencv)", 1, No("asm:directive/inst")),
 ];
 
-const ALL: Features = Features { lse: true, crc: true, fp: true, rand: true };
+const ALL: Features = Features::ALL;
 
 fn hod(body: &str) -> Result<Vec<u32>, hod_asm::Refusal> {
     let mut code = Code::default();
@@ -199,7 +193,7 @@ fn llvm(major: u32, source: &str, scratch: &Scratch) -> Option<Vec<u32>> {
         &mc,
         [
             "--triple=aarch64-unknown-linux-gnu".as_ref(),
-            "-mattr=+lse,+crc,+fp-armv8".as_ref(),
+            "-mattr=+lse,+crc,+fp-armv8,+aes,+fullfp16".as_ref(),
             "-filetype=obj".as_ref(),
             "-o".as_ref(),
             obj.as_os_str(),

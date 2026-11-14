@@ -4,9 +4,13 @@
 //! Register names are read without regard to case: `x0`..`x30`,
 //! `w0`..`w30`, `xzr`, `wzr`, `sp`, `wsp`, the aliases `fp` (`x29`),
 //! `lr` (`x30`), `x31`/`w31` (the zero register), and the scalar views
-//! of the FP/SIMD registers `b0`..`q31`. A vector register (`v0`,
-//! `v0.4s`, `v0.s[1]`) and a register list (`{...}`) parse, as
-//! [`Op::Vector`], so that the instruction refuses them by name.
+//! of the FP/SIMD registers `b0`..`q31`. A vector register with an
+//! arrangement (`v0.4s`, [`Op::VReg`]), an element (`v0.s[1]`,
+//! [`Op::VLane`]) and a register list (`{v0.4s, v1.4s}`,
+//! `{v0.16b-v3.16b}`, `{v0.s, v1.s}[1]`, [`Op::VList`]) are read as
+//! `llvm-mc` reads them (§20); any other vector form (`v0` with no
+//! arrangement, an arrangement `llvm-mc` has no name for) parses as
+//! [`Op::Vector`], so that the instruction refuses it by name.
 
 use hod_mc_a64::{Extend, Shift};
 
@@ -117,8 +121,16 @@ pub enum Op<'a> {
     Gp(Gp),
     /// A scalar view of an FP/SIMD register: `(n, view)`.
     Fp(u8, View),
-    /// A vector register, element or register list.
+    /// A vector register, element or register list of a form hod does
+    /// not read.
     Vector,
+    /// `v<n>.<count><view>`: a vector register with an arrangement
+    /// (`v8.4s` is `(8, 4, S)`; `v8.1q` is `(8, 1, Q)`).
+    VReg(u8, u8, View),
+    /// `v<n>.<view>[<index>]`: one element (`v10.s[0]`).
+    VLane(u8, View, u8),
+    /// A register list.
+    VList(VList),
     /// A constant: `#expr` (`true`) or a bare constant expression.
     Imm(i64, bool),
     /// A floating-point immediate `#1.5`.
@@ -136,7 +148,32 @@ pub enum Op<'a> {
     Literal,
 }
 
+/// A register list `{v<n>.<T>, ...}` or `{v<n>.<T> - v<m>.<T>}`, one to
+/// four consecutive registers (`v31` is followed by `v0`) of one
+/// arrangement, and for the single-structure forms an element index
+/// after the brace (`{v0.s, v1.s}[1]`, the arrangement then a bare
+/// element: `count` 0).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct VList {
+    /// The first register.
+    pub first: u8,
+    /// The number of registers, 1..=4.
+    pub len: u8,
+    /// The element count of the arrangement (0: an element, `v0.s`).
+    pub count: u8,
+    /// The element.
+    pub view: View,
+    /// The element index written after the list.
+    pub index: Option<u8>,
+}
+
 impl Op<'_> {
+    /// Whether it is a vector operand (a register with an arrangement, an
+    /// element, a list, or a vector form hod does not read).
+    pub const fn is_vector(&self) -> bool {
+        matches!(self, Op::Vector | Op::VReg(..) | Op::VLane(..) | Op::VList(_))
+    }
+
     /// The bare name of an operand (`eq`, `ish`, `tpidr_el0`), lower
     /// case is the caller's.
     pub fn ident(&self) -> Option<&str> {
@@ -226,11 +263,116 @@ pub fn fp_name(name: &str) -> Option<(u8, View)> {
     Some((n, view))
 }
 
-/// Whether `name` is a vector register `v0`..`v31` (with or without an
-/// arrangement, which the caller has cut at the `.`).
-fn is_vector_name(name: &str) -> bool {
+/// The number of a vector register name `v0`..`v31` (any case; the
+/// caller has cut the arrangement at the `.`).
+fn vector_number(name: &str) -> Option<u8> {
     let b = name.as_bytes();
-    b.len() >= 2 && b[0].eq_ignore_ascii_case(&b'v') && number(&b[1..], 31).is_some()
+    if b.len() >= 2 && b[0].eq_ignore_ascii_case(&b'v') { number(&b[1..], 31) } else { None }
+}
+
+/// An arrangement suffix as `llvm-mc` names them: `8b`, `16b`, `4b`,
+/// `4h`, `8h`, `2h`, `2s`, `4s`, `1d`, `2d`, `1q` (`count`, `view`), or a
+/// bare element `b`, `h`, `s`, `d`, `q` (count 0); any case.
+fn arrangement(suffix: &str) -> Option<(u8, View)> {
+    let (&last, digits) = suffix.as_bytes().split_last()?;
+    let view = match last.to_ascii_lowercase() {
+        b'b' => View::B,
+        b'h' => View::H,
+        b's' => View::S,
+        b'd' => View::D,
+        b'q' => View::Q,
+        _ => return None,
+    };
+    let count = match digits {
+        b"" => return Some((0, view)),
+        b"1" => 1,
+        b"2" => 2,
+        b"4" => 4,
+        b"8" => 8,
+        b"16" => 16,
+        _ => return None,
+    };
+    let named = matches!(
+        (count, view),
+        (4 | 8 | 16, View::B)
+            | (2 | 4 | 8, View::H)
+            | (2 | 4, View::S)
+            | (1 | 2, View::D)
+            | (1, View::Q)
+    );
+    named.then_some((count, view))
+}
+
+/// A vector register word (`v8.4s`, `v8.s`) as its number and
+/// arrangement; `None` for one hod does not read.
+fn vector_word(word: &str) -> Option<(u8, u8, View)> {
+    let (base, suffix) = word.split_once('.')?;
+    let n = vector_number(base)?;
+    let (count, view) = arrangement(suffix)?;
+    Some((n, count, view))
+}
+
+/// An element index `[i]`, 0..=255 (the instruction checks the range).
+fn lane_index(c: &mut Cursor<'_>) -> Result<Option<u8>, Refusal> {
+    if !c.eat(b'[') {
+        return Ok(None);
+    }
+    let i = c.constant()?;
+    if !c.eat(b']') {
+        return err(operand::SYNTAX);
+    }
+    u8::try_from(i).map(Some).map_err(|_| Refusal(operand::RANGE))
+}
+
+/// The inside of `{...}` (the `{` consumed), the `}` and an index after
+/// it; `Op::Vector` for a list `llvm-mc` rejects (registers that are not
+/// consecutive, arrangements that differ, more than four).
+fn vector_list<'a>(c: &mut Cursor<'a>) -> Result<Op<'a>, Refusal> {
+    let mut regs = [(0u8, 0u8, View::B); 4];
+    let mut len = 0usize;
+    let mut range = false;
+    loop {
+        let Some((n, count, view)) = c.name().and_then(vector_word) else {
+            return Ok(Op::Vector);
+        };
+        if range {
+            // `first-last`: every register between them.
+            let (first, fc, fv) = regs[0];
+            let span = usize::from(n.wrapping_sub(first) & 31) + 1;
+            if len != 1 || (count, view) != (fc, fv) || span > 4 {
+                return Ok(Op::Vector);
+            }
+            for (k, r) in regs.iter_mut().enumerate().take(span).skip(1) {
+                *r = ((first + k as u8) & 31, count, view);
+            }
+            len = span;
+        } else {
+            if len == 4 {
+                return Ok(Op::Vector);
+            }
+            regs[len] = (n, count, view);
+            len += 1;
+        }
+        if c.eat(b'}') {
+            break;
+        }
+        if c.eat(b'-') && !range && len == 1 {
+            range = true;
+        } else if !c.eat(b',') || range {
+            return Ok(Op::Vector);
+        }
+    }
+    let (first, count, view) = regs[0];
+    for (k, &(n, cn, vn)) in regs[..len].iter().enumerate() {
+        if n != (first + k as u8) & 31 || (cn, vn) != (count, view) {
+            return Ok(Op::Vector);
+        }
+    }
+    let index = lane_index(c)?;
+    if index.is_some() != (count == 0) {
+        return Ok(Op::Vector);
+    }
+    Ok(Op::VList(VList { first, len: len as u8, count, view, index }))
 }
 
 fn shift_name(name: &str) -> Option<Shift> {
@@ -316,7 +458,13 @@ pub fn parse_one(text: &str) -> Result<Op<'_>, Refusal> {
             c.at += 1;
             Op::Mem(mem(&mut c)?)
         }
-        Some(b'{') => return Ok(Op::Vector),
+        Some(b'{') => {
+            c.at += 1;
+            match vector_list(&mut c)? {
+                Op::Vector => return Ok(Op::Vector),
+                list => list,
+            }
+        }
         Some(b'=') => return Ok(Op::Literal),
         Some(b'#') => {
             c.at += 1;
@@ -334,8 +482,15 @@ pub fn parse_one(text: &str) -> Result<Op<'_>, Refusal> {
             if let Some(word) = c.name() {
                 // A register, possibly with an arrangement or element.
                 let base = word.split('.').next().unwrap_or(word);
-                if is_vector_name(base) {
-                    return Ok(Op::Vector);
+                if vector_number(base).is_some() {
+                    return match vector_word(word) {
+                        Some((n, 0, view)) => match lane_index(&mut c)? {
+                            Some(i) if c.at_end() => Ok(Op::VLane(n, view, i)),
+                            _ => Ok(Op::Vector),
+                        },
+                        Some((n, count, view)) if c.at_end() => Ok(Op::VReg(n, count, view)),
+                        _ => Ok(Op::Vector),
+                    };
                 }
                 if let Some(g) = gp_name(word) {
                     Op::Gp(g)
@@ -452,7 +607,23 @@ mod tests {
         assert_eq!(one("x31"), Op::Gp(Gp::Xzr));
         assert_eq!(one("wsp"), Op::Gp(Gp::Wsp));
         assert_eq!(one("d7"), Op::Fp(7, View::D));
-        assert_eq!(one("v1.4s"), Op::Vector);
+        assert_eq!(one("v1.4s"), Op::VReg(1, 4, View::S));
+        assert_eq!(one("V31.16B"), Op::VReg(31, 16, View::B));
+        assert_eq!(one("v8.1q"), Op::VReg(8, 1, View::Q));
+        assert_eq!(one("v10.s[3]"), Op::VLane(10, View::S, 3));
+        assert_eq!(one("v1"), Op::Vector);
+        assert_eq!(one("v1.3s"), Op::Vector);
+        assert_eq!(one("v1.s"), Op::Vector);
+        assert_eq!(one("v1.4s[1]"), Op::Vector);
+        let list = |first, len, count, view, index| VList { first, len, count, view, index };
+        assert_eq!(one("{v0.16b}"), Op::VList(list(0, 1, 16, View::B, None)));
+        assert_eq!(one("{ v30.4s, v31.4s, v0.4s }"), Op::VList(list(30, 3, 4, View::S, None)));
+        assert_eq!(one("{v4.2d-v7.2d}"), Op::VList(list(4, 4, 2, View::D, None)));
+        assert_eq!(one("{v1.s, v2.s}[3]"), Op::VList(list(1, 2, 0, View::S, Some(3))));
+        assert_eq!(one("{v0.4s, v2.4s}"), Op::Vector);
+        assert_eq!(one("{v0.4s, v1.2s}"), Op::Vector);
+        assert_eq!(one("{v0.s}"), Op::Vector);
+        assert_eq!(one("{v0.4s-v4.4s}"), Op::Vector);
         assert_eq!(one("#-8"), Op::Imm(-8, true));
         assert_eq!(one("42"), Op::Imm(42, false));
         assert_eq!(one("#1.5"), Op::FpImm(1.5));

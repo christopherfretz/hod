@@ -2441,8 +2441,10 @@ stack arguments, `byval`, `fastcc`, `preserve_mostcc`, `preserve_allcc`
 and a variadic call) the same argument registers and stack slots, return
 registers and call register masks as a function without features, except
 (a) a vector wider than 128 bits under anything that implies AVX, and a
-vector of `i1` under AVX-512, which `x64:wide-vector-abi` refuses with the
-function's features (§5.6.9; `sha512`, `sm3` and `sm4` imply AVX), and
+vector of `i1` under AVX-512: a 256-bit vector under known AVX goes in
+`ymm` registers (`spec/abi-x64.md` §1.3 and §8.7, WP-203), and what
+remains is `x64:wide-vector-abi` with the function's features (§5.6.9;
+`sha512`, `sm3` and `sm4` imply AVX), and
 (b) `preserve_allcc`, whose call's register mask keeps all of
 `ymm0`..`ymm15` under AVX while §5.6.23's callee keeps their low halves:
 `llc`'s own callee returns through `vzeroupper` whenever it called
@@ -2884,9 +2886,11 @@ summarized in `spec/landed/codegen/WP-128.md`.
   compiled function's features, never the callee's: `llc` does the same
   (`spec/abi-x64.md` §1.3, which has the CPU tables and the rule). So
   without AVX a `<8 x float>` argument is two `xmm` registers and a
-  `<4 x i1>` one `xmm`, as `llc` places them; with AVX (or a CPU that
-  may have it) a wider-than-128-bit vector is `x64:wide-vector-abi`, and
-  with AVX-512 a vector of `i1`.
+  `<4 x i1>` one `xmm`, as `llc` places them; with known AVX a 256-bit
+  vector is passed and returned in `ymm` registers (`spec/abi-x64.md`
+  §1.3 and §8.7, WP-203); `x64:wide-vector-abi` remains for a vector
+  over 32 bytes or of `i1` under AVX-512, for a `ymm` vector where AVX
+  is only assumed, and for `preserve_*` with a `ymm` piece.
 - **`-x87`** is refused (`attr:target-feature-no-x87`) only for a
   function that has a value of a type containing `x86_fp80` (its
   signature, an instruction's result or an operand): `llc` cannot

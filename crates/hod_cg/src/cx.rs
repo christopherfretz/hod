@@ -328,6 +328,14 @@ pub struct FnCx<'a, T: Target> {
     pub(crate) ret_last: bool,
     /// A coroutine body's state (WP-106, `coro_body`).
     pub(crate) coro: Option<Box<crate::coro_body::CoroFn>>,
+    /// Whether this attempt may give a value whose every use is in its
+    /// own block a block slot (§5.1 "Value slots"); decided before the
+    /// first block.
+    pub(crate) block_slots: bool,
+    /// Set when code that can run a second time (a `returns_twice` call)
+    /// is emitted while [`FnCx::block_slots`] is on: the function is
+    /// compiled again without block slots (§5.1).
+    pub(crate) runs_twice: bool,
 }
 
 impl<'a, T: Target> FnCx<'a, T> {

@@ -522,6 +522,7 @@ impl<'a, T: Target> FnCx<'a, T> {
         // §4.3: a spill slot occupied at this call is read again when
         // the call returns a second time.
         if call.returns_twice {
+            self.code_runs_twice();
             self.s.frame.keep_spills();
         }
         // §4.4: what stays in registers are operands of this call in

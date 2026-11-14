@@ -75,8 +75,8 @@ use hod_mc_x64::{Cond, Size};
 use hod_obj::{RelocKind, X64Reloc};
 
 use crate::common::{
-    R10, R11, XMM15, branch, copy_frame, deferred_first, frame_address, gp, gpr_load, load_fpr,
-    load_gpr, put, store_fpr, store_gpr, unsupported, value_ty, xm,
+    R10, R11, XMM15, branch, copy_frame, deferred_first, frame_address, frame_inst, gp, gpr_load,
+    load_fpr, load_gpr, put, store_fpr, store_gpr, unsupported, value_ty, xm,
 };
 use crate::reg;
 use crate::target::X64;
@@ -175,8 +175,15 @@ enum Place {
 }
 
 /// The register a name denotes, for an operand (`Ok(None)`: not one hod
-/// places an operand in: `ah`..`dh`, x87, `xmm16` and up, `ymm`, `zmm`).
+/// places an operand in: `ah`..`dh`, `st(2)` and deeper, `xmm16` and up,
+/// `ymm`, `zmm`). `st` (`st(0)`) and `st(1)` are the x87 operands of
+/// `spec/asm.md` §14.
 fn named_reg(name: &[u8]) -> Result<Option<PReg>, CgError> {
+    match name {
+        b"st" | b"st(0)" => return Ok(Some(reg::st(0))),
+        b"st(1)" => return Ok(Some(reg::st(1))),
+        _ => {}
+    }
     let name = std::str::from_utf8(name).unwrap_or("");
     match asm::operand::reg_name(name) {
         Some(asm::operand::RegName::Gpr(g)) => match g.reg {
@@ -281,6 +288,20 @@ impl ConstraintSyntax for X64Syntax {
 
 fn text(bytes: &[u8]) -> &str {
     std::str::from_utf8(bytes).unwrap_or("other")
+}
+
+/// The x87 registers `st(0)`, `st(1)` (bits 0, 1) the constraint string
+/// clobbers.
+fn x87_clobbers(constraints: &[u8]) -> u8 {
+    let mut bits = 0;
+    for piece in constraints.split(|&b| b == b',') {
+        match piece {
+            b"~{st}" | b"~{st(0)}" => bits |= 1,
+            b"~{st(1)}" => bits |= 2,
+            _ => {}
+        }
+    }
+    bits
 }
 
 /// Reads the constraint string `constraints` (`hod_cg::asm_constraints`).
@@ -444,6 +465,17 @@ fn is_fp_type(cx: &FnCx<'_, X64>, ty: TypeId) -> bool {
     ) || matches!(cx.types().kind(ty), TypeKind::Int(128))
 }
 
+/// The x87 size of a value of `ty` an operand in `st(0)` or `st(1)`
+/// holds: `float`, `double`, `x86_fp80`.
+fn x87_size(cx: &FnCx<'_, X64>, ty: TypeId) -> Option<mc::X87Size> {
+    match cx.types().kind(ty) {
+        TypeKind::Float => Some(mc::X87Size::S),
+        TypeKind::Double => Some(mc::X87Size::D),
+        TypeKind::X86Fp80 => Some(mc::X87Size::T),
+        _ => None,
+    }
+}
+
 /// Whether the alternative puts the operand in memory: it has a memory
 /// code, and the operand is neither a direct output nor an output an
 /// input is tied to that may take a register.
@@ -599,7 +631,9 @@ fn decide(cx: &FnCx<'_, X64>, inst: Inst<'_>, ops: &Ops) -> CgResult<Plan> {
             plan.places[i] = match plan.places[out] {
                 Some(Place::Reg(r)) => {
                     let same = |ty| {
-                        if reg::is_gpr(r) {
+                        if reg::is_x87(r) {
+                            x87_size(cx, ty).map(|_| 0)
+                        } else if reg::is_gpr(r) {
                             gpr_bytes(cx, ty)
                         } else {
                             xmm_bytes(cx, ty).map(|b| b as u8)
@@ -620,7 +654,9 @@ fn decide(cx: &FnCx<'_, X64>, inst: Inst<'_>, ops: &Ops) -> CgResult<Plan> {
         let ty = plan.tys[i];
         match plan.places[i] {
             Some(Place::Reg(r)) => {
-                let fits = if reg::is_gpr(r) {
+                let fits = if reg::is_x87(r) {
+                    x87_size(cx, ty).is_some() && !op.indirect
+                } else if reg::is_gpr(r) {
                     gpr_bytes(cx, ty).is_some()
                 } else {
                     xmm_bytes(cx, ty).is_some()
@@ -694,6 +730,7 @@ pub fn call<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>) -> CgResult<()> {
         return Err(refused(reason::constraint("count")));
     }
     let plan = decide(cx, inst, &ops)?;
+    let stack = x87_stack(&ops, &plan, x87_clobbers(asm.constraints))?;
     // The text first: nothing is emitted for a template that refuses.
     let mut body = String::new();
     substitute(cx, inst, asm, &ops, &plan, &mut body)?;
@@ -720,7 +757,53 @@ pub fn call<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>) -> CgResult<()> {
         };
         fields.push((r.offset, kind, sym, r.addend));
     }
-    emit(cx, inst, &ops, plan, &code, &fields)
+    emit(cx, inst, &ops, plan, stack, &code, &fields)
+}
+
+/// What a template does to the x87 stack (§14, LLVM's
+/// `X86FloatingPoint` model of inline assembly): the inputs it finds in
+/// `st(0)`, `st(1)` (bits 0, 1), the outputs it leaves there, and the
+/// inputs it pops (those also written or clobbered).
+#[derive(Clone, Copy, Default, Debug)]
+struct X87Stack {
+    uses: u8,
+    defs: u8,
+    popped: u8,
+}
+
+impl X87Stack {
+    /// The registers of a mask, from `st(0)`: 0, 1 or 2.
+    const fn count(bits: u8) -> u8 {
+        bits.count_ones() as u8
+    }
+}
+
+/// The x87 registers of a plan; `asm:constraint/st` for a set LLVM
+/// rejects (inputs, outputs or popped inputs not `st(0)` upward).
+fn x87_stack(ops: &Ops, plan: &Plan, clobbers: u8) -> CgResult<X87Stack> {
+    let mut stack = X87Stack::default();
+    for (i, op) in ops.ops().iter().enumerate() {
+        let Some(Place::Reg(r)) = plan.places[i] else { continue };
+        if !reg::is_x87(r) {
+            continue;
+        }
+        let bit = 1u8 << reg::number(r);
+        match op.kind {
+            Kind::Output => {
+                if stack.defs & bit != 0 {
+                    return Err(refused(reason::constraint("st")));
+                }
+                stack.defs |= bit;
+            }
+            Kind::Input => stack.uses |= bit,
+            Kind::Label => {}
+        }
+    }
+    stack.popped = stack.uses & (stack.defs | clobbers);
+    if [stack.uses, stack.defs, stack.popped].iter().any(|&m| m == 2) {
+        return Err(refused(reason::constraint("st")));
+    }
+    Ok(stack)
 }
 
 /// A symbol field of a template's code: its offset in the code, the
@@ -741,6 +824,13 @@ fn substitute(
     template::substitute(template, ops.len as u32, uid, out, |r, out| {
         let i = r.index as usize;
         let arg = match plan.places[i] {
+            Some(Place::Reg(p)) if reg::is_x87(p) => {
+                if r.modifier.is_some() {
+                    return Err(Refusal(reason::other::TEMPLATE));
+                }
+                out.push_str(if reg::number(p) == 0 { "%st" } else { "%st(1)" });
+                return Ok(());
+            }
             Some(Place::Reg(p)) if reg::is_gpr(p) => {
                 Arg::Gp(reg::number(p), gpr_bytes(cx, plan.tys[i]).unwrap_or(8))
             }
@@ -790,6 +880,7 @@ fn emit<'a>(
     inst: Inst<'a>,
     ops: &Ops,
     mut plan: Plan,
+    stack: X87Stack,
     code: &[u8],
     fields: &[Field],
 ) -> CgResult<()> {
@@ -824,6 +915,11 @@ fn emit<'a>(
                 let r = cx.use_reg(value)?;
                 store_fpr(cx, xm(r), slot, bytes);
                 cx.free_temp(r);
+            }
+            // An `x86_fp80` input of `st(0)`, `st(1)`: its 10 bytes.
+            Class::Mem if matches!(plan.places[i], Some(Place::Reg(r)) if reg::is_x87(r)) => {
+                let m = cx.use_mem(value)?;
+                copy_frame(cx, slot, m, 10);
             }
             Class::Mem => return unsupported(OPERAND_TYPE),
         }
@@ -862,6 +958,7 @@ fn emit<'a>(
         }
         let Some(slot) = plan.slots[i] else { continue };
         match plan.places[i] {
+            Some(Place::Reg(r)) if reg::is_x87(r) => {}
             Some(Place::Reg(r)) => {
                 let bytes = reg_bytes(cx, r, plan.tys[i]);
                 if op.indirect {
@@ -898,6 +995,21 @@ fn emit<'a>(
             load_gpr(cx, gp(r), slot, 8);
         }
     }
+    // The x87 inputs, pushed deepest first: `st(1)`'s, then `st(0)`'s.
+    for n in (0..2u8).rev() {
+        if stack.uses & (1 << n) == 0 {
+            continue;
+        }
+        let Some(i) = (0..ops.len).find(|&i| {
+            ops.list[i].kind == Kind::Input && plan.places[i] == Some(Place::Reg(reg::st(n)))
+        }) else {
+            return cx.bug("an x87 input without an operand");
+        };
+        let (Some(slot), Some(size)) = (plan.slots[i], x87_size(cx, plan.tys[i])) else {
+            return cx.bug("an x87 input without a slot");
+        };
+        frame_inst(cx, slot, |m| mc::fld_m(size, m));
+    }
     // A memory output that is not indirect has no memory to point at:
     // `decide` never makes one.
     // 4. The template.
@@ -913,6 +1025,9 @@ fn emit<'a>(
             continue;
         }
         let Some(Place::Reg(r)) = plan.places[i] else { continue };
+        if reg::is_x87(r) {
+            continue;
+        }
         let to = if op.indirect { plan.values[i] } else { plan.slots[i] };
         let Some(to) = to else { return cx.bug("an inline-assembly output without a slot") };
         if reg::is_gpr(r) {
@@ -920,6 +1035,25 @@ fn emit<'a>(
         } else {
             store_fpr(cx, xm(r), to, 16);
         }
+    }
+    // The x87 outputs, popped from `st(0)` upward, then what is left of
+    // the inputs the template did not pop.
+    for n in 0..2u8 {
+        if stack.defs & (1 << n) == 0 {
+            continue;
+        }
+        let Some(i) = (0..ops.len).find(|&i| {
+            ops.list[i].kind == Kind::Output && plan.places[i] == Some(Place::Reg(reg::st(n)))
+        }) else {
+            return cx.bug("an x87 output without an operand");
+        };
+        let (Some(slot), Some(size)) = (plan.slots[i], x87_size(cx, plan.tys[i])) else {
+            return cx.bug("an x87 output without a slot");
+        };
+        frame_inst(cx, slot, |m| mc::fstp_m(size, m));
+    }
+    for _ in 0..X87Stack::count(stack.uses) - X87Stack::count(stack.popped) {
+        put(cx, mc::fstp_st(mc::St::St0));
     }
     for i in 0..ops.len {
         if let (Some(Place::Flag(cond)), Some(slot)) = (plan.places[i], plan.slots[i]) {
@@ -1025,7 +1159,16 @@ mod tests {
         assert!(parse(b"{rsp}").is_err());
         assert!(parse(b"~{rbp}").is_err());
         assert!(parse(b"{ah}").is_err());
-        assert!(parse(b"t").is_err());
+        let ops = parse(b"={st},={st(1)},0,~{st(1)}").unwrap();
+        assert_eq!(ops.list[0].alts[0].reg, Some(reg::st(0)));
+        assert_eq!(ops.list[1].alts[0].reg, Some(reg::st(1)));
+        assert_eq!(x87_clobbers(b"={st},={st(1)},0,~{st(1)}"), 2);
+        // `t` and `u` are `llc` errors in IR ("couldn't allocate output
+        // register"): clang writes `{st}` and `{st(1)}`.
+        assert!(parse(b"=t,0").is_err());
+        assert!(parse(b"u").is_err());
+        assert!(parse(b"{st(2)}").is_err());
+        assert!(parse(b"f").is_err());
         assert!(parse(b"A").is_err());
         assert!(parse(b"~{k1}").is_err());
         assert!(parse(b"r,=r").is_err());

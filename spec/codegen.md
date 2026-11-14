@@ -2382,34 +2382,83 @@ decisions that are not instruction selection are §5.5.1 "Integers
   `float`/`double` return part in `st0`/`st1` is `x64:ret-x87-part`
   (§5.6.9), a value returned in memory at `ret` is WP-126's.
 
-#### 5.6.2 Target features (WP-116)
+#### 5.6.2 Target features (WP-116, WP-201)
 
 As §5.5.2, with `hod_x64::features`'s table (design 0006 §10.1). hod
 emits the base x86-64 instruction set (SSE2) and never chooses an
 instruction by a feature, so a feature that only makes instructions
-available is **accepted and ignored**, `+` or `-`: `sse3`, `ssse3`,
-`sse4.1`, `sse4.2`, `popcnt`, `lzcnt`, `bmi`, `bmi2`, `fma`, `f16c`,
-`movbe`, `avx`, `avx2`, `cx16` (X-atomic uses `cmpxchg16b` inline with
-it, libatomic without), `crc32`, `sahf`, `xsave`, and the baseline
-`mmx`, `fxsr`, `cmov`, `cx8`. `target-cpu` is accepted with any value.
-Refused by name:
+available is **accepted and ignored**, `+` or `-`. WP-201 judged every
+feature of LLVM 19's and 22's x86 lists (`llc -mattr=help`) and every
+feature clang 19, clang 22 and kiln write for the `-march=` CPUs they
+accept (`x86-64-v2` to `-v4`, `nehalem` to `diamondrapids`, `znver1` to
+`znver5`, ...): `crates/hod_x64/tests/features/x64_features.tsv` is the
+table, `x64_census.tsv` the census, `x64_cpus.tsv` the CPUs against
+outcomes.
 
-| item | reason |
-|---|---|
-| `-sse`, `-sse2` | `attr:target-feature-no-sse` |
-| `-x87` | `attr:target-feature-no-x87`, only for a function that has an `x86_fp80` value (§5.6.9); in `-mattr`, always |
-| `+soft-float` | `attr:target-feature-soft-float` |
-| `+retpoline*` | `attr:target-feature-retpoline` |
-| `+harden-sls-*` | `attr:target-feature-harden-sls` |
-| `+lvi-*` | `attr:target-feature-lvi` |
-| anything else, or an item that is not `+name`/`-name` | `attr:target-feature-unknown` |
+- **Available** (`AVAILABLE`): the baseline `mmx`, `fxsr`, `cmov`, `cx8`,
+  `nopl` and every instruction feature above it: SSE3 to SSE4.2, `sse4a`,
+  `popcnt`, `lzcnt`, `bmi*`, `movbe`, `crc32`, `sahf`, `avx`, `avx2`,
+  `fma`, `fma4`, `f16c`, `xop`, `aes`, `pclmul`, `vaes`, `vpclmulqdq`,
+  `gfni`, `sha`, `sha512`, `sm3`, `sm4`, the `xsave*` and the system and
+  state features (`fsgsbase`, `invpcid`, `rdrnd`, `rdseed`, ...), `cx16`
+  (X-atomic uses `cmpxchg16b` inline with it, libatomic without; on a CPU
+  with the instruction libatomic uses it too, so both halves of a program
+  agree on lock-freedom), the AVX-512 and AVX10 families and `evex512`,
+  the AVX-VNNI/IFMA/NE-convert ones, AMX (`amx-*`), and APX (`egpr`,
+  `ndd`, `ppx`, `push2pop2`, `ccmp`, `cf`, `nf`, `zu`: `r16`..`r31` are
+  caller-saved and carry no argument).
+- **Tuning** (`tuning`): accepted either way: `fast-*`, `slow-*`,
+  `prefer-*`, `false-deps-*`, `tuning-*`, `no-bypass-delay*` and the named
+  ones (`macrofusion`, `ermsb`, `idivq-to-divl`, `vzeroupper`,
+  `inline-asm-use-gpr32`, ...). `target-cpu` and `tune-cpu` are accepted
+  with any value.
+- **Refused by name**:
 
-`+sse`, `+sse2`, `+x87` and `-soft-float`, `-retpoline*`,
-`-harden-sls-*`, `-lvi-*` are accepted. Whether a wide vector argument
-travels in `ymm` under `+avx` is the argument assignment's
-(`x64:wide-vector-abi`, WP-118), with the function's own features
-(§5.6.9, `spec/abi-x64.md` §1.3). `-mattr` items are checked the same
-way, by the module's target.
+  | item | reason |
+  |---|---|
+  | `-sse`, `-sse2` | `attr:target-feature-no-sse` |
+  | `-x87` | `attr:target-feature-no-x87`, only for a function that has an `x86_fp80` value (§5.6.9); in `-mattr`, always |
+  | `+soft-float` | `attr:target-feature-soft-float` |
+  | `+x32` | `attr:target-feature-x32` (32-bit pointers) |
+  | `+16bit-mode`, `+32bit-mode`, `-64bit`, `-64bit-mode` | `attr:target-feature-mode` |
+  | `+tagged-globals` | `attr:target-feature-tagged-globals` |
+  | `+retpoline*` | `attr:target-feature-retpoline` |
+  | `+harden-sls-*` | `attr:target-feature-harden-sls` |
+  | `+lvi-*` | `attr:target-feature-lvi` |
+  | `+seses` | `attr:target-feature-seses` |
+  | anything else, or an item that is not `+name`/`-name` | `attr:target-feature-unknown` |
+
+  The opposite sign of each is accepted (it is what hod's code keeps).
+
+**The evidence (WP-201).** "Available" means no call boundary can tell:
+for every census string (and its CPU alone), every feature enabled alone
+on `x86-64` and every feature disabled on `x86-64-v4`,
+`sapphirerapids`, `diamondrapids`, `znver5`, `haswell` and `x86-64`,
+`llc -O0 -stop-after=finalize-isel` 19 and 22 give 26 probe signatures
+(integers, `i128`, `float`, `double`, `x86_fp80`, `half`, `bfloat`,
+128-, 256- and 512-bit vectors, vectors of `i1`, structures of them,
+stack arguments, `byval`, `fastcc`, `preserve_mostcc`, `preserve_allcc`
+and a variadic call) the same argument registers and stack slots, return
+registers and call register masks as a function without features, except
+(a) a vector wider than 128 bits under anything that implies AVX, and a
+vector of `i1` under AVX-512, which `x64:wide-vector-abi` refuses with the
+function's features (§5.6.9; `sha512`, `sm3` and `sm4` imply AVX), and
+(b) `preserve_allcc`, whose call's register mask keeps all of
+`ymm0`..`ymm15` under AVX while §5.6.23's callee keeps their low halves:
+`llc`'s own callee returns through `vzeroupper` whenever it called
+anything (and saves nothing it does not touch when it is a leaf), so the
+upper halves are lost under `llc` as under hod and no program tells the
+two apart (`features_census::preserve_all_under_avx_is_llc_s`). AVX-512 is therefore judged per signature,
+not per function: a function carrying `+avx512f` compiles unless a
+signature it touches has a wide vector or a vector of `i1`; nothing else
+differs (`csr_64` is the register mask of every `ccc` call under every
+feature; hod never writes a `ymm`/`zmm` upper half, so no `vzeroupper`
+is owed; a 64-byte-aligned value's alignment is the IR's, not the
+feature's). x86-64 `-march=native` on an AArch64 host makes clang 19 and
+22 write AArch64 names (`+neon`, `+lse`, ...) into the x86-64 string;
+they stay unknown (kiln writes the baseline).
+
+`-mattr` items are checked the same way, by the module's target.
 
 #### 5.6.3 Control flow (WP-124)
 

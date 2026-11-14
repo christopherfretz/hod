@@ -455,7 +455,8 @@ pub fn intrinsic<'a>(
 ) -> Option<CgResult<()>> {
     let Some((ret, params, op)) = row(which) else {
         return sys::intrinsic(cx, inst, which, args)
-            .or_else(|| ext::intrinsic(cx, inst, which, args));
+            .or_else(|| ext::intrinsic(cx, inst, which, args))
+            .or_else(|| crate::vector::masked(cx, inst, which, args));
     };
     Some(lower(cx, inst, which, args, ret, params, op))
 }

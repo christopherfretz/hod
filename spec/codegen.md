@@ -4367,6 +4367,36 @@ without them: the code of the x86-64 baseline is unchanged).
 
 Evidence: `spec/landed/codegen/WP-202.md`.
 
+#### 5.6.35 AVX-512 and the masked memory intrinsics (WP-208)
+
+Design: `docs/design/0007-avx512.md`. Evidence:
+`spec/landed/codegen/WP-208.md`; tests `crates/hod_x64/tests/x86_avx512.rs`.
+
+1. **The masked memory intrinsics** (generic; clang 19 and 22 write
+   them for the masked loads and stores, expand loads and compress
+   stores of the AVX-512 headers): `llvm.masked.load`,
+   `llvm.masked.store`, `llvm.masked.expandload`,
+   `llvm.masked.compressstore` (`crates/hod_x64/src/vector.rs`,
+   `masked`; matrix rows `todo(LATER)` / `on(MASKED)`). Built on
+   x86-64 whatever the function's features, lane by lane as `llc`
+   scalarizes them without AVX-512: for each lane whose mask bit is
+   set, the lane's bytes copied through `r11` between memory and the
+   vector's image (the result's slot, or a scratch image of the
+   pass-through reloaded into the result's register for a vector of
+   class `Fpr`; the stored value's slot or image). `load`/`store` reach
+   lane `i` at `ptr + i * size`; `expandload`/`compressstore` the `k`-th
+   set lane at `ptr + k * size`. A lane whose bit is clear touches no
+   memory. A constant mask copies its set lanes (an undefined lane is
+   clear); a variable mask (class `Gpr`, §5.6.13) is tested lane by lane
+   by `bt` and `jae`, the packed forms' cursor in `rax`. Both
+   signatures are read: LLVM 19's (`i32` alignment operand of `load`
+   and `store`) and LLVM 22's (the pointer's `align` attribute); the
+   alignment is not needed, every access being one lane. Refused: a
+   mask of more than 64 lanes (`x64:mask-wide`), what §5.6.13 refuses
+   for the vector's lanes, and a call whose operands are not the
+   intrinsic's (`x64:vector-op`). AArch64 does not build them yet.
+   Execution evidence: on the emulator against `llc` 22 and 19.
+
 ## 6. Control flow
 
 ### 6.1 Reachability

@@ -42,8 +42,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `landingpad` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 703 | 347 | 7 | 349 | 477 | 10 | 216 |
-| total | 1028 | 566 | 56 | 406 | 697 | 64 | 267 |
+| `intrinsic` | 707 | 347 | 11 | 349 | 481 | 10 | 216 |
+| total | 1032 | 566 | 60 | 406 | 701 | 64 | 267 |
 
 ## `module`
 
@@ -1233,6 +1233,10 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.x86.vgf2p8affineinvqb.256` | rejected | supported (int, ptr, vector) | an x86 property. GFNI (WP-202) |
 | `intrinsic:llvm.x86.vgf2p8mulb.128` | rejected | supported (int, ptr, vector) | an x86 property. GFNI (WP-202) |
 | `intrinsic:llvm.x86.vgf2p8mulb.256` | rejected | supported (int, ptr, vector) | an x86 property. GFNI (WP-202) |
+| `intrinsic:llvm.masked.load` | not-implemented | supported (int, ptr, vector) | unplanned. lane by lane (WP-208) |
+| `intrinsic:llvm.masked.store` | not-implemented | supported (int, ptr, vector) | unplanned. lane by lane (WP-208) |
+| `intrinsic:llvm.masked.expandload` | not-implemented | supported (int, ptr, vector) | unplanned. lane by lane (WP-208) |
+| `intrinsic:llvm.masked.compressstore` | not-implemented | supported (int, ptr, vector) | unplanned. lane by lane (WP-208) |
 
 ## Structural rules
 

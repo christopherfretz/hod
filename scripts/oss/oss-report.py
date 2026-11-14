@@ -29,6 +29,7 @@ $HOD_OSS_FINDINGS, else <build root>/findings/oss. `--target x86_64`
 import argparse
 import glob
 import json
+import shlex
 import os
 import shutil
 import stat
@@ -409,17 +410,20 @@ def write(text, out):
 
 
 def cmd_rerun(a):
-    """Run one test of a kept tree `a.times` times under the row's cap."""
+    """Run one test of a kept tree `a.times` times under the row's test
+    cap: `ctest -R ^<test>$`, or the row's `rerun` command with `{test}`
+    (a test program that is not ctest's, duckdb's unittest)."""
     import resource
     import subprocess
     import time
 
     oss, _ = roots()
     tree = os.path.join(trees(oss), a.project, f"{a.flavour}-{a.mode}")
-    if not os.path.exists(os.path.join(tree, "CTestTestfile.cmake")):
-        sys.exit(f"oss-report: {tree} is not a kept build tree")
     row = projects.load()[a.project]
-    cap = int(os.environ.get("KILN_OSS_VMEM_KB") or row["vmem_kb"]) * 1024
+    if not os.path.exists(os.path.join(tree, "CTestTestfile.cmake")) and not (row.get("rerun") and os.path.exists(os.path.join(tree, "Makefile"))):
+        sys.exit(f"oss-report: {tree} is not a kept build tree")
+    # The test step's cap, as oss-build.sh's test run.
+    cap = int(os.environ.get("KILN_OSS_VMEM_KB") or row["test_vmem_kb"]) * 1024
     tmp = os.path.join(tree, "test-tmp")
     os.makedirs(tmp, exist_ok=True)
     env = dict(os.environ, TMPDIR=tmp, TEST_TMPDIR=tmp)
@@ -432,13 +436,16 @@ def cmd_rerun(a):
         resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
 
     for i in range(a.times):
-        p = subprocess.run(["ctest", "-R", f"^{a.test}$", "--output-on-failure"], cwd=tree, env=env,
-                           preexec_fn=limit, capture_output=True, text=True)
-        log = os.path.join(tree, f"rerun-{a.test}-{int(time.time())}-{i}.log")
+        cmd = ["ctest", "-R", f"^{a.test}$", "--output-on-failure"]
+        if row.get("rerun"):
+            cmd = ["bash", "-c", row["rerun"].replace("{test}", shlex.quote(a.test))]
+        p = subprocess.run(cmd, cwd=tree, env=env, preexec_fn=limit, capture_output=True, text=True)
+        log = os.path.join(tree, f"rerun-{safe(a.test)}-{int(time.time())}-{i}.log")
         with open(log, "w", encoding="utf-8") as f:
             f.write(p.stdout + p.stderr)
-        per = projects.test_results(log)[2]
-        ok = per.get(a.test) == "Passed"
+        _, counts, per = projects.test_results(log)
+        ok = per.get(a.test) == "Passed" or (bool(row.get("rerun")) and p.returncode == 0
+                                             and bool(counts) and counts["failed"] == 0 and counts["total"] >= 1)
         with open(os.path.join(tree, "reruns.jsonl"), "a", encoding="utf-8") as f:
             f.write(json.dumps({"test": a.test, "passed": ok, "rc": p.returncode, "log": os.path.basename(log),
                                 "arena": env.get("MALLOC_ARENA_MAX"),

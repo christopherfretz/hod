@@ -32,6 +32,8 @@
 #   test_vmem_kb   optional: the test step's cap instead (at most 100000000)
 #   link_vmem_kb   optional: the cap of a link (a compiler call without -c/-S/-E;
 #                  default vmem_kb, at most 16000000)
+#   rerun          optional: the command `oss-report.py rerun` runs one test with
+#                  (`{test}` its name, quoted) when the test step is not ctest
 #   drop_flags     optional: compiler arguments the wrappers leave out of every
 #                  kiln command (a flag kiln does not accept that the project
 #                  hard-codes, e.g. highway's -fmerge-all-constants), in every mode
@@ -521,6 +523,8 @@ build_targets = ["unittest", "shell"]
 # for the per-case results), then kiln's test: the default (non-slow) cases.
 test = "test/unittest --list-test-names-only > catch-tests.log 2>/dev/null; DUCKDB_TEST_MAX_THREADS=4 SUMMARIZE_FAILURES=1 test/unittest"
 test_timeout = 14400
+# One case again (oss-report.py rerun): unittest takes its name.
+rerun = "DUCKDB_TEST_MAX_THREADS=4 SUMMARIZE_FAILURES=1 test/unittest {test}"
 # unittest links libduckdb_static.a (about 830 MB at -O0 -g0, several GB with -g).
 link_vmem_kb = 12000000
 # Under 3 GB the control's unittest runs out of address space (16 MB block

@@ -31,6 +31,12 @@
 //!   `undef`, `poison`, an empty location, a slot's or a symbol's address,
 //!   a floating-point or wide constant.
 //!
+//! A record with a `DW_OP_LLVM_fragment` (WP-225, `spec/dwarf.md`
+//! §6.31) describes some bits of its variable: it ends only the open
+//! ranges of the instance whose bits overlap its own (a record of the
+//! whole variable overlaps all of them), as `llc`'s
+//! `DbgEntityHistoryCalculator` does; `hod_dwarf` composes the pieces.
+//!
 //! Ranges are never extended across blocks (LLVM's `LiveDebugValues`
 //! does that; follow-up in the landed record): where `llc` shows a value
 //! hod may show `<optimized out>`, never another value.
@@ -129,6 +135,23 @@ struct Pending {
     value: Value,
     /// The instance: the record location's `inlinedAt`.
     ia: LocId,
+    /// The bits of the variable the record describes (WP-225): its
+    /// `DW_OP_LLVM_fragment`, or the whole variable.
+    bits: Bits,
+}
+
+/// The bits of a variable a record describes: `(offset, size)` of its
+/// `DW_OP_LLVM_fragment`, `None` for the whole variable.
+type Bits = Option<(u64, u64)>;
+
+/// Whether two records' bits overlap (`llc`'s `DbgEntityHistoryCalculator`:
+/// a record ends the ranges of the fragments it overlaps; the whole
+/// variable overlaps every fragment).
+fn overlaps(a: Bits, b: Bits) -> bool {
+    match (a, b) {
+        (Some((ao, asz)), Some((bo, bsz))) => ao < bo + bsz && bo < ao + asz,
+        _ => true,
+    }
 }
 
 /// A `#dbg_declare` of an instruction result (WP-221, module doc).
@@ -150,8 +173,9 @@ pub(crate) struct ValueScratch {
     declared: Vec<Declared>,
     /// Whether no instruction of the block being emitted has been yet.
     fresh: bool,
-    /// The ranges not closed: variable, instance, index in `Chunk::vars`.
-    open: Vec<(DiId, LocId, u32)>,
+    /// The ranges not closed: variable, instance, bits, index in
+    /// `Chunk::vars`.
+    open: Vec<(DiId, LocId, Bits, u32)>,
     /// The block being emitted, as `BlockId` raw + 1 (0: none yet).
     block: u32,
     /// Its first byte (before its `phi` loads), while no instruction of
@@ -212,7 +236,12 @@ impl<'a, T: Target> FnCx<'a, T> {
                 self.out.vars.push(refused_row(&record, name));
                 continue;
             }
-            let ia = self.module.debug.location(record.loc).map_or(LocId::NONE, |l| l.inlined_at);
+            let debug = &self.module.debug;
+            let ia = debug.location(record.loc).map_or(LocId::NONE, |l| l.inlined_at);
+            let bits = debug.ops(record.expr).find_map(|op| match op {
+                hod_ir::DiOp::Fragment(offset, size) => Some((offset, size)),
+                _ => None,
+            });
             self.s.dbg_values.records.push(Pending {
                 before: record.before.raw(),
                 var: record.var,
@@ -220,6 +249,7 @@ impl<'a, T: Target> FnCx<'a, T> {
                 expr: record.expr,
                 value: record.values[0],
                 ia,
+                bits,
             });
         }
         self.s.dbg_values.declared.clear();
@@ -310,12 +340,16 @@ impl<'a, T: Target> FnCx<'a, T> {
                 break;
             }
             at += 1;
-            // The instance's range so far ends here.
-            if let Some(k) =
-                self.s.dbg_values.open.iter().position(|&(var, ia, _)| var == r.var && ia == r.ia)
-            {
-                let (_, _, row) = self.s.dbg_values.open.swap_remove(k);
-                self.set_end(row, offset);
+            // The instance's ranges of the bits it overlaps end here
+            // (one range, unless the variable is described in fragments).
+            let mut k = 0;
+            while let Some(&(var, ia, bits, row)) = self.s.dbg_values.open.get(k) {
+                if var == r.var && ia == r.ia && overlaps(bits, r.bits) {
+                    self.s.dbg_values.open.swap_remove(k);
+                    self.set_end(row, offset);
+                } else {
+                    k += 1;
+                }
             }
             let place = if ends { ValueAt::None } else { self.value_at(r.value, inst)? };
             let end = if ends { offset } else { OPEN };
@@ -332,7 +366,7 @@ impl<'a, T: Target> FnCx<'a, T> {
                 place: VarPlace::Value(ValueRange { start, end, at: place }),
             });
             if !ends {
-                self.s.dbg_values.open.push((r.var, r.ia, row));
+                self.s.dbg_values.open.push((r.var, r.ia, r.bits, row));
             }
         }
         let fresh = std::mem::replace(&mut self.s.dbg_values.fresh, false);
@@ -386,7 +420,8 @@ impl<'a, T: Target> FnCx<'a, T> {
                     at: ValueAt::HomeAddress(home),
                 }),
             });
-            self.s.dbg_values.open.push((d.var, d.ia, row));
+            // A declaration places the whole variable (`None`).
+            self.s.dbg_values.open.push((d.var, d.ia, None, row));
         }
         Ok(())
     }
@@ -418,7 +453,7 @@ impl<'a, T: Target> FnCx<'a, T> {
     /// start (it claims nothing).
     fn close_all(&mut self, offset: Option<u32>) {
         let mut open = std::mem::take(&mut self.s.dbg_values.open);
-        for &(_, _, row) in &open {
+        for &(_, _, _, row) in &open {
             match offset {
                 Some(offset) => self.set_end(row, offset),
                 None => {

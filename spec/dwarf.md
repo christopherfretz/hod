@@ -1101,7 +1101,7 @@ reports a `debug:*` name as itself and §6.5's unnamed shapes as
 | `debug:specification-type` | a definition whose return type differs from its declaration's |
 | `debug:foreign-scope` | a variable or row in another function's scope |
 | `debug:fragment` | a `DW_OP_LLVM_fragment` in a declared variable's expression |
-| `debug:dbg-value-fragment`, `debug:dbg-value-expr` | a value record's expression with a fragment, or one §6.23 does not write (WP-162) |
+| `debug:dbg-value-fragment`, `debug:dbg-value-expr` | a value record's expression with a fragment that is not byte aligned, or one §6.23 and §6.31 do not write (WP-162, WP-225) |
 | `debug:dbg-value-arglist`, `debug:dbg-value-coroutine` | a value record with a `DIArgList`; one in a coroutine body (`hod_cg`, §6.23) |
 | `debug:expression` | any other op that is not a plain DWARF op |
 | `debug:variable-without-type` | as named |
@@ -1931,7 +1931,7 @@ writer's (`tests/early.rs`):
 | `debug:call-sites-line-tables` | `DIFlagAllCallsDescribed` with inlined code (WP-113, §6.19) |
 | `debug:variable-without-type`, `debug:variable-alignment` | a variable record's variable (§6.4, §6.12) |
 | `debug:fragment`, `debug:expression` | a variable record's expression |
-| `debug:dbg-value-fragment`, `debug:dbg-value-expr` | a value record's expression (WP-162, §6.23) |
+| `debug:dbg-value-fragment`, `debug:dbg-value-expr` | a value record's expression (WP-162, §6.23; narrowed by WP-225, §6.31) |
 | `debug:label-attribute` | no longer refused (WP-098, §6.14) |
 | `debug:import-scope`, `debug:import` | a function's import with no scope, or scoped in a block file or another function; one in its own scope of a shape hod does not write |
 | `debug:subprogram-twice` | two bodies with one subprogram |
@@ -2810,11 +2810,17 @@ The expression of a record is checked before code generation:
 - allowed: the empty expression, one ending in `DW_OP_stack_value`, or
   one ending in `DW_OP_deref` (a memory location: the value is the
   address, and the final deref is dropped), with the plain DWARF ops
-  the `#dbg_declare` path writes in between;
-- `debug:dbg-value-fragment`: a `DW_OP_LLVM_fragment`;
-- `debug:dbg-value-expr`: any other op (`DW_OP_LLVM_convert`,
-  `DW_OP_LLVM_arg`, entry values, `DW_OP_LLVM_tag_offset`, ...), an op
-  after `DW_OP_stack_value`, or another last op.
+  the `#dbg_declare` path writes in between; since WP-225 also
+  `DW_OP_LLVM_convert` to a signed or unsigned integer of 1 to 64 bits
+  (not before a final `DW_OP_deref`) and a final byte-aligned
+  `DW_OP_LLVM_fragment` (§6.31);
+- `debug:dbg-value-fragment`: a `DW_OP_LLVM_fragment` whose offset or
+  size is not a whole number of bytes, or of size 0 (none in the
+  census of §6.31);
+- `debug:dbg-value-expr`: any other op (a convert to another encoding
+  or a wider integer, `DW_OP_LLVM_arg`, entry values,
+  `DW_OP_LLVM_tag_offset`, ...), an op after `DW_OP_stack_value`, or
+  another last op.
 
 A home with the empty expression is `DW_OP_fbreg n`; otherwise
 `DW_OP_fbreg n`, `DW_OP_deref` (`DW_OP_deref_size k` for a value under
@@ -3134,7 +3140,81 @@ a block, a slot named by a record, a label; inlined only, and with the
 function's code before and after its caller; DWARF 5 and 4; both
 targets; tree equal to `llc` 22's). The libc++ module itself is then
 refused for `debug:dbg-value-expr` (a value record's expression,
-outside this package).
+outside this package; built since WP-225, §6.31).
+
+### 6.31 Value records with fragments and conversions (implemented, WP-225)
+
+Optimized code describes a variable in pieces (`DW_OP_LLVM_fragment`:
+SROA splits an aggregate, or a value is narrowed) and through integer
+conversions (`DW_OP_LLVM_convert`: a truncation or an extension the
+optimizer folded into the record). Before this package §6.23 refused
+both; a census of 886 `-O1`/`-O2 -g` modules (libc++ tests through
+kiln, both targets) counted 200 refused for `debug:dbg-value-fragment`
+and 68 for `debug:dbg-value-expr`. hod writes them as `llc` 22 does,
+measured shape by shape against `llc` 19 and 22.
+
+**Checks** (`check_value_expr`, §6.23): a fragment must be the last op,
+byte aligned and of nonzero size (all 389,019 fragments of the census
+are); a convert must be to `DW_ATE_signed` or `DW_ATE_unsigned` of 1 to
+64 bits, and an expression with a convert may not end in
+`DW_OP_deref`. Anything else keeps its refusal name.
+
+**Rows** (`crates/hod_cg/src/dbg_value.rs`). A record now closes only
+the open ranges of its `(variable, inlinedAt)` whose bits overlap its
+own fragment (a record without a fragment overlaps all), as `llc`'s
+`DbgEntityHistoryCalculator` does; so one fragment's new value leaves
+the other fragments' ranges open.
+
+**Entries** (`crates/hod_dwarf/src/loclists.rs`). A variable whose
+records have a fragment gets its list by composition (`compose`): the
+ranges' bounds cut the code into stretches; over each, the pieces that
+hold there (a later record replaces the earlier ones whose bits it
+overlaps), sorted by offset, are one entry (`llc`'s `DebugLocEntry`).
+A stretch without a piece has no entry; adjacent stretches with the
+same pieces are merged. An entry is, per piece, a `DW_OP_piece` of the
+gap before it when there is one (an empty piece), the piece's location
+(§6.23's ops, without the fragment) and `DW_OP_piece size/8`; a gap
+after the last piece is not written. A piece whose value is narrower
+than its fragment (an `i32` home for a 64-bit fragment) is not
+located.
+
+**Conversions.** `DW_OP_convert` names a `DW_TAG_base_type` DIE of the
+unit (`DW_AT_name` `DW_ATE_signed_N` or `DW_ATE_unsigned_N`,
+`DW_AT_encoding`, `DW_AT_byte_size` `ceil(N/8)`; the existing
+`BASE_TYPE` family, no new one): they are the compile unit's first
+children, in the order the unit's lists first use them, and the operand
+is the DIE's unit offset as a ULEB128 padded to 4 bytes, as `llc`
+writes it. A constant's leading converts are folded into it
+(`DIExpression::constantFold` in `llc`'s instruction selection: a
+narrowing keeps the low bits, a signed widening extends the sign), and
+only the converts after it are written. On a home, a value under 64
+bits accepts only low-bit ops before the first convert, and that
+convert may not be wider than the value. In a split unit (§6.15)
+`llc`'s gdb tuning writes the legacy form (`DwarfExpression`'s
+`emitLegacySExt` / `emitLegacyZExt`: a widening pair becomes the shift
+and multiply sequence or a mask, a narrowing is dropped) and hod does
+the same; `llc` also uses the legacy form for lldb tuning on ELF, which
+hod does not distinguish (`-debugger-tune` is parsed and ignored): a
+follow-up.
+
+**Constants** follow LLVM 22, where 19 differs: an `i1` true is 1 (19
+wrote all ones), and a nonzero constant of a `DW_ATE_boolean` variable
+is `DW_OP_lit1`. A variable of a signed type (`DW_ATE_signed`,
+`DW_ATE_signed_char`) gets `DW_OP_consts`, sign-extended from the
+constant's width when it is wider than one bit.
+
+**Verification.** `llvm-dwarfdump --verify` reports `llc`'s own objects
+with base types as errors (the base types are missing from its
+`.debug_names`); hod writes no name index and its objects verify clean.
+
+**Tests.** `crates/hod/tests/dbg_value.rs` `pieces_and_conversions`
+(both targets, plain and split: base types first and in use order,
+conversion chains on a home and on constants, booleans, composed
+fragments with gaps, a poison fragment, the legacy forms) and
+`refusals_are_named`; sessions `tests/debug/dbg_value_pieces.c`,
+`dbg_value_convert_pieces.c` and `dbg_value_fragments.c` (`-O1`). Still
+refused: `debug:dbg-value-arglist` (§6.23), and a fragment in a
+declaration (`debug:fragment`). Evidence: `spec/landed/dwarf/WP-225.md`.
 
 ### 6.30 Two differences real runs found (implemented, WP-221)
 

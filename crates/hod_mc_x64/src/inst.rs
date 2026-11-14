@@ -3,7 +3,7 @@
 //! "Shape of the API", "Instruction layout").
 
 use crate::fixup::Fixup;
-use crate::reg::{Base, Mem, Reg};
+use crate::reg::{Base, Mem, Reg, Scale};
 
 /// The longest instruction the architecture allows.
 pub const MAX_LEN: usize = 15;
@@ -425,6 +425,52 @@ pub(crate) const fn vex_bare(op: VexOp) -> Inst {
     out.push(0xc5);
     out.push(0x80 | 0x78 | if op.l { 4 } else { 0 } | op.pp);
     out.push(op.opcode);
+    out.finish()
+}
+
+/// A VEX-encoded instruction with a VSIB memory operand (the gathers,
+/// WP-207): `[base + index * scale + disp]` where `index` is the number of
+/// a vector register (`VEX.X` its bit 3, `SIB.index` its low bits; 4 is
+/// `xmm4`, not "no index"). Always a `SIB` byte and the `C4` prefix where
+/// `X`, `B`, `W` or the map require it; the shortest displacement, `disp8`
+/// 0 for a base whose low bits are 101 (`rbp`, `r13`).
+pub(crate) const fn vex_vsib(
+    op: VexOp,
+    reg: u8,
+    vvvv: u8,
+    base: Reg,
+    index: u8,
+    scale: Scale,
+    disp: i32,
+) -> Inst {
+    let mut out = Acc::EMPTY;
+    let r = (reg >> 3) & 1;
+    let x = (index >> 3) & 1;
+    let b = base.high();
+    let tail = (!vvvv & 15) << 3 | if op.l { 4 } else { 0 } | op.pp;
+    if op.map == 1 && !op.w && x == 0 && b == 0 {
+        out.push(0xc5);
+        out.push((r ^ 1) << 7 | tail);
+    } else {
+        out.push(0xc4);
+        out.push((r ^ 1) << 7 | (x ^ 1) << 6 | (b ^ 1) << 5 | op.map);
+        out.push(if op.w { 0x80 } else { 0 } | tail);
+    }
+    out.push(op.opcode);
+    let md = if disp == 0 && base.low() != 0b101 {
+        0b00
+    } else if disp >= -128 && disp <= 127 {
+        0b01
+    } else {
+        0b10
+    };
+    out.push(md << 6 | (reg & 7) << 3 | 0b100);
+    out.push((scale as u8) << 6 | (index & 7) << 3 | base.low());
+    match md {
+        0b01 => out.push(disp as u8),
+        0b10 => out.push_imm(disp as u32, 4),
+        _ => {}
+    }
     out.finish()
 }
 

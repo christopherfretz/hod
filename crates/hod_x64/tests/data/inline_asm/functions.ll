@@ -427,3 +427,18 @@ define void @forced_fwait() {
   call void asm sideeffect "wait", "~{dirflag},~{fpsr},~{flags}"()
   ret void
 }
+
+; WP-204 (spec/asm.md §14): a call to a symbol, `R_X86_64_PLT32`. hod's
+; stack pointer is 16-byte aligned at the template and nothing of hod's
+; is below it; the callee's clobbers are the template's.
+declare i32 @asm_callee(i32)
+
+define i32 @call_symbol(i32 %x) {
+  %r = call i32 asm sideeffect "movl $1, %edi\0A\09call asm_callee\0A\09movl %eax, $0", "=r,r,~{rax},~{rcx},~{rdx},~{rsi},~{rdi},~{r8},~{r9},~{r10},~{r11},~{xmm0},~{xmm1},~{xmm2},~{xmm3},~{xmm4},~{xmm5},~{xmm6},~{xmm7},~{xmm8},~{xmm9},~{xmm10},~{xmm11},~{xmm12},~{xmm13},~{xmm14},~{xmm15},~{memory},~{dirflag},~{fpsr},~{flags}"(i32 %x)
+  ret i32 %r
+}
+
+define i32 @jump_symbol(i32 %x) {
+  %r = call i32 asm sideeffect "movl $1, %edi\0A\09testl %edi, %edi\0A\09jne 1f\0A\09call asm_callee\0A\09jmp 2f\0A\091: call asm_callee@PLT\0A\092: movl %eax, $0", "=r,r,~{rax},~{rcx},~{rdx},~{rsi},~{rdi},~{r8},~{r9},~{r10},~{r11},~{xmm0},~{xmm1},~{xmm2},~{xmm3},~{xmm4},~{xmm5},~{xmm6},~{xmm7},~{xmm8},~{xmm9},~{xmm10},~{xmm11},~{xmm12},~{xmm13},~{xmm14},~{xmm15},~{memory},~{dirflag},~{fpsr},~{flags}"(i32 %x)
+  ret i32 %r
+}

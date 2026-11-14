@@ -89,13 +89,22 @@ fn what_is_not_a_barrier_is_refused_by_name() {
             if ret == "void" { "" } else { "%r" }
         )
     };
+    // WP-204 (`spec/asm.md` §14): what one effect does not express is
+    // lowered as a template with no bytes, as `llc` allocates it.
+    let lowered = [
+        one("i32", "%r = call i32 asm \"\", \"=r\"()"),
+        one("void", "call void asm \"\", \"=*r\"(ptr elementtype(i32) %p)"),
+        one("void", "%r = call { i32, i32 } asm \"\", \"=r,=r,0,1\"(i32 %x, i32 %x)"),
+        one("i32", "%r = call i32 asm \"\", \"=r,0\"(i64 0)"),
+        one("void", "call void asm \"\", \"=*imr,0\"(ptr elementtype(i32) %p, ptr %p)"),
+        one("i32", "%b = trunc i32 %x to i1\n  %r = call i32 asm \"\", \"=r,0\"(i1 %b)"),
+    ];
+    for text in &lowered {
+        let (m, bodies) = parse(text);
+        hod_x64::compile_to_object(&m, &bodies, &pic(Stress::default()))
+            .unwrap_or_else(|e| panic!("{e}\n{text}"));
+    }
     let cases = [
-        (one("i32", "%r = call i32 asm \"\", \"=r\"()"), barrier::OUTPUT),
-        (one("void", "call void asm \"\", \"=*r\"(ptr elementtype(i32) %p)"), barrier::OUTPUT),
-        (
-            one("void", "%r = call { i32, i32 } asm \"\", \"=r,=r,0,1\"(i32 %x, i32 %x)"),
-            barrier::OUTPUTS,
-        ),
         (one("void", "call void asm \"\", \"!i\"()"), barrier::CONSTRAINT),
         (one("void", "call void asm \"\", \"y\"(i32 %x)"), barrier::CONSTRAINT),
         // Front ends spell `a` as `{ax}`; `llc` does not read `a`.
@@ -105,7 +114,11 @@ fn what_is_not_a_barrier_is_refused_by_name() {
         (one("void", "call void asm \"\", \"~{r16}\"()"), barrier::CLOBBER),
         (one("void", "call void asm \"\", \"i\"(i32 %x)"), barrier::OPERAND),
         (one("void", "call void asm \"\", \"I\"(i32 %x)"), barrier::OPERAND),
-        (one("i32", "%r = call i32 asm \"\", \"=r,0\"(i64 0)"), barrier::OPERAND),
+        // An aggregate tied input: neither lowering places it.
+        (
+            one("i32", "%r = call i32 asm \"\", \"=r,0\"({ i32, i32 } zeroinitializer)"),
+            barrier::OPERAND,
+        ),
     ];
     for (text, name) in &cases {
         let (m, bodies) = parse(text);

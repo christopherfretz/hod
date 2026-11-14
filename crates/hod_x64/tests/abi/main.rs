@@ -18,3 +18,4 @@ mod sigs;
 mod table;
 mod ty;
 mod variadic;
+mod wide;

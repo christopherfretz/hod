@@ -30,6 +30,9 @@ const DRIVER: &str = include_str!("data/inline_asm/driver.c");
 /// The instructions of the census (WP-199, `spec/asm.md` §13).
 const CENSUS: &str = include_str!("data/inline_asm/census.ll");
 const CENSUS_DRIVER: &str = include_str!("data/inline_asm/census.c");
+/// The x87 operands (WP-204, `spec/asm.md` §14).
+const X87: &str = include_str!("data/inline_asm/x87.ll");
+const X87_DRIVER: &str = include_str!("data/inline_asm/x87.c");
 
 fn hod_object(text: &str, stress: Stress) -> Vec<u8> {
     let (m, bodies) = parse(text);
@@ -51,7 +54,19 @@ fn census_templates_run_as_llc_builds_them() {
     run_as_llc_builds_them("x64-inline-asm-census", CENSUS, CENSUS_DRIVER, Some("max"));
 }
 
+/// The x87 operands' templates (`fsqrt`, `fpatan`, `fprem`, `fxam`,
+/// `fsincos`, `fldpi`, `fscale`) compute the known values, plain and
+/// stressed, linked by every linker found (bfd and lld at least).
+#[test]
+fn x87_templates_run_as_llc_builds_them() {
+    run_with_linkers("x64-inline-asm-x87", X87, X87_DRIVER, None, true);
+}
+
 fn run_as_llc_builds_them(name: &str, functions: &str, driver: &str, cpu: Option<&str>) {
+    run_with_linkers(name, functions, driver, cpu, false);
+}
+
+fn run_with_linkers(name: &str, functions: &str, driver: &str, cpu: Option<&str>, all: bool) {
     let dir = Scratch::new(name);
     let text = format!("{}{functions}", ll_header());
     let mut objects: Vec<(String, PathBuf)> = Vec::new();
@@ -69,10 +84,11 @@ fn run_as_llc_builds_them(name: &str, functions: &str, driver: &str, cpu: Option
         None => toolchain,
     };
     let driver = toolchain.compile_c(&dir, "driver", driver, &[]);
-    let linker = &toolchain.linkers[0];
-    for (who, object) in &objects {
+    let linkers = if all { &toolchain.linkers[..] } else { &toolchain.linkers[..1] };
+    for (linker, (who, object)) in linkers.iter().flat_map(|l| objects.iter().map(move |o| (l, o)))
+    {
         for (how, flags) in [("dynamic", &[][..]), ("static", &["-static"][..])] {
-            let program = dir.join(format!("{who}-{how}"));
+            let program = dir.join(format!("{who}-{how}-{}", linker.name));
             let ran = toolchain.link_and_run(linker, flags, &[&driver, object], &program);
             assert_eq!(
                 exit_code(&ran),
@@ -243,8 +259,12 @@ fn what_is_not_assembled_is_refused_by_name() {
         (one("void", "call void asm \"nop\", \"{rsp}\"(i32 %x)"), template::FRAME_REGISTER),
         (one("void", "call void asm \"nop\", \"~{rbp}\"()"), template::FRAME_REGISTER),
         (one("void", "call void asm \"nop\", \"~{ebp}\"()"), template::FRAME_REGISTER),
-        (one("i32", "%r = call i32 asm \"movl $1, $0\", \"=r,r\"(i1 0)"), template::OPERAND_TYPE),
-        (one("i32", "%r = call i32 asm \"movl $1, $0\", \"=r,0\"(i64 0)"), template::OPERAND_TYPE),
+        // An i1 is held in a byte register, as llc holds it; `movl` with a
+        // byte register is the assembler's refusal.
+        (one("i32", "%r = call i32 asm \"movl $1, $0\", \"=r,r\"(i1 0)"), "asm:operand/register"),
+        // A tied input of another width shares the register, as in llc;
+        // `movl` with a 64-bit register is the assembler's refusal.
+        (one("i32", "%r = call i32 asm \"movl $1, $0\", \"=r,0\"(i64 0)"), "asm:operand/register"),
         (
             one("void", "call void asm \"nop\", \"r\"({ i32, i32 } zeroinitializer)"),
             template::OPERAND_TYPE,
@@ -255,7 +275,25 @@ fn what_is_not_assembled_is_refused_by_name() {
         (one("void", "call void asm \"nop\", \"g\"(i32 %x)"), "asm:constraint/g"),
         (one("void", "call void asm \"nop\", \"t\"(i32 %x)"), "asm:constraint/t"),
         (one("void", "call void asm \"nop\", \"{ah}\"(i32 %x)"), "asm:constraint/ah"),
-        (one("void", "call void asm \"nop\", \"{st}\"(i32 %x)"), "asm:constraint/st"),
+        // §14: `{st}` and `{st(1)}` hold a float, double or x86_fp80;
+        // `st(2)` and deeper are not placed; LLVM's stack rules.
+        (one("void", "call void asm \"nop\", \"{st}\"(i32 %x)"), template::OPERAND_TYPE),
+        (one("void", "call void asm \"nop\", \"{st(2)}\"(i32 %x)"), "asm:constraint/other"),
+        (
+            format!(
+                "{}define void @f(double %x) {{\n  call void asm \"nop\", \"{{st(1)}}\"(double %x)\n  ret void\n}}\n",
+                ll_header()
+            ),
+            "asm:constraint/st",
+        ),
+        (
+            format!(
+                "{}define double @f() {{\n  %r = call double asm \"fld1\", \"={{st(1)}}\"()\n  ret double %r\n}}\n",
+                ll_header()
+            ),
+            "asm:constraint/st",
+        ),
+        (one("void", "call void asm \"nop\", \"u\"(i32 %x)"), "asm:constraint/u"),
         (one("void", "call void asm \"nop\", \"~{k1}\"()"), "asm:clobber/k1"),
         (one("void", "call void asm \"nop\", \"i\"(i32 %x)"), "asm:constraint/i"),
         (one("void", "call void asm \"nop\", \"I\"(i32 99)"), "asm:constraint/range"),
@@ -273,7 +311,9 @@ fn what_is_not_assembled_is_refused_by_name() {
         (one("void", "call void asm \"frob $0\", \"r\"(i32 %x)"), "asm:mnemonic/frob"),
         (one("void", "call void asm \"vzeroupper\", \"\"()"), "asm:mnemonic/vzeroupper"),
         (one("void", "call void asm \"movb ${0:h}, %al\", \"r\"(i32 %x)"), "asm:modifier/h"),
-        (one("void", "call void asm \"call foo\", \"\"()"), "asm:mnemonic/call"),
+        // §14: a call to a symbol the module does not have.
+        (one("void", "call void asm \"call foo\", \"\"()"), "asm:symbol"),
+        (one("void", "call void asm \"call *%rax\", \"\"()"), "asm:operand/form"),
         (one("void", "call void asm \"movq nowhere(%rip), %rax\", \"~{rax}\"()"), "asm:symbol"),
         (
             one("void", "call void asm \"leaq f@GOTPCREL(%rip), %rax\", \"~{rax}\"()"),

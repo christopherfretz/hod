@@ -329,7 +329,13 @@ pub fn call<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>) -> CgResult<()> {
     if !musttail {
         align_stack_area(cx, &site);
     }
+    arm_vzeroupper(inst); // WP-203
     cx.call(inst)?;
+    if musttail && take_vzeroupper() {
+        // The branch of the tail exit the call sequence just added.
+        let index = cx.tail_exit_count() - 1;
+        VZERO.with(|v| v.borrow_mut().tails.push(index));
+    }
     // An `invoke`'s are cleared by the call sequence before its branch
     // (WP-084).
     if odd && inst.opcode() != Opcode::Invoke && !cx.is_dead(inst) {
@@ -354,6 +360,253 @@ fn byval_align(cx: &FnCx<'_, X64>, site: &CallSite<'_>) -> u64 {
     align
 }
 
+/// WP-203 (`spec/abi-x64.md` §3.2, §8.7): 32 when an argument of
+/// `site` has a `ymm` piece on the stack (a 32-byte slot aligned to 32,
+/// which `llc`'s callee reads with `vmovaps`); 0 otherwise.
+fn wide_stack_align(cx: &FnCx<'_, X64>, site: &CallSite<'_>) -> u64 {
+    let features = cx.target.features.abi;
+    let types = cx.types();
+    let Some((tys, asg)) = call_assignment(cx, site) else { return 0 };
+    let on_stack = asg.args.iter().any(|part| {
+        matches!(part.place, Place::Stack(_))
+            && crate::abi::has_wide_leaf(types, tys[part.arg as usize], features)
+    });
+    if on_stack { 32 } else { 0 }
+}
+
+/// WP-203: the types and the assignment of `site` as the call sequence
+/// assigns it, when the function has AVX and one of its types has a
+/// `ymm` leaf; `None` otherwise (or when `assign` refuses it, which the
+/// call sequence then reports).
+fn call_assignment(cx: &FnCx<'_, X64>, site: &CallSite<'_>) -> Option<(Vec<TypeId>, Assignment)> {
+    let features = cx.target.features.abi;
+    let types = cx.types();
+    if !features.avx {
+        return None;
+    }
+    let TypeKind::Function { ret, params, variadic } = types.kind(site.fn_type()) else {
+        return None;
+    };
+    let args = site.args();
+    if args.len() < params.len() {
+        return None;
+    }
+    // The variable arguments typed by their values, as the call sequence
+    // types them (WP-115).
+    let tys: Vec<TypeId> = params
+        .iter()
+        .copied()
+        .chain(args[params.len()..].iter().map(|&value| value_ty(cx, value)))
+        .collect();
+    if !tys.iter().chain([&ret]).any(|&ty| crate::abi::has_wide_leaf(types, ty, features)) {
+        return None;
+    }
+    let ret_attrs = hod_ir::call_ret_attrs(cx.module, site).ok()?;
+    let param_attrs = (0..args.len())
+        .map(|index| hod_ir::call_arg_attrs(cx.module, site, index).ok())
+        .collect::<Option<Vec<ParamAttrs>>>()?;
+    let sig = Sig {
+        cc: site.cc(),
+        ret,
+        ret_attrs,
+        params: &tys,
+        param_attrs: &param_attrs,
+        fixed: params.len() as u32,
+        variadic,
+    };
+    let mut asg = Assignment::default();
+    cx.target.assign(types, &sig, &mut asg).ok()?;
+    Some((tys, asg))
+}
+
+// ---- vzeroupper (WP-203, `spec/abi-x64.md` §8.7) ----------------------------
+
+/// Where the function writes `vzeroupper`: before the call of each
+/// instruction marked in `before`, before its `ret`, and before the
+/// branch of each tail exit in `tails`. `pending` is the mark of the
+/// call being lowered, which [`take_vzeroupper`] consumes.
+#[derive(Default, Debug)]
+struct Vzero {
+    before: Vec<bool>,
+    ret: bool,
+    tails: Vec<usize>,
+    pending: bool,
+}
+
+thread_local! {
+    static VZERO: std::cell::RefCell<Vzero> = std::cell::RefCell::new(Vzero::default());
+}
+
+/// `Target::begin_function` (§8.7): plans the function's `vzeroupper`s
+/// as `llc`'s `X86VZeroUpper` pass places them, over the IR. An
+/// instruction makes the upper halves dirty when it reads or writes a
+/// value with a vector of 32 bytes or more ([`touches_ymm`]), a call or
+/// `ret` when its own assignment has a `ymm` piece; a call or `ret`
+/// without one in a dirty state gets a `vzeroupper` and leaves it clean.
+/// A block starts dirty when a predecessor ends dirty, the entry block
+/// when an argument that arrives in `ymm` is used. A function without
+/// [`crate::features::FnFeatures::vzeroupper`] writes none.
+pub fn plan_vzeroupper(cx: &FnCx<'_, X64>) {
+    let mut plan = Vzero::default();
+    if cx.target.features.vzeroupper {
+        analyse_vzeroupper(cx, &mut plan);
+    }
+    VZERO.with(|v| *v.borrow_mut() = plan);
+}
+
+/// Called by the lowering of `inst`, a call or `resume`, before its call
+/// sequence: the next call instruction gets the `vzeroupper` if `inst`
+/// is marked.
+fn arm_vzeroupper(inst: Inst<'_>) {
+    VZERO.with(|v| {
+        let mut v = v.borrow_mut();
+        v.pending = v.before.get(inst.id().index()).copied().unwrap_or(false);
+    });
+}
+
+/// `Target::emit_call` (`crate::frame::emit_call`): whether a
+/// `vzeroupper` goes right before this call (consumed).
+pub fn take_vzeroupper() -> bool {
+    VZERO.with(|v| std::mem::take(&mut v.borrow_mut().pending))
+}
+
+/// Whether a `vzeroupper` goes right before the epilogue's `ret`.
+pub fn vzeroupper_at_return() -> bool {
+    VZERO.with(|v| v.borrow().ret)
+}
+
+/// Whether a `vzeroupper` goes right before the branch of tail exit
+/// `index`.
+pub fn vzeroupper_at_tail(index: usize) -> bool {
+    VZERO.with(|v| v.borrow().tails.contains(&index))
+}
+
+/// Whether `ty` has a vector of 32 bytes or more (not of `i1`) as a
+/// leaf: one `llc` moves through a `ymm` register.
+fn touches_ymm(types: &hod_ir::TypeTable, ty: TypeId) -> bool {
+    match types.kind(ty) {
+        TypeKind::Struct { fields, .. } => fields.iter().any(|&f| touches_ymm(types, f)),
+        TypeKind::Array { elem, len } => len != 0 && touches_ymm(types, elem),
+        TypeKind::Vector { elem, .. } => elem != TypeId::I1 && types.size_of(ty) >= 32,
+        _ => false,
+    }
+}
+
+/// What a call does to the state (§8.7): whether what comes before its
+/// call instruction moves `ymm` (a `byval` copy of a wide pointee, a
+/// `ymm` piece stored to the argument area), and whether the call
+/// itself has a `ymm` piece in a register; `None` for what `llc` keeps
+/// no call (an intrinsic, inline assembly).
+fn call_effect(cx: &FnCx<'_, X64>, inst: Inst<'_>) -> Option<(bool, bool)> {
+    let site = inst.call()?;
+    if site.intrinsic().is_some() || matches!(site.callee_value().kind(), ValueKind::Asm(_)) {
+        return None;
+    }
+    let types = cx.types();
+    let copies = (0..site.args().len()).any(|index| {
+        hod_ir::call_arg_attrs(cx.module, &site, index).is_ok_and(|attrs| {
+            attrs.mem() == ParamMem::ByVal
+                && attrs.mem_type().is_some_and(|pointee| touches_ymm(types, pointee))
+        })
+    });
+    let Some((tys, asg)) = call_assignment(cx, &site) else { return Some((copies, false)) };
+    let stored = asg.args.iter().any(|part| {
+        matches!(part.place, Place::Stack(_)) && touches_ymm(types, tys[part.arg as usize])
+    });
+    let uses = asg
+        .args
+        .iter()
+        .chain(&asg.ret)
+        .any(|part| matches!(part.place, Place::Reg(_)) && part.size > 16);
+    Some((copies || stored, uses))
+}
+
+/// The dataflow of [`plan_vzeroupper`].
+fn analyse_vzeroupper(cx: &FnCx<'_, X64>, plan: &mut Vzero) {
+    let body = cx.body;
+    let types = cx.types();
+    let features = cx.target.features.abi;
+    let value_touches = |value: Value| touches_ymm(types, body.value_type(cx.module, value));
+    let ret_in_ymm = cx
+        .fn_assignment()
+        .ret
+        .iter()
+        .any(|part| matches!(part.place, Place::Reg(_)) && part.size > 16);
+    let entry_dirty = body.arg_types(cx.module).iter().enumerate().any(|(index, &ty)| {
+        crate::abi::has_wide_leaf(types, ty, features) && body.arg_uses(index as u32).count() != 0
+    });
+    // One walk of a block from `dirty`; marks when `marks` is given.
+    let walk = |block: hod_ir::Block<'_>, mut dirty: bool, mut marks: Option<&mut Vzero>| {
+        for inst in block.insts() {
+            if inst.opcode() == Opcode::Ret {
+                if ret_in_ymm {
+                    dirty = true;
+                } else if dirty {
+                    if let Some(marks) = marks.as_deref_mut() {
+                        marks.ret = true;
+                    }
+                    dirty = false;
+                }
+                continue;
+            }
+            let call = if inst.opcode() == Opcode::Resume {
+                Some((inst.operands().iter().any(|&v| value_touches(v)), false))
+            } else {
+                call_effect(cx, inst)
+            };
+            if let Some((before, uses)) = call {
+                dirty |= before;
+                if uses {
+                    dirty = true;
+                } else if dirty {
+                    if let Some(marks) = marks.as_deref_mut() {
+                        marks.before[inst.id().index()] = true;
+                    }
+                    dirty = false;
+                }
+                // A `musttail` call ends the block's code: its `ret` is
+                // the tail exit's branch.
+                if inst.call().is_some_and(|site| site.tail() == TailKind::MustTail) {
+                    return false;
+                }
+            } else {
+                let result = inst.ty() != TypeId::VOID && touches_ymm(types, inst.ty());
+                if result || inst.operands().iter().any(|&v| value_touches(v)) {
+                    dirty = true;
+                }
+            }
+        }
+        dirty
+    };
+    let mut dirty_in = vec![false; body.block_count()];
+    dirty_in[body.entry().index()] = entry_dirty;
+    loop {
+        let mut changed = false;
+        for &id in body.layout() {
+            if !cx.is_reachable(id) {
+                continue;
+            }
+            if walk(body.block(id), dirty_in[id.index()], None) {
+                for next in body.block(id).successors() {
+                    if !dirty_in[next.index()] {
+                        dirty_in[next.index()] = true;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    plan.before = vec![false; body.inst_count()];
+    for &id in body.layout() {
+        if cx.is_reachable(id) {
+            walk(body.block(id), dirty_in[id.index()], Some(plan));
+        }
+    }
+}
+
 /// WP-152 (`spec/codegen.md` §5.6.18): before the call sequence of a
 /// call with a `byval` argument aligned to `a > 16`, `rsp` is lowered so
 /// that the stack-argument area the sequence then allocates (`area`
@@ -367,7 +620,7 @@ fn byval_align(cx: &FnCx<'_, X64>, site: &CallSite<'_>) -> u64 {
 /// `musttail` call writes its caller's incoming area and is not aligned.
 /// Writes the flags (no compare is live across a call).
 fn align_stack_area(cx: &mut FnCx<'_, X64>, site: &CallSite<'_>) {
-    let a = byval_align(cx, site);
+    let a = byval_align(cx, site).max(wide_stack_align(cx, site));
     if a <= 16 || a > crate::abi::MAX_BYVAL_ALIGN {
         return;
     }
@@ -623,6 +876,7 @@ pub fn resume<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, value: Value) -> CgRes
     let from = cx.use_mem(value)?;
     let exception = cx.temp(Class::Gpr)?;
     load_gpr(cx, gp(exception), from, 8);
+    arm_vzeroupper(inst); // WP-203
     cx.call_runtime(RuntimeFn::UnwindResume, &[CallArg::Reg(exception)], None)?;
     cx.trap();
     Ok(())

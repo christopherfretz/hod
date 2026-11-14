@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use hod_cg::abi::Place;
 use hod_testutil::{Outcome, Target, run, run_with, tools_required};
+use hod_x64::abi::Features;
 
 use crate::emit::{self, Ext, Func, Item};
 use crate::ir;
@@ -81,6 +82,32 @@ pub struct Tools {
     /// `qemu-x86_64 -cpu <baseline> -L <system root>`.
     pub runner: Vec<OsString>,
     pub llc: Vec<(Config, PathBuf)>,
+    /// WP-203: the machine the functions of both sides are compiled for;
+    /// `None` is the baseline (no `target-cpu`, no `target-features`).
+    pub machine: Option<Machine>,
+}
+
+/// WP-203: a `target-cpu` and `target-features` pair (from WP-201's
+/// census), and what hod makes of them (`spec/abi-x64.md` §1.3).
+#[derive(Clone, Debug)]
+pub struct Machine {
+    pub cpu: String,
+    pub features: String,
+}
+
+impl Machine {
+    /// The features `abi::assign` is given.
+    pub fn abi(&self) -> Features {
+        hod_x64::features::of_function(Some(&self.cpu), Some(&self.features)).abi
+    }
+
+    /// The LLVM attribute group of the functions on the LLVM side.
+    pub fn attributes(&self) -> String {
+        format!(
+            "attributes #0 = {{ \"target-cpu\"=\"{}\" \"target-features\"=\"{}\" }}\n",
+            self.cpu, self.features
+        )
+    }
 }
 
 impl Tools {
@@ -99,7 +126,26 @@ impl Tools {
         for config in CONFIGS {
             llc.push((config, llvm_tool(config.major, "llc")?));
         }
-        Some(Tools { assembler, gcc, runner, llc })
+        Some(Tools { assembler, gcc, runner, llc, machine: None })
+    }
+
+    /// These tools for functions compiled for `machine`, run under
+    /// `qemu-x86_64 -cpu max` on another host.
+    pub fn with_machine(&self, machine: Machine) -> Option<Tools> {
+        let mut tools = self.clone();
+        let target = Target::X86_64;
+        if !target.is_host() {
+            let sysroot = target.tool("sysroot")?;
+            tools.runner = vec![target.tool("emulator")?.into_os_string()];
+            tools.runner.extend(["-cpu".into(), "max".into(), "-L".into(), sysroot.into()]);
+        }
+        tools.machine = Some(machine);
+        Some(tools)
+    }
+
+    /// The features of the functions of both sides.
+    pub fn features(&self) -> Features {
+        self.machine.as_ref().map(Machine::abi).unwrap_or_default()
     }
 
     /// A command that runs the x86-64 program `exe`.
@@ -221,9 +267,9 @@ const DRIVER: &str = r#"
 #include <stdlib.h>
 #include <unistd.h>
 
-unsigned char hodabi_in[IN_SIZE] __attribute__((aligned(16)));
-unsigned char hodabi_outa[OUT_SIZE] __attribute__((aligned(16)));
-unsigned char hodabi_outb[OUT_SIZE] __attribute__((aligned(16)));
+unsigned char hodabi_in[IN_SIZE] __attribute__((aligned(64)));
+unsigned char hodabi_outa[OUT_SIZE] __attribute__((aligned(64)));
+unsigned char hodabi_outb[OUT_SIZE] __attribute__((aligned(64)));
 
 typedef void step(void);
 STEPS
@@ -407,8 +453,11 @@ impl Batch {
         let mut types = table();
         let mut blobs = Blobs::default();
         let mut rng = Rng(seed);
-        let plans: Vec<Plan> =
-            cases.iter().map(|case| Plan::new(case, &mut types, &mut blobs, &mut rng)).collect();
+        let features = tools.features();
+        let plans: Vec<Plan> = cases
+            .iter()
+            .map(|case| Plan::new_with(case, &mut types, &mut blobs, &mut rng, features))
+            .collect();
 
         let mut asm = String::new();
         emit::prelude(&mut asm);
@@ -429,6 +478,7 @@ impl Batch {
                 args: &args,
                 ret,
                 variadic: plan.case.fixed.is_some(),
+                avx: tools.features().avx,
             };
             emit::caller(&mut asm, func);
             let callee =
@@ -453,8 +503,12 @@ impl Batch {
             runs(&self.plans[index], config, hod_calls) && !left_out.contains(&(index, hod_calls))
         };
         loop {
-            let module =
-                ir::module(&self.plans, &|index, hod_calls| runs(&left_out, index, hod_calls));
+            let attrs = tools.machine.as_ref().map(Machine::attributes);
+            let module = ir::module_with(
+                &self.plans,
+                &|index, hod_calls| runs(&left_out, index, hod_calls),
+                attrs.as_deref(),
+            );
             let source = scratch.write(&format!("llvm{tag}.ll"), module);
             let compiled = compile(llc, config, &source, &object);
             if compiled.success() {

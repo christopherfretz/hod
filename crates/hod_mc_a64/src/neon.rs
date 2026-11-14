@@ -954,6 +954,55 @@ pub const fn bcax(rd: VReg, rn: VReg, rm: VReg, ra: VReg) -> u32 {
     rrr(0xce20_0000 | ra.code() << 10, rd, rn, rm)
 }
 
+ops! {
+    /// The SM3 and SM4 instructions with three `4S` registers (`FEAT_SM3`,
+    /// `FEAT_SM4`): [`sm3reg`].
+    pub enum Sm3Reg {
+        Sm3partw1 = (0xce60_c000, "sm3partw1"),
+        Sm3partw2 = (0xce60_c400, "sm3partw2"),
+        Sm4ekey = (0xce60_c800, "sm4ekey"),
+    }
+}
+
+/// `<op> <Vd>.4S, <Vn>.4S, <Vm>.4S`: an SM3 message expansion, which
+/// combines `rd` with the sources, or `SM4EKEY`.
+#[inline]
+pub const fn sm3reg(op: Sm3Reg, rd: VReg, rn: VReg, rm: VReg) -> u32 {
+    rrr(op.word(), rd, rn, rm)
+}
+
+/// `SM3SS1 <Vd>.4S, <Vn>.4S, <Vm>.4S, <Va>.4S`.
+#[inline]
+pub const fn sm3ss1(rd: VReg, rn: VReg, rm: VReg, ra: VReg) -> u32 {
+    rrr(0xce40_0000 | ra.code() << 10, rd, rn, rm)
+}
+
+/// `SM4E <Vd>.4S, <Vn>.4S`: four SM4 rounds on `rd` with the keys of `rn`.
+#[inline]
+pub const fn sm4e(rd: VReg, rn: VReg) -> u32 {
+    rr(0xcec0_8400, rd, rn)
+}
+
+ops! {
+    /// The SM3 compression steps: [`sm3tt`].
+    pub enum Sm3tt {
+        Sm3tt1a = (0xce40_8000, "sm3tt1a"),
+        Sm3tt1b = (0xce40_8400, "sm3tt1b"),
+        Sm3tt2a = (0xce40_8800, "sm3tt2a"),
+        Sm3tt2b = (0xce40_8c00, "sm3tt2b"),
+    }
+}
+
+checked! {
+    /// `<op> <Vd>.4S, <Vn>.4S, <Vm>.S[index]`: an SM3 compression step,
+    /// which combines `rd` with the sources.
+    ///
+    /// Precondition: `index < 4`.
+    pub fn sm3tt / try_sm3tt(op: Sm3tt, rd: VReg, rn: VReg, rm: VReg, index: u32)
+    requires index < 4;
+    { rrr(op.word() | (index & 3) << 12, rd, rn, rm) }
+}
+
 checked! {
     /// `XAR <Vd>.2D, <Vn>.2D, <Vm>.2D, #amount`: XAR, `rn ^ rm` rotated
     /// right by `amount`.

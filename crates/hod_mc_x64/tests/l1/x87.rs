@@ -95,6 +95,26 @@ fn fixed(b: &mut Batch) {
     emit!(b, frndint(), "frndint");
     emit!(b, fnclex(), "fnclex");
     emit!(b, fninit(), "fninit");
+    emit!(b, fnop(), "fnop");
+    emit!(b, ftst(), "ftst");
+    emit!(b, fxam(), "fxam");
+    emit!(b, fldl2t(), "fldl2t");
+    emit!(b, fldl2e(), "fldl2e");
+    emit!(b, fldpi(), "fldpi");
+    emit!(b, fldlg2(), "fldlg2");
+    emit!(b, fldln2(), "fldln2");
+    emit!(b, f2xm1(), "f2xm1");
+    emit!(b, fyl2x(), "fyl2x");
+    emit!(b, fptan(), "fptan");
+    emit!(b, fpatan(), "fpatan");
+    emit!(b, fxtract(), "fxtract");
+    emit!(b, fdecstp(), "fdecstp");
+    emit!(b, fincstp(), "fincstp");
+    emit!(b, fyl2xp1(), "fyl2xp1");
+    emit!(b, fsincos(), "fsincos");
+    emit!(b, fscale(), "fscale");
+    emit!(b, fsin(), "fsin");
+    emit!(b, fcos(), "fcos");
 }
 
 /// Every memory constructor at every width it has, on `m`.

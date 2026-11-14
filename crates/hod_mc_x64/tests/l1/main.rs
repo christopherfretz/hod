@@ -39,6 +39,9 @@ mod tls;
 mod byte_regs;
 mod x87;
 
+// EVEX (WP-208).
+mod evex;
+
 use harness::Batch;
 
 /// A sweep: its spec section and the function adding its cases.
@@ -76,6 +79,12 @@ pub const GROUPS: &[Group] = &[
     // SSE4 and VEX (WP-202).
     ("three-byte-maps", avx::legacy),
     ("vex", avx::vex_forms),
+    // The AVX2 gathers (WP-207).
+    ("vex-gathers", avx::gathers),
+    // EVEX and the opmask instructions (WP-208).
+    ("evex", evex::evex_forms),
+    ("evex-memory-operands", evex::memory),
+    ("opmask", evex::opmask),
 ];
 
 fn check(group: &str) {
@@ -125,4 +134,10 @@ differential! {
     // WP-202.
     three_byte_maps_match_llvm => "three-byte-maps";
     vex_matches_llvm => "vex";
+    // WP-207.
+    vex_gathers_match_llvm => "vex-gathers";
+    // WP-208.
+    evex_matches_llvm => "evex";
+    evex_memory_operands_match_llvm => "evex-memory-operands";
+    opmask_matches_llvm => "opmask";
 }

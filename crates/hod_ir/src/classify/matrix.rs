@@ -485,11 +485,10 @@ const MODULE: [SupportRow; 24] = [
         "the shadow-stack bit in `.note.gnu.property`; the code does not change (WP-143); on \
          for any value, 0 included, as `llc` (WP-144)",
     ),
-    row(
+    both(
         "module:asm",
         ON,
-        todo(X64),
-        "module-level assembly of code and data: `hod_asm` (WP-112, `spec/asm.md` §9); what it does not read is refused by an `asm:*` name",
+        "module-level assembly of code and data: `hod_asm` (WP-112 on AArch64, WP-204 on x86-64 with `.symver`, `spec/asm.md` §9, §14); what it does not read is refused by an `asm:*` name",
     ),
     both(
         "module:asm-symbols",
@@ -3446,12 +3445,28 @@ const INTRINSIC_A64: &[SupportRow] = &[
     row("intrinsic:llvm.aarch64.neon.vsri", on(NEON), never(A64_ONLY), "WP-083"),
     row("intrinsic:llvm.aarch64.sisd.fabd", on(NEON), never(A64_ONLY), "WP-083"),
     row("intrinsic:llvm.aarch64.sisd.fcvtxn", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.crypto.sm3partw1", on(NEON), never(A64_ONLY), "WP-205"),
+    row("intrinsic:llvm.aarch64.crypto.sm3partw2", on(NEON), never(A64_ONLY), "WP-205"),
+    row("intrinsic:llvm.aarch64.crypto.sm3ss1", on(NEON), never(A64_ONLY), "WP-205"),
+    row("intrinsic:llvm.aarch64.crypto.sm3tt1a", on(NEON), never(A64_ONLY), "WP-205"),
+    row("intrinsic:llvm.aarch64.crypto.sm3tt1b", on(NEON), never(A64_ONLY), "WP-205"),
+    row("intrinsic:llvm.aarch64.crypto.sm3tt2a", on(NEON), never(A64_ONLY), "WP-205"),
+    row("intrinsic:llvm.aarch64.crypto.sm3tt2b", on(NEON), never(A64_ONLY), "WP-205"),
+    row("intrinsic:llvm.aarch64.crypto.sm4e", on(NEON), never(A64_ONLY), "WP-205"),
+    row("intrinsic:llvm.aarch64.crypto.sm4ekey", on(NEON), never(A64_ONLY), "WP-205"),
+    row("intrinsic:llvm.aarch64.frint32x", on(NEON), never(A64_ONLY), "WP-205"),
+    row("intrinsic:llvm.aarch64.frint32z", on(NEON), never(A64_ONLY), "WP-205"),
+    row("intrinsic:llvm.aarch64.frint64x", on(NEON), never(A64_ONLY), "WP-205"),
+    row("intrinsic:llvm.aarch64.frint64z", on(NEON), never(A64_ONLY), "WP-205"),
+    row("intrinsic:llvm.aarch64.fjcvtzs", on(NEON), never(A64_ONLY), "WP-205"),
 ];
 
 /// The x86 target intrinsics of WP-173, which follow [`INTRINSIC_A64`] on
 /// the list, then WP-190's system and state ones. Above SSE2 (and for
 /// WP-190's above the baseline) the lowering refuses a function whose
 /// `target-features` do not enable the feature, by the intrinsic's name.
+/// Last, the generic masked memory intrinsics of WP-208, which the list
+/// keeps after the x86 ones.
 const INTRINSIC_X86: &[SupportRow] = &[
     row("intrinsic:llvm.x86.sse.cmp.ss", never(X64_ONLY), on(X86_SSE), "SSE"),
     row("intrinsic:llvm.x86.sse.comieq.ss", never(X64_ONLY), on(X86_SSE), "SSE"),
@@ -3801,7 +3816,91 @@ const INTRINSIC_X86: &[SupportRow] = &[
     row("intrinsic:llvm.x86.vgf2p8affineinvqb.256", never(X64_ONLY), on(X86_SSE), "GFNI (WP-202)"),
     row("intrinsic:llvm.x86.vgf2p8mulb.128", never(X64_ONLY), on(X86_SSE), "GFNI (WP-202)"),
     row("intrinsic:llvm.x86.vgf2p8mulb.256", never(X64_ONLY), on(X86_SSE), "GFNI (WP-202)"),
+    row("intrinsic:llvm.x86.avx2.gather.d.d", never(X64_ONLY), on(X86_SSE), "AVX2 gather (WP-207)"),
+    row(
+        "intrinsic:llvm.x86.avx2.gather.d.d.256",
+        never(X64_ONLY),
+        on(X86_SSE),
+        "AVX2 gather (WP-207)",
+    ),
+    row("intrinsic:llvm.x86.avx2.gather.d.q", never(X64_ONLY), on(X86_SSE), "AVX2 gather (WP-207)"),
+    row(
+        "intrinsic:llvm.x86.avx2.gather.d.q.256",
+        never(X64_ONLY),
+        on(X86_SSE),
+        "AVX2 gather (WP-207)",
+    ),
+    row(
+        "intrinsic:llvm.x86.avx2.gather.d.ps",
+        never(X64_ONLY),
+        on(X86_SSE),
+        "AVX2 gather (WP-207)",
+    ),
+    row(
+        "intrinsic:llvm.x86.avx2.gather.d.ps.256",
+        never(X64_ONLY),
+        on(X86_SSE),
+        "AVX2 gather (WP-207)",
+    ),
+    row(
+        "intrinsic:llvm.x86.avx2.gather.d.pd",
+        never(X64_ONLY),
+        on(X86_SSE),
+        "AVX2 gather (WP-207)",
+    ),
+    row(
+        "intrinsic:llvm.x86.avx2.gather.d.pd.256",
+        never(X64_ONLY),
+        on(X86_SSE),
+        "AVX2 gather (WP-207)",
+    ),
+    row("intrinsic:llvm.x86.avx2.gather.q.d", never(X64_ONLY), on(X86_SSE), "AVX2 gather (WP-207)"),
+    row(
+        "intrinsic:llvm.x86.avx2.gather.q.d.256",
+        never(X64_ONLY),
+        on(X86_SSE),
+        "AVX2 gather (WP-207)",
+    ),
+    row("intrinsic:llvm.x86.avx2.gather.q.q", never(X64_ONLY), on(X86_SSE), "AVX2 gather (WP-207)"),
+    row(
+        "intrinsic:llvm.x86.avx2.gather.q.q.256",
+        never(X64_ONLY),
+        on(X86_SSE),
+        "AVX2 gather (WP-207)",
+    ),
+    row(
+        "intrinsic:llvm.x86.avx2.gather.q.ps",
+        never(X64_ONLY),
+        on(X86_SSE),
+        "AVX2 gather (WP-207)",
+    ),
+    row(
+        "intrinsic:llvm.x86.avx2.gather.q.ps.256",
+        never(X64_ONLY),
+        on(X86_SSE),
+        "AVX2 gather (WP-207)",
+    ),
+    row(
+        "intrinsic:llvm.x86.avx2.gather.q.pd",
+        never(X64_ONLY),
+        on(X86_SSE),
+        "AVX2 gather (WP-207)",
+    ),
+    row(
+        "intrinsic:llvm.x86.avx2.gather.q.pd.256",
+        never(X64_ONLY),
+        on(X86_SSE),
+        "AVX2 gather (WP-207)",
+    ),
+    row("intrinsic:llvm.masked.load", todo(LATER), on(MASKED), "lane by lane (WP-208)"),
+    row("intrinsic:llvm.masked.store", todo(LATER), on(MASKED), "lane by lane (WP-208)"),
+    row("intrinsic:llvm.masked.expandload", todo(LATER), on(MASKED), "lane by lane (WP-208)"),
+    row("intrinsic:llvm.masked.compressstore", todo(LATER), on(MASKED), "lane by lane (WP-208)"),
 ];
+
+/// The value classes of the masked memory intrinsics' signatures
+/// (WP-208): the pointer, LLVM 19's alignment, the mask and the vectors.
+const MASKED: &[TypeClass] = &[TypeClass::Int, TypeClass::Ptr, TypeClass::Vector];
 
 /// The value classes of the x86 system and state intrinsics' signatures
 /// (WP-190): integers, pointers and the `{iN, iM}` results.

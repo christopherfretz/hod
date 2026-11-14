@@ -811,20 +811,19 @@ fn wide_vector_thunk(features: &str, callee_features: &str, vectors: usize) -> S
 // `spec/abi-x64.md` §1.3, §8.5: the features of the function making the
 // call decide both areas. Without AVX a `<4 x double>` is two `xmm`
 // pieces (some on the stack here), whatever the callee's features; with
-// AVX `assign` refuses it, so the rule has no answer and the call is
-// `musttail:stack-args-unknown`, as is an `x86_fp80` under `-x87`.
+// known AVX it is one `ymm` register (§8.7, WP-203). Under AVX-512
+// `assign` refuses a 512-bit vector, so the rule has no answer and the
+// call is `musttail:stack-args-unknown`, as is an `x86_fp80` under
+// `-x87`.
 #[test]
 fn the_calling_functions_features_decide() {
     assert_eq!(refusal(&wide_vector_thunk("nounwind", "nounwind", 5)), None);
     assert_eq!(refusal(&wide_vector_thunk("nounwind", "\"target-features\"=\"+avx\"", 5)), None);
-    assert_eq!(
-        refusal(&wide_vector_thunk("\"target-features\"=\"+avx\"", "nounwind", 1)).as_deref(),
-        Some("musttail:stack-args-unknown")
-    );
-    assert_eq!(
-        refusal(&wide_vector_thunk("\"target-cpu\"=\"haswell\"", "nounwind", 1)).as_deref(),
-        Some("musttail:stack-args-unknown")
-    );
+    assert_eq!(refusal(&wide_vector_thunk("\"target-features\"=\"+avx\"", "nounwind", 1)), None);
+    assert_eq!(refusal(&wide_vector_thunk("\"target-cpu\"=\"haswell\"", "nounwind", 1)), None);
+    let zmm = wide_vector_thunk("\"target-features\"=\"+avx512f\"", "nounwind", 1)
+        .replace("<4 x double>", "<8 x double>");
+    assert_eq!(refusal(&zmm).as_deref(), Some("musttail:stack-args-unknown"));
     let x87 = "declare i64 @c(x86_fp80)\n\
                define i64 @t(x86_fp80 %x) \"target-features\"=\"-x87\" {\n  \
                %r = musttail call i64 @c(x86_fp80 %x)\n  ret i64 %r\n}\n";

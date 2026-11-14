@@ -326,6 +326,11 @@ pub struct Blobs {
 
 impl Blobs {
     fn put(&mut self, bytes: &[u8]) -> u64 {
+        // A `byval` source or a loaded value wider than 16 bytes may be
+        // read with the alignment of its type (`vmovaps`, up to 64).
+        if bytes.len() > 16 {
+            self.input.resize(self.input.len().next_multiple_of(64), 0);
+        }
         let at = self.input.len() as u64;
         self.input.extend_from_slice(bytes);
         self.input.resize(self.input.len().next_multiple_of(16), 0);
@@ -336,6 +341,12 @@ impl Blobs {
         let clean = self.put(&image.clean);
         let dirty = self.put(&image.dirty);
         let memory = self.put(&image.memory);
+        // LLVM stores a value returned in memory with the alignment of
+        // its type, up to 64 bytes for a wide vector (`vmovaps` into the
+        // buffer): an output slot wider than 16 bytes starts at 64.
+        if image.size > 16 {
+            self.out_size = self.out_size.next_multiple_of(64);
+        }
         let out = self.out_size;
         self.out_size += (image.size + SLACK).next_multiple_of(16) as u64;
         Slot { image, clean, dirty, memory, out, int, ext }
@@ -357,8 +368,22 @@ impl Plan {
     /// # Panics
     /// Panics if the signature is unsupported.
     pub fn new(case: &Case, types: &mut TypeTable, blobs: &mut Blobs, rng: &mut Rng) -> Plan {
+        Plan::new_with(case, types, blobs, rng, Features::default())
+    }
+
+    /// [`Plan::new`] for functions compiled with `features` (WP-203).
+    ///
+    /// # Panics
+    /// Panics if the signature is unsupported.
+    pub fn new_with(
+        case: &Case,
+        types: &mut TypeTable,
+        blobs: &mut Blobs,
+        rng: &mut Rng,
+        features: Features,
+    ) -> Plan {
         let asg = case
-            .assign(types)
+            .assign_with(types, features)
             .unwrap_or_else(|name| panic!("`{}` is unsupported: {name}", case.text()));
         let args = case
             .params

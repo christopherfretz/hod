@@ -242,16 +242,22 @@ fn assignment_in(text: &str, callee: &[u8]) -> Result<Assignment, &'static str> 
     target.assign(&module.types, &sig, &mut out).map_err(|AbiUnsupported(name)| name)?;
     // Without AVX the parts are `abi::assign`'s without features, which
     // the grid checks against `llc` (`spec/abi-x64.md` §11.1).
+    // With AVX a part of 32 bytes is a `ymm` (WP-203), which the wide grid
+    // checks (`abi::wide_vector_grid`).
     let mut plain = Assignment::default();
     abi::assign(&module.types, &sig, abi::Features::default(), &mut plain).unwrap();
-    assert_eq!(out, plain, "{text}");
+    if out.args.iter().chain(&out.ret).all(|part| part.size <= 16) {
+        assert_eq!(out, plain, "{text}");
+    }
     Ok(out)
 }
 
 /// §1.3: a function without AVX places its own wide vectors and vectors of
-/// `i1` in `xmm` registers, as `llc` does; with AVX the wide ones are
-/// refused, with AVX-512 the `i1` ones too. A call's signature is assigned
-/// with the caller's features, whatever the callee declares.
+/// `i1` in `xmm` registers, as `llc` does; with AVX the 256-bit ones go in
+/// `ymm` (WP-203), with AVX-512 the `i1` ones are refused, and where AVX
+/// is only assumed (a CPU hod does not know) the wide ones are too. A
+/// call's signature is assigned with the caller's features, whatever the
+/// callee declares.
 #[test]
 fn own_signature_takes_the_function_features() {
     let wide = "define <8 x i32> @f(<8 x i32> %v, <4 x i64> %w) #0 {\n  ret <8 x i32> %v\n}\n";
@@ -260,6 +266,12 @@ fn own_signature_takes_the_function_features() {
         define void @f() #0 {\n  ret void\n}\n\
         attributes #1 = { \"target-cpu\"=\"skylake-avx512\" }\n";
     let wide_vector = abi::WIDE_VECTOR_ABI;
+    let in_fprs = |asg: &Assignment, size: u32| {
+        asg.args
+            .iter()
+            .chain(&asg.ret)
+            .all(|part| part.size == size && matches!(part.place, Place::Reg(r) if reg::is_fpr(r)))
+    };
     for attrs in WITHOUT_AVX {
         for body in [wide, mask] {
             let asg = assignment_in(&module(body, attrs), b"f").expect(attrs);
@@ -272,45 +284,64 @@ fn own_signature_takes_the_function_features() {
         }
         assert!(assignment_in(&module(call, attrs), b"g").is_ok(), "{attrs}");
     }
+    for attrs in [
+        "\"target-features\"=\"+avx\"",
+        "\"target-cpu\"=\"haswell\"",
+        "\"target-cpu\"=\"skylake-avx512\"",
+    ] {
+        let asg = assignment_in(&module(wide, attrs), b"f").expect(attrs);
+        assert!(in_fprs(&asg, 32) && asg.args.len() == 2, "{attrs}: {asg:?}");
+        let asg = assignment_in(&module(call, attrs), b"g").expect(attrs);
+        assert!(in_fprs(&asg, 32), "{attrs}: {asg:?}");
+    }
     for attrs in ["\"target-features\"=\"+avx\"", "\"target-cpu\"=\"haswell\""] {
-        assert_eq!(assignment_in(&module(wide, attrs), b"f"), Err(wide_vector));
-        assert_eq!(assignment_in(&module(call, attrs), b"g"), Err(wide_vector));
         assert!(assignment_in(&module(mask, attrs), b"f").is_ok());
     }
     let avx512 = "\"target-cpu\"=\"skylake-avx512\"";
     assert_eq!(assignment_in(&module(mask, avx512), b"f"), Err(wide_vector));
+    for assumed in ["\"target-cpu\"=\"some-future-cpu\"", "\"target-features\"=\"+amx-avx512\""] {
+        assert_eq!(assignment_in(&module(wide, assumed), b"f"), Err(wide_vector), "{assumed}");
+    }
 }
 
 /// §1.3 through the whole compiler: with AVX (or a CPU that may have it) a
-/// signature with a vector wider than 128 bits is refused; with AVX-512
-/// also one with a vector of `i1`; a 128-bit vector is fine either way.
-/// The caller's features decide, whatever the callee declares. Without
-/// AVX, a wide vector (a `Mem` value) and a vector of `i1` compile.
+/// signature with a 256-bit vector compiles (WP-203), one wider than 256
+/// bits too unless AVX-512 may be on; where AVX is only assumed it is
+/// refused; with AVX-512 a vector of `i1` is refused; a 128-bit vector is
+/// fine either way. The caller's features decide, whatever the callee
+/// declares. Without AVX, a wide vector (a `Mem` value) and a vector of
+/// `i1` compile.
 #[test]
 fn avx_signatures_are_refused_by_the_function() {
     let wide = "define <4 x i64> @f(<4 x i64> %v) #0 {\n  ret <4 x i64> %v\n}\n";
+    let wider = "define <8 x i64> @f(<8 x i64> %v) #0 {\n  ret <8 x i64> %v\n}\n";
     let mask = "define <4 x i1> @f(<4 x i1> %v) #0 {\n  ret <4 x i1> %v\n}\n";
     let narrow = "define <2 x i64> @f(<2 x i64> %v) #0 {\n  ret <2 x i64> %v\n}\n";
     let call = "declare <4 x i64> @g(<4 x i64>) #1\n\
         define <4 x i64> @f(<4 x i64> %v) #0 {\n  %r = call <4 x i64> @g(<4 x i64> %v)\n  \
         ret <4 x i64> %r\n}\nattributes #1 = { \"target-cpu\"=\"skylake-avx512\" }\n";
     let wide_vector = abi::WIDE_VECTOR_ABI;
-    let rows: [(&str, &str, &str); 14] = [
+    let rows: [(&str, &str, &str); 19] = [
         (wide, "nounwind", ""),
         (wide, "\"target-cpu\"=\"x86-64-v2\"", ""),
-        (wide, "\"target-features\"=\"+avx\"", wide_vector),
-        (wide, "\"target-features\"=\"+fma\"", wide_vector),
-        (wide, "\"target-cpu\"=\"haswell\"", wide_vector),
+        (wide, "\"target-features\"=\"+avx\"", ""),
+        (wide, "\"target-features\"=\"+fma\"", ""),
+        (wide, "\"target-cpu\"=\"haswell\"", ""),
+        (wide, "\"target-cpu\"=\"skylake-avx512\"", ""),
         (wide, "\"target-cpu\"=\"some-future-cpu\"", wide_vector),
+        (wide, "\"target-cpu\"=\"some-future-cpu\" \"target-features\"=\"+avx\"", ""),
+        (wide, "\"target-features\"=\"+avx10.1-256\"", wide_vector),
         (wide, "\"target-cpu\"=\"haswell\" \"target-features\"=\"-avx\"", ""),
+        (wider, "\"target-cpu\"=\"haswell\"", ""),
+        (wider, "\"target-cpu\"=\"skylake-avx512\"", wide_vector),
         (mask, "\"target-cpu\"=\"haswell\"", ""),
         (mask, "\"target-cpu\"=\"skylake-avx512\"", wide_vector),
         (mask, "\"target-cpu\"=\"haswell\" \"target-features\"=\"+avx512vl\"", wide_vector),
         (mask, "\"target-cpu\"=\"x86-64-v4\" \"target-features\"=\"-avx512f\"", ""),
         (narrow, "\"target-cpu\"=\"skylake-avx512\"", ""),
-        // The callee's features do not count: the caller has none.
+        // The callee's features do not count: the caller's do.
         (call, "nounwind", ""),
-        (call, "\"target-features\"=\"+avx2\"", wide_vector),
+        (call, "\"target-features\"=\"+avx2\"", ""),
     ];
     for (body, attrs, expected) in rows {
         assert_eq!(refusal(&module(body, attrs)), expected, "{attrs}\n{body}");

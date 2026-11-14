@@ -1723,7 +1723,7 @@ It lowers the AArch64 target intrinsics on `hod_ir`'s list (§5.5,
 `bfcvtn`, `bfcvtn2`, `bfdot`, `bfmlalb`, `bfmlalt`, `bfmmla`) are on the
 list with a matrix row that is not supported, so they stay
 `intrinsic:<name>` (vectors of `bfloat` are not lowered; the scalar is,
-WP-095 below).
+WP-095 below; the structure loads and stores move them, §5.6.34).
 
 - **Target features.** Like `crc32` (WP-084), an intrinsic is lowered
   whatever the function's `target-features` say: a feature is
@@ -2441,8 +2441,10 @@ stack arguments, `byval`, `fastcc`, `preserve_mostcc`, `preserve_allcc`
 and a variadic call) the same argument registers and stack slots, return
 registers and call register masks as a function without features, except
 (a) a vector wider than 128 bits under anything that implies AVX, and a
-vector of `i1` under AVX-512, which `x64:wide-vector-abi` refuses with the
-function's features (§5.6.9; `sha512`, `sm3` and `sm4` imply AVX), and
+vector of `i1` under AVX-512: a 256-bit vector under known AVX goes in
+`ymm` registers (`spec/abi-x64.md` §1.3 and §8.7, WP-203), and what
+remains is `x64:wide-vector-abi` with the function's features (§5.6.9;
+`sha512`, `sm3` and `sm4` imply AVX), and
 (b) `preserve_allcc`, whose call's register mask keeps all of
 `ymm0`..`ymm15` under AVX while §5.6.23's callee keeps their low halves:
 `llc`'s own callee returns through `vzeroupper` whenever it called
@@ -2884,9 +2886,11 @@ summarized in `spec/landed/codegen/WP-128.md`.
   compiled function's features, never the callee's: `llc` does the same
   (`spec/abi-x64.md` §1.3, which has the CPU tables and the rule). So
   without AVX a `<8 x float>` argument is two `xmm` registers and a
-  `<4 x i1>` one `xmm`, as `llc` places them; with AVX (or a CPU that
-  may have it) a wider-than-128-bit vector is `x64:wide-vector-abi`, and
-  with AVX-512 a vector of `i1`.
+  `<4 x i1>` one `xmm`, as `llc` places them; with known AVX a 256-bit
+  vector is passed and returned in `ymm` registers (`spec/abi-x64.md`
+  §1.3 and §8.7, WP-203); `x64:wide-vector-abi` remains for a vector
+  over 32 bytes or of `i1` under AVX-512, for a `ymm` vector where AVX
+  is only assumed, and for `preserve_*` with a `ymm` piece.
 - **`-x87`** is refused (`attr:target-feature-no-x87`) only for a
   function that has a value of a type containing `x86_fp80` (its
   signature, an instruction's result or an operand): `llc` cannot
@@ -4266,7 +4270,7 @@ own registers, so no combination is refused for being one.
 
 Evidence: `spec/landed/codegen/WP-194.md`.
 
-#### 5.6.33 x86 vector intrinsics past SSSE3 (WP-202)
+#### 5.6.33 x86 vector intrinsics past SSSE3 (WP-202, WP-207)
 
 The `llvm.x86.*` calls clang 19 and 22 write at `-O0` for the functions
 of `<smmintrin.h>`/`<nmmintrin.h>` (SSE4.1, SSE4.2), `<wmmintrin.h>`
@@ -4360,12 +4364,149 @@ without them: the code of the x86-64 baseline is unchanged).
    a predicate of 8 to 31 in a function with AVX are `vcmpss`/`vcmpsd`
    with the whole predicate, as `llc`'s (the legacy encoding reads
    three bits, which is right only without AVX).
-5. **Refused by name** (`classify`): the gathers (`avx2.gather.*`, 16
-   names), every AVX-512, AVX10, VAES, VPCLMULQDQ and 512-bit GFNI name
-   (counted in `spec/landed/codegen/WP-202.md`), and every other
-   `llvm.x86.*` name not listed. AArch64 refuses every `llvm.x86.*` name.
+5. **Refused by name** (`classify`): every AVX-512, AVX10, VAES,
+   VPCLMULQDQ and 512-bit GFNI name (counted in
+   `spec/landed/codegen/WP-202.md`), the generic `llvm.masked.gather`
+   (clang 19 and 22 and kiln write the `avx2.gather.*` names for the
+   header functions under `+avx2`), and every other `llvm.x86.*` name not
+   listed. AArch64 refuses every `llvm.x86.*` name.
+6. **The AVX2 gathers** (WP-207; need `avx2`): `avx2.gather.{d,q}.{d,q,
+   ps,pd}` and their `.256`, 16 names, operands pass-through, base
+   pointer, index, mask and the scale (an `immarg`; other than 1, 2, 4
+   or 8 is `x64:x86-intrinsic-signature`, where `llc` stops). One
+   `vpgatherdd`/`vpgatherdq`/`vpgatherqd`/`vpgatherqq`/`vgatherdps`/
+   `vgatherdpd`/`vgatherqps`/`vgatherqpd` with the VSIB operand
+   `[base + index*scale]`, `VEX.L` set where the destination or the index
+   is a `ymm` (`.256`: the `d` index of 64-bit elements is an `xmm`, the
+   destination of the `q` index with 32-bit elements is an `xmm`). The
+   instruction requires its destination, index and mask in three
+   distinct registers and clears the mask, whose IR value stays as it
+   was:
+   - the destination is `xmm14`/`ymm14`, the pass-through copied (or
+     loaded from its slot) into it first, its register given back at
+     once;
+   - a 128-bit index or mask is used in its own register (§4.2: a
+     register operand may be overwritten; the same value as index and
+     mask gives the mask a copy in `xmm15`); a 256-bit one is loaded
+     from its slot into `ymm15`;
+   - when both are 256 bits, the index is loaded into a temporary of the
+     pool (no register value of the class is pinned by these operands);
+   - the base in its general register (a constant, as `null`, in a
+     temporary); a 256-bit result is stored from `ymm14` to its slot, a
+     128-bit one moved into the index's (or the mask's) register and
+     finished there, so at most two registers of the class are pinned.
+   No register is reserved beyond §2.1's scratch registers, and no
+   function without a gather changes. Lanes whose mask element's sign is
+   clear are not read.
 
-Evidence: `spec/landed/codegen/WP-202.md`.
+Evidence: `spec/landed/codegen/WP-202.md`, `spec/landed/codegen/WP-207.md`.
+
+#### 5.6.35 AVX-512 and the masked memory intrinsics (WP-208)
+
+Design: `docs/design/0007-avx512.md`. Evidence:
+`spec/landed/codegen/WP-208.md`; tests `crates/hod_x64/tests/x86_avx512.rs`.
+
+1. **The masked memory intrinsics** (generic; clang 19 and 22 write
+   them for the masked loads and stores, expand loads and compress
+   stores of the AVX-512 headers): `llvm.masked.load`,
+   `llvm.masked.store`, `llvm.masked.expandload`,
+   `llvm.masked.compressstore` (`crates/hod_x64/src/vector.rs`,
+   `masked`; matrix rows `todo(LATER)` / `on(MASKED)`). Built on
+   x86-64 whatever the function's features, lane by lane as `llc`
+   scalarizes them without AVX-512: for each lane whose mask bit is
+   set, the lane's bytes copied through `r11` between memory and the
+   vector's image (the result's slot, or a scratch image of the
+   pass-through reloaded into the result's register for a vector of
+   class `Fpr`; the stored value's slot or image). `load`/`store` reach
+   lane `i` at `ptr + i * size`; `expandload`/`compressstore` the `k`-th
+   set lane at `ptr + k * size`. A lane whose bit is clear touches no
+   memory. A constant mask copies its set lanes (an undefined lane is
+   clear); a variable mask (class `Gpr`, §5.6.13) is tested lane by lane
+   by `bt` and `jae`, the packed forms' cursor in `rax`. Both
+   signatures are read: LLVM 19's (`i32` alignment operand of `load`
+   and `store`) and LLVM 22's (the pointer's `align` attribute); the
+   alignment is not needed, every access being one lane. Refused: a
+   mask of more than 64 lanes (`x64:mask-wide`), what §5.6.13 refuses
+   for the vector's lanes, and a call whose operands are not the
+   intrinsic's (`x64:vector-op`). AArch64 does not build them yet.
+   Execution evidence: on the emulator against `llc` 22 and 19.
+
+#### 5.6.34 The AArch64 intrinsic headers, built and refused (WP-205)
+
+What reaches the back end from every function and function-like macro of
+`<arm_neon.h>`, `<arm_fp16.h>` and `<arm_acle.h>` that clang 19 or 22
+compiles at `-O0` (one wrapper each, the features clang asks for added;
+`crates/hod_a64/tests/data/neon_census/census.py`), and what hod does
+with it (`census.tsv` there: one line per `llvm.*` name or IR
+instruction, the header functions that reach it, how many hod builds).
+A function counts as built when `hod --strict` writes an object for it
+under every clang that compiles it.
+
+| group | functions | built before | built after | refused |
+|---|---|---|---|---|
+| arithmetic | 810 | 810 | 810 | 0 |
+| load-store | 746 | 746 | 746 | 0 |
+| convert | 659 | 623 | 659 | 0 |
+| lane | 496 | 496 | 496 | 0 |
+| saturating | 371 | 369 | 371 | 0 |
+| compare | 302 | 302 | 302 | 0 |
+| fp8, lut, faminmax | 275 | 184 | 184 | 91 |
+| shift | 210 | 210 | 210 | 0 |
+| bf16 | 169 | 108 | 156 | 13 |
+| polynomial | 145 | 145 | 145 | 0 |
+| pairwise, reduce, table | 244 | 244 | 244 | 0 |
+| complex (`fcma`) | 70 | 70 | 70 | 0 |
+| min-max | 52 | 48 | 52 | 0 |
+| dot, matrix multiply | 39 | 25 | 25 | 14 |
+| rdm, fp16fml | 60 | 60 | 60 | 0 |
+| sha2, sha3, aes, crc | 46 | 46 | 46 | 0 |
+| sm3, sm4 | 9 | 0 | 9 | 0 |
+| ACLE scalar | 31 | 21 | 30 | 1 |
+| ACLE system | 19 | 9 | 9 | 10 |
+| all | 4753 | 4516 | 4624 | 129 |
+
+The fp8 group's 184 built are its functions without an fp8 type (the
+`mf8` loads, stores and lane moves, which are bytes). 130 header
+functions compile under neither clang for AArch64 (the AArch32 DSP and
+coprocessor functions, `__arm_rsr`/`__arm_wsr` and the MTE macros with
+non-constant operands, `vcmla*_f64`); they are not counted.
+
+Built by WP-205 (each by §5.5.1's NEON rules unless said):
+
+1. **`sm3partw1`, `sm3partw2`, `sm3tt1a`/`1b`/`2a`/`2b`, `sm4e`** tied
+   to the first operand (`mov` into the destination first, as the other
+   tied crypto forms); `sm3ss1` and `sm4ekey` three- and two-register.
+   `sm3tt*`'s `i64` is the lane of the third operand, 0 to 3; any other
+   is `a64:intrinsic-immediate`.
+2. **Half precision scalars** (`FEAT_FP16`, the single-precision word
+   with `ftype` 3): `fcvt{a,m,n,p,z}{s,u}` of `half` to `i32`/`i64`
+   into a general register; to `i16` the scalar SIMD form `fcvt* h, h`
+   (saturating to 16 bits) and its `fmov w` (zero-extended), which is
+   `llc` 22's (19 cannot select it); `vcvtfp2fx{s,u}` of `half` to
+   `i32`/`i64` the 16-bit fixed point `fcvtz{s,u} h, h, #n`, and
+   `vcvtfx{s,u}2fp` from `i32`/`i64` `{s,u}cvtf h, h, #n` of the
+   integer's low 16 bits, as `llc`; `n` 1 to 16, else
+   `a64:intrinsic-immediate`; `fmax`, `fmin`, `fmaxnm`, `fminnm` `.f16`.
+3. **`frint32x`, `frint32z`, `frint64x`, `frint64z`** of `float` and
+   `double` (`FEAT_FRINTTS`, the scalar forms of the vector names
+   already built); **`fjcvtzs`** (`FEAT_JSCVT`, `double` to `i32`).
+4. **Vectors of `bfloat` in the structure loads and stores** (`ld1x2`
+   to `ld1x4`, `ld2` to `ld4`, their `lane` and `r` forms, `st1x2` to
+   `st4lane`): moved as 16-bit integer lanes, the bits unchanged.
+5. **A vector constant whose other lanes are `poison` or `undef`** is a
+   splat of its defined lanes where an immediate is read from one
+   (clang's `vqshlub_n_s8`/`vqshluh_n_s16` set lane 0 only).
+
+Refused by name (`intrinsic:<name>`), on purpose: the fp8 names and
+`set.fpmr` (FEAT_FP8, the `fpm` register), `vluti2`/`vluti4q` (FEAT_LUT),
+`famax`/`famin` (FEAT_FAMINMAX), `llvm.vector.insert`/`extract` (only the
+fp8 functions write them), `rndr`/`rndrrs`, `gcspopm`/`gcsss`
+(`__gcspr` is `a64:named-register`), `ld64b`/`st64b*`, `chkfeat`,
+`ldxr`/`stxr` of `__swp`, and the scalar `bfcvt` of clang 19's
+`vcvth_bf16_f32` (clang 22 writes `fptrunc`, built). SVE, SME and
+scalable types stay refused as before.
+
+Evidence: `spec/landed/codegen/WP-205.md`.
 
 ## 6. Control flow
 

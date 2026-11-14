@@ -442,6 +442,22 @@ intrinsics! {
     Aarch64NeonVsri = "llvm.aarch64.neon.vsri" [Ret],
     Aarch64SisdFabd = "llvm.aarch64.sisd.fabd" [Ret],
     Aarch64SisdFcvtxn = "llvm.aarch64.sisd.fcvtxn" [],
+    // The census of `<arm_neon.h>` and `<arm_acle.h>` (WP-205): SM3/SM4,
+    // the scalar FRINT32/64 and FJCVTZS of `<arm_acle.h>`.
+    Aarch64CryptoSm3partw1 = "llvm.aarch64.crypto.sm3partw1" [],
+    Aarch64CryptoSm3partw2 = "llvm.aarch64.crypto.sm3partw2" [],
+    Aarch64CryptoSm3ss1 = "llvm.aarch64.crypto.sm3ss1" [],
+    Aarch64CryptoSm3tt1a = "llvm.aarch64.crypto.sm3tt1a" [],
+    Aarch64CryptoSm3tt1b = "llvm.aarch64.crypto.sm3tt1b" [],
+    Aarch64CryptoSm3tt2a = "llvm.aarch64.crypto.sm3tt2a" [],
+    Aarch64CryptoSm3tt2b = "llvm.aarch64.crypto.sm3tt2b" [],
+    Aarch64CryptoSm4e = "llvm.aarch64.crypto.sm4e" [],
+    Aarch64CryptoSm4ekey = "llvm.aarch64.crypto.sm4ekey" [],
+    Aarch64Frint32x = "llvm.aarch64.frint32x" [Ret],
+    Aarch64Frint32z = "llvm.aarch64.frint32z" [Ret],
+    Aarch64Frint64x = "llvm.aarch64.frint64x" [Ret],
+    Aarch64Frint64z = "llvm.aarch64.frint64z" [Ret],
+    Aarch64Fjcvtzs = "llvm.aarch64.fjcvtzs" [],
     // x86 target intrinsics (WP-173): the names clang 19 and 22 emit at
     // `-O0` for the SSE, SSE2, SSE3 and SSSE3 headers that hod builds.
     X86SseCmpSs = "llvm.x86.sse.cmp.ss" [],
@@ -797,6 +813,31 @@ intrinsics! {
     X86Vgf2p8affineinvqb256 = "llvm.x86.vgf2p8affineinvqb.256" [],
     X86Vgf2p8mulb128 = "llvm.x86.vgf2p8mulb.128" [],
     X86Vgf2p8mulb256 = "llvm.x86.vgf2p8mulb.256" [],
+    // The AVX2 gathers (WP-207).
+    X86Avx2GatherDD = "llvm.x86.avx2.gather.d.d" [],
+    X86Avx2GatherDD256 = "llvm.x86.avx2.gather.d.d.256" [],
+    X86Avx2GatherDQ = "llvm.x86.avx2.gather.d.q" [],
+    X86Avx2GatherDQ256 = "llvm.x86.avx2.gather.d.q.256" [],
+    X86Avx2GatherDPs = "llvm.x86.avx2.gather.d.ps" [],
+    X86Avx2GatherDPs256 = "llvm.x86.avx2.gather.d.ps.256" [],
+    X86Avx2GatherDPd = "llvm.x86.avx2.gather.d.pd" [],
+    X86Avx2GatherDPd256 = "llvm.x86.avx2.gather.d.pd.256" [],
+    X86Avx2GatherQD = "llvm.x86.avx2.gather.q.d" [],
+    X86Avx2GatherQD256 = "llvm.x86.avx2.gather.q.d.256" [],
+    X86Avx2GatherQQ = "llvm.x86.avx2.gather.q.q" [],
+    X86Avx2GatherQQ256 = "llvm.x86.avx2.gather.q.q.256" [],
+    X86Avx2GatherQPs = "llvm.x86.avx2.gather.q.ps" [],
+    X86Avx2GatherQPs256 = "llvm.x86.avx2.gather.q.ps.256" [],
+    X86Avx2GatherQPd = "llvm.x86.avx2.gather.q.pd" [],
+    X86Avx2GatherQPd256 = "llvm.x86.avx2.gather.q.pd.256" [],
+    // The masked memory intrinsics (WP-208): generic, but what clang 19
+    // and 22 emit for the AVX-512 masked loads, stores, expand loads and
+    // compress stores. LLVM 19 passes the alignment of `load`/`store` as
+    // an `i32` operand, LLVM 22 as the pointer's `align` attribute.
+    MaskedLoad = "llvm.masked.load" [Ret, P(0)],
+    MaskedStore = "llvm.masked.store" [P(0), P(1)],
+    MaskedExpandLoad = "llvm.masked.expandload" [Ret],
+    MaskedCompressStore = "llvm.masked.compressstore" [P(0)],
 }
 
 /// The most overload types an intrinsic on the list has.
@@ -871,7 +912,23 @@ impl<'a> Intrinsic<'a> {
             | I::X86Sse42Pcmpestric128
             | I::X86Sse42Pcmpestrio128
             | I::X86Sse42Pcmpestris128
-            | I::X86Sse42Pcmpestriz128 => &[4],
+            | I::X86Sse42Pcmpestriz128
+            | I::X86Avx2GatherDD
+            | I::X86Avx2GatherDD256
+            | I::X86Avx2GatherDQ
+            | I::X86Avx2GatherDQ256
+            | I::X86Avx2GatherDPs
+            | I::X86Avx2GatherDPs256
+            | I::X86Avx2GatherDPd
+            | I::X86Avx2GatherDPd256
+            | I::X86Avx2GatherQD
+            | I::X86Avx2GatherQD256
+            | I::X86Avx2GatherQQ
+            | I::X86Avx2GatherQQ256
+            | I::X86Avx2GatherQPs
+            | I::X86Avx2GatherQPs256
+            | I::X86Avx2GatherQPd
+            | I::X86Avx2GatherQPd256 => &[4],
             _ => &[],
         }
     }

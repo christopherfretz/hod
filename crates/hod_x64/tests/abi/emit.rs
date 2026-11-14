@@ -60,6 +60,10 @@ pub struct Func<'a> {
     /// The call is to a variadic function: `al` carries the number of
     /// vector registers used (§9.1).
     pub variadic: bool,
+    /// WP-203: the function has AVX: a vector part of more than 16 bytes
+    /// is a `ymm` (§1.3), the `ymm`s are poisoned whole, and the
+    /// stack-argument area is aligned to 32 (§3.2).
+    pub avx: bool,
 }
 
 /// The bits a producer leaves in every byte it does not owe.
@@ -233,6 +237,19 @@ impl Asm<'_> {
         for number in 0..8 {
             ins!(self, "movdqu {SCRATCH}(%rbp), %xmm{number}");
         }
+        if self.func.avx {
+            self.junk_wide();
+            for number in 0..8 {
+                ins!(self, "vmovdqu {SCRATCH}(%rbp), %ymm{number}");
+            }
+        }
+    }
+
+    /// Fills the whole 32-byte scratch area with junk.
+    fn junk_wide(&mut self) {
+        for at in (0..32).step_by(8) {
+            ins!(self, "movq %r13, {}(%rbp)", SCRATCH + at);
+        }
     }
 
     /// Fills the first 16 bytes of the scratch area with junk.
@@ -318,6 +335,13 @@ impl Asm<'_> {
                     if let Some((ext, _)) = extension {
                         self.extend(name, ext);
                     }
+                }
+                Reg::Vector(number) if size > 16 => {
+                    // WP-203: a `ymm`.
+                    assert!(size <= 32 && self.func.avx, "a ymm holds 32 bytes, with AVX");
+                    self.junk_wide();
+                    self.copy(size, src, ("rbp", SCRATCH));
+                    ins!(self, "vmovdqu {SCRATCH}(%rbp), %ymm{number}");
                 }
                 Reg::Vector(number) => {
                     assert!(size <= 16, "a vector register holds 16 bytes");
@@ -405,6 +429,10 @@ impl Asm<'_> {
                         assert!(size <= 8, "a general register holds 8 bytes");
                         ins!(self, "movq %{name}, {SCRATCH}(%rbp)");
                     }
+                    Reg::Vector(number) if size > 16 => {
+                        assert!(size <= 32 && self.func.avx, "a ymm holds 32 bytes, with AVX");
+                        ins!(self, "vmovdqu %ymm{number}, {SCRATCH}(%rbp)");
+                    }
                     Reg::Vector(number) => {
                         assert!(size <= 16, "a vector register holds 16 bytes");
                         ins!(self, "movdqu %xmm{number}, {SCRATCH}(%rbp)");
@@ -438,6 +466,10 @@ pub fn caller(text: &mut String, func: Func<'_>) {
     assert!(area < 1 << 30, "a stack-argument area the emitter cannot make");
     if area != 0 {
         ins!(asm, "subq ${area}, %rsp");
+        if func.avx {
+            // §3.2: a `ymm` piece's slot is aligned to 32.
+            ins!(asm, "andq $-32, %rsp");
+        }
         ins!(asm, "movq %rsp, %r15");
         ins!(asm, "movq ${area}, %r10");
         ins!(asm, "callq hodabi_fill");

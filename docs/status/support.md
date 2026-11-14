@@ -20,7 +20,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 
 | group | constructs | aarch64 supported | not-implemented | rejected | x86_64 supported | not-implemented | rejected |
 |---|---|---|---|---|---|---|---|
-| `module` | 24 | 16 | 6 | 2 | 18 | 6 | 0 |
+| `module` | 24 | 16 | 6 | 2 | 19 | 5 | 0 |
 | `structor` | 2 | 2 | 0 | 0 | 2 | 0 | 0 |
 | `debug` | 5 | 4 | 1 | 0 | 4 | 1 | 0 |
 | `global` | 12 | 11 | 1 | 0 | 11 | 1 | 0 |
@@ -42,8 +42,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `landingpad` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 703 | 347 | 7 | 349 | 477 | 10 | 216 |
-| total | 1028 | 566 | 56 | 406 | 697 | 64 | 267 |
+| `intrinsic` | 737 | 361 | 11 | 365 | 497 | 10 | 230 |
+| total | 1062 | 580 | 60 | 422 | 718 | 63 | 281 |
 
 ## `module`
 
@@ -69,7 +69,7 @@ Module properties (`ModuleProps`, §2.1) and module-level tables.
 | `module:branch-protection-pauth-lr` | not-implemented | supported | unplanned. AArch64: `paciasppc` and the PC-modifier forms (FEAT_PAuth_LR); x86-64: ignored (WP-185) |
 | `module:cf-protection-branch` | rejected | supported | an x86 property. `endbr64` at every function entry but a `nocf_check` one, at address-taken blocks, landing pads, the `llvm.eh.sjlj.setjmp` resume point, coroutine entry stubs and after direct calls of `returns_twice` functions, then the IBT bit in `.note.gnu.property` (WP-184); `llc` 19 and 22 turn it on for any value, 0 included (WP-143), as `hod_ir` reads it (WP-144) |
 | `module:cf-protection-return` | rejected | supported | an x86 property. the shadow-stack bit in `.note.gnu.property`; the code does not change (WP-143); on for any value, 0 included, as `llc` (WP-144) |
-| `module:asm` | supported | not-implemented | module-level assembly of code and data: `hod_asm` (WP-112, `spec/asm.md` §9); what it does not read is refused by an `asm:*` name |
+| `module:asm` | supported | supported | module-level assembly of code and data: `hod_asm` (WP-112 on AArch64, WP-204 on x86-64 with `.symver`, `spec/asm.md` §9, §14); what it does not read is refused by an `asm:*` name |
 | `module:asm-symbols` | supported | supported | module-level assembly made only of symbol directives (`spec/ir.md` §2.3) |
 | `module:linker-options` | supported | supported | `!llvm.linker.options` |
 | `module:dependent-libraries` | supported | supported | `!llvm.dependent-libraries` |
@@ -887,6 +887,20 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.aarch64.neon.vsri` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
 | `intrinsic:llvm.aarch64.sisd.fabd` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
 | `intrinsic:llvm.aarch64.sisd.fcvtxn` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.crypto.sm3partw1` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
+| `intrinsic:llvm.aarch64.crypto.sm3partw2` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
+| `intrinsic:llvm.aarch64.crypto.sm3ss1` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
+| `intrinsic:llvm.aarch64.crypto.sm3tt1a` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
+| `intrinsic:llvm.aarch64.crypto.sm3tt1b` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
+| `intrinsic:llvm.aarch64.crypto.sm3tt2a` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
+| `intrinsic:llvm.aarch64.crypto.sm3tt2b` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
+| `intrinsic:llvm.aarch64.crypto.sm4e` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
+| `intrinsic:llvm.aarch64.crypto.sm4ekey` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
+| `intrinsic:llvm.aarch64.frint32x` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
+| `intrinsic:llvm.aarch64.frint32z` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
+| `intrinsic:llvm.aarch64.frint64x` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
+| `intrinsic:llvm.aarch64.frint64z` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
+| `intrinsic:llvm.aarch64.fjcvtzs` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
 | `intrinsic:llvm.x86.sse.cmp.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
 | `intrinsic:llvm.x86.sse.comieq.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
 | `intrinsic:llvm.x86.sse.comige.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
@@ -1233,6 +1247,26 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.x86.vgf2p8affineinvqb.256` | rejected | supported (int, ptr, vector) | an x86 property. GFNI (WP-202) |
 | `intrinsic:llvm.x86.vgf2p8mulb.128` | rejected | supported (int, ptr, vector) | an x86 property. GFNI (WP-202) |
 | `intrinsic:llvm.x86.vgf2p8mulb.256` | rejected | supported (int, ptr, vector) | an x86 property. GFNI (WP-202) |
+| `intrinsic:llvm.x86.avx2.gather.d.d` | rejected | supported (int, ptr, vector) | an x86 property. AVX2 gather (WP-207) |
+| `intrinsic:llvm.x86.avx2.gather.d.d.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX2 gather (WP-207) |
+| `intrinsic:llvm.x86.avx2.gather.d.q` | rejected | supported (int, ptr, vector) | an x86 property. AVX2 gather (WP-207) |
+| `intrinsic:llvm.x86.avx2.gather.d.q.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX2 gather (WP-207) |
+| `intrinsic:llvm.x86.avx2.gather.d.ps` | rejected | supported (int, ptr, vector) | an x86 property. AVX2 gather (WP-207) |
+| `intrinsic:llvm.x86.avx2.gather.d.ps.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX2 gather (WP-207) |
+| `intrinsic:llvm.x86.avx2.gather.d.pd` | rejected | supported (int, ptr, vector) | an x86 property. AVX2 gather (WP-207) |
+| `intrinsic:llvm.x86.avx2.gather.d.pd.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX2 gather (WP-207) |
+| `intrinsic:llvm.x86.avx2.gather.q.d` | rejected | supported (int, ptr, vector) | an x86 property. AVX2 gather (WP-207) |
+| `intrinsic:llvm.x86.avx2.gather.q.d.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX2 gather (WP-207) |
+| `intrinsic:llvm.x86.avx2.gather.q.q` | rejected | supported (int, ptr, vector) | an x86 property. AVX2 gather (WP-207) |
+| `intrinsic:llvm.x86.avx2.gather.q.q.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX2 gather (WP-207) |
+| `intrinsic:llvm.x86.avx2.gather.q.ps` | rejected | supported (int, ptr, vector) | an x86 property. AVX2 gather (WP-207) |
+| `intrinsic:llvm.x86.avx2.gather.q.ps.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX2 gather (WP-207) |
+| `intrinsic:llvm.x86.avx2.gather.q.pd` | rejected | supported (int, ptr, vector) | an x86 property. AVX2 gather (WP-207) |
+| `intrinsic:llvm.x86.avx2.gather.q.pd.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX2 gather (WP-207) |
+| `intrinsic:llvm.masked.load` | not-implemented | supported (int, ptr, vector) | unplanned. lane by lane (WP-208) |
+| `intrinsic:llvm.masked.store` | not-implemented | supported (int, ptr, vector) | unplanned. lane by lane (WP-208) |
+| `intrinsic:llvm.masked.expandload` | not-implemented | supported (int, ptr, vector) | unplanned. lane by lane (WP-208) |
+| `intrinsic:llvm.masked.compressstore` | not-implemented | supported (int, ptr, vector) | unplanned. lane by lane (WP-208) |
 
 ## Structural rules
 

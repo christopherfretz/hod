@@ -126,8 +126,8 @@ const JUDGED: &[Judged] = &[
 /// - `avx`, `avx2`, the AVX-512 and AVX10 families, and what implies them
 ///   (`fma`, `f16c`, `vaes`, `sha512`, ...): the instructions only. Where
 ///   a wide vector or a vector of `i1` then travels is the signature's
-///   (`x64:wide-vector-abi`, [`of_function`]), and `vzeroupper` is not
-///   hod's to write (it never dirties the upper halves).
+///   (`x64:wide-vector-abi`, [`of_function`]), and where hod writes
+///   `vzeroupper` is [`FnFeatures::vzeroupper`]'s (WP-203).
 /// - `cx16`: X-atomic (WP-133) uses `cmpxchg16b` inline with `+cx16` and
 ///   libatomic's `__atomic_*_16` without; on a CPU with `cmpxchg16b`
 ///   libatomic uses the same instruction, so either is lock-free and the
@@ -321,6 +321,11 @@ pub struct FnFeatures {
     pub abi: abi::Features,
     /// `-x87` is in force.
     pub no_x87: bool,
+    /// WP-203: the function writes `vzeroupper` where `llc` would
+    /// (`spec/abi-x64.md` §8.7): AVX is known, and the CPU's tuning has
+    /// it (all but `btver2`, `knl` and `knm`) or the last `vzeroupper`
+    /// item of the features turns it on.
+    pub vzeroupper: bool,
 }
 
 /// CPUs (`target-cpu`, LLVM's names) without AVX: `llc` 19 and 22 pass a
@@ -355,6 +360,84 @@ const CPUS_WITHOUT_AVX: &[&str] = &[
     "barcelona",
     "btver1",
 ];
+
+/// WP-203: the CPUs `llc` 22 gives AVX (a `<4 x double>` in `ymm0`).
+/// `llc` 19 does not know `diamondrapids`, `novalake` and `wildcatlake`
+/// and gives them none; hod follows 22 (`spec/abi-x64.md` §1.3). Any CPU
+/// neither here nor in [`CPUS_WITHOUT_AVX`] only may have AVX.
+const CPUS_WITH_AVX: &[&str] = &[
+    "alderlake",
+    "arrowlake",
+    "arrowlake-s",
+    "arrowlake_s",
+    "bdver1",
+    "bdver2",
+    "bdver3",
+    "bdver4",
+    "broadwell",
+    "btver2",
+    "cannonlake",
+    "cascadelake",
+    "clearwaterforest",
+    "cooperlake",
+    "core-avx-i",
+    "core-avx2",
+    "core_2nd_gen_avx",
+    "core_3rd_gen_avx",
+    "core_4th_gen_avx",
+    "core_4th_gen_avx_tsx",
+    "core_5th_gen_avx",
+    "core_5th_gen_avx_tsx",
+    "corei7-avx",
+    "diamondrapids",
+    "emeraldrapids",
+    "gracemont",
+    "grandridge",
+    "graniterapids",
+    "graniterapids-d",
+    "graniterapids_d",
+    "haswell",
+    "icelake-client",
+    "icelake-server",
+    "icelake_client",
+    "icelake_server",
+    "ivybridge",
+    "knl",
+    "knm",
+    "lunarlake",
+    "meteorlake",
+    "mic_avx512",
+    "novalake",
+    "pantherlake",
+    "raptorlake",
+    "rocketlake",
+    "sandybridge",
+    "sapphirerapids",
+    "sierraforest",
+    "skx",
+    "skylake",
+    "skylake-avx512",
+    "skylake_avx512",
+    "tigerlake",
+    "wildcatlake",
+    "x86-64-v3",
+    "x86-64-v4",
+    "znver1",
+    "znver2",
+    "znver3",
+    "znver4",
+    "znver5",
+];
+
+/// WP-203: the CPUs whose tuning lacks `vzeroupper` in `llc` 19 and 22
+/// (measured: no `vzeroupper` before a call after a 256-bit store).
+const CPUS_WITHOUT_VZEROUPPER: &[&str] = &["btver2", "knl", "knm"];
+
+/// WP-203: the features that imply AVX in one `llc` only, or (for
+/// `amx-avx512`) in neither but may: with one of them AVX is assumed.
+/// `avx10.1-256` implies it in 19 and not 22; `avx10.2-256` in neither
+/// (both are names that one of them does not know).
+const AVX_ASSUMED: &[&str] = &["avx10.1-256", "avx10.2-256", "amx-avx512"];
 
 /// CPUs with AVX and without AVX-512: `ymm` for a `<4 x double>`. Every
 /// other CPU, known to LLVM or not, may have AVX-512.
@@ -399,12 +482,16 @@ const CPUS_WITHOUT_AVX512: &[&str] = &[
 /// function with other features included (`spec/abi-x64.md` §1.3).
 pub fn of_function(cpu: Option<&str>, features: Option<&str>) -> FnFeatures {
     let cpu = cpu.unwrap_or("");
+    // WP-203: whether AVX is known (a CPU `llc` 22 gives AVX, or a feature
+    // that implies it in `llc` 19 and 22) rather than assumed.
+    let mut known = CPUS_WITH_AVX.contains(&cpu);
     let (mut avx, mut avx512) = if CPUS_WITHOUT_AVX.contains(&cpu) {
         (false, false)
     } else {
         (true, !CPUS_WITHOUT_AVX512.contains(&cpu))
     };
     let mut no_x87 = false;
+    let mut tuned = !CPUS_WITHOUT_VZEROUPPER.contains(&cpu);
     for item in features.unwrap_or("").split(',') {
         let (on, name) = match item.split_at_checked(1) {
             Some(("+", name)) => (true, name),
@@ -417,8 +504,12 @@ pub fn of_function(cpu: Option<&str>, features: Option<&str>) -> FnFeatures {
             name.starts_with("avx512") || name.starts_with("avx10") || name == "amx-avx512";
         match (on, name) {
             (_, "x87") => no_x87 = !on,
+            (_, "vzeroupper") => tuned = on,
             // What implies AVX-512, and AVX-512 itself.
-            (true, _) if is_avx512 => (avx, avx512) = (true, true),
+            (true, _) if is_avx512 => {
+                (avx, avx512) = (true, true);
+                known |= !AVX_ASSUMED.contains(&name);
+            }
             // What implies AVX (`llc` 19 and 22 place a `<8 x float>` in
             // `ymm0` under each, WP-201).
             (
@@ -427,18 +518,26 @@ pub fn of_function(cpu: Option<&str>, features: Option<&str>) -> FnFeatures {
                 | "sm3" | "sm4",
             ) => {
                 avx = true;
+                known = true;
             }
-            (true, _) if name.starts_with("avx") => avx = true,
+            (true, _) if name.starts_with("avx") => {
+                avx = true;
+                known = true;
+            }
             // What AVX implies.
             (false, "sse" | "sse2" | "sse3" | "ssse3" | "sse4.1" | "sse4.2" | "avx") => {
-                (avx, avx512) = (false, false);
+                (avx, avx512, known) = (false, false, false);
             }
             // What AVX-512 implies.
             (false, "avx2" | "fma" | "f16c" | "avx512f") => avx512 = false,
             _ => {}
         }
     }
-    FnFeatures { abi: abi::Features { avx, avx512 }, no_x87 }
+    FnFeatures {
+        abi: abi::Features { avx, avx512, assumed: avx && !known },
+        no_x87,
+        vzeroupper: avx && known && tuned,
+    }
 }
 
 /// One item of a feature string.

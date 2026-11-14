@@ -295,11 +295,53 @@ fn ref_kind(
 }
 
 /// A symbol field before layout: its offset in the byte buffer.
-struct Pending {
-    at: usize,
-    kind: RefKind,
-    name: String,
-    addend: i64,
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(crate) struct Pending {
+    /// The field's offset in the byte buffer.
+    pub(crate) at: usize,
+    /// The relocation.
+    pub(crate) kind: RefKind,
+    /// The symbol.
+    pub(crate) name: String,
+    /// The addend (for a `%rip` field, minus the bytes from the field to
+    /// the instruction's end).
+    pub(crate) addend: i64,
+}
+
+/// A transfer whose form or target is decided once labels are known.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Jump {
+    /// `jmp`: `EB rel8` or `E9 rel32`.
+    Jmp,
+    /// `j<cc>`: `7x rel8` or `0F 8x rel32`.
+    Jcc(Cond),
+    /// `call`: `E8 rel32`, never short.
+    Call,
+}
+
+impl Jump {
+    /// The bytes of the short (`near` false) or near form.
+    pub(crate) fn len(self, near: bool) -> usize {
+        match (self, near) {
+            (Jump::Call, _) | (Jump::Jmp, true) => 5,
+            (_, false) => 2,
+            (Jump::Jcc(_), true) => 6,
+        }
+    }
+
+    /// The instruction with displacement `disp` (short when it fits
+    /// `near` false).
+    pub(crate) fn inst(self, near: bool, disp: i64) -> Result<mc::Inst, Refusal> {
+        let rel32 = || i32::try_from(disp).map_err(|_| Refusal(op_reason::REACH));
+        let rel8 = || i8::try_from(disp).map_err(|_| Refusal(op_reason::REACH));
+        Ok(match (self, near) {
+            (Jump::Call, _) => mc::call(rel32()?),
+            (Jump::Jmp, false) => mc::jmp_short(rel8()?),
+            (Jump::Jcc(c), false) => mc::jcc_short(c, rel8()?),
+            (Jump::Jmp, true) => mc::jmp_near(rel32()?),
+            (Jump::Jcc(c), true) => mc::jcc_near(c, rel32()?),
+        })
+    }
 }
 
 /// One item of a body: bytes, a branch to a local label, a label.
@@ -307,8 +349,8 @@ struct Pending {
 enum Item {
     /// Bytes `at..at + len` of the byte buffer.
     Bytes { at: usize, len: usize },
-    /// A branch to local label `n`; `forward` for `nf`.
-    Branch { cond: Option<Cond>, n: u32, forward: bool, near: bool },
+    /// A branch or call to local label `n`; `forward` for `nf`.
+    Branch { jump: Jump, n: u32, forward: bool, near: bool },
     /// A numeric label definition.
     Label(u32),
 }
@@ -320,7 +362,7 @@ fn split_label(stmt: &str) -> Option<(&str, &str)> {
 
 /// Splits a statement into its mnemonic (or directive) and its operand
 /// text.
-fn split_mnemonic(stmt: &str) -> (&str, &str) {
+pub(crate) fn split_mnemonic(stmt: &str) -> (&str, &str) {
     match stmt.find(|c: char| c.is_ascii() && is_space(c as u8)) {
         Some(i) => (&stmt[..i], trim(&stmt[i..])),
         None => (stmt, ""),
@@ -329,7 +371,7 @@ fn split_mnemonic(stmt: &str) -> (&str, &str) {
 
 /// A prefix statement: `lock`, or `rep` and `repne` and their synonyms.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Prefix {
+pub(crate) enum Prefix {
     Lock,
     /// `rep`, `repe`, `repz`: `F3`.
     Rep,
@@ -377,7 +419,7 @@ fn repeated(p: Prefix, name: &str, rest: &str, bytes: &mut Vec<u8>) -> Result<mc
 }
 
 /// The data directives: their field size.
-fn data_size(name: &str) -> Option<usize> {
+pub(crate) fn data_size(name: &str) -> Option<usize> {
     match name {
         ".byte" => Some(1),
         ".short" | ".value" | ".word" | ".2byte" => Some(2),
@@ -441,8 +483,8 @@ pub fn assemble(
         if stmt.is_empty() {
             continue;
         }
-        let (mnemonic, mut rest) = split_mnemonic(stmt);
-        let mut name = mnemonic.to_ascii_lowercase();
+        let (mnemonic, rest) = split_mnemonic(stmt);
+        let name = mnemonic.to_ascii_lowercase();
         if name.starts_with('.') {
             if pending.is_some() {
                 return Err(Refusal(op_reason::FORM));
@@ -459,68 +501,163 @@ pub fn assemble(
             items.push(Item::Bytes { at, len: bytes.len() - at });
             continue;
         }
-        // A prefix with its instruction on the same statement is part of
-        // the instruction (`lock xadd`: `F0` after `66`, as LLVM writes
-        // it); a prefix alone is a byte of its own before the next one.
-        let mut joined = None;
-        if let Some(p) = prefix(&name) {
-            if rest.is_empty() {
-                if pending.is_some() {
-                    return Err(Refusal(op_reason::FORM));
-                }
-                pending = Some(p);
-                continue;
-            }
-            joined = Some(p);
-            let (m, r) = split_mnemonic(rest);
-            name = m.to_ascii_lowercase();
-            rest = r;
-        }
-        let separate = pending.take();
-        let prefix = joined.or(separate);
         let at = bytes.len();
-        let inst = match prefix {
-            Some(p @ (Prefix::Rep | Prefix::Repne)) => repeated(p, &name, rest, &mut bytes)?,
-            Some(Prefix::Lock) | None => {
-                if let Some(form) = waiting(&name) {
-                    if prefix.is_some() {
-                        return Err(Refusal(op_reason::FORM));
-                    }
-                    bytes.push(0x9b);
-                    name = form.to_owned();
+        match instruction(mnemonic, rest, &mut pending, &mut bytes)? {
+            Stmt::Bytes(field) => {
+                if let Some(p) = field {
+                    pending_refs.push(p);
                 }
-                let ops = operand::parse(rest)?;
-                match encode::encode(&name, &ops)? {
-                    Encoded::Inst(inst) => {
-                        let inst = match prefix {
-                            Some(_) if !inst.is_lockable() => return Err(Refusal(op_reason::FORM)),
-                            Some(_) if separate.is_some() => {
-                                bytes.push(0xf0);
-                                inst
-                            }
-                            Some(_) => mc::lock(inst),
-                            None => inst,
-                        };
-                        if let Some(p) = symbol_field(&name, &ops, &inst, bytes.len())? {
-                            pending_refs.push(p);
-                        }
-                        inst
-                    }
-                    Encoded::Branch(cond, target) => {
-                        items.push(branch(cond, target, prefix)?);
-                        continue;
-                    }
+                if bytes.len() != at {
+                    items.push(Item::Bytes { at, len: bytes.len() - at });
                 }
             }
-        };
-        bytes.extend_from_slice(inst.bytes());
-        items.push(Item::Bytes { at, len: bytes.len() - at });
+            Stmt::Jump(jump, target, kind) => match target {
+                Value { name: Some(Name::Local(n, forward)), constant: 0 } => {
+                    items.push(Item::Branch { jump, n, forward, near: jump == Jump::Call });
+                }
+                Value { name: Some(Name::Local(..)), .. } => {
+                    return Err(Refusal(op_reason::EXPRESSION));
+                }
+                // §14: a symbol, through its PLT entry, near.
+                Value { name: Some(Name::Sym(sym)), constant } => {
+                    pending_refs.push(symbol_jump(jump, sym, constant, kind, &mut bytes)?);
+                    items.push(Item::Bytes { at, len: bytes.len() - at });
+                }
+                Value { name: None, .. } => return Err(Refusal(op_reason::SYMBOL)),
+            },
+        }
     }
     if pending.is_some() {
         return Err(Refusal(op_reason::FORM));
     }
     let offsets = lay_out(&mut items, &bytes, code)?;
     place_refs(&items, &offsets, pending_refs, refs)
+}
+
+/// The near form of `jump` to symbol `sym` plus `constant`, appended to
+/// `bytes`, and its field: `R_X86_64_PLT32` with the addend minus 4, as
+/// LLVM's assembler writes a branch or call to a symbol whatever its
+/// binding, static or PIC (`spec/asm.md` §14).
+pub(crate) fn symbol_jump(
+    jump: Jump,
+    sym: &str,
+    constant: i64,
+    kind: RefKind,
+    bytes: &mut Vec<u8>,
+) -> Result<Pending, Refusal> {
+    let inst = jump.inst(true, 0)?;
+    let site = inst.site().ok_or(Refusal(op_reason::SYMBOL))?;
+    let at = bytes.len() + site.offset;
+    bytes.extend_from_slice(inst.bytes());
+    Ok(Pending {
+        at,
+        kind,
+        name: sym.to_owned(),
+        addend: constant.checked_add(site.addend).ok_or(Refusal(op_reason::EXPRESSION))?,
+    })
+}
+
+/// The relocation of a branch target written as `rest` (§14): llvm-mc
+/// keeps `R_X86_64_PLT32` for a symbol alone or one with `@PLT` (and an
+/// addend), and writes `R_X86_64_PC32` for any other expression, `S+0`
+/// included.
+fn jump_kind(rest: &str) -> RefKind {
+    let t = rest.trim();
+    let alone = !t.is_empty()
+        && !t.starts_with(|c: char| c.is_ascii_digit())
+        && t.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '$'));
+    if alone || t.contains('@') { RefKind::Plt32 } else { RefKind::Pc32 }
+}
+
+/// What an instruction statement is once read.
+pub(crate) enum Stmt<'a> {
+    /// Its bytes, appended to the buffer (none for a prefix alone, which
+    /// waits for the next statement), and its symbol field.
+    Bytes(Option<Pending>),
+    /// A branch or call: its target is decided by the caller, nothing is
+    /// appended. The kind is that of a relocated field (§14):
+    /// `R_X86_64_PLT32` for a symbol alone or with `@PLT`, `R_X86_64_PC32`
+    /// for any other expression (`S+0` included), as llvm-mc writes.
+    Jump(Jump, Value<'a>, RefKind),
+}
+
+/// Reads instruction statement `mnemonic rest` (§10.4: prefixes, alone
+/// in `pending` or joined, the waiting x87 forms, the repeat prefixes)
+/// and appends its bytes to `bytes`.
+///
+/// # Errors
+/// The statement's `asm:*` refusal.
+pub(crate) fn instruction<'a>(
+    mnemonic: &str,
+    rest: &'a str,
+    pending: &mut Option<Prefix>,
+    bytes: &mut Vec<u8>,
+) -> Result<Stmt<'a>, Refusal> {
+    let mut name = mnemonic.to_ascii_lowercase();
+    let mut rest = rest;
+    // A prefix with its instruction on the same statement is part of
+    // the instruction (`lock xadd`: `F0` after `66`, as LLVM writes it);
+    // a prefix alone is a byte of its own before the next one.
+    let mut joined = None;
+    if let Some(p) = prefix(&name) {
+        if rest.is_empty() {
+            if pending.is_some() {
+                return Err(Refusal(op_reason::FORM));
+            }
+            *pending = Some(p);
+            return Ok(Stmt::Bytes(None));
+        }
+        joined = Some(p);
+        let (m, r) = split_mnemonic(rest);
+        name = m.to_ascii_lowercase();
+        rest = r;
+    }
+    let separate = pending.take();
+    let prefix = joined.or(separate);
+    let inst = match prefix {
+        Some(p @ (Prefix::Rep | Prefix::Repne)) => repeated(p, &name, rest, bytes)?,
+        Some(Prefix::Lock) | None => {
+            if let Some(form) = waiting(&name) {
+                if prefix.is_some() {
+                    return Err(Refusal(op_reason::FORM));
+                }
+                bytes.push(0x9b);
+                name = form.to_owned();
+            }
+            let ops = operand::parse(rest)?;
+            match encode::encode(&name, &ops)? {
+                Encoded::Inst(inst) => {
+                    let inst = match prefix {
+                        Some(_) if !inst.is_lockable() => return Err(Refusal(op_reason::FORM)),
+                        Some(_) if separate.is_some() => {
+                            bytes.push(0xf0);
+                            inst
+                        }
+                        Some(_) => mc::lock(inst),
+                        None => inst,
+                    };
+                    let field = symbol_field(&name, &ops, &inst, bytes.len())?;
+                    bytes.extend_from_slice(inst.bytes());
+                    return Ok(Stmt::Bytes(field));
+                }
+                Encoded::Branch(cond, target) => {
+                    if prefix.is_some() {
+                        return Err(Refusal(op_reason::FORM));
+                    }
+                    let kind = jump_kind(rest);
+                    return Ok(Stmt::Jump(cond.map_or(Jump::Jmp, Jump::Jcc), target, kind));
+                }
+                Encoded::Call(target) => {
+                    if prefix.is_some() {
+                        return Err(Refusal(op_reason::FORM));
+                    }
+                    return Ok(Stmt::Jump(Jump::Call, target, jump_kind(rest)));
+                }
+            }
+        }
+    };
+    bytes.extend_from_slice(inst.bytes());
+    Ok(Stmt::Bytes(None))
 }
 
 /// Moves each symbol field from its byte-buffer offset to its offset in
@@ -579,22 +716,9 @@ fn reloc(operands: &str, at: usize) -> Result<Pending, Refusal> {
     Ok(Pending { at, kind: RefKind::None, name: name.to_string(), addend: v.constant })
 }
 
-/// A branch to a numeric local label, not prefixed.
-fn branch(cond: Option<Cond>, target: Value<'_>, prefix: Option<Prefix>) -> Result<Item, Refusal> {
-    if prefix.is_some() {
-        return Err(Refusal(op_reason::FORM));
-    }
-    let (n, forward) = match target {
-        Value { name: Some(Name::Local(n, f)), constant: 0 } => (n, f),
-        Value { name: Some(Name::Local(..)), .. } => return Err(Refusal(op_reason::EXPRESSION)),
-        _ => return Err(Refusal(op_reason::SYMBOL)),
-    };
-    Ok(Item::Branch { cond, n, forward, near: false })
-}
-
 /// The symbol field of `inst` (statement `name`, operands `ops`), placed
 /// at byte `at` of the buffer, if an operand names a symbol.
-fn symbol_field(
+pub(crate) fn symbol_field(
     name: &str,
     ops: &operand::Ops<'_>,
     inst: &mc::Inst,
@@ -622,15 +746,6 @@ fn symbol_operand<'a>(ops: &operand::Ops<'a>) -> Option<(&'a str, operand::MemOp
     })
 }
 
-/// The bytes of a branch.
-fn branch_len(cond: Option<Cond>, near: bool) -> usize {
-    match (cond, near) {
-        (_, false) => 2,
-        (None, true) => 5,
-        (Some(_), true) => 6,
-    }
-}
-
 /// The target offset of each branch, given the offsets of the items.
 fn target(items: &[Item], offsets: &[usize], at: usize) -> Result<usize, Refusal> {
     let Item::Branch { n, forward, .. } = items[at] else { unreachable!("a branch") };
@@ -653,15 +768,15 @@ fn lay_out(items: &mut [Item], bytes: &[u8], code: &mut Vec<u8>) -> Result<Vec<u
             offsets[i] = at;
             at += match *item {
                 Item::Bytes { len, .. } => len,
-                Item::Branch { cond, near, .. } => branch_len(cond, near),
+                Item::Branch { jump, near, .. } => jump.len(near),
                 Item::Label(_) => 0,
             };
         }
         offsets[items.len()] = at;
         let mut changed = false;
         for i in 0..items.len() {
-            if let Item::Branch { cond, near: false, .. } = items[i] {
-                let end = offsets[i] + branch_len(cond, false);
+            if let Item::Branch { jump, near: false, .. } = items[i] {
+                let end = offsets[i] + jump.len(false);
                 let disp = target(items, &offsets, i)? as i64 - end as i64;
                 if i8::try_from(disp).is_err() {
                     if let Item::Branch { near, .. } = &mut items[i] {
@@ -679,20 +794,10 @@ fn lay_out(items: &mut [Item], bytes: &[u8], code: &mut Vec<u8>) -> Result<Vec<u
         match items[i] {
             Item::Bytes { at, len } => code.extend_from_slice(&bytes[at..at + len]),
             Item::Label(_) => {}
-            Item::Branch { cond, near, .. } => {
-                let end = offsets[i] + branch_len(cond, near);
+            Item::Branch { jump, near, .. } => {
+                let end = offsets[i] + jump.len(near);
                 let disp = target(items, &offsets, i)? as i64 - end as i64;
-                let inst = match (cond, near) {
-                    (None, false) => mc::jmp_short(disp as i8),
-                    (Some(c), false) => mc::jcc_short(c, disp as i8),
-                    (None, true) => {
-                        mc::jmp_near(i32::try_from(disp).map_err(|_| Refusal(op_reason::REACH))?)
-                    }
-                    (Some(c), true) => {
-                        mc::jcc_near(c, i32::try_from(disp).map_err(|_| Refusal(op_reason::REACH))?)
-                    }
-                };
-                code.extend_from_slice(inst.bytes());
+                code.extend_from_slice(jump.inst(near, disp)?.bytes());
             }
         }
     }
@@ -767,7 +872,23 @@ mod tests {
         assert_eq!(with_refs("movq $s@tpoff, %rax").err(), sp);
         assert_eq!(with_refs("movq s@got(%rip), %rax").err(), sp);
         assert_eq!(with_refs("movl $s, %eax").err(), Some(Refusal(op_reason::SYMBOL)));
-        assert_eq!(with_refs("jmp s@plt").err(), Some(Refusal(op_reason::SYMBOL)));
+        // §14: a branch or call to a symbol, near, through its PLT entry.
+        let plt = |text: &str| {
+            let (code, refs) = with_refs(text).unwrap();
+            (code, refs[0].offset, refs[0].kind, refs[0].addend)
+        };
+        assert_eq!(plt("jmp s@plt"), (vec![0xe9, 0, 0, 0, 0], 1, RefKind::Plt32, -4));
+        assert_eq!(plt("call s"), (vec![0xe8, 0, 0, 0, 0], 1, RefKind::Plt32, -4));
+        assert_eq!(plt("callq s+8"), (vec![0xe8, 0, 0, 0, 0], 1, RefKind::Pc32, 4));
+        assert_eq!(plt("call s+0").2, RefKind::Pc32);
+        assert_eq!(plt("call s@PLT+8").2, RefKind::Plt32);
+        assert_eq!(plt("nop; jne s").0, [0x90, 0x0f, 0x85, 0, 0, 0, 0]);
+        assert_eq!(plt("nop; jne s").1, 3);
+        assert_eq!(asm("call 1f\n1:").unwrap(), [0xe8, 0, 0, 0, 0]);
+        assert_eq!(asm("1: call 1b").unwrap(), [0xe8, 0xfb, 0xff, 0xff, 0xff]);
+        assert_eq!(with_refs("call s@gotpcrel").err(), Some(Refusal(op_reason::FORM)));
+        assert_eq!(with_refs("lock call s").err(), Some(Refusal(op_reason::FORM)));
+        assert_eq!(with_refs("callw s").err(), Some(reason::mnemonic("callw")));
         assert_eq!(asm("fwait; wait").unwrap(), [0x9b, 0x9b]);
     }
 
@@ -790,7 +911,7 @@ mod tests {
         assert_eq!(asm("x: nop").err(), Some(Refusal(other::LABEL)));
         assert_eq!(asm(".p2align 4").err(), Some(reason::directive(".p2align")));
         assert_eq!(asm("jmp 2f").err(), Some(Refusal(op_reason::LABEL)));
-        assert_eq!(with_refs("jmp foo").err(), Some(Refusal(op_reason::SYMBOL)));
+        assert_eq!(with_refs("jmp $5").err(), Some(Refusal(op_reason::FORM)));
         assert_eq!(asm("frob %eax").err(), Some(reason::mnemonic("frob")));
         assert_eq!(asm("lock").err(), Some(Refusal(op_reason::FORM)));
         assert_eq!(asm("lock movl %eax, (%rdi)").err(), Some(Refusal(op_reason::FORM)));

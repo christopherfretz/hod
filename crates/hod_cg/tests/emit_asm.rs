@@ -99,7 +99,7 @@ const READ_ON_AARCH64: &[&str] = &[
 
 /// Module text `llc` warns about or refuses, or whose effect depends on
 /// its assembler's precedence rules, with the name `hod` refuses it by
-/// on AArch64 (`hod_asm`'s, WP-112); on x86-64 each is `module:asm`.
+/// on AArch64 (`hod_asm`'s, WP-112), and on x86-64 but `.symver` (WP-204).
 const REFUSED: &[(&str, &str)] = &[
     ("module asm \".symver a, a@V1\"\n", "asm:directive/symver"),
     ("module asm \".size U, 4\"\n", "asm:symbol"),
@@ -221,8 +221,7 @@ fn directives_agree_with_llc() {
 }
 
 // spec/ir.md §2.3, spec/asm.md §9: everything else passes classify on
-// AArch64 and is refused in emission by `hod_asm`'s name; on x86-64 it
-// stays `module:asm`, in `classify` and in emission.
+// AArch64 and x86-64 and is refused in emission by `hod_asm`'s name.
 #[test]
 fn other_assembly_is_refused_by_name() {
     let aarch64 = hod_ir::Support::shipped(hod_ir::Arch::Aarch64);
@@ -238,20 +237,25 @@ fn other_assembly_is_refused_by_name() {
         assert!(hod_ir::Classifier::new(aarch64).module(&parsed.module).is_ok(), "{ir}");
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+    // WP-204: x86-64 reads module assembly too (`spec/asm.md` §14): the
+    // same text is read, and refused by the same names, but `.symver`,
+    // which x86-64 applies (an undefined unreferenced name writes nothing).
     let x86_64 = hod_ir::Support::shipped(hod_ir::Arch::X86_64);
-    for ir in READ_ON_AARCH64.iter().chain(REFUSED.iter().map(|(ir, _)| ir)) {
-        let text = format!(
-            "target datalayout = \"{X86_64_LINUX_DATA_LAYOUT}\"\ntarget triple = \"x86_64-unknown-linux-gnu\"\n{ir}"
-        );
+    let read = READ_ON_AARCH64.iter().map(|ir| (*ir, None));
+    let refused =
+        REFUSED.iter().map(|&(ir, name)| (ir, (name != "asm:directive/symver").then_some(name)));
+    for (ir, name) in read.chain(refused) {
+        let text = format!("{}{ir}", header(Arch::X86_64, 22));
         let parsed = hod_ll::parse_module(text.as_bytes(), &hod_ll::ParseOptions::default())
             .unwrap_or_else(|e| panic!("{ir}: hod_ll: {e}"));
-        match emit_module(&parsed.module, &options(), &[]) {
-            Err(CgError::Unsupported { construct }) => assert_eq!(construct, "module:asm", "{ir}"),
-            other => panic!("{ir}: {other:?}"),
+        match (emit_module(&parsed.module, &options(), &[]), name) {
+            (Ok(_), None) => {}
+            (Err(CgError::Unsupported { construct }), Some(name)) if construct == name => {}
+            (other, _) => failures.push(format!("x86-64 {ir:?}: expected {name:?}, got {other:?}")),
         }
-        let rejection = hod_ir::Classifier::new(x86_64).module(&parsed.module).expect_err(ir);
-        assert_eq!(rejection.construct, "module:asm", "{ir}");
+        assert!(hod_ir::Classifier::new(x86_64).module(&parsed.module).is_ok(), "{ir}");
     }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
     for &(name, ir) in CASES {
         let text = format!("{}{ir}", header(Arch::AArch64, 22));
         let parsed =

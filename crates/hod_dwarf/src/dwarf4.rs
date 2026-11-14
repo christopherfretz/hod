@@ -65,9 +65,9 @@ pub const DWARF_4_SHAPE: &str = "debug:dwarf-4-shape";
 const LAST_CHECKED: usize = fam::SUBPROGRAM_EMPTY;
 
 /// The families after [`LAST_CHECKED`] whose version 4 shape was
-/// compared with `llc`'s all the same (WP-189: §6.24).
+/// compared with `llc`'s all the same (WP-189: §6.24; WP-206: §6.27).
 const fn checked_later(family: usize) -> bool {
-    family == fam::METHOD_EXPLICIT_QUALIFIED
+    family == fam::METHOD_EXPLICIT_QUALIFIED || family == fam::METHOD_ANY
 }
 
 // WP-150: the GNU call-site forms of version 4 (`spec/dwarf.md` §6.21).

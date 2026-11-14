@@ -8,9 +8,8 @@
 %S = type { i32, i64, [3 x i16], i8 }
 
 @arr = global [8 x i64] zeroinitializer, align 16
-; (`llc` refuses a vector base in an initializer; hod folds it too.)
-@cv = global <2 x ptr> getelementptr (i32, ptr @arr, <2 x i64> <i64 1, i64 3>), align 16
-@cs = global <4 x ptr> getelementptr inbounds (%S, ptr @arr, <4 x i32> <i32 0, i32 1, i32 -1, i32 2>, i32 2, i64 1), align 32
+; The initializers `@cv` and `@cs` are in `initializers.ll` (hod's
+; build) and `initializers_by_lane.ll` (`llc`'s build).
 
 ; The two reduced modules' functions (kiln -O2, libc++ flat_multimap).
 define <2 x ptr> @reduced_x64() {
@@ -132,6 +131,26 @@ define void @byval(ptr %out, ptr %in, ptr %ix) {
   %a = getelementptr i64, <2 x ptr> %v, i64 1
   %r = call <2 x ptr> @bump(<2 x ptr> %a, <2 x i64> %d)
   store <2 x ptr> %r, ptr %out, align 8
+  ret void
+}
+
+; Constant operands: a global as the scalar base, a constant vector
+; index with a variable base, a constant vector base (a global and
+; `null`) with a variable scalar index.
+define void @consts(ptr %out, i64 %i) {
+  %v = insertelement <2 x i64> <i64 0, i64 5>, i64 %i, i32 0
+  %a = getelementptr i64, ptr @arr, <2 x i64> %v
+  store <2 x ptr> %a, ptr %out, align 8
+  %b = getelementptr i32, <2 x ptr> %a, <2 x i64> <i64 1, i64 -1>
+  %o2 = getelementptr ptr, ptr %out, i64 2
+  store <2 x ptr> %b, ptr %o2, align 8
+  %c = getelementptr i8, <2 x ptr> <ptr @arr, ptr null>, i64 %i
+  %o4 = getelementptr ptr, ptr %out, i64 4
+  store <2 x ptr> %c, ptr %o4, align 8
+  %d = getelementptr i16, <4 x ptr> <ptr null, ptr @arr, ptr null, ptr @arr>, <4 x i32> <i32 3, i32 -3, i32 0, i32 1>
+  %o6 = getelementptr ptr, ptr %out, i64 6
+  %d2 = shufflevector <4 x ptr> %d, <4 x ptr> poison, <2 x i32> <i32 0, i32 1>
+  store <2 x ptr> %d2, ptr %o6, align 8
   ret void
 }
 

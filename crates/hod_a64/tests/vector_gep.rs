@@ -21,13 +21,22 @@ use hod_testutil::{LLVM_MAJORS, Scratch, run_with};
 
 const FUNCTIONS: &str = include_str!("../../hod_x64/tests/data/vector_gep/functions.ll");
 const DRIVER: &str = include_str!("../../hod_x64/tests/data/vector_gep/driver.c");
+/// The initializers as hod builds them (constant vector GEPs).
+const INITIALIZERS: &str = include_str!("../../hod_x64/tests/data/vector_gep/initializers.ll");
+/// The same addresses one lane at a time: `llc` cannot build the vector
+/// forms (see the file's comment).
+const INITIALIZERS_BY_LANE: &str =
+    include_str!("../../hod_x64/tests/data/vector_gep/initializers_by_lane.ll");
 
 fn llc(dir: &Scratch, major: u32) -> Option<PathBuf> {
     let llc = PathBuf::from(format!("/usr/lib/llvm-{major}/bin/llc"));
     if !llc.is_file() {
         return None;
     }
-    let input = dir.write(&format!("llc-{major}.ll"), format!("{}{FUNCTIONS}", ll_header(major)));
+    let input = dir.write(
+        &format!("llc-{major}.ll"),
+        format!("{}{FUNCTIONS}{INITIALIZERS_BY_LANE}", ll_header(major)),
+    );
     let output = dir.join(format!("llc-{major}.o"));
     let mut command = Command::new(llc);
     command
@@ -47,10 +56,9 @@ fn pic(stress: Stress) -> Options {
 /// Every form, built by hod (plain and stressed) and by `llc`, gives the
 /// addresses the driver computes, under every linker, dynamic and static.
 #[test]
-#[ignore = "WP-234: llc fails on this module (hod builds it); to narrow"]
 fn vector_geps_run_as_c_computes_them() {
     let dir = Scratch::new("a64-vector-gep");
-    let (m, bodies) = parse(&format!("{}{FUNCTIONS}", ll_header(22)));
+    let (m, bodies) = parse(&format!("{}{FUNCTIONS}{INITIALIZERS}", ll_header(22)));
     let mut objects = Vec::new();
     for (who, stress) in [("hod", Stress::default()), ("stress", Stress::ALL)] {
         let emitted = emit(&m, &bodies, &pic(stress));

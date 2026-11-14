@@ -6,7 +6,9 @@
 //! and 8 lanes, a scale and an offset beyond 32 bits, the result stored,
 //! returned, passed by value and read by `extractelement`, and constant
 //! vector `getelementptr` expressions folded lane by lane, in one module
-//! (`tests/data/vector_gep/functions.ll`, shared with AArch64). The
+//! (`tests/data/vector_gep/functions.ll`, shared with AArch64; its two
+//! initializers are `initializers.ll` for hod and, written lane by lane,
+//! `initializers_by_lane.ll` for `llc`, which cannot build them). The
 //! module is compiled by hod (plainly and under `Stress::ALL`) and by
 //! `llc -O0 -fast-isel=0` of each LLVM major present; each object is
 //! linked with a C driver that computes every expected address itself
@@ -30,15 +32,19 @@ use linking::{Toolchain, exit_code};
 
 const FUNCTIONS: &str = include_str!("data/vector_gep/functions.ll");
 const DRIVER: &str = include_str!("data/vector_gep/driver.c");
+/// The initializers as hod builds them (constant vector GEPs).
+const INITIALIZERS: &str = include_str!("data/vector_gep/initializers.ll");
+/// The same addresses one lane at a time: `llc` cannot build the vector
+/// forms (see the file's comment).
+const INITIALIZERS_BY_LANE: &str = include_str!("data/vector_gep/initializers_by_lane.ll");
 
 /// Every form, built by hod (plain and stressed) and by `llc`, gives the
 /// addresses the driver computes, under every linker, dynamic and static.
 #[test]
-#[ignore = "WP-234: llc 22 does not finish on this module in 30 s (hod builds it); to narrow"]
 fn vector_geps_run_as_c_computes_them() {
     let dir = Scratch::new("x64-vector-gep");
-    let text = format!("{}{FUNCTIONS}", ll_header());
-    let (m, bodies) = parse(&text);
+    let (m, bodies) = parse(&format!("{}{FUNCTIONS}{INITIALIZERS}", ll_header()));
+    let text = format!("{}{FUNCTIONS}{INITIALIZERS_BY_LANE}", ll_header());
     let mut objects: Vec<(String, PathBuf)> = Vec::new();
     for (who, stress) in [("hod", Stress::default()), ("stress", Stress::ALL)] {
         let object = hod_x64::compile_to_object(&m, &bodies, &pic(stress))

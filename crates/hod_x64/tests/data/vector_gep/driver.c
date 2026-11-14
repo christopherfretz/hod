@@ -23,6 +23,7 @@ void big(void **, void **, int64_t *);
 void one(void **, void *, int64_t);
 void *extract(void *, int64_t, int64_t);
 void byval(void **, void **, int64_t *);
+void consts(void **, int64_t);
 int hod_test_personality(void) { return 0; }
 
 static int fails;
@@ -97,6 +98,12 @@ int main(void) {
   int64_t d[2] = {-1, 17};
   byval(out, in, d);
   for (int n = 0; n < 2; n++) CHECK(U(out[n]) == U(in[n]) + 8 + d[n]);
+
+  consts(out, -2);
+  CHECK(U(out[0]) == U(arr) - 16); CHECK(U(out[1]) == U(&arr[5]));
+  CHECK(U(out[2]) == U(arr) - 12); CHECK(U(out[3]) == U(&arr[5]) - 4);
+  CHECK(U(out[4]) == U(arr) - 2); CHECK(U(out[5]) == (uintptr_t)-2);
+  CHECK(U(out[6]) == 6); CHECK(U(out[7]) == U(arr) - 6);
 
   r = ret2(p, 2, -3);
   CHECK(r[0] == U(p) + 32 + 16); CHECK(r[1] == U(p) + 32 - 24);

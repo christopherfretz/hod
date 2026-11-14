@@ -312,3 +312,111 @@ define void @upb_longvarint(ptr %p, i64 %val, i64 %skip) {
   %r = call { i64, i64 } asm sideeffect "adr $0, 0f\0Aadd $0, $0, $4, lsl #3\0Amov ${1:w}, #0x80\0Abr $0\0A.p2align 3\0A0:\0Aorr $0, $1, $2, lsr #56\0Astrb ${0:w}, [$3, #8]\0Aorr $0, $1, $2, lsr #49\0Astrb ${0:w}, [$3, #7]\0Aorr $0, $1, $2, lsr #42\0Astrb ${0:w}, [$3, #6]\0Aorr $0, $1, $2, lsr #35\0Astrb ${0:w}, [$3, #5]\0Aorr $0, $1, $2, lsr #28\0Astrb ${0:w}, [$3, #4]\0Aorr ${0:w}, ${1:w}, ${2:w}, lsr #21\0Astrb ${0:w}, [$3, #3]\0Aorr ${0:w}, ${1:w}, ${2:w}, lsr #14\0Astrb ${0:w}, [$3, #2]\0Aorr ${0:w}, ${1:w}, ${2:w}, lsr #7\0Astrb ${0:w}, [$3, #1]\0Aorr ${0:w}, ${2:w}, #0x80\0Astrb ${0:w}, [$3]\0A", "=&r,=&r,r,r,r,~{memory}"(i64 %val, ptr %p, i64 %skip)
   ret void
 }
+
+; WP-226 (`spec/asm.md` §20): the NEON templates of the census.
+; Eigen's `fmla` by element, the accumulator `+w` (`GeneralBlockPanelKernel.h`).
+define <4 x float> @eigen_fmla0(<4 x float> %c, <4 x float> %a, <4 x float> %b) {
+  %r = call <4 x float> asm "fmla $0.4s, $1.4s, $2.s[0]\0A", "=w,w,w,0"(<4 x float> %a, <4 x float> %b, <4 x float> %c)
+  ret <4 x float> %r
+}
+
+define <4 x float> @eigen_fmla3(<4 x float> %c, <4 x float> %a, <4 x float> %b) {
+  %r = call <4 x float> asm "fmla $0.4s, $1.4s, $2.s[3]\0A", "=w,w,w,0"(<4 x float> %a, <4 x float> %b, <4 x float> %c)
+  ret <4 x float> %r
+}
+
+; highway's conversions and compares (`arm_neon-inl.h`).
+define <4 x i32> @hwy_fcvtzs(<4 x float> %v) {
+  %r = call <4 x i32> asm "fcvtzs $0.4s, $1.4s", "=w,w"(<4 x float> %v)
+  ret <4 x i32> %r
+}
+
+define <4 x i32> @hwy_fcvtzu(<4 x float> %v) {
+  %r = call <4 x i32> asm "fcvtzu $0.4s, $1.4s", "=w,w"(<4 x float> %v)
+  ret <4 x i32> %r
+}
+
+define <2 x i64> @hwy_fcvtzs2d(<2 x double> %v) {
+  %r = call <2 x i64> asm "fcvtzs $0.2d, $1.2d", "=w,w"(<2 x double> %v)
+  ret <2 x i64> %r
+}
+
+define i64 @hwy_fcvtzs_d(double %v) {
+  %r = call i64 asm "fcvtzs ${0:d}, ${1:d}", "=w,w"(double %v)
+  ret i64 %r
+}
+
+define i64 @hwy_fcvtzu_d(double %v) {
+  %r = call i64 asm "fcvtzu ${0:d}, ${1:d}", "=w,w"(double %v)
+  ret i64 %r
+}
+
+define i64 @hwy_fcmeq_d(double %v) {
+  %r = call i64 asm "fcmeq ${0:d}, ${1:d}, ${1:d}", "=w,w"(double %v)
+  ret i64 %r
+}
+
+define <4 x i32> @hwy_fcmeq4s(<4 x float> %v) {
+  %r = call <4 x i32> asm "fcmeq $0.4s, $1.4s, $1.4s", "=w,w"(<4 x float> %v)
+  ret <4 x i32> %r
+}
+
+define <8 x i16> @hwy_fcmeq8h(<8 x half> %v) #1 {
+  %r = call <8 x i16> asm "fcmeq $0.8h, $1.8h, $1.8h", "=w,w"(<8 x half> %v)
+  ret <8 x i16> %r
+}
+
+define <8 x i16> @hwy_fcvtzs8h(<8 x half> %v) #1 {
+  %r = call <8 x i16> asm "fcvtzs $0.8h, $1.8h", "=w,w"(<8 x half> %v)
+  ret <8 x i16> %r
+}
+
+; OpenCV's rounding conversion (`intrin_neon.hpp`).
+define <4 x i32> @cv_fcvtns(<4 x float> %v) {
+  %r = call <4 x i32> asm "fcvtns $0.4s, $1.4s", "=w,w"(<4 x float> %v)
+  ret <4 x i32> %r
+}
+
+; xxhash's `umlal` (`XXH3_scalarRound` NEON), the accumulator `+w`.
+define <2 x i64> @xxh_umlal(<2 x i64> %acc, <2 x i32> %a, <2 x i32> %b) {
+  %r = call <2 x i64> asm "umlal $0.2d, $1.2s, $2.2s", "=w,w,w,0"(<2 x i32> %a, <2 x i32> %b, <2 x i64> %acc)
+  ret <2 x i64> %r
+}
+
+; abseil's carry-less multiplies (`crc32_x86_arm_combined_simd.h`): `aes`.
+define <2 x i64> @absl_pmull(<2 x i64> %a, <2 x i64> %b) #0 {
+  %r = call <2 x i64> asm "pmull $0.1q, $1.1d, $2.1d", "=w,w,w"(<2 x i64> %a, <2 x i64> %b)
+  ret <2 x i64> %r
+}
+
+define <2 x i64> @absl_pmull2(<2 x i64> %a, <2 x i64> %b) #0 {
+  %r = call <2 x i64> asm "pmull2 $0.1q, $1.2d, $2.2d", "=w,w,w"(<2 x i64> %a, <2 x i64> %b)
+  ret <2 x i64> %r
+}
+
+; `w` and `x` print the view of the value's size; `x` takes v0..v15.
+define float @mod_wx(float %a, double %b) {
+  %r = call float asm "fcvt ${0:w}, ${2:x}\0A fadd ${0:x}, ${0:w}, ${1:w}", "=&w,w,w"(float %a, double %b)
+  ret float %r
+}
+
+define <4 x float> @x_constraint(<4 x float> %a, <4 x float> %b) {
+  %r = call <4 x float> asm "fadd $0.4s, $1.4s, $2.4s", "=x,x,x"(<4 x float> %a, <4 x float> %b)
+  ret <4 x float> %r
+}
+
+; Structure loads and stores, post-index.
+define ptr @ld1_st1(ptr %dst, ptr %src) {
+  %r = call ptr asm sideeffect "ld1 {v16.4s, v17.4s}, [$0], #32\0A fadd v16.4s, v16.4s, v17.4s\0A st1 {v16.4s}, [$2]", "=r,0,r,~{v16},~{v17},~{memory}"(ptr %src, ptr %dst)
+  ret ptr %r
+}
+
+; Every register of v8..v15 written whole, clobbered by its several
+; names: the low halves the caller keeps survive.
+define double @clobber_v8_v15(ptr %a, ptr %b) {
+  %r = call double asm sideeffect "ld1 {v8.16b-v11.16b}, [$1]\0A ld1 {v12.16b-v15.16b}, [$2]\0A fadd ${0:d}, d8, d15", "=w,r,r,~{v8},~{q9},~{d10},~{s11},~{v12},~{v13},~{v14},~{v15},~{memory}"(ptr %a, ptr %b)
+  ret double %r
+}
+
+attributes #0 = { "target-features"="+aes,+fp-armv8,+neon" }
+attributes #1 = { "target-features"="+fp-armv8,+fullfp16,+neon" }

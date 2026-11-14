@@ -499,6 +499,24 @@ fn decide(cx: &FnCx<'_, A64>, inst: Inst<'_>, ops: &Ops) -> CgResult<Plan> {
                 if !fits(cx, ty, reg::is_fpr(r)) {
                     return unsupported(OPERAND_TYPE);
                 }
+                let codes = alt_of(op, chosen).codes;
+                if reg::is_fpr(r) && codes & W != 0 {
+                    // `spec/asm.md` §20, as `llc` 19 and 22 allocate: `w`
+                    // takes values of 16, 32, 64 or 128 bits, `x` of 128
+                    // only, `y` none hod holds (SVE's).
+                    if codes & LOWEST != 0 {
+                        return Err(refused(hod_asm::reason::constraint("y")));
+                    }
+                    let bits = cx.types().size_in_bits_of(ty);
+                    let fits = if codes & LOW != 0 {
+                        bits == 128
+                    } else {
+                        matches!(bits, 16 | 32 | 64 | 128)
+                    };
+                    if !fits {
+                        return unsupported(OPERAND_TYPE);
+                    }
+                }
                 plan.written |= 1 << r.index();
             }
             Some(Place::Mem(r)) => {
@@ -640,7 +658,10 @@ fn substitute(
         let i = r.index as usize;
         let arg = match plan.places[i] {
             Some(Place::Reg(p)) if reg::is_gpr(p) => Arg::Gp(reg::number(p)),
-            Some(Place::Reg(p)) => Arg::Fp(reg::number(p)),
+            Some(Place::Reg(p)) => {
+                let bytes = cx.types().size_in_bits_of(plan.tys[i]) / 8;
+                Arg::Fp(reg::number(p), u8::try_from(bytes).unwrap_or(0))
+            }
             Some(Place::Mem(p)) => Arg::Mem(reg::number(p)),
             Some(Place::Imm(v)) => Arg::Imm(v),
             Some(Place::Sym(_)) => match names[i] {

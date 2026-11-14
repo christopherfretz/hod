@@ -53,7 +53,8 @@ fn checked(w: Option<u32>) -> R<Encoded<'static>> {
 fn gp(op: &Op<'_>) -> R<Gp> {
     match op {
         Op::Gp(g) => Ok(*g),
-        Op::Vector | Op::Fp(..) => fail(operand::REGISTER),
+        o if o.is_vector() => fail(operand::REGISTER),
+        Op::Fp(..) => fail(operand::REGISTER),
         _ => form(),
     }
 }
@@ -158,7 +159,7 @@ fn cond(op: &Op<'_>) -> R<Cond> {
 fn fp(op: &Op<'_>) -> R<(VReg, View)> {
     match op {
         Op::Fp(n, v) => Ok((VReg::new(*n).ok_or(Refusal(operand::REGISTER))?, *v)),
-        Op::Vector => fail(operand::VECTOR),
+        o if o.is_vector() => fail(operand::VECTOR),
         Op::Gp(_) => fail(operand::REGISTER),
         _ => form(),
     }
@@ -195,10 +196,6 @@ fn fp_same(ops: &[Op<'_>]) -> R<(FpSize, [VReg; 4])> {
 // and 1 for `D`. `tests/llvm_mc.rs` holds each to `llvm-mc` 22's and 19's
 // words.
 
-/// `FCVTZS <V><d>, <V><n>` (vector, integer; scalar).
-const FCVTZS: u32 = 0x5ea1_b800;
-/// `FCVTZU <V><d>, <V><n>` (vector, integer; scalar).
-const FCVTZU: u32 = 0x7ea1_b800;
 /// `FCMEQ <V><d>, <V><n>, <V><m>` (register; scalar).
 const FCMEQ: u32 = 0x5e20_e400;
 /// `FCMEQ <V><d>, <V><n>, #0.0` (zero; scalar).
@@ -230,6 +227,10 @@ pub fn encode<'a>(mnemonic: &str, ops: &[Op<'a>], features: Features) -> R<Encod
     }
     let m = std::str::from_utf8(&buf[..mnemonic.len()]).map_err(|_| reason::mnemonic("other"))?;
     let refuse = || Err(reason::mnemonic(m));
+    // §20: the Advanced SIMD forms of a vector operand.
+    if let Some(e) = super::neon::encode(m, ops, features)? {
+        return Ok(e);
+    }
     if let Some(c) = m.strip_prefix("b.") {
         let Some(c) = cond_name(c) else { return refuse() };
         let [t] = ops else { return form() };
@@ -394,8 +395,16 @@ pub fn encode<'a>(mnemonic: &str, ops: &[Op<'a>], features: Features) -> R<Encod
             if let Some(e) = lse(m, ops, features)? {
                 return Ok(e);
             }
+            if let Some(e) = super::neon::fp2_scalar(m, ops, features)? {
+                return Ok(e);
+            }
             if let Some(e) = float(m, ops, features)? {
                 return Ok(e);
+            }
+            if super::neon::known(m) {
+                // An Advanced SIMD mnemonic with no vector operand and no
+                // scalar form here.
+                return form();
             }
             refuse()
         }
@@ -1457,7 +1466,7 @@ fn float<'a>(m: &str, ops: &[Op<'a>], features: Features) -> R<Option<Encoded<'a
     if !features.fp {
         return fail(other::FEATURE);
     }
-    if ops.iter().any(|o| matches!(o, Op::Vector)) {
+    if ops.iter().any(Op::is_vector) {
         return fail(operand::VECTOR);
     }
     if let Some(f) = two {
@@ -1477,8 +1486,13 @@ fn float<'a>(m: &str, ops: &[Op<'a>], features: Features) -> R<Option<Encoded<'a
     }
     let e = match m {
         "fmov" => fmov(ops)?,
-        // §17: the scalar SIMD forms, `S` or `D` registers alike.
+        // §17: the scalar SIMD form, `S` or `D` registers alike; it needs
+        // `neon` (§20; `fcvtzs`/`fcvtzu` of two FP registers are
+        // `neon::fp2_scalar`'s).
         "fcmeq" => {
+            if !features.neon {
+                return fail(other::FEATURE);
+            }
             let [d, n, b] = ops else { return form() };
             if matches!(b, Op::FpImm(_) | Op::Imm(..)) {
                 let zero = match b {
@@ -1494,12 +1508,6 @@ fn float<'a>(m: &str, ops: &[Op<'a>], features: Features) -> R<Option<Encoded<'a
                 let (sz, r) = fp_same(ops)?;
                 word(scalar_simd(FCMEQ, sz, r[2].index(), r[1], r[0]))
             }
-        }
-        "fcvtzs" | "fcvtzu" if matches!(ops.first(), Some(Op::Fp(..))) => {
-            let [_, _] = ops else { return form() };
-            let (sz, r) = fp_same(ops)?;
-            let base = if m == "fcvtzs" { FCVTZS } else { FCVTZU };
-            word(scalar_simd(base, sz, 0, r[1], r[0]))
         }
         "fcmp" | "fcmpe" => {
             let [a, b] = ops else { return form() };

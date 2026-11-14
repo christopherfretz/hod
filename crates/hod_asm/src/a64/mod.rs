@@ -12,6 +12,7 @@
 //! a relocation of (or to resolve, for an `asm goto` target).
 
 pub mod encode;
+pub mod neon;
 pub mod operand;
 pub mod prefetch;
 pub mod sysreg;
@@ -35,16 +36,44 @@ pub struct Features {
     pub fp: bool,
     /// `+rand`: the `rndr` and `rndrrs` system registers.
     pub rand: bool,
+    /// `+neon`: the Advanced SIMD instructions, vector and scalar
+    /// (§20).
+    pub neon: bool,
+    /// `+aes`: `pmull` and `pmull2` of 64-bit elements (§20).
+    pub aes: bool,
+    /// `+fullfp16`: the half-precision arithmetic, vector forms on `4h`
+    /// and `8h` among them (§20).
+    pub fp16: bool,
 }
 
 impl Features {
     /// The features of `aarch64-*-linux-*` with no attribute: the base
-    /// architecture with floating point.
-    pub const BASE: Features = Features { lse: false, crc: false, fp: true, rand: false };
+    /// architecture with floating point and Advanced SIMD.
+    pub const BASE: Features = Features {
+        lse: false,
+        crc: false,
+        fp: true,
+        rand: false,
+        neon: true,
+        aes: false,
+        fp16: false,
+    };
+
+    /// Every feature hod reads.
+    pub const ALL: Features =
+        Features { lse: true, crc: true, fp: true, rand: true, neon: true, aes: true, fp16: true };
 
     /// The features a `target-features` attribute value
     /// (`+lse,+crc,-fp-armv8,+v8.1a,...`) gives over [`Features::BASE`]:
     /// an architecture version from `v8.1a` on has `lse` and `crc`.
+    ///
+    /// The items apply in order, each with what LLVM's feature table
+    /// implies (§20, measured with `llc` 19 and 22): turning on `neon`,
+    /// `fullfp16`, `fp16fml` or `sve` turns on `fp-armv8`; `aes` and
+    /// `crypto` turn on `neon` too; `fp16fml` and `sve` turn on
+    /// `fullfp16`. Turning a feature off turns off those that need it:
+    /// `-fp-armv8` clears `neon`, `aes` and `fullfp16`, `-neon` clears
+    /// `aes`.
     pub fn from_attribute(value: &str) -> Features {
         let mut f = Features::BASE;
         for item in value.split(',') {
@@ -54,10 +83,25 @@ impl Features {
                 Some(b'-') => (false, &item[1..]),
                 _ => continue,
             };
+            match (name, on) {
+                ("fp-armv8", true) => f.fp = true,
+                ("fp-armv8", false) => {
+                    f.fp = false;
+                    f.neon = false;
+                    f.aes = false;
+                    f.fp16 = false;
+                }
+                ("neon", true) => (f.neon, f.fp) = (true, true),
+                ("neon", false) => (f.neon, f.aes) = (false, false),
+                ("aes" | "crypto", true) => (f.aes, f.neon, f.fp) = (true, true, true),
+                ("aes", false) => f.aes = false,
+                ("fullfp16" | "fp16fml" | "sve", true) => (f.fp16, f.fp) = (true, true),
+                ("fullfp16", false) => f.fp16 = false,
+                _ => {}
+            }
             match name {
                 "lse" => f.lse = on,
                 "crc" => f.crc = on,
-                "fp-armv8" => f.fp = on,
                 "rand" => f.rand = on,
                 _ => {
                     if on && is_v81_or_later(name) {
@@ -153,8 +197,9 @@ impl Code {
 pub enum Arg<'a> {
     /// A general register `x0`..`x30`.
     Gp(u8),
-    /// An FP/SIMD register `v0`..`v31`.
-    Fp(u8),
+    /// An FP/SIMD register `v0`..`v31`, holding a value of this many
+    /// bytes (2, 4, 8 or 16).
+    Fp(u8, u8),
     /// A constant.
     Imm(i64),
     /// A memory operand whose address is in general register `n`.
@@ -171,7 +216,8 @@ pub enum Arg<'a> {
 /// - a general register is `x<n>`; `w` and `x` select the view; `b`,
 ///   `h`, `s`, `d`, `q` print the FP/SIMD register of that number;
 /// - an FP/SIMD register is `v<n>`; `b`..`q` select the scalar view;
-///   `w`/`x` are refused (an `llc` error);
+///   `w` and `x` select the view of the value's size (`h`, `s`, `d`,
+///   `q`: `llc` 19 and 22, §20);
 /// - a constant is decimal with no `#`; `w`/`x` print `wzr`/`xzr` for
 ///   zero; `c` is the constant, `n` its negation, `s` is
 ///   `(32 - c) & 31`;
@@ -188,10 +234,20 @@ pub fn print_operand(arg: Arg<'_>, modifier: Option<u8>, out: &mut String) -> Re
     match (arg, modifier) {
         (Arg::Gp(n), None | Some(b'x')) => write!(out, "x{n}"),
         (Arg::Gp(n), Some(b'w')) => write!(out, "w{n}"),
-        (Arg::Gp(n) | Arg::Fp(n), Some(m @ (b'b' | b'h' | b's' | b'd' | b'q'))) => {
+        (Arg::Gp(n) | Arg::Fp(n, _), Some(m @ (b'b' | b'h' | b's' | b'd' | b'q'))) => {
             write!(out, "{}{n}", char::from(m))
         }
-        (Arg::Fp(n), None) => write!(out, "v{n}"),
+        (Arg::Fp(n, _), None) => write!(out, "v{n}"),
+        (Arg::Fp(n, bytes), Some(m @ (b'w' | b'x'))) => {
+            let view = match bytes {
+                2 => 'h',
+                4 => 's',
+                8 => 'd',
+                16 => 'q',
+                _ => return bad(m),
+            };
+            write!(out, "{view}{n}")
+        }
         (Arg::Imm(0), Some(b'w')) => write!(out, "wzr"),
         (Arg::Imm(0), Some(b'x')) => write!(out, "xzr"),
         (Arg::Imm(v), None | Some(b'w' | b'x' | b'c')) => write!(out, "{v}"),
@@ -428,14 +484,20 @@ mod tests {
         };
         assert_eq!(p(Arg::Gp(3), None).unwrap(), "x3");
         assert_eq!(p(Arg::Gp(3), Some(b'w')).unwrap(), "w3");
-        assert_eq!(p(Arg::Fp(3), Some(b'd')).unwrap(), "d3");
-        assert_eq!(p(Arg::Fp(3), None).unwrap(), "v3");
+        assert_eq!(p(Arg::Fp(3, 16), Some(b'd')).unwrap(), "d3");
+        assert_eq!(p(Arg::Fp(3, 16), None).unwrap(), "v3");
+        // §20: `w` and `x` print the view of the value's size.
+        assert_eq!(p(Arg::Fp(3, 2), Some(b'w')).unwrap(), "h3");
+        assert_eq!(p(Arg::Fp(3, 4), Some(b'x')).unwrap(), "s3");
+        assert_eq!(p(Arg::Fp(3, 8), Some(b'w')).unwrap(), "d3");
+        assert_eq!(p(Arg::Fp(3, 16), Some(b'x')).unwrap(), "q3");
+        assert!(p(Arg::Fp(1, 16), Some(b'v')).is_err());
+        assert!(p(Arg::Fp(1, 16), Some(b'a')).is_err());
         assert_eq!(p(Arg::Imm(0), Some(b'w')).unwrap(), "wzr");
         assert_eq!(p(Arg::Imm(-5), None).unwrap(), "-5");
         assert_eq!(p(Arg::Imm(5), Some(b'n')).unwrap(), "-5");
         assert_eq!(p(Arg::Mem(9), None).unwrap(), "[x9]");
         assert_eq!(p(Arg::Sym("g", -4), None).unwrap(), "g-4");
-        assert!(p(Arg::Fp(1), Some(b'w')).is_err());
         assert!(p(Arg::Mem(1), Some(b'w')).is_err());
     }
 
@@ -445,5 +507,14 @@ mod tests {
         assert!(!Features::from_attribute("+v8a,+neon").lse);
         assert!(Features::from_attribute("+crc").crc);
         assert!(!Features::from_attribute("-fp-armv8").fp);
+        // §20: in order, with LLVM's implications.
+        assert!(Features::from_attribute("+aes").neon);
+        assert!(!Features::from_attribute("+aes,-neon").aes);
+        assert!(Features::from_attribute("-neon,+aes").aes);
+        assert!(Features::from_attribute("-fp-armv8,+neon").fp);
+        assert!(!Features::from_attribute("+fullfp16,-fp-armv8").fp16);
+        assert!(!Features::from_attribute("-neon,+fullfp16").neon);
+        assert!(Features::from_attribute("+v8.2a,+crypto").aes);
+        assert!(!Features::from_attribute("+v9a").fp16);
     }
 }

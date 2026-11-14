@@ -9,7 +9,7 @@ use hod_asm::a64::sysreg::{self, EXTRA, RAND, READ, TABLE, WRITE};
 use hod_asm::a64::{Code, Features, assemble};
 use hod_testutil::{Scratch, run, tool};
 
-const ALL: Features = Features { lse: true, crc: true, fp: true, rand: true };
+const ALL: Features = Features::ALL;
 
 fn hod(body: &str, features: Features) -> Result<Vec<u32>, &'static str> {
     let mut code = Code::default();

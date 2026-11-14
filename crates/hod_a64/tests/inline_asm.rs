@@ -154,7 +154,11 @@ fn what_is_not_supported_is_refused_by_name() {
     };
     let cases = [
         (one("void", "call void asm \"frob x0\", \"\"()"), "asm:mnemonic/frob"),
-        (one("void", "call void asm \"ld1 {v0.16b}, [$0]\", \"r\"(ptr %p)"), "asm:mnemonic/ld1"),
+        (one("void", "call void asm \"cntb $0\", \"r\"(ptr %p)"), "asm:mnemonic/cntb"),
+        (
+            one("void", "call void asm \"ld1 {v0.16b}, [$0], #8\", \"r,~{v0}\"(ptr %p)"),
+            "asm:operand/range",
+        ),
         (one("void", "call void asm \".inst 0xd503201f\", \"\"()"), "asm:directive/inst"),
         (one("i64", "%r = call i64 asm \"mrs $0, midr_el2\", \"=r\"()"), "asm:operand/sysreg"),
         (one("void", "call void asm \"x: nop\", \"\"()"), "asm:label"),

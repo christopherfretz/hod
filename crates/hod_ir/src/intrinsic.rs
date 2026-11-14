@@ -619,6 +619,182 @@ intrinsics! {
     X86Incsspq = "llvm.x86.incsspq" [],
     X86Rdsspd = "llvm.x86.rdsspd" [],
     X86Rdsspq = "llvm.x86.rdsspq" [],
+    // x86 vector intrinsics past SSSE3 (WP-202): the names clang 19 and 22
+    // emit at `-O0` for the SSE4.1, SSE4.2, AES, PCLMUL, SHA, AVX, AVX2,
+    // FMA, F16C and GFNI headers that hod builds.
+    X86Sse41RoundPs = "llvm.x86.sse41.round.ps" [],
+    X86Sse41RoundPd = "llvm.x86.sse41.round.pd" [],
+    X86Sse41RoundSs = "llvm.x86.sse41.round.ss" [],
+    X86Sse41RoundSd = "llvm.x86.sse41.round.sd" [],
+    X86Sse41Blendvps = "llvm.x86.sse41.blendvps" [],
+    X86Sse41Blendvpd = "llvm.x86.sse41.blendvpd" [],
+    X86Sse41Pblendvb = "llvm.x86.sse41.pblendvb" [],
+    X86Sse41Dpps = "llvm.x86.sse41.dpps" [],
+    X86Sse41Dppd = "llvm.x86.sse41.dppd" [],
+    X86Sse41Insertps = "llvm.x86.sse41.insertps" [],
+    X86Sse41Mpsadbw = "llvm.x86.sse41.mpsadbw" [],
+    X86Sse41Packusdw = "llvm.x86.sse41.packusdw" [],
+    X86Sse41Phminposuw = "llvm.x86.sse41.phminposuw" [],
+    X86Sse41Ptestz = "llvm.x86.sse41.ptestz" [],
+    X86Sse41Ptestc = "llvm.x86.sse41.ptestc" [],
+    X86Sse41Ptestnzc = "llvm.x86.sse41.ptestnzc" [],
+    X86Sse42Pcmpistrm128 = "llvm.x86.sse42.pcmpistrm128" [],
+    X86Sse42Pcmpistri128 = "llvm.x86.sse42.pcmpistri128" [],
+    X86Sse42Pcmpistria128 = "llvm.x86.sse42.pcmpistria128" [],
+    X86Sse42Pcmpistric128 = "llvm.x86.sse42.pcmpistric128" [],
+    X86Sse42Pcmpistrio128 = "llvm.x86.sse42.pcmpistrio128" [],
+    X86Sse42Pcmpistris128 = "llvm.x86.sse42.pcmpistris128" [],
+    X86Sse42Pcmpistriz128 = "llvm.x86.sse42.pcmpistriz128" [],
+    X86Sse42Pcmpestrm128 = "llvm.x86.sse42.pcmpestrm128" [],
+    X86Sse42Pcmpestri128 = "llvm.x86.sse42.pcmpestri128" [],
+    X86Sse42Pcmpestria128 = "llvm.x86.sse42.pcmpestria128" [],
+    X86Sse42Pcmpestric128 = "llvm.x86.sse42.pcmpestric128" [],
+    X86Sse42Pcmpestrio128 = "llvm.x86.sse42.pcmpestrio128" [],
+    X86Sse42Pcmpestris128 = "llvm.x86.sse42.pcmpestris128" [],
+    X86Sse42Pcmpestriz128 = "llvm.x86.sse42.pcmpestriz128" [],
+    X86AesniAesenc = "llvm.x86.aesni.aesenc" [],
+    X86AesniAesenclast = "llvm.x86.aesni.aesenclast" [],
+    X86AesniAesdec = "llvm.x86.aesni.aesdec" [],
+    X86AesniAesdeclast = "llvm.x86.aesni.aesdeclast" [],
+    X86AesniAesimc = "llvm.x86.aesni.aesimc" [],
+    X86AesniAeskeygenassist = "llvm.x86.aesni.aeskeygenassist" [],
+    X86Pclmulqdq = "llvm.x86.pclmulqdq" [],
+    X86Sha1rnds4 = "llvm.x86.sha1rnds4" [],
+    X86Sha1nexte = "llvm.x86.sha1nexte" [],
+    X86Sha1msg1 = "llvm.x86.sha1msg1" [],
+    X86Sha1msg2 = "llvm.x86.sha1msg2" [],
+    X86Sha256msg1 = "llvm.x86.sha256msg1" [],
+    X86Sha256msg2 = "llvm.x86.sha256msg2" [],
+    X86Sha256rnds2 = "llvm.x86.sha256rnds2" [],
+    X86AvxAddsubPd256 = "llvm.x86.avx.addsub.pd.256" [],
+    X86AvxAddsubPs256 = "llvm.x86.avx.addsub.ps.256" [],
+    X86AvxMaxPd256 = "llvm.x86.avx.max.pd.256" [],
+    X86AvxMaxPs256 = "llvm.x86.avx.max.ps.256" [],
+    X86AvxMinPd256 = "llvm.x86.avx.min.pd.256" [],
+    X86AvxMinPs256 = "llvm.x86.avx.min.ps.256" [],
+    X86AvxHaddPd256 = "llvm.x86.avx.hadd.pd.256" [],
+    X86AvxHaddPs256 = "llvm.x86.avx.hadd.ps.256" [],
+    X86AvxHsubPd256 = "llvm.x86.avx.hsub.pd.256" [],
+    X86AvxHsubPs256 = "llvm.x86.avx.hsub.ps.256" [],
+    X86AvxBlendvPd256 = "llvm.x86.avx.blendv.pd.256" [],
+    X86AvxBlendvPs256 = "llvm.x86.avx.blendv.ps.256" [],
+    X86AvxDpPs256 = "llvm.x86.avx.dp.ps.256" [],
+    X86AvxCmpPd256 = "llvm.x86.avx.cmp.pd.256" [],
+    X86AvxCmpPs256 = "llvm.x86.avx.cmp.ps.256" [],
+    X86AvxCvtPd2Ps256 = "llvm.x86.avx.cvt.pd2.ps.256" [],
+    X86AvxCvtPs2dq256 = "llvm.x86.avx.cvt.ps2dq.256" [],
+    X86AvxCvtPd2dq256 = "llvm.x86.avx.cvt.pd2dq.256" [],
+    X86AvxCvttPd2dq256 = "llvm.x86.avx.cvtt.pd2dq.256" [],
+    X86AvxCvttPs2dq256 = "llvm.x86.avx.cvtt.ps2dq.256" [],
+    X86AvxRcpPs256 = "llvm.x86.avx.rcp.ps.256" [],
+    X86AvxRsqrtPs256 = "llvm.x86.avx.rsqrt.ps.256" [],
+    X86AvxRoundPd256 = "llvm.x86.avx.round.pd.256" [],
+    X86AvxRoundPs256 = "llvm.x86.avx.round.ps.256" [],
+    X86AvxVpermilvarPs = "llvm.x86.avx.vpermilvar.ps" [],
+    X86AvxVpermilvarPd = "llvm.x86.avx.vpermilvar.pd" [],
+    X86AvxVpermilvarPs256 = "llvm.x86.avx.vpermilvar.ps.256" [],
+    X86AvxVpermilvarPd256 = "llvm.x86.avx.vpermilvar.pd.256" [],
+    X86AvxVtestzPs = "llvm.x86.avx.vtestz.ps" [],
+    X86AvxVtestzPd = "llvm.x86.avx.vtestz.pd" [],
+    X86AvxVtestzPs256 = "llvm.x86.avx.vtestz.ps.256" [],
+    X86AvxVtestzPd256 = "llvm.x86.avx.vtestz.pd.256" [],
+    X86AvxVtestcPs = "llvm.x86.avx.vtestc.ps" [],
+    X86AvxVtestcPd = "llvm.x86.avx.vtestc.pd" [],
+    X86AvxVtestcPs256 = "llvm.x86.avx.vtestc.ps.256" [],
+    X86AvxVtestcPd256 = "llvm.x86.avx.vtestc.pd.256" [],
+    X86AvxVtestnzcPs = "llvm.x86.avx.vtestnzc.ps" [],
+    X86AvxVtestnzcPd = "llvm.x86.avx.vtestnzc.pd" [],
+    X86AvxVtestnzcPs256 = "llvm.x86.avx.vtestnzc.ps.256" [],
+    X86AvxVtestnzcPd256 = "llvm.x86.avx.vtestnzc.pd.256" [],
+    X86AvxPtestz256 = "llvm.x86.avx.ptestz.256" [],
+    X86AvxPtestc256 = "llvm.x86.avx.ptestc.256" [],
+    X86AvxPtestnzc256 = "llvm.x86.avx.ptestnzc.256" [],
+    X86AvxMovmskPd256 = "llvm.x86.avx.movmsk.pd.256" [],
+    X86AvxMovmskPs256 = "llvm.x86.avx.movmsk.ps.256" [],
+    X86AvxLduDq256 = "llvm.x86.avx.ldu.dq.256" [],
+    X86AvxMaskloadPs = "llvm.x86.avx.maskload.ps" [],
+    X86AvxMaskstorePs = "llvm.x86.avx.maskstore.ps" [],
+    X86AvxMaskloadPd = "llvm.x86.avx.maskload.pd" [],
+    X86AvxMaskstorePd = "llvm.x86.avx.maskstore.pd" [],
+    X86AvxMaskloadPs256 = "llvm.x86.avx.maskload.ps.256" [],
+    X86AvxMaskstorePs256 = "llvm.x86.avx.maskstore.ps.256" [],
+    X86AvxMaskloadPd256 = "llvm.x86.avx.maskload.pd.256" [],
+    X86AvxMaskstorePd256 = "llvm.x86.avx.maskstore.pd.256" [],
+    X86AvxVzeroall = "llvm.x86.avx.vzeroall" [],
+    X86AvxVzeroupper = "llvm.x86.avx.vzeroupper" [],
+    X86Avx2Packssdw = "llvm.x86.avx2.packssdw" [],
+    X86Avx2Packsswb = "llvm.x86.avx2.packsswb" [],
+    X86Avx2Packusdw = "llvm.x86.avx2.packusdw" [],
+    X86Avx2Packuswb = "llvm.x86.avx2.packuswb" [],
+    X86Avx2PavgB = "llvm.x86.avx2.pavg.b" [],
+    X86Avx2PavgW = "llvm.x86.avx2.pavg.w" [],
+    X86Avx2Pblendvb = "llvm.x86.avx2.pblendvb" [],
+    X86Avx2PhaddD = "llvm.x86.avx2.phadd.d" [],
+    X86Avx2PhaddW = "llvm.x86.avx2.phadd.w" [],
+    X86Avx2PhaddSw = "llvm.x86.avx2.phadd.sw" [],
+    X86Avx2PhsubD = "llvm.x86.avx2.phsub.d" [],
+    X86Avx2PhsubW = "llvm.x86.avx2.phsub.w" [],
+    X86Avx2PhsubSw = "llvm.x86.avx2.phsub.sw" [],
+    X86Avx2PmaddUbSw = "llvm.x86.avx2.pmadd.ub.sw" [],
+    X86Avx2PmaddWd = "llvm.x86.avx2.pmadd.wd" [],
+    X86Avx2Pmovmskb = "llvm.x86.avx2.pmovmskb" [],
+    X86Avx2PmulHrSw = "llvm.x86.avx2.pmul.hr.sw" [],
+    X86Avx2PmulhW = "llvm.x86.avx2.pmulh.w" [],
+    X86Avx2PmulhuW = "llvm.x86.avx2.pmulhu.w" [],
+    X86Avx2PsadBw = "llvm.x86.avx2.psad.bw" [],
+    X86Avx2PshufB = "llvm.x86.avx2.pshuf.b" [],
+    X86Avx2PsignB = "llvm.x86.avx2.psign.b" [],
+    X86Avx2PsignW = "llvm.x86.avx2.psign.w" [],
+    X86Avx2PsignD = "llvm.x86.avx2.psign.d" [],
+    X86Avx2PsllW = "llvm.x86.avx2.psll.w" [],
+    X86Avx2PsllD = "llvm.x86.avx2.psll.d" [],
+    X86Avx2PsllQ = "llvm.x86.avx2.psll.q" [],
+    X86Avx2PslliW = "llvm.x86.avx2.pslli.w" [],
+    X86Avx2PslliD = "llvm.x86.avx2.pslli.d" [],
+    X86Avx2PslliQ = "llvm.x86.avx2.pslli.q" [],
+    X86Avx2PsrlW = "llvm.x86.avx2.psrl.w" [],
+    X86Avx2PsrlD = "llvm.x86.avx2.psrl.d" [],
+    X86Avx2PsrlQ = "llvm.x86.avx2.psrl.q" [],
+    X86Avx2PsrliW = "llvm.x86.avx2.psrli.w" [],
+    X86Avx2PsrliD = "llvm.x86.avx2.psrli.d" [],
+    X86Avx2PsrliQ = "llvm.x86.avx2.psrli.q" [],
+    X86Avx2PsraW = "llvm.x86.avx2.psra.w" [],
+    X86Avx2PsraD = "llvm.x86.avx2.psra.d" [],
+    X86Avx2PsraiW = "llvm.x86.avx2.psrai.w" [],
+    X86Avx2PsraiD = "llvm.x86.avx2.psrai.d" [],
+    X86Avx2PsllvD = "llvm.x86.avx2.psllv.d" [],
+    X86Avx2PsllvD256 = "llvm.x86.avx2.psllv.d.256" [],
+    X86Avx2PsllvQ = "llvm.x86.avx2.psllv.q" [],
+    X86Avx2PsllvQ256 = "llvm.x86.avx2.psllv.q.256" [],
+    X86Avx2PsrlvD = "llvm.x86.avx2.psrlv.d" [],
+    X86Avx2PsrlvD256 = "llvm.x86.avx2.psrlv.d.256" [],
+    X86Avx2PsrlvQ = "llvm.x86.avx2.psrlv.q" [],
+    X86Avx2PsrlvQ256 = "llvm.x86.avx2.psrlv.q.256" [],
+    X86Avx2PsravD = "llvm.x86.avx2.psrav.d" [],
+    X86Avx2PsravD256 = "llvm.x86.avx2.psrav.d.256" [],
+    X86Avx2Permd = "llvm.x86.avx2.permd" [],
+    X86Avx2Permps = "llvm.x86.avx2.permps" [],
+    X86Avx2Mpsadbw = "llvm.x86.avx2.mpsadbw" [],
+    X86Avx2MaskloadD = "llvm.x86.avx2.maskload.d" [],
+    X86Avx2MaskstoreD = "llvm.x86.avx2.maskstore.d" [],
+    X86Avx2MaskloadQ = "llvm.x86.avx2.maskload.q" [],
+    X86Avx2MaskstoreQ = "llvm.x86.avx2.maskstore.q" [],
+    X86Avx2MaskloadD256 = "llvm.x86.avx2.maskload.d.256" [],
+    X86Avx2MaskstoreD256 = "llvm.x86.avx2.maskstore.d.256" [],
+    X86Avx2MaskloadQ256 = "llvm.x86.avx2.maskload.q.256" [],
+    X86Avx2MaskstoreQ256 = "llvm.x86.avx2.maskstore.q.256" [],
+    X86FmaVfmaddsubPs = "llvm.x86.fma.vfmaddsub.ps" [],
+    X86FmaVfmaddsubPd = "llvm.x86.fma.vfmaddsub.pd" [],
+    X86FmaVfmaddsubPs256 = "llvm.x86.fma.vfmaddsub.ps.256" [],
+    X86FmaVfmaddsubPd256 = "llvm.x86.fma.vfmaddsub.pd.256" [],
+    X86Vcvtps2ph128 = "llvm.x86.vcvtps2ph.128" [],
+    X86Vcvtps2ph256 = "llvm.x86.vcvtps2ph.256" [],
+    X86Vgf2p8affineqb128 = "llvm.x86.vgf2p8affineqb.128" [],
+    X86Vgf2p8affineqb256 = "llvm.x86.vgf2p8affineqb.256" [],
+    X86Vgf2p8affineinvqb128 = "llvm.x86.vgf2p8affineinvqb.128" [],
+    X86Vgf2p8affineinvqb256 = "llvm.x86.vgf2p8affineinvqb.256" [],
+    X86Vgf2p8mulb128 = "llvm.x86.vgf2p8mulb.128" [],
+    X86Vgf2p8mulb256 = "llvm.x86.vgf2p8mulb.256" [],
 }
 
 /// The most overload types an intrinsic on the list has.
@@ -650,7 +826,46 @@ impl<'a> Intrinsic<'a> {
             I::FrameAddress | I::ReturnAddress | I::UbsanTrap | I::X86Xabort => &[0],
             I::Ctlz | I::Cttz | I::Abs | I::IsFpClass | I::VectorExtract => &[1],
             I::Prefetch | I::ObjectSize => &[1, 2, 3],
-            I::VectorInsert | I::X86SseCmpSs | I::X86Sse2CmpSd => &[2],
+            I::VectorInsert
+            | I::X86SseCmpSs
+            | I::X86Sse2CmpSd
+            | I::X86Sse41RoundSs
+            | I::X86Sse41RoundSd
+            | I::X86Sse41Dpps
+            | I::X86Sse41Dppd
+            | I::X86Sse41Insertps
+            | I::X86Sse41Mpsadbw
+            | I::X86Sse42Pcmpistrm128
+            | I::X86Sse42Pcmpistri128
+            | I::X86Sse42Pcmpistria128
+            | I::X86Sse42Pcmpistric128
+            | I::X86Sse42Pcmpistrio128
+            | I::X86Sse42Pcmpistris128
+            | I::X86Sse42Pcmpistriz128
+            | I::X86Pclmulqdq
+            | I::X86Sha1rnds4
+            | I::X86AvxDpPs256
+            | I::X86AvxCmpPd256
+            | I::X86AvxCmpPs256
+            | I::X86Avx2Mpsadbw
+            | I::X86Vgf2p8affineqb128
+            | I::X86Vgf2p8affineqb256
+            | I::X86Vgf2p8affineinvqb128
+            | I::X86Vgf2p8affineinvqb256 => &[2],
+            I::X86Sse41RoundPs
+            | I::X86Sse41RoundPd
+            | I::X86AesniAeskeygenassist
+            | I::X86AvxRoundPd256
+            | I::X86AvxRoundPs256
+            | I::X86Vcvtps2ph128
+            | I::X86Vcvtps2ph256 => &[1],
+            I::X86Sse42Pcmpestrm128
+            | I::X86Sse42Pcmpestri128
+            | I::X86Sse42Pcmpestria128
+            | I::X86Sse42Pcmpestric128
+            | I::X86Sse42Pcmpestrio128
+            | I::X86Sse42Pcmpestris128
+            | I::X86Sse42Pcmpestriz128 => &[4],
             _ => &[],
         }
     }

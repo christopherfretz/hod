@@ -783,9 +783,8 @@ does not use it.
 **Not provided** here: the integer-operand arithmetic (`fiadd` and the
 others), `fcom`/`fcomp` with a memory operand, `fist`/`fistp` to 8 bits
 (they do not exist), `fisttp` (SSE3), `fnstsw m16`, `fnstenv`/`fldenv`/
-`fnsave`/`frstor`, `fxsave`, the transcendental instructions (`fsin`,
-`fptan`, `fyl2x` and the others), `fscale`, `fxtract`, the waiting forms
-(`fstcw`, `fstsw`, `fclex`, `finit`, `fwait`) and `ffree`.
+`fnsave`/`frstor`, `fxsave`, the waiting forms (`fstcw`, `fstsw`,
+`fclex`, `finit`, `fwait`) and `ffree`.
 
 **Tests.** Three groups of `tests/l1`, by the method of "Test method"
 below: `x87` (every stack register in every register form, every
@@ -805,6 +804,29 @@ an 8-bit operand numbered 4 to 7, in each position, gets the REX prefix
 `40` (and an operand-size prefix, if any, before it), operands numbered 0
 to 3 get none, and LLVM's disassembler, at every major, reads `spl`,
 `bpl`, `sil`, `dil` where intended and never `ah`, `ch`, `dh`, `bh`.
+
+**The other instructions without operands** (WP-204), for inline and
+module assembly (`spec/asm.md` §14); the code generator does not use
+them. Each is `const fn() -> Inst`, `D9` and one byte, with no prefix, no
+REX and no failure; the operation is the Intel SDM's. Tested as the fixed
+forms of `x87` above and in `table`.
+
+| constructor | bytes | operation |
+|---|---|---|
+| `fnop()` | `D9 D0` | nothing |
+| `ftst()` | `D9 E4` | compare `st(0)` with `+0.0` into C0, C2, C3 |
+| `fxam()` | `D9 E5` | classify `st(0)` into C0, C2, C3 (C1: the sign) |
+| `fld1()`, `fldl2t()`, `fldl2e()`, `fldpi()`, `fldlg2()`, `fldln2()`, `fldz()` | `D9 E8` … `D9 EE` | push `1`, `log2(10)`, `log2(e)`, `pi`, `log10(2)`, `ln(2)`, `+0.0` (`fld1`, `fldz` above) |
+| `f2xm1()` | `D9 F0` | `st(0) = 2^st(0) - 1` |
+| `fyl2x()` | `D9 F1` | `st(1) = st(1) * log2(st(0))`, then pop |
+| `fptan()` | `D9 F2` | `st(0) = tan(st(0))`, then push `1.0` |
+| `fpatan()` | `D9 F3` | `st(1) = atan2(st(1), st(0))`, then pop |
+| `fxtract()` | `D9 F4` | `st(0)` = its exponent, then push its significand |
+| `fdecstp()`, `fincstp()` | `D9 F6`, `D9 F7` | the stack top minus, plus one (no tag changes) |
+| `fyl2xp1()` | `D9 F9` | `st(1) = st(1) * log2(st(0) + 1)`, then pop |
+| `fsincos()` | `D9 FB` | `st(0) = sin(st(0))`, then push `cos` of the old `st(0)` |
+| `fscale()` | `D9 FD` | `st(0) = st(0) * 2^trunc(st(1))` |
+| `fsin()`, `fcos()` | `D9 FE`, `D9 FF` | `st(0) = sin(st(0))`, `cos(st(0))` |
 
 ## Processor state and extensions
 

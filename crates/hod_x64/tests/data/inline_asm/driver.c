@@ -57,6 +57,13 @@ void *forced_ws_address(void);
 void *forced_sym_plt(void);
 void forced_fwait(void);
 
+int call_symbol(int), jump_symbol(int);
+int asm_callee_misaligned;
+int asm_callee(int x) {
+  if (((uintptr_t)__builtin_frame_address(0) & 15) != 0) asm_callee_misaligned++;
+  return 3 * x + 1;
+}
+
 static int fails;
 #define CHECK(c)                                                               \
   do {                                                                         \
@@ -169,6 +176,10 @@ int main(void) {
   CHECK(forced_sym_gotpcrel() == (void *)&asm_cell);
   CHECK(forced_sym_plt() == (void *)asm_fn);
   forced_fwait();
+  /* WP-204: a template's call to a symbol; the callee finds the stack
+   * 16-byte aligned, as the ABI asks. */
+  CHECK(call_symbol(4) == 13 && jump_symbol(0) == 1 && jump_symbol(5) == 16);
+  CHECK(asm_callee_misaligned == 0);
   printf("checked, %d failures\n", fails);
   return fails;
 }

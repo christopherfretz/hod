@@ -16,10 +16,12 @@
 //!   symbol it does not define take effect (the rules of `spec/ir.md`
 //!   §2.3, as for text of symbol directives only).
 //!
-//! Only AArch64: `hod_asm` has no x86-64 assembler, and an x86-64 module
-//! with assembly is refused (`module:asm`, in `asm::check`). What the
-//! text does that `llc` resolves by a rule hod does not reproduce is
-//! refused by name (`asm:*`).
+//! AArch64 and, since WP-204 (`spec/asm.md` §14), x86-64, whose text
+//! may also give `.symver` directives: in `finish`, each one adds the
+//! versioned alias of a defined symbol, or renames the symbol (`@@@`,
+//! or an undefined one), as LLVM's assembler does. What the text does
+//! that `llc` resolves by a rule hod does not reproduce is refused by
+//! name (`asm:*`).
 
 use hod_asm::a64::{Features, RefKind};
 use hod_asm::module::{
@@ -28,7 +30,8 @@ use hod_asm::module::{
 };
 use hod_ir::{Linkage, SymId, SymbolKind as IrKind, TlsModel};
 use hod_obj::{
-    A64Reloc, Binding, SectionId, Symbol, SymbolId, SymbolKind, SymbolPlace, Visibility,
+    A64Reloc, Binding, RelocKind, SectionId, Symbol, SymbolId, SymbolKind, SymbolPlace, Visibility,
+    X64Reloc,
 };
 
 use super::section::{Found, Kind, NO_GROUP};
@@ -41,6 +44,9 @@ use crate::sym::RuntimeFn;
 #[derive(Debug, Default)]
 pub(super) struct Deferred {
     entries: Vec<Entry>,
+    /// The `.symver` directives, in order: the object symbol of the
+    /// name, and the versioned name.
+    symvers: Vec<(SymbolId, String)>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -82,8 +88,36 @@ fn obj_type(t: SymbolType) -> SymbolKind {
     }
 }
 
-fn reloc_kind(kind: AsmReloc) -> A64Reloc {
+/// The object's kind of a relocation the text writes, for the target's
+/// architecture.
+fn reloc_kind(kind: AsmReloc, x64: bool) -> RelocKind {
+    use hod_asm::x64::RefKind as X;
+    if !x64 {
+        return a64_reloc_kind(kind).into();
+    }
+    let k = match kind {
+        AsmReloc::X64(X::Pc32) => X64Reloc::Pc32,
+        AsmReloc::X64(X::Plt32) => X64Reloc::Plt32,
+        AsmReloc::X64(X::GotPcRel) => X64Reloc::GotPcrel,
+        AsmReloc::X64(X::GotPcRelX) => X64Reloc::GotPcrelX,
+        AsmReloc::X64(X::RexGotPcRelX) => X64Reloc::RexGotPcrelX,
+        AsmReloc::X64(X::GotTpOff) => X64Reloc::GotTpOff,
+        AsmReloc::X64(X::TpOff32) => X64Reloc::TpOff32,
+        AsmReloc::X64(X::DtpOff32) => X64Reloc::DtpOff32,
+        AsmReloc::X64(X::Abs32S) => X64Reloc::Abs32S,
+        AsmReloc::Abs64 => X64Reloc::Abs64,
+        AsmReloc::Abs32 => X64Reloc::Abs32,
+        AsmReloc::Abs16 => X64Reloc::Abs16,
+        // The x86-64 assembler writes no AArch64 field.
+        AsmReloc::X64(X::None) | AsmReloc::Code(_) => X64Reloc::None,
+    };
+    k.into()
+}
+
+fn a64_reloc_kind(kind: AsmReloc) -> A64Reloc {
     match kind {
+        // The AArch64 assembler writes no x86-64 field.
+        AsmReloc::X64(_) => A64Reloc::None,
         AsmReloc::Code(RefKind::Jump26) => A64Reloc::Jump26,
         AsmReloc::Code(RefKind::Call26) => A64Reloc::Call26,
         AsmReloc::Code(RefKind::Branch19) => A64Reloc::CondBr19,
@@ -111,13 +145,29 @@ impl ModuleEmitter<'_> {
         {
             return Ok(());
         }
-        // `asm::check` refused it on x86-64.
         let text = std::str::from_utf8(module.module_asm())
             .map_err(|_| refused(hod_asm::reason::other::LEXICAL))?;
         let mut code = ModuleCode::default();
-        asm::assemble_module(text, Features::BASE, &mut code).map_err(|r| refused(r.0))?;
+        let x64 = module.target().arch() == hod_ir::Arch::X86_64;
+        if x64 {
+            asm::assemble_module_x64(text, &mut code)
+        } else {
+            asm::assemble_module(text, Features::BASE, &mut code)
+        }
+        .map_err(|r| refused(r.0))?;
         let sections = self.asm_sections(&code)?;
-        let (ids, deferred) = self.asm_symbols(&code, &sections)?;
+        let (ids, mut deferred) = self.asm_symbols(&code, &sections)?;
+        for v in &code.symvers {
+            match ids[v.sym as usize] {
+                Some(id) => deferred.symvers.push((id, v.alias.clone())),
+                // A `.L` name.
+                None if code.symbols[v.sym as usize].is_temporary() => {
+                    return Err(refused(SYMBOL));
+                }
+                // Undefined and unreferenced: nothing is written.
+                None => {}
+            }
+        }
         for (s, &id) in code.sections.iter().zip(&sections) {
             for r in &s.relocs {
                 let (target, addend) = match r.target {
@@ -129,7 +179,7 @@ impl ModuleEmitter<'_> {
                     }
                     Target::Section(j) => (self.obj.section_symbol(sections[j as usize]), r.addend),
                 };
-                self.obj.add_relocation(id, r.offset, reloc_kind(r.kind), target, addend);
+                self.obj.add_relocation(id, r.offset, reloc_kind(r.kind, x64), target, addend);
             }
         }
         self.asm_deferred = Some(Box::new(deferred));
@@ -207,7 +257,15 @@ impl ModuleEmitter<'_> {
         let module = self.module;
         let mut ids = Vec::with_capacity(code.symbols.len());
         let mut deferred = Deferred::default();
+        let versioned = |i: usize| code.symvers.iter().any(|v| v.sym as usize == i);
         for s in &code.symbols {
+            // Named by `.symver` alone: no directive, no reference.
+            let only_versioned = s.def == Def::Undefined
+                && !s.referenced
+                && s.binding.is_none()
+                && s.visibility.is_none()
+                && s.ty.is_none()
+                && versioned(ids.len());
             let label = match s.def {
                 Def::Label(section, offset) => Some((sections[section as usize], offset)),
                 _ => None,
@@ -215,6 +273,14 @@ impl ModuleEmitter<'_> {
             if let Some(sym) = module.find_symbol(s.name.as_bytes()) {
                 let entry = if let Some((section, offset)) = label {
                     self.asm_definition(sym, s, section, offset)?
+                } else if only_versioned
+                    && module.symbol(sym).linkage() == Linkage::Internal
+                    && module.symbol(sym).is_definition()
+                {
+                    // `.symver` of an internal definition: the alias is
+                    // local, as LLVM writes it.
+                    ids.push(Some(Self::obj_sym(sym)));
+                    continue;
                 } else if s.def == Def::Undefined {
                     self.asm_directives(sym, s)?
                 } else {
@@ -223,6 +289,12 @@ impl ModuleEmitter<'_> {
                 };
                 deferred.entries.push(entry);
                 ids.push(Some(Self::obj_sym(sym)));
+                continue;
+            }
+            // A name only `.symver` gives, undefined and unreferenced:
+            // LLVM's assembler writes nothing for it.
+            if only_versioned {
+                ids.push(None);
                 continue;
             }
             if s.is_temporary() {
@@ -395,6 +467,58 @@ impl ModuleEmitter<'_> {
             if let Some(k) = e.kind {
                 target.kind = k;
             }
+        }
+        for (id, alias) in &deferred.symvers {
+            self.symver(*id, alias)?;
+        }
+        Ok(())
+    }
+
+    /// `.symver name, base@V` (`base@@V`, `base@@@V`), as LLVM's
+    /// assembler writes it (`spec/asm.md` §14): for a defined name, a
+    /// symbol `base@V` (`base@@V`) at the same place, of the same size,
+    /// type, binding and visibility, the name kept; with `@@@`, the name
+    /// itself renamed `base@@V`. An undefined name is renamed `base@V`
+    /// (`@` and `@@@` alike: what refers to it refers to the version);
+    /// `@@` of an undefined name is an error to LLVM, refused as
+    /// [`SYMBOL`].
+    fn symver(&mut self, id: SymbolId, alias: &str) -> CgResult<()> {
+        let at = alias.find('@').ok_or_else(|| CgError::internal("a .symver without @"))?;
+        let (base, rest) = alias.split_at(at);
+        let version = rest.trim_start_matches('@');
+        let ats = rest.len() - version.len();
+        let original = *self.obj.symbol(id);
+        let defined = matches!(original.place, SymbolPlace::Section(_));
+        let mut name = std::mem::take(&mut self.name);
+        name.clear();
+        name.extend_from_slice(base.as_bytes());
+        let rename = match (defined, ats) {
+            (true, 1 | 2) => false,
+            (true, _) => {
+                name.extend_from_slice(b"@@");
+                true
+            }
+            (false, 2) => {
+                self.name = name;
+                return Err(refused(SYMBOL));
+            }
+            (false, _) => {
+                name.push(b'@');
+                true
+            }
+        };
+        if !rename {
+            name.extend_from_slice(&rest.as_bytes()[..ats]);
+        }
+        name.extend_from_slice(version.as_bytes());
+        let added = self.obj.add_string(&name).map_err(obj_err);
+        self.name = name;
+        let added = added?;
+        if rename {
+            self.obj.symbol_mut(id).name = added;
+        } else {
+            let alias = self.obj.add_symbol(Symbol { name: added, ..original });
+            self.obj.retain_symbol(alias);
         }
         Ok(())
     }

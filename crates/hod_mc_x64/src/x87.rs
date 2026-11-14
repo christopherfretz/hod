@@ -405,6 +405,126 @@ pub const fn fsqrt() -> Inst {
     fixed(0xd9, 0xfa)
 }
 
+/// `FNOP` (`D9 D0`): nothing.
+#[inline]
+pub const fn fnop() -> Inst {
+    fixed(0xd9, 0xd0)
+}
+
+/// `FTST` (`D9 E4`): compares `st(0)` with 0.0 into C0, C2, C3.
+#[inline]
+pub const fn ftst() -> Inst {
+    fixed(0xd9, 0xe4)
+}
+
+/// `FXAM` (`D9 E5`): classifies `st(0)` into C0, C2, C3 (and its sign into C1).
+#[inline]
+pub const fn fxam() -> Inst {
+    fixed(0xd9, 0xe5)
+}
+
+/// `FLDL2T` (`D9 E9`): pushes log2(10).
+#[inline]
+pub const fn fldl2t() -> Inst {
+    fixed(0xd9, 0xe9)
+}
+
+/// `FLDL2E` (`D9 EA`): pushes log2(e).
+#[inline]
+pub const fn fldl2e() -> Inst {
+    fixed(0xd9, 0xea)
+}
+
+/// `FLDPI` (`D9 EB`): pushes pi.
+#[inline]
+pub const fn fldpi() -> Inst {
+    fixed(0xd9, 0xeb)
+}
+
+/// `FLDLG2` (`D9 EC`): pushes log10(2).
+#[inline]
+pub const fn fldlg2() -> Inst {
+    fixed(0xd9, 0xec)
+}
+
+/// `FLDLN2` (`D9 ED`): pushes ln(2).
+#[inline]
+pub const fn fldln2() -> Inst {
+    fixed(0xd9, 0xed)
+}
+
+/// `F2XM1` (`D9 F0`): `st(0) = 2^st(0) - 1`.
+#[inline]
+pub const fn f2xm1() -> Inst {
+    fixed(0xd9, 0xf0)
+}
+
+/// `FYL2X` (`D9 F1`): `st(1) = st(1) * log2(st(0))`, popped.
+#[inline]
+pub const fn fyl2x() -> Inst {
+    fixed(0xd9, 0xf1)
+}
+
+/// `FPTAN` (`D9 F2`): `st(0) = tan(st(0))`, then pushes 1.0.
+#[inline]
+pub const fn fptan() -> Inst {
+    fixed(0xd9, 0xf2)
+}
+
+/// `FPATAN` (`D9 F3`): `st(1) = atan(st(1) / st(0))`, popped.
+#[inline]
+pub const fn fpatan() -> Inst {
+    fixed(0xd9, 0xf3)
+}
+
+/// `FXTRACT` (`D9 F4`): `st(0)` split into exponent and significand (pushed).
+#[inline]
+pub const fn fxtract() -> Inst {
+    fixed(0xd9, 0xf4)
+}
+
+/// `FDECSTP` (`D9 F6`): decrements the stack top.
+#[inline]
+pub const fn fdecstp() -> Inst {
+    fixed(0xd9, 0xf6)
+}
+
+/// `FINCSTP` (`D9 F7`): increments the stack top.
+#[inline]
+pub const fn fincstp() -> Inst {
+    fixed(0xd9, 0xf7)
+}
+
+/// `FYL2XP1` (`D9 F9`): `st(1) = st(1) * log2(st(0) + 1)`, popped.
+#[inline]
+pub const fn fyl2xp1() -> Inst {
+    fixed(0xd9, 0xf9)
+}
+
+/// `FSINCOS` (`D9 FB`): `st(0) = sin(st(0))`, then pushes the cosine.
+#[inline]
+pub const fn fsincos() -> Inst {
+    fixed(0xd9, 0xfb)
+}
+
+/// `FSCALE` (`D9 FD`): `st(0) = st(0) * 2^trunc(st(1))`.
+#[inline]
+pub const fn fscale() -> Inst {
+    fixed(0xd9, 0xfd)
+}
+
+/// `FSIN` (`D9 FE`): `st(0) = sin(st(0))`.
+#[inline]
+pub const fn fsin() -> Inst {
+    fixed(0xd9, 0xfe)
+}
+
+/// `FCOS` (`D9 FF`): `st(0) = cos(st(0))`.
+#[inline]
+pub const fn fcos() -> Inst {
+    fixed(0xd9, 0xff)
+}
+
 /// `FRNDINT` (`D9 FC`): `st(0)` rounded to an integer by the control
 /// word's rounding mode.
 #[inline]

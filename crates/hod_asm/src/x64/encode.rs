@@ -25,6 +25,15 @@ pub enum Encoded<'a> {
     /// A branch to a label (`jmp` when the condition is `None`): its
     /// form, short or near, is chosen once the labels are known.
     Branch(Option<Cond>, Value<'a>),
+    /// `call` of a label or symbol (`spec/asm.md` §14): always the near
+    /// form, `E8` and a 32-bit displacement.
+    Call(Value<'a>),
+}
+
+/// Whether a branch target has no specifier or `@PLT` (which LLVM's
+/// assembler writes as the plain target's relocation, `R_X86_64_PLT32`).
+fn plt_or_none(m: &MemOp<'_>) -> bool {
+    matches!(m.spec, None | Some(crate::x64::operand::Spec::Plt))
 }
 
 fn err<T>(what: &'static str) -> Result<T, Refusal> {
@@ -153,6 +162,9 @@ fn fixed(name: &str) -> Option<Inst> {
         "sfence" => mc::sfence(),
         "int3" => mc::int3(),
         "ud2" => mc::ud2(),
+        // §14: what a function of module-level assembly ends with.
+        "ret" | "retq" => mc::ret(),
+        "leave" | "leaveq" => mc::leave(),
         "hlt" => mc::hlt(),
         "fwait" | "wait" => mc::fwait(),
         "cld" => mc::cld(),
@@ -182,6 +194,36 @@ fn fixed(name: &str) -> Option<Inst> {
         "pconfig" => mc::pconfig(),
         "fnclex" => mc::fnclex(),
         "fninit" => mc::fninit(),
+        // §14: the x87 instructions without operands.
+        "fucompp" => mc::fucompp(),
+        "fchs" => mc::fchs(),
+        "fabs" => mc::fabs(),
+        "fldz" => mc::fldz(),
+        "fld1" => mc::fld1(),
+        "fprem" => mc::fprem(),
+        "fprem1" => mc::fprem1(),
+        "fsqrt" => mc::fsqrt(),
+        "frndint" => mc::frndint(),
+        "fnop" => mc::fnop(),
+        "ftst" => mc::ftst(),
+        "fxam" => mc::fxam(),
+        "fldl2t" => mc::fldl2t(),
+        "fldl2e" => mc::fldl2e(),
+        "fldpi" => mc::fldpi(),
+        "fldlg2" => mc::fldlg2(),
+        "fldln2" => mc::fldln2(),
+        "f2xm1" => mc::f2xm1(),
+        "fyl2x" => mc::fyl2x(),
+        "fptan" => mc::fptan(),
+        "fpatan" => mc::fpatan(),
+        "fxtract" => mc::fxtract(),
+        "fdecstp" => mc::fdecstp(),
+        "fincstp" => mc::fincstp(),
+        "fyl2xp1" => mc::fyl2xp1(),
+        "fsincos" => mc::fsincos(),
+        "fscale" => mc::fscale(),
+        "fsin" => mc::fsin(),
+        "fcos" => mc::fcos(),
         "clc" => mc::clc(),
         "stc" => mc::stc(),
         "cmc" => mc::cmc(),
@@ -715,7 +757,16 @@ fn family<'a>(
         }
         "jmp" if sfx.is_none() => {
             return Some(match (n, a) {
-                (1, Some(Op::Mem(m))) if m.bare => Ok(Encoded::Branch(None, m.disp)),
+                (1, Some(Op::Mem(m))) if m.bare && plt_or_none(&m) => {
+                    Ok(Encoded::Branch(None, m.disp))
+                }
+                _ => err(operand::FORM),
+            });
+        }
+        // §14: `call sym`, `callq sym`, `call sym@PLT`.
+        "call" if matches!(sfx, None | Some(Size::Q)) => {
+            return Some(match (n, a) {
+                (1, Some(Op::Mem(m))) if m.bare && plt_or_none(&m) => Ok(Encoded::Call(m.disp)),
                 _ => err(operand::FORM),
             });
         }
@@ -752,7 +803,9 @@ fn family<'a>(
         && let Some(cond) = name.strip_prefix('j').and_then(cond_name)
     {
         return Some(match (n, a) {
-            (1, Some(Op::Mem(m))) if m.bare => Ok(Encoded::Branch(Some(cond), m.disp)),
+            (1, Some(Op::Mem(m))) if m.bare && plt_or_none(&m) => {
+                Ok(Encoded::Branch(Some(cond), m.disp))
+            }
             _ => err(operand::FORM),
         });
     }

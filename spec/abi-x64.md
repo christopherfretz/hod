@@ -840,9 +840,11 @@ hook"), which for x86-64 is
    with such a copy is possible only through variable arguments before
    the `...`, refused by the two names of item 4.
 6. When `X64::assign` refuses either signature (for example a vector
-   wider than 16 bytes under AVX, `x64:wide-vector-abi`, or an
+   wider than 32 bytes under AVX-512, `x64:wide-vector-abi`, or an
    `x86_fp80` under `-x87`), or the symbol is not a function, the rule
-   has no answer and the call is `musttail:stack-args-unknown`.
+   has no answer and the call is `musttail:stack-args-unknown`. A
+   256-bit vector under known AVX has an answer since WP-203 (§8.7):
+   it travels in a `ymm` register.
 
 *Evidence:* `cc::musttail_in_llvm` (LLVM refuses a pair differing in
 `alignstack`; its variadic thunk restores `rdi`..`r9`, `xmm0`..`xmm7`

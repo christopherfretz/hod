@@ -93,6 +93,41 @@ fn masked(text: &str, dir: &Path) -> String {
     out
 }
 
+/// A masked lldb session with the entries of each `image lookup` answer
+/// in one order. lldb lists the matches of a name lookup (`2 matches
+/// found in ...`, then an `Address:` and a `Summary:` line for each) in
+/// the order its index returns them, which is not the same from one run
+/// of the same program to the next.
+fn matches_ordered(text: &str) -> String {
+    let entry = |l: &str| {
+        let l = l.trim_start();
+        l.starts_with("Address:") || l.starts_with("Summary:")
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < lines.len() {
+        out.push_str(lines[i]);
+        out.push('\n');
+        let found = lines[i].contains(" matches found in ");
+        i += 1;
+        if !found {
+            continue;
+        }
+        let from = i;
+        while i < lines.len() && entry(lines[i]) {
+            i += 1;
+        }
+        let mut pairs: Vec<&[&str]> = lines[from..i].chunks(2).collect();
+        pairs.sort_by_key(|pair| (pair.last().copied(), pair.first().copied()));
+        for line in pairs.into_iter().flatten() {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
 fn gdb_session(gdb: &Path, program: &Path, commands: &[&str]) -> String {
     let mut command = Command::new(gdb);
     command.args(["-nx", "-batch", "-ex", "set pagination off", "-ex", "set confirm off"]).args([
@@ -304,6 +339,8 @@ fn run_case(case: &Case) {
                     (gdb_session(&gdb, &p_hod, case.gdb), gdb_session(&gdb, &p_llc, case.gdb))
                 };
                 let (h, l) = (masked(&h, &scratch.join(&d_hod)), masked(&l, &scratch.join(&d_llc)));
+                let (h, l) =
+                    if lldb_like { (matches_ordered(&h), matches_ordered(&l)) } else { (h, l) };
                 assert_eq!(h, l, "{tag}: {name}: hod's session, then llc's");
                 for w in wants {
                     assert!(h.contains(w), "{tag}: {name}: {w:?} in\n{h}");
@@ -313,6 +350,15 @@ fn run_case(case: &Case) {
         }
     }
     eprintln!("{stem}: {sessions} sessions, hod's equal to llc's");
+}
+
+#[test]
+fn lookup_answers_are_compared_in_one_order() {
+    let a = "2 matches found in DIR/prog:\n        Address: prog[0x?] (a)\n        Summary: prog`f<int>\n        Address: prog[0x?] (a)\n        Summary: prog`f<double>\n(lldb) quit\n";
+    let b = "2 matches found in DIR/prog:\n        Address: prog[0x?] (a)\n        Summary: prog`f<double>\n        Address: prog[0x?] (a)\n        Summary: prog`f<int>\n(lldb) quit\n";
+    assert_ne!(a, b);
+    assert_eq!(matches_ordered(a), matches_ordered(b));
+    assert_eq!(matches_ordered(b), b, "an ordered answer and the lines around it are kept");
 }
 
 #[test]

@@ -4055,7 +4055,11 @@ directory under `/tmp` in its `test` command and removes it afterwards.
 `x86_64-unknown-linux-gnu` on the AArch64 host: CMake's cross settings, the
 wrappers' `--target=<triple>`, the tests under
 `CMAKE_CROSSCOMPILING_EMULATOR` (qemu-x86_64 with the system root; `projects.py
-emulate-tests` puts the commands CMake does not wrap under it too), test
+emulate-tests` puts the commands CMake does not wrap under it too),
+links naming the system root's loader as interpreter and its libraries
+on the run path (link flags only, in every mode; `HOD_OSS_X64_INTERP=0`
+turns them off), so a program that a build or a test starts by itself
+runs through the host's x86-64 translation, test
 timeouts times `$HOD_OSS_X64_TEST_SLOWDOWN`, and the trees and findings
 under `x64-build/`, `x64-install/` and `<findings>/x64/` (the sources are
 shared). `oss-run.sh --strict` runs the strict build even after a fallback:

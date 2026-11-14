@@ -5,11 +5,11 @@
 use hod_mc_a64::*;
 
 use crate::harness::{Batch, Tools};
-use crate::text::{s as xsp, tuples, v, xs};
+use crate::text::{rz, s as xsp, tuples, v, xs, z};
 
 /// The extensions on top of the base features.
 const EXTRA: &str =
-    ",+fullfp16,+rdm,+dotprod,+i8mm,+bf16,+aes,+sha2,+sha3,+complxnum,+fp16fml,+v8.5a";
+    ",+fullfp16,+rdm,+dotprod,+i8mm,+bf16,+aes,+sha2,+sha3,+sm4,+complxnum,+fp16fml,+v8.5a";
 
 const BITS: [VecBits; 2] = [VecBits::V64, VecBits::V128];
 const FORMATS: [FpFormat; 3] = [FpFormat::H, FpFormat::S, FpFormat::D];
@@ -578,6 +578,59 @@ fn crypto(b: &mut Batch) {
         emit!(b, try_xar(v(1), v(2), v(3), amount), "xar v1.2d, v2.2d, v3.2d, #{amount}");
     }
     reject!(b, try_xar(v(1), v(2), v(3), 64), "xar v1.2d, v2.2d, v3.2d, #64");
+    // SM3 and SM4 (WP-205).
+    for (i, &op) in Sm3Reg::ALL.iter().enumerate() {
+        let mn = op.mnemonic();
+        for [d, n, m] in regs3(i == 0) {
+            emit_as!(b, mn, sm3reg(op, v(d), v(n), v(m)), "{mn} v{d}.4s, v{n}.4s, v{m}.4s");
+        }
+    }
+    for [d, n, m] in regs3(true) {
+        let a = (d + n + m) % 32;
+        emit!(b, sm3ss1(v(d), v(n), v(m), v(a)), "sm3ss1 v{d}.4s, v{n}.4s, v{m}.4s, v{a}.4s");
+    }
+    for [d, n] in regs2(true) {
+        emit!(b, sm4e(v(d), v(n)), "sm4e v{d}.4s, v{n}.4s");
+    }
+    for (i, &op) in Sm3tt::ALL.iter().enumerate() {
+        let mn = op.mnemonic();
+        for [d, n, m] in regs3(i == 0) {
+            for index in 0..4 {
+                emit_as!(
+                    b,
+                    mn,
+                    try_sm3tt(op, v(d), v(n), v(m), index),
+                    "{mn} v{d}.4s, v{n}.4s, v{m}.s[{index}]"
+                );
+            }
+        }
+        reject!(b, try_sm3tt(op, v(1), v(2), v(3), 4), "{mn} v1.4s, v2.4s, v3.s[4]");
+    }
+}
+
+/// The half-precision forms of the scalar floating-point instructions the
+/// intrinsics use (WP-205): `fp_half` of the single-precision word.
+fn half_scalar(b: &mut Batch) {
+    for [d, n, m] in regs3(true) {
+        emit!(b, fp_half(fmax(FpSize::S, v(d), v(n), v(m))), "fmax h{d}, h{n}, h{m}");
+        emit!(b, fp_half(fmin(FpSize::S, v(d), v(n), v(m))), "fmin h{d}, h{n}, h{m}");
+        emit!(b, fp_half(fmaxnm(FpSize::S, v(d), v(n), v(m))), "fmaxnm h{d}, h{n}, h{m}");
+        emit!(b, fp_half(fminnm(FpSize::S, v(d), v(n), v(m))), "fminnm h{d}, h{n}, h{m}");
+    }
+    macro_rules! to_int {
+        ($($f:ident)*) => {$(
+            for sz in Size::ALL {
+                for [d, n] in regs2(true) {
+                    emit!(
+                        b,
+                        fp_half($f(sz, z(d), FpSize::S, v(n))),
+                        "{} {}, h{n}", stringify!($f), rz(sz, d)
+                    );
+                }
+            }
+        )*};
+    }
+    to_int!(fcvtns fcvtnu fcvtas fcvtau fcvtps fcvtpu fcvtms fcvtmu fcvtzs fcvtzu);
 }
 
 /// `{v<r>.<t>, ...}` of `n` consecutive registers.
@@ -705,6 +758,7 @@ pub fn build(b: &mut Batch) {
     shifts(b);
     products(b);
     crypto(b);
+    half_scalar(b);
     tables(b);
     structures(b);
 }

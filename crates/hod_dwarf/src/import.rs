@@ -34,7 +34,20 @@ impl UnitPlan<'_> {
             self.import(ie, None, &mut chain)?;
         }
         let mut in_blocks = Vec::new();
+        let mut abstracts = 0;
         for i in 0..self.funcs.len() {
+            // WP-195 (§6.25): the abstract instances this function wrote
+            // first, as `llc` deferred their scopes' imports first.
+            while let Some(&(f, die)) = self.inline.imports.get(abstracts)
+                && f as usize == i
+            {
+                abstracts += 1;
+                let sp = self.dies[die as usize].node;
+                let DiNode::Subprogram(s) = self.debug.node(sp) else { continue };
+                for &n in s.retained_nodes {
+                    self.import(n, Some((sp, die)), &mut chain)?;
+                }
+            }
             let die = self.funcs[i].die;
             let sp = self.dies[die as usize].node;
             let DiNode::Subprogram(s) = self.debug.node(sp) else { continue };

@@ -85,6 +85,10 @@ pub(crate) struct Inline {
     objptr: Vec<(u32, u32)>,
     /// `(subprogram DIE, function index)`, sorted when sealed.
     fn_by_die: Vec<(u32, u32)>,
+    /// `(function index, abstract subprogram DIE)` of the abstract
+    /// instances with imports, in the order they were written: `llc`'s
+    /// `DeferredLocalDecls` (WP-195).
+    pub(crate) imports: Vec<(u32, u32)>,
     /// The functions' variable DIEs in `llc`'s `ConcreteEntities` order
     /// (WP-094): by function, then by record, not by DIE.
     entities: Vec<u32>,
@@ -150,8 +154,9 @@ pub(crate) struct FnInline {
     /// The abstract entities made: `(scope, class, key, node)`, as
     /// `FnScratch::ents`.
     ents: Vec<(u32, u8, u32, DiId)>,
-    /// `(variable, inlinedAt)` seen.
-    seen: HashSet<(u32, u32)>,
+    /// `(variable, inlinedAt)` seen, and whether its first row was a
+    /// slot (`LocalPlace::Frame`).
+    seen: HashMap<(u32, u32), bool>,
     child_start: Vec<u32>,
     children: Vec<u32>,
     vars: Vec<bool>,
@@ -177,9 +182,17 @@ impl FnInline {
         self.keys.insert((node.raw(), ia.raw()), index);
     }
 
-    /// Whether this is the first entity `(node, ia)` of the function.
-    pub(crate) fn first_of(&mut self, node: DiId, ia: LocId) -> bool {
-        self.seen.insert((node.raw(), ia.raw()))
+    /// `None` when this is the first entity `(node, ia)` of the
+    /// function, whose first row is a slot when `frame`; else whether the
+    /// first one's was (WP-195).
+    pub(crate) fn first_of(&mut self, node: DiId, ia: LocId, frame: bool) -> Option<bool> {
+        match self.seen.entry((node.raw(), ia.raw())) {
+            std::collections::hash_map::Entry::Occupied(e) => Some(*e.get()),
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(frame);
+                None
+            }
+        }
     }
 }
 
@@ -230,10 +243,23 @@ impl UnitPlan<'_> {
         if sp.unit != Some(self.unit) {
             return Err(unsupported(sp_id, DEBUG_INLINED_FOREIGN_UNIT));
         }
-        if !sp.retained_nodes.is_empty() {
+        // WP-195 (§6.25): an import scoped in the subprogram itself is
+        // written under its abstract instance; a retained variable or
+        // label, an import in a block, or retained nodes of a function
+        // also placed out of line are not.
+        if !sp.retained_nodes.is_empty()
+            && (self.inline.has_body(sp_id)
+                || !sp.retained_nodes.iter().all(|&n| self.own_import(n, sp_id)))
+        {
             return Err(unsupported(sp_id, DEBUG_RETAINED_NODES));
         }
         Ok(())
+    }
+
+    /// Whether retained node `n` is an imported entity scoped in `sp`.
+    fn own_import(&self, n: DiId, sp: DiId) -> bool {
+        self.debug.find_kind(n) == Some(DiKind::ImportedEntity)
+            && matches!(self.debug.node(n), DiNode::ImportedEntity(e) if e.scope == Some(sp))
     }
 
     /// The key of the scope an inlined subprogram's scope `(sp, ia)` is
@@ -339,6 +365,14 @@ impl UnitPlan<'_> {
                 Some(d) => d,
                 None => self.create_abstract(sp)?,
             };
+            // WP-195: its imports are deferred to the end of the unit,
+            // before those of the function being added (§6.25).
+            if let DiNode::Subprogram(n) = self.debug.node(sp)
+                && !n.retained_nodes.is_empty()
+                && self.cu.emission_kind == hod_ir::EmissionKind::FullDebug
+            {
+                self.inline.imports.push((self.funcs.len() as u32, die));
+            }
             self.abstract_entities(s, root, die, die)?;
             s.walk.clear();
             s.walk.push((root, die, s.child_start[root as usize]));
@@ -465,6 +499,14 @@ impl UnitPlan<'_> {
         };
         if bodies.binary_search(&scope.raw()).is_ok() {
             let parent = self.subprogram_parent(scope, &sp)?;
+            // WP-195 (§6.25): making the declaration's class can reach
+            // another type local to this function, which made the DIE;
+            // `llc`'s `getOrCreateSubprogramDIE` looks again after
+            // making the declaration.
+            let made = self.slot[scope.index()];
+            if made != NONE {
+                return Ok(made);
+            }
             let die = self.push(scope, parent, Kind::Subprogram);
             self.inline.early.insert(die);
             Ok(die)

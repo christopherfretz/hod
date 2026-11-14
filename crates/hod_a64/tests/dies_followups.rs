@@ -402,11 +402,9 @@ fn coroutine_ramps_match_llc() {
 /// kiln++'s ramp: the same, but kiln++ writes the frame type's `void *`
 /// as a second node equal to the first (`!142 = !DIDerivedType(tag:
 /// DW_TAG_pointer_type, baseType: null, size: 64)` beside `!17`). LLVM's
-/// parser makes equal uniqued nodes one; `hod_ll` keeps two, so hod's
-/// unit has one more `void *` DIE than `llc`'s. Outside WP-111
-/// (`crates/hod_ll`, metadata uniquing).
+/// parser makes equal uniqued nodes one, and so do hod's readers since
+/// WP-228 (`spec/ir.md` §6.3), so both units have one `void *` DIE.
 #[test]
-#[ignore = "hod_ll keeps two equal uniqued metadata nodes apart (an extra void * DIE)"]
 fn kiln_coroutine_ramp_matches_llc() {
     let (Some(k), Some(_)) = (support::kiln(), tool("llc-22")) else { return };
     let scratch = Scratch::new("dies-followups-kiln-ramp");

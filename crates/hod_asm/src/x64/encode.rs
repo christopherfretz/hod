@@ -166,6 +166,29 @@ fn fixed(name: &str) -> Option<Inst> {
         "cwtd" | "cwd" => mc::cwd(),
         "cltd" | "cdq" => mc::cdq(),
         "cqto" | "cqo" => mc::cqo(),
+        "rdmsr" => mc::rdmsr(),
+        "wrmsr" => mc::wrmsr(),
+        "rdpmc" => mc::rdpmc(),
+        "xsetbv" => mc::xsetbv(),
+        "xend" => mc::xend(),
+        "xtest" => mc::xtest(),
+        "rdpkru" => mc::rdpkru(),
+        "wrpkru" => mc::wrpkru(),
+        "serialize" => mc::serialize(),
+        "endbr64" => mc::endbr64(),
+        "enclu" => mc::enclu(),
+        "encls" => mc::encls(),
+        "enclv" => mc::enclv(),
+        "pconfig" => mc::pconfig(),
+        "fnclex" => mc::fnclex(),
+        "fninit" => mc::fninit(),
+        "clc" => mc::clc(),
+        "stc" => mc::stc(),
+        "cmc" => mc::cmc(),
+        "lahf" => mc::lahf(),
+        "sahf" => mc::sahf(),
+        "cli" => mc::cli(),
+        "sti" => mc::sti(),
         _ => return None,
     })
 }
@@ -298,7 +321,11 @@ pub fn encode<'a>(mnemonic: &str, ops: &Ops<'a>) -> Result<Encoded<'a>, Refusal>
     if let Some(found) = sse(&name, ops) {
         return found.map(Encoded::Inst);
     }
-    if let Some(inst) = fixed(&name) {
+    // `nop` with an operand is the multi-byte no-op, a family member.
+    if let Some(inst) = fixed(&name).filter(|_| ops.is_empty() || name != "nop") {
+        return if ops.is_empty() { Ok(Encoded::Inst(inst)) } else { err(operand::FORM) };
+    }
+    if let Some(inst) = string_op(&name) {
         return if ops.is_empty() { Ok(Encoded::Inst(inst)) } else { err(operand::FORM) };
     }
     if let Some(found) = family(&name, None, ops) {
@@ -311,6 +338,19 @@ pub fn encode<'a>(mnemonic: &str, ops: &Ops<'a>) -> Result<Encoded<'a>, Refusal>
         return found;
     }
     Err(reason::mnemonic(&name))
+}
+
+/// A string instruction without operands (`movsb`, `lodsq`, `cmpsl`;
+/// `movsd` is `movsl`), as `rep` takes it: `None` for a name that is
+/// none of them. `stosd`, `lodsd`, `scasd` and `cmpsd` are not names of
+/// them to LLVM's assembler.
+pub fn string_op(name: &str) -> Option<Inst> {
+    if name == "movsd" {
+        return Some(mc::string_op(mc::StringOp::Movs, Size::D));
+    }
+    let (&last, stem) = name.as_bytes().split_last()?;
+    let op = mc::StringOp::ALL.into_iter().find(|op| op.stem().as_bytes() == stem)?;
+    Some(mc::string_op(op, suffix_size(last)?))
 }
 
 type XRr = fn(FpSize, Xmm, Xmm) -> Inst;
@@ -338,6 +378,15 @@ fn sse_arith(name: &str) -> Option<(XRr, XRm, FpSize)> {
         "xorp" => (mc::xorp_rr, mc::xorp_rm),
         "ucomis" => (mc::ucomis_rr, mc::ucomis_rm),
         "comis" => (mc::comis_rr, mc::comis_rm),
+        "addp" => (mc::addp_rr, mc::addp_rm),
+        "subp" => (mc::subp_rr, mc::subp_rm),
+        "mulp" => (mc::mulp_rr, mc::mulp_rm),
+        "divp" => (mc::divp_rr, mc::divp_rm),
+        "sqrtp" => (mc::sqrtp_rr, mc::sqrtp_rm),
+        "minp" => (mc::minp_rr, mc::minp_rm),
+        "maxp" => (mc::maxp_rr, mc::maxp_rm),
+        "unpcklp" => (mc::unpcklp_rr, mc::unpcklp_rm),
+        "unpckhp" => (mc::unpckhp_rr, mc::unpckhp_rm),
         _ => return None,
     };
     Some((ops.0, ops.1, fp))
@@ -707,7 +756,121 @@ fn family<'a>(
             _ => err(operand::FORM),
         });
     }
-    None
+    inline(name, sfx, ops).map(|r| r.map(Encoded::Inst))
+}
+
+/// The instructions only inline assembly writes (`spec/asm.md` §13):
+/// `None` for a name that is none of them.
+#[allow(clippy::many_single_char_names, reason = "operands a, b; source s, destination d")]
+fn inline(name: &str, sfx: Option<Size>, ops: &Ops<'_>) -> Option<Result<Inst, Refusal>> {
+    let (n, a, b) = (ops.len(), ops.get(0), ops.get(1));
+    let one_mem = || match (n, a) {
+        (1, Some(Op::Mem(m))) => mem(&m),
+        _ => err(operand::FORM),
+    };
+    if sfx.is_none() {
+        if let Some(op) = mc::Prefetch::ALL.into_iter().find(|p| p.mnemonic() == name) {
+            return Some(one_mem().map(|m| mc::prefetch_m(op, m)));
+        }
+        if let Some(op) = mc::XState::ALL.into_iter().find(|x| x.mnemonic() == name) {
+            return Some(one_mem().map(|m| mc::xstate_m(op, m)));
+        }
+        let mem_form: Option<fn(mc::Mem) -> Inst> = match name {
+            "clflush" => Some(mc::clflush_m),
+            "clflushopt" => Some(mc::clflushopt_m),
+            "clwb" => Some(mc::clwb_m),
+            "stmxcsr" => Some(mc::stmxcsr_m),
+            "ldmxcsr" => Some(mc::ldmxcsr_m),
+            "fnstenv" => Some(mc::fnstenv_m),
+            "fldenv" => Some(mc::fldenv_m),
+            "fnsave" => Some(mc::fnsave_m),
+            "frstor" => Some(mc::frstor_m),
+            _ => None,
+        };
+        if let Some(f) = mem_form {
+            return Some(one_mem().map(f));
+        }
+    }
+    let bare = sfx.is_none();
+    Some(match (name, n, a, b) {
+        ("fnstsw", 0, ..) if bare => Ok(mc::fnstsw_ax()),
+        ("fnstsw", 1, Some(Op::Gpr(r)), _) if bare => {
+            if r.reg == Reg::Rax && r.size == Size::W {
+                Ok(mc::fnstsw_ax())
+            } else {
+                err(operand::REGISTER)
+            }
+        }
+        ("fnstsw", 1, Some(Op::Mem(m)), _) if bare => mem(&m).map(mc::fnstsw_m),
+        ("nop", 1, Some(Op::Gpr(r)), _) => {
+            size_of(sfx, &[r]).and_then(|size| some(mc::try_nop_r(size, r.reg)))
+        }
+        ("nop", 1, Some(Op::Mem(m)), _) => {
+            size_of(sfx, &[]).and_then(|size| some(mc::try_nop_m(size, mem(&m)?)))
+        }
+        ("hreset", 1, Some(Op::Imm(i)), _) if bare => imm8(&i).map(mc::hreset),
+        ("in" | "out", 2, Some(x), Some(y)) => port_io(name == "in", sfx, x, y),
+        ("crc32", 2, Some(Op::Gpr(s)), Some(Op::Gpr(d))) => (|| {
+            let size = size_of(sfx, &[s])?;
+            match (size, d.size) {
+                (Size::B, Size::Q) => Ok(mc::crc32_q_rb(d.reg, s.reg)),
+                (Size::Q, Size::Q) | (Size::B | Size::W | Size::D, Size::D) => {
+                    Ok(mc::crc32_rr(size, d.reg, s.reg))
+                }
+                _ => err(operand::REGISTER),
+            }
+        })(),
+        ("rdrand" | "rdseed", 1, Some(Op::Gpr(r)), _) => (|| {
+            let size = size_of(sfx, &[r])?;
+            let f = if name == "rdrand" { mc::try_rdrand_r } else { mc::try_rdseed_r };
+            f(size, r.reg).ok_or(Refusal(operand::REGISTER))
+        })(),
+        ("rdpid", 1, Some(Op::Gpr(r)), _) if bare => {
+            if r.size == Size::Q {
+                Ok(mc::rdpid_r(r.reg))
+            } else {
+                err(operand::REGISTER)
+            }
+        }
+        ("fnstsw" | "hreset" | "rdpid", ..) if bare => err(operand::FORM),
+        ("nop" | "in" | "out" | "crc32" | "rdrand" | "rdseed", ..) => err(operand::FORM),
+        _ => {
+            let op = mc::SegBase::ALL.into_iter().find(|op| op.mnemonic() == name)?;
+            match (n, a) {
+                (1, Some(Op::Gpr(r))) => size_of(sfx, &[r]).and_then(|size| {
+                    mc::try_segbase_r(op, size, r.reg).ok_or(Refusal(operand::REGISTER))
+                }),
+                _ => err(operand::FORM),
+            }
+        }
+    })
+}
+
+/// `in` (`input`) from `%dx` or an 8-bit port `x` into the accumulator
+/// `y`, or `out` of the accumulator `x` to `%dx` or a port `y`.
+fn port_io(input: bool, sfx: Option<Size>, x: Op<'_>, y: Op<'_>) -> Result<Inst, Refusal> {
+    let (acc, port) = if input { (y, x) } else { (x, y) };
+    let Op::Gpr(acc) = acc else { return err(operand::FORM) };
+    if acc.reg != Reg::Rax {
+        return err(operand::REGISTER);
+    }
+    let size = size_of(sfx, &[acc])?;
+    let inst = match port {
+        Op::Gpr(d) if d.reg == Reg::Rdx && d.size == Size::W => {
+            if input {
+                mc::try_in_dx(size)
+            } else {
+                mc::try_out_dx(size)
+            }
+        }
+        Op::Imm(i) => {
+            let p = imm8(&i)?;
+            if input { mc::try_in_i(size, p) } else { mc::try_out_i(size, p) }
+        }
+        Op::Gpr(_) => return err(operand::REGISTER),
+        _ => return err(operand::FORM),
+    };
+    some(inst)
 }
 
 /// `mov` in its register, memory and immediate forms.

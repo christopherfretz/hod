@@ -188,17 +188,17 @@ fn inline_viable(module: &Module, body: &Body) -> Viable {
 /// made with another function type, another personality) and none of
 /// hod's to doubt the frame the inlined code runs in (a `musttail` call,
 /// a coroutine caller).
-fn surely_inlined(module: &Module, caller: &Body, site: &CallSite<'_>, callee: &Body) -> bool {
+fn surely_inlined(module: &Module, from: &Body, site: &CallSite<'_>, callee: &Body) -> bool {
     let personality = |sym: SymId| match module.symbol(sym).kind() {
         SymbolKind::Function { personality, .. } => personality,
         _ => None,
     };
-    let (theirs, ours) = (personality(callee.symbol()), personality(caller.symbol()));
+    let (theirs, ours) = (personality(callee.symbol()), personality(from.symbol()));
     site.opcode() != Opcode::CallBr
         && site.bundle_count() == 0
         && site.fn_type() == callee.fn_type()
         && site.tail() != TailKind::MustTail
-        && !has_flag(module, caller.symbol(), FnAttrs::PRESPLIT_COROUTINE)
+        && !has_flag(module, from.symbol(), FnAttrs::PRESPLIT_COROUTINE)
         && (theirs.is_none() || ours.is_none() || theirs == ours)
 }
 
@@ -282,8 +282,7 @@ fn scan(module: &Module, body: &Body, depth_ok: bool) -> Option<&'static str> {
         }
         if let Some(intrinsic) = site.intrinsic() {
             match intrinsic.name() {
-                "llvm.frameaddress" if depth_ok => {}
-                "llvm.returnaddress" if depth_ok => {}
+                "llvm.frameaddress" | "llvm.returnaddress" if depth_ok => {}
                 "llvm.frameaddress" | "llvm.sponentry" | "llvm.localaddress"
                 | "llvm.eh.dwarf.cfa" => return Some(reason::FRAME_ADDRESS),
                 "llvm.returnaddress" | "llvm.addressofreturnaddress" => {
@@ -466,8 +465,8 @@ impl Inlining {
         if !biased.is_empty() {
             biased.sort_unstable_by_key(|&(at, _)| at);
             biased.dedup_by_key(|&mut (at, _)| at);
-            let biases = frame_bias(module, bodies, &self.held, &reached, &biased)?;
-            for (at, bias) in biases {
+            let found = frame_bias(module, bodies, &self.held, &reached, &biased)?;
+            for (at, bias) in found {
                 let body = match at {
                     At::Accepted(sym) => {
                         let Some(body) = bodies.iter_mut().find(|body| body.symbol() == sym) else {
@@ -537,7 +536,7 @@ fn escaping(module: &Module, bodies: &[Body], held: &[Body], reached: &[bool]) -
     for id in 0..module.consts.len() {
         match module.consts.get(hod_ir::ConstId::new(id as u32)) {
             Const::Addr { sym, .. } | Const::DsoLocalEquivalent(sym) | Const::NoCfi(sym) => {
-                mark(sym)
+                mark(sym);
             }
             Const::SymDiff { a, b, .. } => {
                 mark(a);
@@ -623,11 +622,10 @@ fn frame_bias(
             }
             match inline_viable(module, target) {
                 Viable::No => sets[to as usize].bits |= 1,
-                Viable::Unsure => sets[to as usize].unsure = true,
                 Viable::Yes if surely_inlined(module, caller, &site, target) => {
                     edges.push((from as u32, to));
                 }
-                Viable::Yes => sets[to as usize].unsure = true,
+                Viable::Yes | Viable::Unsure => sets[to as usize].unsure = true,
             }
         }
     }
@@ -649,17 +647,17 @@ fn frame_bias(
             }
         }
     }
-    let mut biases = Vec::with_capacity(biased.len());
+    let mut found = Vec::with_capacity(biased.len());
     for &(at, why) in biased {
         let index = nodes.iter().position(|&(node, _)| node == at);
-        let set = index.map(|index| sets[index]).unwrap_or(Biases { bits: 0, unsure: true });
+        let set = index.map_or(Biases { bits: 0, unsure: true }, |index| sets[index]);
         let sym = index.map_or_else(|| SymId::new(0), |index| nodes[index].1.symbol());
         if set.unsure || set.bits.count_ones() != 1 || set.bits == 1 {
             return Err(decline(module, sym, why));
         }
-        biases.push((at, set.bits.trailing_zeros()));
+        found.push((at, set.bits.trailing_zeros()));
     }
-    Ok(biases)
+    Ok(found)
 }
 
 /// Raises the depth of every `llvm.returnaddress` and `llvm.frameaddress`

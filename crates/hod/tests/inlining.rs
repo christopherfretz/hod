@@ -525,14 +525,18 @@ fn no_frame_bias_where_the_frame_is_not_one() {
             got => panic!("{what}: {:?}\n{text}", got.map(|_| "an object")),
         }
     }
-    // A personality the callee has and the caller has another of.
-    let pers = format!(
-        "declare i32 @__gxx_personality_v0(...)\ndeclare i32 @__gcc_personality_v0(...)\n\
-         define internal ptr @s() #0 personality ptr @__gxx_personality_v0 {{\n  %p = call ptr @llvm.returnaddress(i32 0)\n  ret ptr %p\n}}\n\
-         declare ptr @llvm.returnaddress(i32 immarg)\nattributes #0 = {{ alwaysinline }}\n\
-         define ptr @caller() personality ptr @__gcc_personality_v0 {{\n  %p = call ptr @s()\n  ret ptr %p\n}}\n"
-    );
-    assert_eq!(outcome(&pers).err().as_deref(), Some(why), "personality");
+}
+
+/// WP-197: a personality the callee has and the caller has another of
+/// leaves the inlining unknown, so no frame bias; the same one biases.
+#[test]
+fn no_frame_bias_across_personalities() {
+    let why = inline_reason::RETURN_ADDRESS;
+    let pers = "declare i32 @__gxx_personality_v0(...)\ndeclare i32 @__gcc_personality_v0(...)\n\
+         define internal ptr @s() #0 personality ptr @__gxx_personality_v0 {\n  %p = call ptr @llvm.returnaddress(i32 0)\n  ret ptr %p\n}\n\
+         declare ptr @llvm.returnaddress(i32 immarg)\nattributes #0 = { alwaysinline }\n\
+         define ptr @caller() personality ptr @__gcc_personality_v0 {\n  %p = call ptr @s()\n  ret ptr %p\n}\n";
+    assert_eq!(outcome(pers).err().as_deref(), Some(why), "personality");
     // The same personality: biased.
     outcome(
         &pers.replace(

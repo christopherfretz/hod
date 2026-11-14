@@ -853,12 +853,16 @@ impl Body {
             + bytes(&self.clauses)
     }
 
-    /// Replaces argument `index` of the call, `invoke` or `callbr` `inst`
-    /// with `value`; whether there was such an argument. The caller keeps
-    /// the body valid: `value` has the argument's type, and a module
-    /// value is the module's (WP-197: the depth of a frame intrinsic,
-    /// `spec/cli.md` "Always-inline").
+    /// Replaces the constant argument `index` of the call, `invoke` or
+    /// `callbr` `inst` with the constant `value`; whether it did (`false`
+    /// when there is no such argument, or either is not a constant: the
+    /// use facts of instructions and arguments stay true). The caller
+    /// keeps the body valid: `value` has the argument's type (WP-197: the
+    /// depth of a frame intrinsic, `spec/cli.md` "Always-inline").
     pub fn set_call_arg(&mut self, inst: InstId, index: usize, value: Value) -> bool {
+        if !matches!(value.kind(), ValueKind::Const(_)) {
+            return false;
+        }
         let Some(d) = self.insts.get(inst.index()) else { return false };
         if !d.op.is_call() {
             return false;
@@ -870,11 +874,11 @@ impl Body {
             return false;
         }
         match self.vals.get_mut(start + 1 + index) {
-            Some(slot) => {
+            Some(slot) if matches!(slot.kind(), ValueKind::Const(_)) => {
                 *slot = value;
                 true
             }
-            None => false,
+            _ => false,
         }
     }
 

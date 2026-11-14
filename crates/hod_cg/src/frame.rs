@@ -77,13 +77,16 @@ pub struct Frame {
     /// The bytes alignment skipped and no slot uses yet: `(offset, len)`,
     /// at most [`MAX_HOLES`] of them (§5.1).
     holes: Vec<(u32, u32)>,
-    /// Block slots (§5.1): `(offset, size, stamp)`; a slot is taken in
-    /// the block whose stamp it holds, free in any other.
-    block_slots: Vec<(u32, u32, u32)>,
-    /// The stamp of the block being emitted: never 0 once a block began,
-    /// so a slot's stamp is never the current one before it is taken.
-    block_stamp: u32,
+    /// Block slots (§5.1) by size class (1, 2, 4, 8 and 16 bytes), as
+    /// local-area offsets in the order they were made.
+    block_slots: [Vec<u32>; BLOCK_CLASSES],
+    /// How many of each class's block slots the current block took: always
+    /// the first ones of the list.
+    block_taken: [usize; BLOCK_CLASSES],
 }
+
+/// The size classes of block slots: 1, 2, 4, 8 and 16 bytes.
+const BLOCK_CLASSES: usize = 5;
 
 /// The most holes a frame remembers: a bound on the search a value slot
 /// makes; a hole that does not fit is never used, and costs nothing else.
@@ -110,8 +113,10 @@ impl Frame {
         self.free_temps.clear();
         self.live_temps.clear();
         self.holes.clear();
-        self.block_slots.clear();
-        self.block_stamp = 0;
+        for list in &mut self.block_slots {
+            list.clear();
+        }
+        self.block_taken = [0; BLOCK_CLASSES];
     }
 
     /// The size of the local area so far, in bytes. Final once the
@@ -190,38 +195,43 @@ impl Frame {
     /// A block begins (§5.1): every block slot is free in it.
     #[inline]
     pub(crate) fn begin_block(&mut self) {
-        self.block_stamp = self.block_stamp.wrapping_add(1).max(1);
+        self.block_taken = [0; BLOCK_CLASSES];
     }
 
-    /// A block slot of `size` bytes aligned to `align` (§5.1): one taken
-    /// in no block since the current one began, the smallest that holds
-    /// `size` bytes at that alignment; a new value slot otherwise. It is
+    /// A block slot of `size` bytes aligned to `align` (§5.1): one not
+    /// taken since the current block began, of the smallest size class
+    /// that has one; a new slot of the request's class otherwise. It is
     /// the slot's until the block ends.
+    ///
+    /// The class of a request is the power of two that holds it, up to 16
+    /// bytes, and its slots are aligned to that size (or the stack
+    /// alignment, if smaller). Each class lists its slots in the order
+    /// they were made and a block takes them in that order, so the slots a
+    /// block holds are the first ones of each list and a count per class
+    /// is the block's whole state: constant time, however many slots the
+    /// function has. A larger request, or one aligned beyond its class, is
+    /// a plain value slot, never reused.
     ///
     /// # Errors
     /// As [`Frame::alloc`].
     pub(crate) fn alloc_block(&mut self, size: u64, align: u32) -> CgResult<FrameRef> {
-        let stamp = self.block_stamp;
-        let best = self
-            .block_slots
-            .iter()
-            .enumerate()
-            .filter(|&(_, &(at, have, taken))| {
-                taken != stamp && u64::from(have) >= size && at % align == 0
-            })
-            .min_by_key(|&(_, &(_, have, _))| have)
-            .map(|(index, _)| index);
-        if let Some(index) = best {
-            self.block_slots[index].2 = stamp;
-            return Ok(FrameRef::Local(self.block_slots[index].0));
+        let class_bytes = size.max(1).next_power_of_two();
+        if class_bytes > 1 << (BLOCK_CLASSES - 1) || u64::from(align) > class_bytes {
+            return self.alloc_value(size, align);
         }
-        let FrameRef::Local(at) = self.alloc_value(size, align)? else {
+        let class = class_bytes.trailing_zeros() as usize;
+        for larger in class..BLOCK_CLASSES {
+            let taken = self.block_taken[larger];
+            if let Some(&at) = self.block_slots[larger].get(taken) {
+                self.block_taken[larger] = taken + 1;
+                return Ok(FrameRef::Local(at));
+            }
+        }
+        let FrameRef::Local(at) = self.alloc_value(class_bytes, (class_bytes as u32).min(self.stack_align))? else {
             return internal("the allocator returned a slot outside the local area");
         };
-        let Ok(have) = u32::try_from(size) else {
-            return Err(CgError::unsupported(LIMIT_FRAME_SIZE));
-        };
-        self.block_slots.push((at, have, stamp));
+        self.block_slots[class].push(at);
+        self.block_taken[class] = self.block_slots[class].len();
         Ok(FrameRef::Local(at))
     }
 
@@ -383,8 +393,8 @@ mod tests {
     }
 
     /// §5.1 "Value slots" (WP-198): a block slot is the block's until the
-    /// next block begins; then any block may take it again, the smallest
-    /// that holds the size first.
+    /// next block begins; then any block may take it again, its own size
+    /// class first, then the next larger.
     #[test]
     fn block_slots_are_reused_in_every_block() {
         let mut frame = Frame::new(16);
@@ -401,6 +411,9 @@ mod tests {
         assert_eq!(frame.size(), size);
         let d = local(frame.alloc_block(1, 1));
         assert!(d != a && d != b && d != c);
+        let e = local(frame.alloc_block(24, 8));
+        frame.begin_block();
+        assert_ne!(local(frame.alloc_block(24, 8)), e); // no class: never reused
         frame.reset(16);
         frame.begin_block();
         assert_eq!(local(frame.alloc_block(4, 4)), 0);

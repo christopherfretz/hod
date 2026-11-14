@@ -482,11 +482,14 @@ url = "https://github.com/grpc/grpc"
 tag = "v1.85.2"
 build = "cmake"
 cxx_std = 17
-c = "kiln"
 submodules = true
+# C through clang-19: kiln's C driver rejects upb's C (an _Atomic pointer
+# assigned NULL, upb/mem/arena.c; offsetof with a run-time array index,
+# UPB_SIZEOF_FLEX), 48 of 227 C TUs in the control; the C++ is the census.
+c = "clang"
 # Every dependency from its bundled submodule (abseil, protobuf, re2, zlib,
 # c-ares, BoringSSL, upb, googletest, benchmark). BoringSSL without its
-# assembly (OPENSSL_NO_ASM): .S files would not be kiln TUs.
+# assembly (OPENSSL_NO_ASM).
 configure = ["-DgRPC_BUILD_TESTS=ON", "-DgRPC_DOWNLOAD_ARCHIVES=OFF", "-DgRPC_ABSL_PROVIDER=module", "-DgRPC_PROTOBUF_PROVIDER=module", "-DgRPC_RE2_PROVIDER=module", "-DgRPC_ZLIB_PROVIDER=module", "-DgRPC_CARES_PROVIDER=module", "-DgRPC_SSL_PROVIDER=module", "-DOPENSSL_NO_ASM=ON", "-DgRPC_BUILD_GRPC_CSHARP_PLUGIN=OFF", "-DgRPC_BUILD_GRPC_NODE_PLUGIN=OFF", "-DgRPC_BUILD_GRPC_OBJECTIVE_C_PLUGIN=OFF", "-DgRPC_BUILD_GRPC_PHP_PLUGIN=OFF", "-DgRPC_BUILD_GRPC_PYTHON_PLUGIN=OFF", "-DgRPC_BUILD_GRPC_RUBY_PLUGIN=OFF", "-Dprotobuf_BUILD_TESTS=OFF", "-DABSL_PROPAGATE_CXX_STD=ON"]
 build_targets = ["grpc", "grpc++", "grpc_cpp_plugin", "status_util_test", "time_util_test", "byte_buffer_test", "sockaddr_utils_test", "useful_test", "bitset_test", "status_helper_test", "json_test", "thread_quota_test", "grpc_byte_buffer_reader_test", "orphanable_test", "ref_counted_test", "env_test", "host_port_test", "string_ref_test", "channel_arguments_test", "proto_utils_test", "codegen_test_minimal", "server_builder_test", "alarm_test", "end2end_test", "async_end2end_test", "generic_end2end_test", "client_callback_end2end_test"]
 # The tests run from the source tree (end2end tests read
@@ -494,4 +497,4 @@ build_targets = ["grpc", "grpc++", "grpc_cpp_plugin", "status_util_test", "time_
 test = "mkdir -p whole && emu=$(sed -n 's/^CMAKE_CROSSCOMPILING_EMULATOR:[A-Z]*=//p' CMakeCache.txt | tr ';' ' ') && for t in status_util_test time_util_test byte_buffer_test sockaddr_utils_test useful_test bitset_test status_helper_test json_test thread_quota_test grpc_byte_buffer_reader_test orphanable_test ref_counted_test env_test host_port_test string_ref_test channel_arguments_test proto_utils_test codegen_test_minimal server_builder_test alarm_test end2end_test async_end2end_test generic_end2end_test client_callback_end2end_test; do if [ -x \"$t\" ]; then echo \"add_test($t $emu $PWD/$t)\"; echo \"set_tests_properties($t PROPERTIES WORKING_DIRECTORY @SRC@)\"; fi; done > whole/CTestTestfile.cmake && cd whole && ctest --output-on-failure -j4 --timeout 2400"
 test_timeout = 10800
 test_vmem_kb = 16000000
-notes = "WP-211. gRPC with every dependency bundled (submodules): libgrpc, libgrpc++ and grpc_cpp_plugin (protoc built from the bundled protobuf), plus 24 test programs (core unit tests and the C++ end2end suites end2end_test, async_end2end_test, generic_end2end_test, client_callback_end2end_test); C (BoringSSL without asm, c-ares, zlib, upb, address_sorting) through kiln-cc."
+notes = "WP-211. gRPC with every dependency bundled (submodules): libgrpc, libgrpc++ and grpc_cpp_plugin (protoc built from the bundled protobuf), plus 24 test programs (core unit tests and the C++ end2end suites end2end_test, async_end2end_test, generic_end2end_test, client_callback_end2end_test); C (BoringSSL without asm, c-ares, zlib, upb, address_sorting) through clang-19, unlogged (kiln's C driver rejects upb)."

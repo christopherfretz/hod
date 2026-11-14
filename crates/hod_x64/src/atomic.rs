@@ -56,7 +56,8 @@
 //!
 //! # Refused
 //!
-//! [`UNALIGNED`]: an access whose alignment is below its size. [`TYPE`]:
+//! [`UNALIGNED`] is no longer returned (an access below its alignment
+//! calls libatomic's generic routines, WP-231, WP-232). [`TYPE`]:
 //! `fp128`, `x86_fp80`, vectors, an integer that is not 8, 16, 32, 64 or
 //! 128 bits wide, an operation whose type does not fit it.
 //! [`BFLOAT_OP`]: arithmetic on `bfloat` (as AArch64). [`FLOAT_OP`]
@@ -81,10 +82,9 @@ use crate::target::X64;
 /// more (`mem.rs` names it for an atomic access the dispatch would send
 /// here); kept for the coverage log's history.
 pub const ATOMIC: &str = "x64:todo:atomic";
-/// An access whose alignment is below its size and whose value operand
-/// is its own pointer (a store, `xchg`, `cmpxchg`). Every other
-/// under-aligned access calls libatomic's generic routines (WP-231,
-/// WP-232).
+/// An atomic access whose alignment is below its size: no longer
+/// returned (WP-231, WP-232: libatomic's generic routines), kept for the
+/// support table.
 pub const UNALIGNED: &str = "x64:atomic-unaligned";
 /// An atomic access of a type hod has no sequence for: `fp128`,
 /// `x86_fp80`, a vector, an integer that is not 8, 16, 32, 64 or 128
@@ -1308,29 +1308,43 @@ fn slot_to_reg(cx: &mut FnCx<'_, X64>, shape: Shape, slot: FrameRef, rd: PReg) {
     }
 }
 
+/// The pointer in `reg` copied to a new slot: the routine's pointer
+/// argument when an operand is the pointer itself (a register value is
+/// asked for once, and passing it to the call would ask again).
+fn ptr_copy(cx: &mut FnCx<'_, X64>, reg: PReg) -> CgResult<FrameRef> {
+    let slot = cx.alloc_slot(8, 8)?;
+    frame_inst(cx, slot, |m| mc::mov_mr(Size::Q, m, gp(reg)));
+    Ok(slot)
+}
+
+/// The routine's pointer argument: `ptr`, or its copy in `copy`.
+fn ptr_arg(ptr: Value, copy: Option<FrameRef>) -> CallArg {
+    copy.map_or(CallArg::Value(ptr), CallArg::Mem)
+}
+
 /// The slot holding `value` for a routine to read: its own for a
-/// [`Shape::Wide`] value, else a new one it is stored to. `None` when
-/// `value` is also the pointer operand (a register value is asked for
-/// once and the call consumes the pointer).
+/// [`Shape::Wide`] value, else a new one it is stored to, its register
+/// given back at once (the call's size and ordering arguments need
+/// registers). When `value` is the pointer, the pointer is copied to
+/// `copy` too.
 fn value_slot(
     cx: &mut FnCx<'_, X64>,
     shape: Shape,
     value: Value,
     ptr: Value,
-) -> CgResult<Option<FrameRef>> {
+    copy: &mut Option<FrameRef>,
+) -> CgResult<FrameRef> {
     if shape == Shape::Wide {
-        return cx.use_mem(value).map(Some);
-    }
-    if value == ptr {
-        return Ok(None);
+        return cx.use_mem(value);
     }
     let slot = generic_slot(cx, shape)?;
     let reg = cx.use_reg(value)?;
     reg_to_slot(cx, shape, reg, slot);
-    // The value is in its slot: its register is free for the call's
-    // size and ordering arguments.
+    if value == ptr {
+        *copy = Some(ptr_copy(cx, reg)?);
+    }
     crate::float::give_back(cx, value, reg);
-    Ok(Some(slot))
+    Ok(slot)
 }
 
 /// `%r = load atomic` below its alignment: `__atomic_load(size, ptr, &r,
@@ -1360,9 +1374,6 @@ fn load_generic<'a>(
 
 /// `store atomic` below its alignment: `__atomic_store(size, ptr,
 /// &value, order)`.
-///
-/// # Errors
-/// [`UNALIGNED`] when the value stored is the pointer itself.
 fn store_generic<'a>(
     cx: &mut FnCx<'a, X64>,
     inst: Inst<'a>,
@@ -1372,21 +1383,17 @@ fn store_generic<'a>(
     shape: Shape,
 ) -> CgResult<()> {
     deferred_first(cx, inst, None)?;
-    let Some(src) = value_slot(cx, shape, value, ptr)? else {
-        return unsupported(UNALIGNED);
-    };
+    let mut copy = None;
+    let src = value_slot(cx, shape, value, ptr, &mut copy)?;
     let size = c_size(cx, shape.bytes())?;
     let order = c_order(cx, ordering(mem))?;
-    let args = [size, CallArg::Value(ptr), CallArg::Addr(src), order];
+    let args = [size, ptr_arg(ptr, copy), CallArg::Addr(src), order];
     cx.call_runtime(RuntimeFn::AtomicStore, &args, None)?;
     Ok(())
 }
 
 /// `%r = atomicrmw xchg` below its alignment: `__atomic_exchange(size,
 /// ptr, &value, &r, order)`.
-///
-/// # Errors
-/// [`UNALIGNED`] when the value is the pointer itself.
 fn xchg_generic<'a>(
     cx: &mut FnCx<'a, X64>,
     inst: Inst<'a>,
@@ -1396,15 +1403,14 @@ fn xchg_generic<'a>(
     shape: Shape,
 ) -> CgResult<()> {
     deferred_first(cx, inst, None)?;
-    let Some(src) = value_slot(cx, shape, value, ptr)? else {
-        return unsupported(UNALIGNED);
-    };
+    let mut copy = None;
+    let src = value_slot(cx, shape, value, ptr, &mut copy)?;
     let dead = cx.is_dead(inst);
     let ret =
         if shape == Shape::Wide && !dead { cx.def_mem(inst)? } else { generic_slot(cx, shape)? };
     let size = c_size(cx, shape.bytes())?;
     let order = c_order(cx, ordering)?;
-    let args = [size, CallArg::Value(ptr), CallArg::Addr(src), CallArg::Addr(ret), order];
+    let args = [size, ptr_arg(ptr, copy), CallArg::Addr(src), CallArg::Addr(ret), order];
     cx.call_runtime(RuntimeFn::AtomicExchange, &args, None)?;
     if shape == Shape::Wide || dead {
         return Ok(());
@@ -1417,10 +1423,9 @@ fn xchg_generic<'a>(
 /// `%r = cmpxchg` below its alignment: the expected value in the result's
 /// own slot, where `__atomic_compare_exchange(size, ptr, &r, &desired,
 /// success, failure)` writes the cell's value when it fails, and the
-/// routine's C `bool` stored as the result's flag.
-///
-/// # Errors
-/// [`UNALIGNED`] when the expected or the new value is the pointer itself.
+/// routine's C `bool` stored as the result's flag. An expected or new
+/// value that is the pointer itself is copied to a slot of its own too,
+/// the call's pointer argument.
 #[allow(clippy::too_many_arguments, reason = "the instruction's operands")]
 fn cmpxchg_generic<'a>(
     cx: &mut FnCx<'a, X64>,
@@ -1433,10 +1438,8 @@ fn cmpxchg_generic<'a>(
     shape: Shape,
     flag_at: u32,
 ) -> CgResult<()> {
-    if ptr == expected || ptr == replacement {
-        return unsupported(UNALIGNED);
-    }
     deferred_first(cx, inst, None)?;
+    let mut copy = None;
     let desired = if shape == Shape::Wide {
         let e = cx.use_mem(expected)?;
         let n = cx.use_mem(replacement)?;
@@ -1453,6 +1456,11 @@ fn cmpxchg_generic<'a>(
         let n = generic_slot(cx, shape)?;
         reg_to_slot(cx, shape, pe, r);
         reg_to_slot(cx, shape, pn, n);
+        if ptr == expected {
+            copy = Some(ptr_copy(cx, pe)?);
+        } else if ptr == replacement {
+            copy = Some(ptr_copy(cx, pn)?);
+        }
         // Both are in their slots: three more registers are needed for
         // the size and the two orderings, more than a small pool has
         // beside these two.
@@ -1464,7 +1472,7 @@ fn cmpxchg_generic<'a>(
     let size = c_size(cx, shape.bytes())?;
     let success = c_order(cx, success)?;
     let failure = c_order(cx, failure)?;
-    let args = [size, CallArg::Value(ptr), CallArg::Addr(r), CallArg::Addr(n), success, failure];
+    let args = [size, ptr_arg(ptr, copy), CallArg::Addr(r), CallArg::Addr(n), success, failure];
     let Some(ok) = cx.call_runtime(RuntimeFn::AtomicCompareExchange, &args, None)? else {
         return cx.bug("__atomic_compare_exchange without a result");
     };

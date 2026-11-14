@@ -3041,10 +3041,12 @@ differences are listed below. x86-64 is TSO, so no ordering but
   every register is displaced before the loop, so the call displaces
   nothing. `llc` calls `__extendhfsf2`/`__truncsfhf2` in a `half` loop;
   hod's conversions are inline, with the same results.
-- **Refused, by name:** `x64:atomic-unaligned`, an under-aligned
-  store, `xchg` or `cmpxchg` whose value operand is the pointer operand
-  itself (AArch64 copies the pointer to a slot there; x86-64 not yet);
-  `x64:atomic-type`, an atomic of `fp128`, `x86_fp80`, a vector, an
+  A value operand that is the pointer itself (a store of `ptr %p` to
+  `%p`, its `xchg`, a `cmpxchg` with it as the expected or the new
+  value) is stored to its slot and to a slot of its own, the call's
+  pointer argument loaded from that one, as on AArch64.
+- **Refused, by name:** `x64:atomic-unaligned` is no longer returned
+  (WP-232); `x64:atomic-type`, an atomic of `fp128`, `x86_fp80`, a vector, an
   integer that is not 8, 16, 32, 64 or 128 bits, or an operation whose
   type does not fit it; `x64:atomic-bfloat-op`, `bfloat` arithmetic;
   `x64:atomic-float-op` and `x64:atomic-libatomic` are no longer

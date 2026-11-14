@@ -698,7 +698,7 @@ fn wide_atomics_without_cx16_call_libatomic() {
 #[test]
 fn under_aligned_atomics_run_against_libatomic() {
     use std::path::{Path, PathBuf};
-    let table = generic_table(true, false);
+    let table = generic_table(true, true);
     let module = |keep: &dyn Fn(&GenericFn) -> bool| {
         generic_module(&table, &aggr_gen::header(), "", aggr_gen::PIE_FLAGS, keep)
     };

@@ -853,6 +853,31 @@ impl Body {
             + bytes(&self.clauses)
     }
 
+    /// Replaces argument `index` of the call, `invoke` or `callbr` `inst`
+    /// with `value`; whether there was such an argument. The caller keeps
+    /// the body valid: `value` has the argument's type, and a module
+    /// value is the module's (WP-197: the depth of a frame intrinsic,
+    /// `spec/cli.md` "Always-inline").
+    pub fn set_call_arg(&mut self, inst: InstId, index: usize, value: Value) -> bool {
+        let Some(d) = self.insts.get(inst.index()) else { return false };
+        if !d.op.is_call() {
+            return false;
+        }
+        let (start, len) = (d.ops[0].bits() as usize, d.ops[1].bits() as usize);
+        let Some(call) = self.calls.get(d.ops[2].bits() as usize) else { return false };
+        // The list is the callee, then the arguments.
+        if index >= call.nargs as usize || index + 1 >= len {
+            return false;
+        }
+        match self.vals.get_mut(start + 1 + index) {
+            Some(slot) => {
+                *slot = value;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Translates every module id the body holds (types, constants,
     /// inline assembly, debug expressions and locations) from a fork's
     /// to the module's the fork was made of, by `remap`

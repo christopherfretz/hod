@@ -1298,7 +1298,23 @@ is the whole list of permitted differences:
     unset value under hod, which reads the slot before the prologue has
     stored the address (the parameters there are unset under both).
     From `prologue_end`, where `break make` and `step` stop, both print
-    the same.
+    the same;
+  - *a slot of a stack protector's guarded block* (WP-183,
+    `spec/codegen.md` §5.6.24 rule 2; class `stack protector`, only in a
+    module naming `ssp`, `sspstrong` or `sspreq`): hod reaches an
+    escaping local of a protected function through its pointer slot and
+    writes `DW_OP_fbreg N, DW_OP_deref`; `llc` moves the object itself
+    and writes `DW_OP_fbreg N`. Nothing else in the tree changes. The
+    pointer slots are stored by the entry code (and by each coroutine
+    stub) before `prologue_end`, so from where `break f` and `step` stop
+    both programs print the same: `tests/debug/stack_protector.c`
+    (arrays, a struct and scalars sharing a line with them; `info
+    locals` / `frame variable` after every line, `print` of an element
+    and of the whole object, `finish`) and `tests/debug/coroutine_ssp.cpp`
+    (coroutine.cpp's session under `-fstack-protector-strong`) pass under
+    gdb and lldb on x86-64 and AArch64, every linker, clang 19 and 22.
+    Before the pointer slot is stored (`break *f`) hod's variable is
+    unset, as the `sret` case above.
 - **value records** (WP-162, §6.23): hod writes a location list for
   every variable of `#dbg_value` records that has a range, where `llc`
   may write a single location expression or `DW_AT_const_value`; and its

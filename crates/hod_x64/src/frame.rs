@@ -204,6 +204,7 @@ pub struct FrameState {
 /// None in practice; `Internal` for a CFI row out of order.
 pub fn begin(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
     reset_local_sites();
+    crate::call::plan_vzeroupper(cx); // WP-203
     crate::cet::entry(cx); // WP-184: `endbr64` first
     put(cx, mc::push_r(RBP));
     cx.cfi(CfiOp::DefCfaOffset(16));
@@ -294,6 +295,9 @@ pub fn end(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
     // WP-125: the `sret` or return-in-memory address back in `rax`.
     crate::call::before_return(cx);
     teardown(cx)?;
+    if crate::call::vzeroupper_at_return() {
+        put(cx, mc::vzeroupper()); // WP-203: §8.7
+    }
     put(cx, mc::ret());
 
     for index in 0..cx.tail_exit_count() {
@@ -306,6 +310,9 @@ pub fn end(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
         // WP-125: `al` of a variadic function, as it arrived.
         crate::call::before_tail_exit(cx);
         teardown(cx)?;
+        if crate::call::vzeroupper_at_tail(index) {
+            put(cx, mc::vzeroupper()); // WP-203: §8.7
+        }
         cx.tail_branch_here(index, dwarf); // WP-113: `spec/dwarf.md` §6.19
         match exit.target {
             CallTarget::Sym(sym) => put_reloc(cx, mc::jmp_near(0), X64Reloc::Plt32, sym, 0)?,
@@ -475,6 +482,10 @@ pub fn emit_call(
 ) -> CgResult<()> {
     if variadic {
         put(cx, mc::mov_ri(Size::B, Reg::Rax, i64::from(vector_regs)));
+    }
+    // WP-203 (`spec/abi-x64.md` §8.7): after `mov al`, as `llc` writes it.
+    if crate::call::take_vzeroupper() {
+        put(cx, mc::vzeroupper());
     }
     match target {
         CallTarget::Sym(sym) => put_reloc(cx, mc::call(0), X64Reloc::Plt32, sym, 0),

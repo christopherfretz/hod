@@ -91,20 +91,42 @@ in `06-ptrattrs.ll`).
 
 ### 1.3 Target features
 
-`assign` takes a `Features { avx, avx512 }`. Without either, the rules
-below are complete. With `avx` (or anything that implies it), LLVM
-passes and returns a vector wider than 128 bits in one `ymm` (and with
-`avx512`, 512 bits in one `zmm`, and `<N x i1>` in a mask register);
-those signatures are refused as `x64:wide-vector-abi`:
+`assign` takes a `Features { avx, avx512, assumed }`. Without `avx`, the
+rules below are complete. With `avx` (or anything that implies it), LLVM
+passes and returns a vector wider than 128 bits in `ymm` registers (and
+with `avx512`, 512 bits in one `zmm` or two `ymm`, and `<N x i1>` in a
+mask register). **WP-203:** hod places the `ymm` ones as `llc` does
+(class `Wide`, §3.2, §4.3, §5.1, §9.1) and refuses the rest as
+`x64:wide-vector-abi`:
 
-- with `avx`: an argument or return value with a vector leaf of more
-  than 16 bytes;
-- with `avx512` besides: a vector of `i1`, whatever its length.
+- with `avx`: a vector LLVM makes a legal 256-bit vector (a power of two
+  of 32 bytes, or one widened to exactly 32 bytes: `<6 x float>`,
+  `<3 x double>`, `<5 x i32>`, `<24 x i8>`, `<9 x half>`) is one `ymm`
+  piece; a power of two of more than 32 bytes (`<16 x float>`,
+  `<64 x i8>`) is one `ymm` piece per 32 bytes; one widened beyond 32
+  bytes (`<12 x float>`, `<9 x float>`) travels element by element, as
+  without AVX;
+- with `avx512` besides: a vector of more than 32 bytes is refused (one
+  `zmm` or two `ymm` by the function's preferred vector width and
+  `min-legal-vector-width`, and hod has no EVEX encoder), and so is a
+  vector of `i1`, whatever its length;
+- with `assumed` (AVX is not known, only possible: a CPU hod does not
+  know, `+avx10.1-256`, `+avx10.2-256`, `+amx-avx512`): every vector the
+  first rule puts in `ymm` is refused;
+- a `preserve_mostcc` or `preserve_allcc` signature with a `ymm` piece is
+  refused (`llc`'s callee does not keep the upper halves its mask
+  claims, §1.2).
 
 A 128-bit or narrower vector travels as §4.3 says whatever the features.
 
-*Evidence:* `errors::every_name` (the refusals with the features, the
-same signatures accepted without them). The grid runs without AVX only.
+*Evidence:* `errors::every_name` (the refusals with the features);
+`abi::wide_vector_grid` (§11.1: 1,119 signatures with `ymm` pieces under
+`+avx`, `+avx2`, `sandybridge`, `haswell` and `znver3`, run against `llc`
+19 and 22 in both directions, zero disagreements; under `skylake-avx512`
+635 accepted signatures assigned as under `+avx` and passed by `llc` as
+under `+avx`, since the emulator has no AVX-512 to run them);
+`wide_vector_abi` (the C++ clang writes, and IR shapes, mixed with `llc`
+and run).
 
 **Whose features decide (WP-140).** The *compiled function's*: every
 signature a function's code touches (its own, and that of every call and
@@ -126,7 +148,11 @@ it); hod reproduces LLVM, it does not repair it.
    without AVX-512 (`CPUS_WITHOUT_AVX512`: `x86-64-v3`, `haswell`,
    `skylake`, `znver3`, ...): `avx`. Any other CPU, known or not: both
    (an unknown CPU may have AVX-512; the answer is a refusal, never a
-   wrong placement).
+   wrong placement). **WP-203:** AVX is *known* for the 61 CPUs `llc` 22
+   gives it (`CPUS_WITH_AVX`, measured: a `<4 x double>` returned in
+   `ymm0`), and only *assumed* (`assumed`) for any other CPU that is not
+   in `CPUS_WITHOUT_AVX`. `llc` 19 does not know `diamondrapids`,
+   `novalake` and `wildcatlake` and gives them no AVX; hod follows 22.
 2. Then each `+name`/`-name` of `"target-features"` in order: `+avx512*`
    or `+avx10*` sets both (and `+amx-avx512`, which `llc` 22 does not
    make imply AVX-512: an over-approximation); `+avx`, `+avx2`, `+fma`,
@@ -135,7 +161,12 @@ it); hod reproduces LLVM, it does not repair it.
    each) or any other `+avx*` sets `avx`;
    `-sse`, `-sse2`, `-sse3`, `-ssse3`, `-sse4.1`, `-sse4.2` or `-avx`
    (what AVX implies) clears both; `-avx2`, `-fma`, `-f16c` or `-avx512f`
-   (what AVX-512 implies) clears `avx512`.
+   (what AVX-512 implies) clears `avx512`. **WP-203:** each of these that
+   sets `avx` makes it known (measured with `llc` 19 and 22: each puts a
+   `<4 x double>` in `ymm0`), except `+avx10.1-256` (19 only),
+   `+avx10.2-256` (neither) and `+amx-avx512` (neither), which leave it
+   as it was; `+avx10.1`, `+avx10.2` and `+avx10.2-512`, which 19 does not
+   know, follow 22. `assumed` is `avx` without it known.
 
 The command line's `-mcpu`/`-mattr` do not reach a function and do not
 take part (`hod_cg::Options` has no field for them). An over-approximation
@@ -256,6 +287,13 @@ stack slot. Its class (§4) is **general**, **vector** (`half`, `float`,
   16 for an `fp128` or vector piece.
 - **x87.** Always the stack: a 16-byte slot aligned to 16, of which the
   first 10 bytes are the value.
+- **Wide (WP-203, §1.3).** Up to 32 bytes of a vector under AVX. If
+  V < 8, the piece goes to `ymm[V]` (the `xmm[V]` register's full
+  width) and V increases by 1: wide and vector pieces share the eight
+  registers. Otherwise it goes to the stack: a 32-byte slot aligned to
+  32. In a variadic signature (`sig.variadic`, named arguments
+  included) a wide piece always goes to the stack, as `llc`'s
+  `CCIfNotVarArg` rule does, and V does not count it.
 
 The piece's bytes are at the slot's lowest addresses; the rest of the
 slot is unspecified, except as §7 says. (LLVM writes a narrow stack
@@ -413,7 +451,17 @@ LLVM 19 `s+0`, `s+8`), as it does an `i128` leaf (§4.2).
 The other bits of a lane are unspecified: LLVM's producer writes 0 or
 1, LLVM's consumer reads the low bit only.
 
-With `avx`/`avx512`, §1.3 applies before this table.
+With `avx`/`avx512`, §1.3 applies before this table. **WP-203:** with
+`avx` (known), the rows change as follows; every other row is the same:
+
+| vector, under `avx` | pieces |
+|---|---|
+| N a power of two, N·E = 32 | one wide piece of 32 bytes (`<8 x float>`, `<4 x i64>`, `<32 x i8>`, `<16 x half>`, `<4 x ptr>`) |
+| N a power of two, N·E > 32 | N·E/32 wide pieces of 32 bytes (`<16 x float>`: two `ymm`; `<32 x float>`: four); refused under `avx512` |
+| N not a power of two, `next_pow2(N)`·E = 32 | one wide piece of N·E bytes (`<6 x float>`, `<3 x double>`, `<5 x i32>`, `<7 x i32>`, `<3 x i64>`, `<3 x ptr>`, `<24 x i8>`, `<10 x i16>`, `<9 x half>`): the bytes past N·E in the register are unspecified |
+| N not a power of two, `next_pow2(N)`·E > 32 | N pieces, one per element, as without AVX (`<12 x float>`, `<9 x float>`, `<5 x i64>`); as a result, memory (§5.2) when they do not fit the return registers |
+| vectors of `i1` | as without AVX; refused under `avx512` |
+
 
 *Evidence:* `table::vectors`; the grid's `vectors()` (every element
 type at the lengths above, under every pressure, as returns); `07-vec.ll`,
@@ -463,6 +511,7 @@ The return value's type is broken into leaves and pieces as in §4 (an
 | `float`, `double` | `xmm0`, `xmm1` (under `fastcc` also `xmm2`), then `st0`, `st1` |
 | `fp128` | `xmm0`, `xmm1` |
 | vector | `xmm0`, `xmm1`, `xmm2`, `xmm3` |
+| wide (WP-203) | `ymm0`, `ymm1`, `ymm2`, `ymm3` (the same four registers as the vector row) |
 | x87 (`x86_fp80`) | `st0`, `st1` |
 
 "First free" is over the registers already taken by earlier pieces of
@@ -494,6 +543,12 @@ until WP-131). An `x86_fp80` in `st0`/`st1` is the 10-byte image.
 | `{ double × 3 }`, `<3 x double>` | `xmm0`, `xmm1`, `st0` |
 | `{ i8, double, double, float }` | `al`; `xmm0`, `xmm1`, `st0` |
 | `{ float × 4 }` | one leaf each: `xmm0`, `xmm1`, `st0`, `st1` |
+
+Under `avx` (WP-203): `<8 x float>`, `<6 x float>` `ymm0`;
+`{ <4 x double>, <4 x double> }` `ymm0`, `ymm1`; `{ <4 x float>, <8 x float> }`
+`xmm0`, `ymm1`; `<16 x float>` `ymm0`, `ymm1`; `{ <8 x float>, <16 x float> }`
+`ymm0`..`ymm2`; `<32 x float>` `ymm0`..`ymm3`; `<64 x float>`, `<12 x float>`
+memory.
 
 `ret_attrs` may hold only `zeroext` or `signext` (§7), and only on an
 integer; a memory attribute there is `abi:invalid-signature`, `nest`
@@ -820,6 +875,74 @@ encoding and the `PReg` numbering of §2. `hod_x64::abi` provides
 register, and `14-frame.llc22.s` shows LLVM's `.cfi_offset` for the
 callee-saved registers it pushes.
 
+### 8.7 `ymm` pieces and `vzeroupper` (WP-203)
+
+**Moves.** A wide piece (§3.2) is moved between its register and a frame
+slot by the target's `load` and `store` hooks with `vmovdqu` (VEX.256)
+when it is 32 bytes. A shorter one (`<6 x float>`, 24 bytes) goes
+through a 32-byte area below `rsp`: its bytes are copied there through
+`r11` and the register loaded from it whole (the bytes past the value
+are then whatever was below `rsp`, which §4.3 leaves unspecified); a
+store writes the register's low 16 bytes directly and the rest from the
+area. hod has no `vextractf128`/`vinsertf128` form yet; the area keeps
+the encoder unchanged.
+
+**The argument area.** `llc`'s callee reads a wide stack piece with
+`vmovaps`, so its 32-byte slot must be 32-aligned at the call. When a
+call (not `musttail`) has a wide piece on the stack, hod aligns the
+stack-argument area to 32 with the sequence it uses for a `byval`
+aligned above 16 (`spec/codegen.md` §5.6.18), with `a = 32`. A
+`musttail` call writes its caller's incoming area, which the caller's
+own caller aligned.
+
+**`vzeroupper`.** hod writes `vzeroupper` where `llc -O0` does
+(`X86VZeroUpper`), planned over the IR when the function begins
+(`call::plan_vzeroupper`):
+
+1. Only in a function whose AVX is known (§1.3, not `assumed`) and whose
+   tuning has `vzeroupper`: every CPU but `btver2`, `knl` and `knm`, the
+   last `+vzeroupper`/`-vzeroupper` of `"target-features"` deciding
+   (`FnFeatures::vzeroupper`).
+2. A state per program point, dirty or clean. A block starts dirty when
+   a predecessor ends dirty; the entry block when an argument with a wide
+   piece in a register has a use (an unused one is not live in, as at
+   `llc -O0`).
+3. A call or `invoke` of a function (not an intrinsic, not inline
+   assembly): if a `byval` pointee or a stack piece of it has a vector of
+   32 bytes or more, the copy before it makes the state dirty. Then, if
+   its assignment has a wide piece in a register, the state becomes
+   dirty; otherwise, if dirty, a `vzeroupper` goes right before the call
+   instruction (after `mov al`) and the state becomes clean. A `resume`
+   is a call (`_Unwind_Resume`). A `musttail` call ends its block.
+4. A `ret`: if the function's own assignment has a wide piece in a
+   register, the state becomes dirty; otherwise, if dirty, a
+   `vzeroupper` goes before the `ret` (after the frame's teardown).
+5. Any other instruction whose result or operand type has a vector of
+   32 bytes or more (not of `i1`) as a leaf makes the state dirty.
+
+Where hod's code differs from `llc`'s, by rule:
+
+- hod has one shared `ret`; it gets the `vzeroupper` when any `ret` of
+  the function would. `llc` writes it per returning block.
+- A tail exit's `vzeroupper` comes after the teardown, before the `jmp`,
+  where `llc` writes it.
+- An intrinsic is no call, also when hod or `llc` lowers it to a library
+  call (`memcpy` and the like): no `vzeroupper` before that call.
+- The rule is over IR types. `llc`'s `SelectionDAG` does integer
+  arithmetic on 256-bit vectors without AVX2 in two `xmm` halves and may
+  delete a store of a value loaded from the same address; `FastISel`
+  (`-O0`'s default) moves those through `ymm` as the rule says, and hod
+  follows `FastISel`.
+- `llc` 19 knows no `diamondrapids`, `novalake` or `wildcatlake` and
+  writes no `vzeroupper` for them; hod follows 22 (§1.3).
+
+`vzeroupper` is a performance matter, never a correctness one: the
+upper halves are dead at a call and a return under this convention.
+
+*Evidence:* `vzeroupper::vzeroupper_where_llc_writes_it` (15 functions,
+one per shape of the rule, under nine machines, against `llc` 19 and 22
+with `FastISel` and `SelectionDAG`).
+
 ## 9. Variadic functions
 
 ### 9.1 Assignment
@@ -835,6 +958,13 @@ equals their number.
 registers the call uses, named and variable. The caller passes it in
 `al` (the psABI allows any upper bound up to 8; LLVM writes the exact
 count, and so does hod).
+
+**WP-203.** Under AVX a wide piece of a variadic signature, named or
+not, goes to the stack (a 32-byte slot aligned to 32, §3.2) and is not
+counted in `al`. clang passes an unnamed `__m256` as `byval` aligned to
+32, which is §6.2's. The register save area keeps 16 bytes per `xmm`
+(§9.3), as `llc` does with AVX; a `va_arg` of a wide vector reads the
+overflow area, which clang's IR does itself and hod compiles as loads.
 
 *Evidence:* `table::variadic`; `variadic::variadic_against_c` (C
 callees whose prologue skips saving `xmm` when `al` is 0); the grid's
@@ -891,7 +1021,7 @@ functions); `08-varargs.ll`.
 | `abi:vector-element` | a vector of an element §4.3 does not list (`i24`, `i256`, …) |
 | `x64:vector-i128-split` | a vector of `i128` argument whose first element is partly in registers, or which is on the stack from an offset not a multiple of 16 (§4.3) |
 | `x64:mask-vector` | `<N x i1>` with N not 1, 2, 4, 8 or 16 (§4.3) |
-| `x64:wide-vector-abi` | a wide vector, or an `i1` vector, under AVX/AVX-512 (§1.3) |
+| `x64:wide-vector-abi` | under AVX-512 a vector of more than 32 bytes or of `i1`; under assumed AVX a vector AVX would put in `ymm`; a `preserve_*` signature with a `ymm` piece (§1.3) |
 | `x64:nest` | `nest` (§6.3) |
 | `abi:swiftself`, `abi:swifterror`, `abi:swiftasync`, `abi:inalloca`, `abi:preallocated`, `abi:elementtype` | §6.6 |
 | `abi:byval-align` | a `byval` alignment above 2^30, or not a power of two (§6.2) |
@@ -935,6 +1065,9 @@ natively.
 | `grid::random_grid` | seeded random signatures (400; 8 000 under `HOD_ABI_GRID=full`) |
 | `data::data_signatures_against_llc` | every function of `tests/abi/data/*.ll` |
 | `variadic::variadic_against_c` | variable arguments against C walkers (§9) |
+| `wide::wide_vector_grid` | WP-203: wide vectors of every element type and length class (§4.3), aggregates of them, more than eight, mixed with every class, `byval`/`sret`, variadic; each machine of §1.3's evidence; the AVX-512 one by convention equality (`llc -stop-after=finalize-isel`) with `+avx`, since `qemu`'s TCG has no AVX-512. Runs under `qemu-x86_64 -cpu max`; the harness aligns each blob slot over 16 bytes to 64, as `llc` stores a wide value with its type's alignment |
+| `vzeroupper::vzeroupper_where_llc_writes_it` | WP-203: where `vzeroupper` goes, against `llc` 19 and 22 (§8.7) |
+| `wide_vector_abi::{clang_wide_vectors_mix, ir_wide_vectors_mix}` | WP-203: clang 19/22's `__m256` aggregates, more than eight, variadic and indirect calls, and IR shapes (pairs, widened, split, `sret`/`byval` aligned to 32, `musttail`, `invoke`), each unit built by `llc`, hod and hod under every stress mode, mixed both ways, linked by each linker, run under `qemu-x86_64 -cpu max` |
 
 Each runs against the six configurations of §1.1.
 

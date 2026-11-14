@@ -161,7 +161,7 @@ pub fn all_types() -> Vec<Ty> {
     all
 }
 
-fn seq(parts: &[(&Ty, usize)]) -> Vec<Ty> {
+pub fn seq(parts: &[(&Ty, usize)]) -> Vec<Ty> {
     parts.iter().flat_map(|&(ty, count)| std::iter::repeat_n(ty.clone(), count)).collect()
 }
 
@@ -456,7 +456,7 @@ fn random_type(rng: &mut Rng, pool: &[Ty], depth: u32) -> Ty {
 }
 
 /// One random signature; it may be one `assign` refuses.
-fn random_case(rng: &mut Rng, pool: &[Ty]) -> Case {
+pub fn random_case(rng: &mut Rng, pool: &[Ty]) -> Case {
     let count = if rng.chance(4) { rng.below(20) } else { rng.below(9) } as usize;
     let variadic = rng.chance(8);
     let fixed = if variadic { rng.below(count as u64 + 1) as usize } else { count };

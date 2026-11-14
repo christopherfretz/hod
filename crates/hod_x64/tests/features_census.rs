@@ -520,7 +520,10 @@ fn configurations(names: &BTreeSet<String>) -> Vec<(String, Option<String>)> {
 /// §5.6.2, §5.6.9, `spec/abi-x64.md` §1.3: for every configuration hod
 /// accepts, every signature `llc` 19 or 22 passes, returns or calls
 /// differently from a function without features is one hod refuses under
-/// the function's AVX and AVX-512 (`x64:wide-vector-abi`). A configuration
+/// the function's AVX and AVX-512 (`x64:wide-vector-abi`), or one `llc`
+/// passes exactly as under plain `+avx` (or `+avx512f`) on `x86-64`: the
+/// convention hod's `ymm` assignment follows, which the wide grid checks
+/// against `llc` (`abi::wide_vector_grid`). A configuration
 /// `llc` cannot compile (a CPU it does not know, `-x87` with an
 /// `x86_fp80`) or hod refuses by the feature needs no evidence.
 #[test]
@@ -549,7 +552,16 @@ fn feature_conventions_agree_with_llc() {
             let text = probe_module(&[("x86-64".into(), None)]);
             mir_conventions(&scratch, &llc, major, "base", &text)
         };
-        let (mut checked, mut differing, mut preserve_all) = (0, 0, 0);
+        // The conventions hod follows when it compiles a probe: `p0_*`
+        // under AVX, `p1_*` under AVX-512.
+        let reference = {
+            let text = probe_module(&[
+                ("x86-64".into(), Some("+avx".into())),
+                ("x86-64".into(), Some("+avx512f".into())),
+            ]);
+            mir_conventions(&scratch, &llc, major, "reference", &text)
+        };
+        let (mut checked, mut differing, mut preserve_all, mut followed) = (0, 0, 0, 0);
         for (chunk_no, chunk) in usable.chunks(64).enumerate() {
             let text = probe_module(chunk);
             let got = mir_conventions(&scratch, &llc, major, &format!("c{chunk_no}"), &text);
@@ -576,19 +588,31 @@ fn feature_conventions_agree_with_llc() {
                     assert!(n != usize::MAX, "llc {major} {cpu} {f:?}: the variadic call");
                     let compiles =
                         *verdicts.entry((n, abi)).or_insert_with(|| hod_compiles(n, abi));
+                    if !compiles {
+                        continue;
+                    }
                     assert!(
-                        !compiles,
-                        "llc {major} {cpu} {f:?}: {} differs and hod compiles it with {abi:?}\n\
+                        abi.0,
+                        "llc {major} {cpu} {f:?}: {} differs and hod compiles it without AVX\n\
                          llc: {theirs:?}\nwithout features: {base:?}",
                         SIGS[n].1
                     );
+                    let own = &reference[&format!("p{}_{s}", usize::from(abi.1))];
+                    assert!(
+                        theirs == own,
+                        "llc {major} {cpu} {f:?}: {} differs and hod compiles it with {abi:?}\n\
+                         llc: {theirs:?}\nunder the reference: {own:?}",
+                        SIGS[n].1
+                    );
+                    followed += 1;
                 }
                 checked += 1;
             }
         }
         eprintln!(
             "x64 wp201: llc {major}: {checked} configurations, {differing} probes differ \
-             (all refused by hod), {preserve_all} of them preserve_allcc under AVX"
+             ({followed} compiled by hod as under the reference, the rest refused), \
+             {preserve_all} of them preserve_allcc under AVX"
         );
     }
 }

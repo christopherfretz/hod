@@ -1210,6 +1210,58 @@ pub fn materialize(cx: &mut FnCx<'_, X64>, reg: PReg, value: Value) -> Option<Cg
     Some(Ok(()))
 }
 
+// ---- 256-bit vectors across calls (WP-203, `spec/abi-x64.md` §8.7) ----
+
+/// The bytes a `ymm` holds.
+const YMM_BYTES: u32 = 32;
+
+/// WP-203: loads the `bytes` bytes (17 to 32) at `src` into `ymm<x>`, the
+/// bytes above them unspecified: one `vmovdqu` for 32; otherwise the
+/// bytes are copied through `r11` to 32 bytes below the stack pointer
+/// (`lea rsp, [rsp - 32]` first), which `vmovdqu` then loads, so nothing
+/// beyond the value is read. Writes `r11` and `ymm<x>`; flags kept.
+pub fn load_wide(cx: &mut FnCx<'_, X64>, x: Xmm, src: FrameRef, bytes: u32) {
+    use mc::{V2, Width};
+    if bytes == YMM_BYTES {
+        frame_inst(cx, src, |m| mc::v2_rm(V2::Movdqu, Width::Y, x, m));
+        return;
+    }
+    let shift = YMM_BYTES as i32;
+    put(cx, mc::lea(Size::Q, Reg::Rsp, Mem::base(Reg::Rsp, -shift)));
+    for (at, size) in crate::common::pieces(bytes.min(YMM_BYTES)) {
+        let store = crate::common::exact_size(size).unwrap_or(Size::Q);
+        crate::common::frame_inst_shifted(cx, src.offset_by(at), shift, |m| gpr_load(R11, m, size));
+        put(cx, mc::mov_mr(store, Mem::base(Reg::Rsp, at as i32), R11));
+    }
+    put(cx, mc::v2_rm(V2::Movdqu, Width::Y, x, Mem::base(Reg::Rsp, 0)));
+    put(cx, mc::lea(Size::Q, Reg::Rsp, Mem::base(Reg::Rsp, shift)));
+}
+
+/// WP-203: stores the low `bytes` bytes (17 to 32) of `ymm<x>` to `dst`,
+/// and no byte more: one `vmovdqu` for 32; otherwise the low 16 by
+/// `movups`, and the rest from a copy of the register 32 bytes below the
+/// stack pointer, through `r11`. Writes `r11`; flags kept.
+pub fn store_wide(cx: &mut FnCx<'_, X64>, x: Xmm, dst: FrameRef, bytes: u32) {
+    use mc::Width;
+    if bytes == YMM_BYTES {
+        frame_inst(cx, dst, |m| mc::vmovdqu_mr(Width::Y, m, x));
+        return;
+    }
+    store_fpr(cx, x, dst, 16);
+    let shift = YMM_BYTES as i32;
+    put(cx, mc::lea(Size::Q, Reg::Rsp, Mem::base(Reg::Rsp, -shift)));
+    put(cx, mc::vmovdqu_mr(Width::Y, Mem::base(Reg::Rsp, 0), x));
+    for (at, size) in crate::common::pieces(bytes.min(YMM_BYTES) - 16) {
+        let at = at + 16;
+        let store = crate::common::exact_size(size).unwrap_or(Size::Q);
+        put(cx, gpr_load(R11, Mem::base(Reg::Rsp, at as i32), size));
+        crate::common::frame_inst_shifted(cx, dst.offset_by(at), shift, |m| {
+            mc::mov_mr(store, m, R11)
+        });
+    }
+    put(cx, mc::lea(Size::Q, Reg::Rsp, Mem::base(Reg::Rsp, shift)));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

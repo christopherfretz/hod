@@ -474,8 +474,10 @@ const REFUSED: &[(&str, &str)] = &[
     ("x: nop", "asm:label"),
     (".p2align 4", "asm:directive/p2align"),
     (".text", "asm:directive/text"),
-    ("jmp foo", "asm:operand/symbol"),
-    ("call foo", "asm:mnemonic/call"),
+    ("jmp $foo", "asm:operand/form"),
+    ("call foo@gotpcrel", "asm:operand/form"),
+    ("callw foo", "asm:mnemonic/callw"),
+    ("lock call foo", "asm:operand/form"),
     ("jmp 3f", "asm:operand/label"),
     ("jmp *%rax", "asm:operand/form"),
     ("inc (%rax)", "asm:operand/form"),
@@ -595,6 +597,19 @@ const SYMBOLIC: &[&str] = &[
     "nop\n.reloc ., BFD_RELOC_NONE, S",
     "nop\n.reloc ., BFD_RELOC_NONE, S+8",
     "nop\n.reloc ., R_X86_64_NONE, S-4\nnop",
+    // §14: a branch or call to a symbol, near, `R_X86_64_PLT32`.
+    "call S",
+    "callq S",
+    "call S@PLT",
+    "call S+16",
+    "jmp S",
+    "jmp S@plt",
+    "jne S",
+    "jae S-8",
+    "call S+0",
+    "call S@PLT+4",
+    "jmp 1f\ncall S\n1:",
+    "nop\n1: call S\njmp 1b",
     "jmp 1f\n.quad 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0\n.reloc ., BFD_RELOC_NONE, S\n1:",
 ];
 
@@ -646,11 +661,16 @@ fn symbol_fields_match_llvm_mc() {
         let out = run(&objdump, ["-r".as_ref(), obj.as_os_str()]);
         assert!(out.success(), "llvm-objdump: {}", out.stderr_text());
         let text = out.stdout_text();
-        let theirs: Vec<String> = text
+        let mut theirs: Vec<String> = text
             .lines()
             .filter(|l| l.contains("R_X86_64"))
             .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
             .collect();
+        // llvm-mc writes a `.reloc` field when its fragment closes, out of
+        // offset order; the set of fields is what is compared.
+        theirs.sort();
+        let mut lines = lines.clone();
+        lines.sort();
         assert_eq!(lines, theirs, "LLVM {major}: the relocations differ");
         println!("hod_asm x64: {} symbol fields equal llvm-mc-{major}'s", lines.len());
     }

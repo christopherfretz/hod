@@ -1,7 +1,8 @@
 //! Module-level assembly (`module asm`) for AArch64 ELF (`spec/asm.md`
-//! §9): the statements of the module's text read into sections, symbols
-//! and relocations, as LLVM's integrated assembler (`llc`, which emits
-//! the module's assembly before anything else) would write them.
+//! §9) and x86-64 ELF (§14, [`assemble_module_x64`]): the statements of
+//! the module's text read into sections, symbols and relocations, as
+//! LLVM's integrated assembler (`llc`, which emits the module's assembly
+//! before anything else) would write them.
 //!
 //! [`assemble_module`] keeps a section per name the text switches to
 //! (`.text`, `.data`, `.bss`, `.section`, `.pushsection`/`.popsection`,
@@ -23,7 +24,7 @@
 //! everything else is a relocation against the symbol. A reference to a
 //! `.set` constant is that constant.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::a64::{Features, RefKind, encode, operand, split_label, split_mnemonic};
 use crate::expr::{Cursor, Name, Value};
@@ -105,13 +106,16 @@ pub enum Mapping {
 /// The field a relocation fills.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RelocKind {
-    /// An instruction's PC-relative field.
+    /// An AArch64 instruction's PC-relative field.
     Code(RefKind),
-    /// `.quad`: `R_AARCH64_ABS64`.
+    /// An x86-64 instruction's field (§14): a memory operand's, or a
+    /// branch's or call's (`R_X86_64_PLT32`).
+    X64(crate::x64::RefKind),
+    /// `.quad`: `R_AARCH64_ABS64`, `R_X86_64_64`.
     Abs64,
-    /// `.word`: `R_AARCH64_ABS32`.
+    /// `.word` (AArch64), `.long`: `R_AARCH64_ABS32`, `R_X86_64_32`.
     Abs32,
-    /// `.hword`: `R_AARCH64_ABS16`.
+    /// `.hword` (AArch64), `.short`: `R_AARCH64_ABS16`, `R_X86_64_16`.
     Abs16,
 }
 
@@ -230,6 +234,16 @@ impl Symbol {
     }
 }
 
+/// A `.symver name, alias` directive (x86-64 only, §14).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Symver {
+    /// The symbol of `name`, an index into [`ModuleCode::symbols`].
+    pub sym: u32,
+    /// The versioned name as written: `base@V`, `base@@V` or
+    /// `base@@@V`.
+    pub alias: String,
+}
+
 /// What module-level assembly puts in the object.
 #[derive(Clone, Default, PartialEq, Eq, Debug)]
 pub struct ModuleCode {
@@ -238,6 +252,8 @@ pub struct ModuleCode {
     pub sections: Vec<Section>,
     /// The symbols, in the order the text first names them.
     pub symbols: Vec<Symbol>,
+    /// The `.symver` directives, in order (x86-64 only).
+    pub symvers: Vec<Symver>,
 }
 
 impl ModuleCode {
@@ -263,6 +279,18 @@ enum Fill {
     Local { n: u32, forward: bool, kind: RefKind },
     /// A field to a named symbol.
     Named { sym: u32, kind: RelocKind },
+    /// An x86-64 branch's or call's displacement to a numeric label: one
+    /// byte (`short`) or four.
+    XLocal { n: u32, forward: bool, short: bool },
+    /// An x86-64 branch's or call's displacement to a named symbol.
+    XNamed { sym: u32, short: bool, kind: crate::x64::RefKind },
+}
+
+/// The instruction set of the text.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Isa {
+    A64(Features),
+    X64,
 }
 
 struct Pending {
@@ -275,7 +303,14 @@ struct Pending {
 
 struct State<'t> {
     out: &'t mut ModuleCode,
-    features: Features,
+    isa: Isa,
+    /// x86-64: the statements whose branch takes the near form.
+    near: &'t HashSet<u32>,
+    /// x86-64: the short branches found out of reach or relocated, to
+    /// take the near form in the next pass.
+    grow: Vec<u32>,
+    /// x86-64: a prefix statement waiting for its instruction.
+    prefix: Option<crate::x64::Prefix>,
     names: HashMap<String, u32>,
     current: u32,
     previous: Option<u32>,
@@ -294,13 +329,53 @@ struct State<'t> {
 /// The `asm:*` refusal of the first statement, operand or symbol use
 /// that is not reproduced (`spec/asm.md` §9).
 pub fn assemble_module(text: &str, features: Features, out: &mut ModuleCode) -> R<()> {
-    out.sections.clear();
-    out.symbols.clear();
     let mut cleaned = String::new();
     crate::text::clean(text, &mut cleaned)?;
+    run(&cleaned, Isa::A64(features), &HashSet::new(), out).map(|_| ())
+}
+
+/// Assembles module-level assembly `text` for x86-64 into `out` (cleared
+/// first): §9's directives with x86-64's sizes (`.word` is 2 bytes,
+/// `.align` takes bytes), §10's instructions, branches and calls to
+/// labels and symbols, `.symver` (`spec/asm.md` §14).
+///
+/// A branch is short until its target is out of reach or needs a
+/// relocation, as LLVM's relaxation decides it: the text is assembled
+/// again with the branches found so taking the near form, until none is
+/// left (the least fixed point, which is LLVM's).
+///
+/// # Errors
+/// The `asm:*` refusal of the first statement, operand or symbol use
+/// that is not reproduced.
+pub fn assemble_module_x64(text: &str, out: &mut ModuleCode) -> R<()> {
+    let mut cleaned = String::new();
+    crate::x64::clean(text, &mut cleaned)?;
+    let mut near = HashSet::new();
+    loop {
+        let grow = run(&cleaned, Isa::X64, &near, out)?;
+        if grow.is_empty() {
+            return Ok(());
+        }
+        for seq in grow {
+            if !near.insert(seq) {
+                // Each pass only grows; a branch asked twice is a bug.
+                return fail(op_reason::REACH);
+            }
+        }
+    }
+}
+
+/// One pass over the cleaned text: the statements to grow (x86-64).
+fn run(cleaned: &str, isa: Isa, near: &HashSet<u32>, out: &mut ModuleCode) -> R<Vec<u32>> {
+    out.sections.clear();
+    out.symbols.clear();
+    out.symvers.clear();
     let mut st = State {
         out,
-        features,
+        isa,
+        near,
+        grow: Vec::new(),
+        prefix: None,
         names: HashMap::new(),
         current: 0,
         previous: None,
@@ -309,19 +384,24 @@ pub fn assemble_module(text: &str, features: Features, out: &mut ModuleCode) -> 
         pending: Vec::new(),
         seq: 0,
     };
-    st.out.sections.push(new_section(".text", SectionKind::Text));
-    for (seq, stmt) in crate::text::statements(&cleaned).enumerate() {
+    st.out.sections.push(new_section(".text", SectionKind::Text, isa));
+    for (seq, stmt) in crate::text::statements(cleaned).enumerate() {
         st.seq = u32::try_from(seq).map_err(|_| Refusal(op_reason::REACH))?;
         st.statement(stmt)?;
+    }
+    if st.prefix.is_some() {
+        return fail(op_reason::FORM);
     }
     st.resolve()
 }
 
-fn new_section(name: &str, kind: SectionKind) -> Section {
+fn new_section(name: &str, kind: SectionKind, isa: Isa) -> Section {
     Section {
         name: name.to_owned(),
         kind,
-        align: if kind == SectionKind::Text { 4 } else { 1 },
+        // x86-64: LLVM gives a code section alignment 1 until the text
+        // asks for more (`.text` is 4 to llc: the caller's `.text`).
+        align: if kind == SectionKind::Text && isa != Isa::X64 { 4 } else { 1 },
         bytes: Vec::new(),
         size: 0,
         relocs: Vec::new(),
@@ -454,7 +534,7 @@ impl State<'_> {
         if let Some(i) = self.out.sections.iter().position(|s| s.name == name) {
             return i as u32;
         }
-        self.out.sections.push(new_section(name, kind));
+        self.out.sections.push(new_section(name, kind, self.isa));
         (self.out.sections.len() - 1) as u32
     }
 
@@ -478,6 +558,9 @@ impl State<'_> {
     }
 
     fn mark(&mut self, to: Mapping) {
+        if self.isa == Isa::X64 {
+            return;
+        }
         let s = self.section();
         if s.kind != SectionKind::Text {
             return;
@@ -513,6 +596,9 @@ impl State<'_> {
             return Ok(());
         }
         let (head, rest) = split_mnemonic(stmt);
+        if self.isa == Isa::X64 && self.prefix.is_some() && head.starts_with('.') {
+            return fail(op_reason::FORM);
+        }
         // `name = value`.
         if let Some(value) = rest.strip_prefix('=') {
             return self.set(head, value);
@@ -528,6 +614,9 @@ impl State<'_> {
     }
 
     fn label(&mut self, label: &str) -> R<()> {
+        if self.prefix.is_some() {
+            return fail(op_reason::FORM);
+        }
         let offset = self.section().size;
         if let Ok(n) = label.parse::<u32>() {
             self.locals.push(LocalDef { n, seq: self.seq, section: self.current, offset });
@@ -564,11 +653,15 @@ impl State<'_> {
         if self.section().kind != SectionKind::Text {
             return fail(other::SECTION);
         }
+        let features = match self.isa {
+            Isa::A64(features) => features,
+            Isa::X64 => return self.instruction_x64(mnemonic, rest),
+        };
         if !self.section().size.is_multiple_of(4) {
             return fail(other::UNALIGNED);
         }
         let ops = operand::parse(rest)?;
-        let e = encode::encode(mnemonic, ops.as_slice(), self.features)?;
+        let e = encode::encode(mnemonic, ops.as_slice(), features)?;
         self.mark(Mapping::Code);
         let offset = self.section().size;
         if let Some((kind, to)) = e.fixup {
@@ -602,7 +695,93 @@ impl State<'_> {
         Ok(())
     }
 
+    /// An x86-64 instruction statement (§14).
+    fn instruction_x64(&mut self, mnemonic: &str, rest: &str) -> R<()> {
+        use crate::x64::{Jump, Stmt};
+        let mut bytes = Vec::new();
+        let mut prefix = self.prefix.take();
+        let stmt = crate::x64::instruction(mnemonic, rest, &mut prefix, &mut bytes)?;
+        self.prefix = prefix;
+        let (seq, section, offset) = (self.seq, self.current, self.section().size);
+        match stmt {
+            Stmt::Bytes(field) => {
+                if let Some(p) = field {
+                    let sym = self.symbol(plain_name(&p.name)?);
+                    self.pending.push(Pending {
+                        seq,
+                        section,
+                        offset: offset + p.at as u64,
+                        addend: p.addend,
+                        fill: Fill::Named { sym, kind: RelocKind::X64(p.kind) },
+                    });
+                }
+            }
+            Stmt::Jump(jump, target, kind) => {
+                let near = jump == Jump::Call || self.near.contains(&seq);
+                let inst = jump.inst(near, 0)?;
+                let site = inst.site().ok_or(Refusal(op_reason::FORM))?;
+                let (fill, addend) = match target {
+                    Value { name: Some(Name::Local(n, forward)), constant: 0 } => {
+                        (Fill::XLocal { n, forward, short: !near }, 0)
+                    }
+                    Value { name: Some(Name::Local(..)), .. } => {
+                        return fail(op_reason::EXPRESSION);
+                    }
+                    Value { name: Some(Name::Sym(s)), constant } => {
+                        let sym = self.symbol(plain_name(s)?);
+                        let addend =
+                            constant.checked_add(site.addend).ok_or(Refusal(op_reason::RANGE))?;
+                        (Fill::XNamed { sym, short: !near, kind }, addend)
+                    }
+                    Value { name: None, .. } => return fail(op_reason::SYMBOL),
+                };
+                self.pending.push(Pending {
+                    seq,
+                    section,
+                    offset: offset + site.offset as u64,
+                    addend,
+                    fill,
+                });
+                bytes.extend_from_slice(inst.bytes());
+            }
+        }
+        let s = self.section();
+        s.bytes.extend_from_slice(&bytes);
+        s.size += bytes.len() as u64;
+        Ok(())
+    }
+
+    /// `.symver name, alias` (x86-64, §14): `alias` is `base@V`,
+    /// `base@@V` or `base@@@V`, each part a plain name.
+    fn symver(&mut self, rest: &str) -> R<()> {
+        let parts = split_commas(rest);
+        let [name, alias] = parts.as_slice() else { return fail(op_reason::FORM) };
+        let Some(at) = alias.find('@') else { return fail(op_reason::SYNTAX) };
+        let (base, version) = alias.split_at(at);
+        let version = version.trim_start_matches('@');
+        let ats = alias.len() - base.len() - version.len();
+        if ats > 3 || version.contains('@') {
+            return fail(op_reason::SYNTAX);
+        }
+        plain_name(base)?;
+        plain_name(version)?;
+        let sym = self.symbol(plain_name(name)?);
+        let alias = (*alias).to_owned();
+        if !self.out.symvers.iter().any(|v| v.sym == sym && v.alias == alias) {
+            self.out.symvers.push(Symver { sym, alias });
+        }
+        Ok(())
+    }
+
     fn directive(&mut self, name: &str, rest: &str) -> R<()> {
+        let x64 = self.isa == Isa::X64;
+        match name {
+            ".symver" if x64 => return self.symver(rest),
+            ".word" | ".value" if x64 => return self.values(rest, 2),
+            ".align" if x64 => return self.align(rest, false),
+            ".hword" | ".xword" if x64 => return Err(reason::directive(name)),
+            _ => {}
+        }
         match name {
             ".text" => self.simple_section(".text", SectionKind::Text, rest),
             ".data" => self.simple_section(".data", SectionKind::Data, rest),
@@ -908,6 +1087,7 @@ impl State<'_> {
         {
             return fail(op_reason::RANGE);
         }
+        let x64 = self.isa == Isa::X64;
         let s = self.section();
         s.align = s.align.max(align);
         let pad = (s.size.wrapping_neg() & (align - 1)) as usize;
@@ -918,6 +1098,16 @@ impl State<'_> {
         } else {
             match fill {
                 Some(f) => s.bytes.extend(std::iter::repeat_n(f as u8, pad)),
+                // x86-64: LLVM's no-ops of at most 15 bytes (generic
+                // tuning), longest first.
+                None if s.kind == SectionKind::Text && x64 => {
+                    let mut left = pad;
+                    while left != 0 {
+                        let n = left.min(15);
+                        s.bytes.extend_from_slice(hod_mc_x64::nop(n).bytes());
+                        left -= n;
+                    }
+                }
                 None if s.kind == SectionKind::Text => {
                     s.bytes.extend(std::iter::repeat_n(0, pad % 4));
                     for _ in 0..pad / 4 {
@@ -931,10 +1121,26 @@ impl State<'_> {
         Ok(())
     }
 
-    /// Fills or records every reference, once every label is known.
-    fn resolve(mut self) -> R<()> {
+    /// Fills or records every reference, once every label is known; the
+    /// x86-64 branches to grow.
+    fn resolve(mut self) -> R<Vec<u32>> {
         for p in std::mem::take(&mut self.pending) {
             match p.fill {
+                Fill::XLocal { n, forward, short } => {
+                    let def = if forward {
+                        self.locals.iter().find(|d| d.n == n && d.seq > p.seq)
+                    } else {
+                        self.locals.iter().rev().find(|d| d.n == n && d.seq <= p.seq)
+                    };
+                    let Some(def) = def else { return fail(op_reason::LABEL) };
+                    if def.section != p.section {
+                        return fail(op_reason::LABEL);
+                    }
+                    let width = if short { 1 } else { 4 };
+                    let disp = def.offset as i64 - (p.offset + width) as i64;
+                    self.patch_x64(&p, short, disp)?;
+                }
+                Fill::XNamed { sym, short, kind } => self.named_jump(&p, sym, short, kind)?,
                 Fill::Local { n, forward, kind } => {
                     let def = if forward {
                         self.locals.iter().find(|d| d.n == n && d.seq > p.seq)
@@ -948,8 +1154,14 @@ impl State<'_> {
                     let disp = def.offset as i64 - p.offset as i64;
                     self.patch(p.section, p.offset, kind, disp)?;
                 }
+                Fill::Named { sym, kind: RelocKind::X64(kind) } => {
+                    self.named_x64(&p, sym, kind)?;
+                }
                 Fill::Named { sym, kind } => self.named(&p, sym, kind)?,
             }
+        }
+        if !self.grow.is_empty() {
+            return Ok(std::mem::take(&mut self.grow));
         }
         // A `.L` name must be defined; `.size` and `.type` need a
         // definition of the text's or of the caller's.
@@ -964,6 +1176,109 @@ impl State<'_> {
                 return fail(other::SYMBOL);
             }
         }
+        Ok(Vec::new())
+    }
+
+    /// Writes an x86-64 displacement, one byte (`short`) or four; a
+    /// short one out of reach is grown in the next pass.
+    fn patch_x64(&mut self, p: &Pending, short: bool, disp: i64) -> R<()> {
+        let at = p.offset as usize;
+        let bytes = &mut self.out.sections[p.section as usize].bytes;
+        if short {
+            match i8::try_from(disp) {
+                Ok(d) => bytes[at] = d as u8,
+                Err(_) => self.grow.push(p.seq),
+            }
+        } else {
+            let d = i32::try_from(disp).map_err(|_| Refusal(op_reason::REACH))?;
+            bytes[at..at + 4].copy_from_slice(&d.to_le_bytes());
+        }
+        Ok(())
+    }
+
+    /// An x86-64 branch or call to a named symbol: filled in for a label
+    /// of local binding in the same section; else the near form with
+    /// `R_X86_64_PLT32` (against the section for a local label
+    /// elsewhere), as LLVM's assembler writes it.
+    fn named_jump(
+        &mut self,
+        p: &Pending,
+        sym: u32,
+        short: bool,
+        kind: crate::x64::RefKind,
+    ) -> R<()> {
+        let s = &self.out.symbols[sym as usize];
+        let target = match s.def {
+            Def::Absolute(_) => return fail(op_reason::SYMBOL),
+            Def::Label(section, offset) if s.is_local() => {
+                if section == p.section {
+                    let disp = (offset as i64).wrapping_add(p.addend) - p.offset as i64;
+                    return self.patch_x64(p, short, disp);
+                }
+                (Target::Section(section), (offset as i64).wrapping_add(p.addend))
+            }
+            _ => (Target::Symbol(sym), p.addend),
+        };
+        if short {
+            self.grow.push(p.seq);
+            return Ok(());
+        }
+        let (target, addend) = target;
+        if let Target::Symbol(i) = target {
+            self.out.symbols[i as usize].referenced = true;
+        }
+        let kind = RelocKind::X64(kind);
+        self.out.sections[p.section as usize].relocs.push(Reloc {
+            offset: p.offset,
+            kind,
+            target,
+            addend,
+        });
+        Ok(())
+    }
+
+    /// An x86-64 memory operand's symbol field (§10.2): a `%rip` field to
+    /// a label of local binding in the same section is filled in; one to
+    /// such a label elsewhere, or an absolute one, is relocated against
+    /// the label's section; a GOT field keeps the symbol (a `.L` name is
+    /// refused); a TLS or PLT field to a local label is refused.
+    fn named_x64(&mut self, p: &Pending, sym: u32, kind: crate::x64::RefKind) -> R<()> {
+        use crate::x64::RefKind as K;
+        let s = &self.out.symbols[sym as usize];
+        let target = match (s.def, kind) {
+            (Def::Absolute(_), _) => return fail(op_reason::SYMBOL),
+            (Def::Label(section, offset), K::Pc32) if s.is_local() && section == p.section => {
+                let disp = (offset as i64).wrapping_add(p.addend) - p.offset as i64;
+                let d = i32::try_from(disp).map_err(|_| Refusal(op_reason::REACH))?;
+                let at = p.offset as usize;
+                self.out.sections[p.section as usize].bytes[at..at + 4]
+                    .copy_from_slice(&d.to_le_bytes());
+                return Ok(());
+            }
+            (Def::Label(section, offset), K::Pc32 | K::Abs32S) if s.is_local() => {
+                (Target::Section(section), (offset as i64).wrapping_add(p.addend))
+            }
+            (Def::Label(..), K::GotPcRel | K::GotPcRelX | K::RexGotPcRelX)
+                if s.is_local() && s.is_temporary() =>
+            {
+                return fail(op_reason::SYMBOL);
+            }
+            (Def::Label(..), K::GotPcRel | K::GotPcRelX | K::RexGotPcRelX) if s.is_local() => {
+                (Target::Symbol(sym), p.addend)
+            }
+            (Def::Label(..), _) if s.is_local() => return fail(other::SYMBOL),
+            _ => (Target::Symbol(sym), p.addend),
+        };
+        let (target, addend) = target;
+        if let Target::Symbol(i) = target {
+            self.out.symbols[i as usize].referenced = true;
+        }
+        self.out.sections[p.section as usize].relocs.push(Reloc {
+            offset: p.offset,
+            kind: RelocKind::X64(kind),
+            target,
+            addend,
+        });
         Ok(())
     }
 

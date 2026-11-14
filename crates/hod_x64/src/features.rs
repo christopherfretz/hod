@@ -126,8 +126,8 @@ const JUDGED: &[Judged] = &[
 /// - `avx`, `avx2`, the AVX-512 and AVX10 families, and what implies them
 ///   (`fma`, `f16c`, `vaes`, `sha512`, ...): the instructions only. Where
 ///   a wide vector or a vector of `i1` then travels is the signature's
-///   (`x64:wide-vector-abi`, [`of_function`]), and `vzeroupper` is not
-///   hod's to write (it never dirties the upper halves).
+///   (`x64:wide-vector-abi`, [`of_function`]), and where hod writes
+///   `vzeroupper` is [`FnFeatures::vzeroupper`]'s (WP-203).
 /// - `cx16`: X-atomic (WP-133) uses `cmpxchg16b` inline with `+cx16` and
 ///   libatomic's `__atomic_*_16` without; on a CPU with `cmpxchg16b`
 ///   libatomic uses the same instruction, so either is lock-free and the
@@ -321,6 +321,11 @@ pub struct FnFeatures {
     pub abi: abi::Features,
     /// `-x87` is in force.
     pub no_x87: bool,
+    /// WP-203: the function writes `vzeroupper` where `llc` would
+    /// (`spec/abi-x64.md` §8.7): AVX is known, and the CPU's tuning has
+    /// it (all but `btver2`, `knl` and `knm`) or the last `vzeroupper`
+    /// item of the features turns it on.
+    pub vzeroupper: bool,
 }
 
 /// CPUs (`target-cpu`, LLVM's names) without AVX: `llc` 19 and 22 pass a
@@ -424,6 +429,10 @@ const CPUS_WITH_AVX: &[&str] = &[
     "znver5",
 ];
 
+/// WP-203: the CPUs whose tuning lacks `vzeroupper` in `llc` 19 and 22
+/// (measured: no `vzeroupper` before a call after a 256-bit store).
+const CPUS_WITHOUT_VZEROUPPER: &[&str] = &["btver2", "knl", "knm"];
+
 /// WP-203: the features that imply AVX in one `llc` only, or (for
 /// `amx-avx512`) in neither but may: with one of them AVX is assumed.
 /// `avx10.1-256` implies it in 19 and not 22; `avx10.2-256` in neither
@@ -482,6 +491,7 @@ pub fn of_function(cpu: Option<&str>, features: Option<&str>) -> FnFeatures {
         (true, !CPUS_WITHOUT_AVX512.contains(&cpu))
     };
     let mut no_x87 = false;
+    let mut tuned = !CPUS_WITHOUT_VZEROUPPER.contains(&cpu);
     for item in features.unwrap_or("").split(',') {
         let (on, name) = match item.split_at_checked(1) {
             Some(("+", name)) => (true, name),
@@ -494,6 +504,7 @@ pub fn of_function(cpu: Option<&str>, features: Option<&str>) -> FnFeatures {
             name.starts_with("avx512") || name.starts_with("avx10") || name == "amx-avx512";
         match (on, name) {
             (_, "x87") => no_x87 = !on,
+            (_, "vzeroupper") => tuned = on,
             // What implies AVX-512, and AVX-512 itself.
             (true, _) if is_avx512 => {
                 (avx, avx512) = (true, true);
@@ -522,7 +533,11 @@ pub fn of_function(cpu: Option<&str>, features: Option<&str>) -> FnFeatures {
             _ => {}
         }
     }
-    FnFeatures { abi: abi::Features { avx, avx512, assumed: avx && !known }, no_x87 }
+    FnFeatures {
+        abi: abi::Features { avx, avx512, assumed: avx && !known },
+        no_x87,
+        vzeroupper: avx && known && tuned,
+    }
 }
 
 /// One item of a feature string.

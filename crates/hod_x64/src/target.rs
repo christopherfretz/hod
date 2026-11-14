@@ -88,6 +88,7 @@ pub const X64: X64 = X64 {
     features: FnFeatures {
         abi: abi::Features { avx: false, avx512: false, assumed: false },
         no_x87: false,
+        vzeroupper: false,
     },
     coro: false,
     own: false,

@@ -119,8 +119,12 @@ struct MethodAttrs {
     rref: bool,
     nr: bool,
     del: bool,
-    /// What no family holds: a calling convention, a virtual function
-    /// without a vtable index, `DW_AT_prototyped`, Fortran's flags.
+    /// A calling convention other than the normal one (WP-206: family
+    /// 114 only).
+    cc: bool,
+    /// What no family holds: a virtual function without a vtable index,
+    /// a calling convention `DW_FORM_data1` cannot hold,
+    /// `DW_AT_prototyped`, Fortran's flags.
     other: bool,
 }
 
@@ -131,6 +135,48 @@ fn method_family(a: &MethodAttrs) -> Option<(usize, u32)> {
     if a.other || a.virt != a.cont {
         return None;
     }
+    if !a.cc
+        && let Some(f) = fixed_method_family(a)
+    {
+        return Some(f);
+    }
+    // WP-206: the rest, without a ref-qualifier or `deleted` (§6.27).
+    if a.lref || a.rref || a.del || !a.name {
+        return None;
+    }
+    Some((
+        fam::METHOD_ANY,
+        b(a.link)
+            | b(a.decl) << 1
+            | b(a.cc) << 2
+            | b(a.ty) << 3
+            | b(a.virt) << 4
+            | b(a.art) << 5
+            | b(a.ext) << 6
+            | b(a.nr) << 7
+            | b(a.acc) << 8
+            | b(a.expl) << 9,
+    ))
+}
+
+/// What a member function declaration that no family holds has that
+/// keeps it refused (§6.27), for the refusal's detail.
+fn method_refusal(a: &MethodAttrs) -> &'static str {
+    if a.other {
+        "a member function declaration with a virtual function without a vtable index, a calling convention above 255, a C prototype or Fortran's flags"
+    } else if a.virt != a.cont {
+        "a virtual member function declaration whose containing type has no DIE"
+    } else if !a.name {
+        "a member function declaration without a name, with a calling convention, artificial and noreturn, or explicit and noreturn"
+    } else {
+        "a member function declaration with a ref-qualifier or deleted, and a calling convention, artificial and a ref-qualifier, or explicit and noreturn"
+    }
+}
+
+/// The families of WP-058 and WP-189, for a declaration without a
+/// calling convention.
+fn fixed_method_family(a: &MethodAttrs) -> Option<(usize, u32)> {
+    let b = u32::from;
     let qualified = a.lref || a.rref || a.nr;
     if !qualified && !a.expl && !a.del && a.name {
         if !a.virt && !a.art && !a.acc {
@@ -259,10 +305,7 @@ impl UnitPlan<'_> {
                     && crate::call_sites::c_declaration(self, i as u32).is_none()
                 {
                     // WP-113: §6.19
-                    return Err(unsupported(
-                        self.dies[i].node,
-                        "a member function declaration with a calling convention, without a vtable index or containing type, artificial and a ref-qualifier or noreturn, or explicit and noreturn",
-                    ));
+                    return Err(unsupported(self.dies[i].node, method_refusal(&a)));
                 }
             }
         }
@@ -937,6 +980,7 @@ fn method_attrs(plan: &UnitPlan<'_>, die: u32) -> MethodAttrs {
         }
         _ => (false, false),
     };
+    let wide_cc = cc && method_cc(plan, &sp).is_none();
     let virtuality = sp.sp_flags.0 & 3 != 0;
     let fortran =
         SpFlags::PURE.0 | SpFlags::ELEMENTAL.0 | SpFlags::RECURSIVE.0 | SpFlags::MAIN_SUBPROGRAM.0;
@@ -955,10 +999,22 @@ fn method_attrs(plan: &UnitPlan<'_>, die: u32) -> MethodAttrs {
         rref: has(sp.flags, DiFlags::RVALUE_REFERENCE),
         nr: has(sp.flags, DiFlags::NO_RETURN),
         del: has_sp(sp.sp_flags, SpFlags::DELETED),
-        other: cc
+        cc,
+        other: wide_cc
             || (virtuality && sp.virtual_index == u32::MAX)
             || sp.sp_flags.0 & fortran != 0
             || (has(sp.flags, DiFlags::PROTOTYPED) && is_c(plan.cu.language)),
+    }
+}
+
+/// The calling convention a member function declaration's type names,
+/// other than the normal one, as `DW_FORM_data1` writes it (WP-206).
+fn method_cc(plan: &UnitPlan<'_>, sp: &hod_ir::DiSubprogram<'_>) -> Option<u8> {
+    match sp.ty.map(|t| plan.debug.node(t)) {
+        Some(DiNode::SubroutineType(s)) if s.cc != 0 && s.cc != DW_CC_NORMAL => {
+            u8::try_from(s.cc).ok()
+        }
+        _ => None,
     }
 }
 
@@ -1390,6 +1446,9 @@ impl<'a> Writer<'a> {
                 self.strx_if(family, sp.name)?;
                 let decl = Self::decl_of(plan, n, sp.file, sp.line)?;
                 self.decl(decl);
+                if a.cc {
+                    self.opt_byte(method_cc(plan, &sp).unwrap_or(0));
+                }
                 if a.ty
                     && let Some(DiNode::SubroutineType(s)) = sp.ty.map(|t| plan.debug.node(t))
                 {

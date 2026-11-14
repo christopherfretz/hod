@@ -9,7 +9,7 @@ use crate::text::{rz, s as xsp, tuples, v, xs, z};
 
 /// The extensions on top of the base features.
 const EXTRA: &str =
-    ",+fullfp16,+rdm,+dotprod,+i8mm,+bf16,+aes,+sha2,+sha3,+sm4,+complxnum,+fp16fml,+v8.5a";
+    ",+fullfp16,+rdm,+dotprod,+i8mm,+bf16,+aes,+sha2,+sha3,+sm4,+jsconv,+complxnum,+fp16fml,+v8.5a";
 
 const BITS: [VecBits; 2] = [VecBits::V64, VecBits::V128];
 const FORMATS: [FpFormat; 3] = [FpFormat::H, FpFormat::S, FpFormat::D];
@@ -631,6 +631,9 @@ fn half_scalar(b: &mut Batch) {
         )*};
     }
     to_int!(fcvtns fcvtnu fcvtas fcvtau fcvtps fcvtpu fcvtms fcvtmu fcvtzs fcvtzu);
+    for [d, n] in regs2(true) {
+        emit!(b, fjcvtzs(z(d), v(n)), "fjcvtzs {}, d{n}", rz(Size::W, d));
+    }
 }
 
 /// `{v<r>.<t>, ...}` of `n` consecutive registers.

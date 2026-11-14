@@ -42,8 +42,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `landingpad` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 703 | 347 | 7 | 349 | 477 | 10 | 216 |
-| total | 1028 | 566 | 56 | 406 | 697 | 64 | 267 |
+| `intrinsic` | 717 | 361 | 7 | 349 | 477 | 10 | 230 |
+| total | 1042 | 580 | 56 | 406 | 697 | 64 | 281 |
 
 ## `module`
 
@@ -887,6 +887,20 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.aarch64.neon.vsri` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
 | `intrinsic:llvm.aarch64.sisd.fabd` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
 | `intrinsic:llvm.aarch64.sisd.fcvtxn` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.crypto.sm3partw1` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
+| `intrinsic:llvm.aarch64.crypto.sm3partw2` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
+| `intrinsic:llvm.aarch64.crypto.sm3ss1` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
+| `intrinsic:llvm.aarch64.crypto.sm3tt1a` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
+| `intrinsic:llvm.aarch64.crypto.sm3tt1b` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
+| `intrinsic:llvm.aarch64.crypto.sm3tt2a` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
+| `intrinsic:llvm.aarch64.crypto.sm3tt2b` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
+| `intrinsic:llvm.aarch64.crypto.sm4e` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
+| `intrinsic:llvm.aarch64.crypto.sm4ekey` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
+| `intrinsic:llvm.aarch64.frint32x` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
+| `intrinsic:llvm.aarch64.frint32z` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
+| `intrinsic:llvm.aarch64.frint64x` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
+| `intrinsic:llvm.aarch64.frint64z` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
+| `intrinsic:llvm.aarch64.fjcvtzs` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
 | `intrinsic:llvm.x86.sse.cmp.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
 | `intrinsic:llvm.x86.sse.comieq.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
 | `intrinsic:llvm.x86.sse.comige.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE |

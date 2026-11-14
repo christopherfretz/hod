@@ -258,6 +258,7 @@ pub const CONSTRUCTORS: &[(&str, &[&str])] = &[
     ("fcvtns", &["fcvtns"]),
     ("fcvtnu", &["fcvtnu"]),
     ("fcvtas", &["fcvtas"]),
+    ("fjcvtzs", &["fjcvtzs"]),
     (
         "fp_half",
         &[

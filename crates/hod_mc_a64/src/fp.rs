@@ -82,6 +82,14 @@ pub const fn fp_half(single: u32) -> u32 {
     single | 0x00c0_0000
 }
 
+/// `FJCVTZS <Wd>, <Dn>` (`FEAT_JSCVT`): double to a 32-bit integer
+/// toward zero, modulo 2^32 (JavaScript's conversion), `Z` set when the
+/// conversion was exact.
+#[inline]
+pub const fn fjcvtzs(rd: RegZr, rn: VReg) -> u32 {
+    0x1e7e_0000 | rn.code() << 5 | rd.code()
+}
+
 /// The `S` view goes with `W` and the `D` view with `X` in the FMOV
 /// (general) forms.
 #[inline]

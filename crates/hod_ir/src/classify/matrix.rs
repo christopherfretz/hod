@@ -3446,6 +3446,20 @@ const INTRINSIC_A64: &[SupportRow] = &[
     row("intrinsic:llvm.aarch64.neon.vsri", on(NEON), never(A64_ONLY), "WP-083"),
     row("intrinsic:llvm.aarch64.sisd.fabd", on(NEON), never(A64_ONLY), "WP-083"),
     row("intrinsic:llvm.aarch64.sisd.fcvtxn", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.crypto.sm3partw1", on(NEON), never(A64_ONLY), "WP-205"),
+    row("intrinsic:llvm.aarch64.crypto.sm3partw2", on(NEON), never(A64_ONLY), "WP-205"),
+    row("intrinsic:llvm.aarch64.crypto.sm3ss1", on(NEON), never(A64_ONLY), "WP-205"),
+    row("intrinsic:llvm.aarch64.crypto.sm3tt1a", on(NEON), never(A64_ONLY), "WP-205"),
+    row("intrinsic:llvm.aarch64.crypto.sm3tt1b", on(NEON), never(A64_ONLY), "WP-205"),
+    row("intrinsic:llvm.aarch64.crypto.sm3tt2a", on(NEON), never(A64_ONLY), "WP-205"),
+    row("intrinsic:llvm.aarch64.crypto.sm3tt2b", on(NEON), never(A64_ONLY), "WP-205"),
+    row("intrinsic:llvm.aarch64.crypto.sm4e", on(NEON), never(A64_ONLY), "WP-205"),
+    row("intrinsic:llvm.aarch64.crypto.sm4ekey", on(NEON), never(A64_ONLY), "WP-205"),
+    row("intrinsic:llvm.aarch64.frint32x", on(NEON), never(A64_ONLY), "WP-205"),
+    row("intrinsic:llvm.aarch64.frint32z", on(NEON), never(A64_ONLY), "WP-205"),
+    row("intrinsic:llvm.aarch64.frint64x", on(NEON), never(A64_ONLY), "WP-205"),
+    row("intrinsic:llvm.aarch64.frint64z", on(NEON), never(A64_ONLY), "WP-205"),
+    row("intrinsic:llvm.aarch64.fjcvtzs", on(NEON), never(A64_ONLY), "WP-205"),
 ];
 
 /// The x86 target intrinsics of WP-173, which follow [`INTRINSIC_A64`] on

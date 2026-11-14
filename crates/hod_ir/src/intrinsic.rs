@@ -442,6 +442,22 @@ intrinsics! {
     Aarch64NeonVsri = "llvm.aarch64.neon.vsri" [Ret],
     Aarch64SisdFabd = "llvm.aarch64.sisd.fabd" [Ret],
     Aarch64SisdFcvtxn = "llvm.aarch64.sisd.fcvtxn" [],
+    // The census of `<arm_neon.h>` and `<arm_acle.h>` (WP-205): SM3/SM4,
+    // the scalar FRINT32/64 and FJCVTZS of `<arm_acle.h>`.
+    Aarch64CryptoSm3partw1 = "llvm.aarch64.crypto.sm3partw1" [],
+    Aarch64CryptoSm3partw2 = "llvm.aarch64.crypto.sm3partw2" [],
+    Aarch64CryptoSm3ss1 = "llvm.aarch64.crypto.sm3ss1" [],
+    Aarch64CryptoSm3tt1a = "llvm.aarch64.crypto.sm3tt1a" [],
+    Aarch64CryptoSm3tt1b = "llvm.aarch64.crypto.sm3tt1b" [],
+    Aarch64CryptoSm3tt2a = "llvm.aarch64.crypto.sm3tt2a" [],
+    Aarch64CryptoSm3tt2b = "llvm.aarch64.crypto.sm3tt2b" [],
+    Aarch64CryptoSm4e = "llvm.aarch64.crypto.sm4e" [],
+    Aarch64CryptoSm4ekey = "llvm.aarch64.crypto.sm4ekey" [],
+    Aarch64Frint32x = "llvm.aarch64.frint32x" [Ret],
+    Aarch64Frint32z = "llvm.aarch64.frint32z" [Ret],
+    Aarch64Frint64x = "llvm.aarch64.frint64x" [Ret],
+    Aarch64Frint64z = "llvm.aarch64.frint64z" [Ret],
+    Aarch64Fjcvtzs = "llvm.aarch64.fjcvtzs" [],
     // x86 target intrinsics (WP-173): the names clang 19 and 22 emit at
     // `-O0` for the SSE, SSE2, SSE3 and SSSE3 headers that hod builds.
     X86SseCmpSs = "llvm.x86.sse.cmp.ss" [],

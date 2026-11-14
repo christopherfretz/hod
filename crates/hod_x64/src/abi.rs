@@ -62,6 +62,10 @@ pub struct Features {
     /// `+avx512f` (or anything implying it): 512-bit vectors in `zmm`,
     /// and vectors of `i1` in mask registers.
     pub avx512: bool,
+    /// WP-203: `avx` is assumed, not known: a CPU or a feature `llc` 19
+    /// or 22 may read without AVX. A vector AVX would put in `ymm` is
+    /// refused (§1.3).
+    pub assumed: bool,
 }
 
 /// Every name [`assign`] reports, in the order of §10. [`RET_X87_PART`]
@@ -205,6 +209,11 @@ pub enum Class {
     Quad,
     /// A vector in an `xmm`; a 16-byte slot aligned to 16.
     Vector,
+    /// WP-203: a vector of 17 to 32 bytes in a `ymm` (the function has
+    /// AVX, §1.3); a 32-byte slot aligned to 32. It takes the next of
+    /// `xmm0`..`xmm7` as any vector piece does (the register's `PReg` is
+    /// that `xmm`'s), and is always on the stack in a variadic signature.
+    Wide,
     /// `x86_fp80`: always a 16-byte slot aligned to 16 as an argument,
     /// `st0`/`st1` as a return value.
     X87,
@@ -212,7 +221,7 @@ pub enum Class {
 
 impl Class {
     fn is_xmm(self) -> bool {
-        matches!(self, Class::Half | Class::Float | Class::Quad | Class::Vector)
+        matches!(self, Class::Half | Class::Float | Class::Quad | Class::Vector | Class::Wide)
     }
 
     /// The size, and the alignment, of the piece's stack slot.
@@ -220,6 +229,7 @@ impl Class {
         match self {
             Class::Gpr | Class::Half | Class::Float => 8,
             Class::Quad | Class::Vector | Class::X87 => 16,
+            Class::Wide => 32,
         }
     }
 }
@@ -330,9 +340,26 @@ fn vector_leaf(types: &TypeTable, elem: TypeId, len: u32, features: Features) ->
     if one_register {
         return Ok(Leaf::one(Class::Vector, total));
     }
-    if features.avx && total > 16 {
-        // §1.3: `ymm`/`zmm`.
-        return no(WIDE_VECTOR_ABI);
+    if features.avx {
+        // §1.3 (WP-203): with AVX a vector LLVM makes a legal 256-bit one
+        // (a power of two of 32 bytes or more, or widened to 32 bytes in
+        // one step) travels in `ymm` pieces of 32 bytes. With AVX-512
+        // anything wider would be one `zmm` or two `ymm` depending on
+        // the function's preferred vector width: refused. So is every such
+        // vector when AVX is only assumed (a CPU or feature `llc` 19 or 22
+        // may read without AVX).
+        let wide = if len.is_power_of_two() { Some(total) } else { widened.filter(|&w| w >= 32) };
+        if let Some(wide) = wide {
+            if features.assumed || (features.avx512 && wide > 32) {
+                return no(WIDE_VECTOR_ABI);
+            }
+            if wide == 32 {
+                return Ok(Leaf::one(Class::Wide, total));
+            }
+            if len.is_power_of_two() {
+                return Ok(Leaf::each(Class::Wide, total / 32, 32));
+            }
+        }
     }
     Ok(if len.is_power_of_two() {
         // Split into 128-bit vectors.
@@ -368,6 +395,9 @@ struct State {
     stack: u64,
     /// The signature's return type is not `void`.
     returns_value: bool,
+    /// The signature is variadic: a [`Class::Wide`] piece goes to the
+    /// stack, named or not (WP-203, §3.2).
+    variadic: bool,
     /// The stack offset of the `i128` being placed on the stack whole
     /// (§4.2): its second piece follows its first.
     pair_at: Option<u64>,
@@ -410,6 +440,7 @@ impl State {
                 self.gpr += 1;
                 return PieceLoc::Reg(ARG_GPRS[usize::from(self.gpr) - 1]);
             }
+            Class::Wide if self.variadic => {}
             _ if class.is_xmm() && self.xmm < ARG_XMMS => {
                 self.xmm += 1;
                 return PieceLoc::Reg(xmm_reg(self.xmm - 1));
@@ -507,7 +538,7 @@ impl RetState {
             // Beyond the vector registers, the x87 stack (§5.1).
             Class::Float => self.xmm(self.float_xmm).or_else(|| self.x87()),
             Class::Quad => self.xmm(2),
-            Class::Vector => self.xmm(4),
+            Class::Vector | Class::Wide => self.xmm(4),
             Class::X87 => self.x87(),
         }
     }
@@ -658,6 +689,24 @@ pub fn byval_align(types: &TypeTable, pointee: TypeId, attrs: ParamAttrs) -> u64
     attrs.stack_align().or(attrs.align()).unwrap_or_else(|| types.align_of(pointee)).max(8)
 }
 
+/// WP-203: whether `ty`, any type, has a leaf that travels in `ymm`
+/// pieces under `features` ([`Class::Wide`], §1.3).
+pub fn has_wide_leaf(types: &TypeTable, ty: TypeId, features: Features) -> bool {
+    if !features.avx {
+        return false;
+    }
+    match types.kind(ty) {
+        TypeKind::Struct { fields, .. } => {
+            fields.iter().any(|&f| has_wide_leaf(types, f, features))
+        }
+        TypeKind::Array { elem, len } => len != 0 && has_wide_leaf(types, elem, features),
+        TypeKind::Vector { .. } => {
+            classify(types, ty, features).is_ok_and(|leaf| leaf.class == Class::Wide)
+        }
+        _ => false,
+    }
+}
+
 /// Whether `ty` is a vector of `i128`.
 fn is_i128_vector(types: &TypeTable, ty: TypeId) -> bool {
     matches!(types.kind(ty), TypeKind::Vector { elem, .. }
@@ -716,6 +765,15 @@ fn assign_signature(
     // return as `ccc`; only the callee's saved set differs (`frame.rs`).
     let as_c;
     let sig = if matches!(sig.cc, CallConv::PRESERVE_MOST | CallConv::PRESERVE_ALL) {
+        // WP-203: their saved set with AVX (the upper halves of the
+        // `ymm`s) is not followed; a signature that passes a `ymm` stays
+        // refused.
+        if features.avx
+            && (has_wide_leaf(types, sig.ret, features)
+                || sig.params.iter().any(|&ty| has_wide_leaf(types, ty, features)))
+        {
+            return no(WIDE_VECTOR_ABI);
+        }
         as_c = Sig { cc: CallConv::C, ..*sig };
         &as_c
     } else {
@@ -733,7 +791,11 @@ fn assign_signature(
         return no(INVALID_SIGNATURE);
     }
 
-    let mut state = State { returns_value: sig.ret != TypeId::VOID, ..State::default() };
+    let mut state = State {
+        returns_value: sig.ret != TypeId::VOID,
+        variadic: sig.variadic,
+        ..State::default()
+    };
     if assign_return(types, sig, features, &mut out.ret)? {
         // §5.2: the hidden pointer is the first argument.
         state.gpr = 1;

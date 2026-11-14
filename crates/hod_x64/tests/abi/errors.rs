@@ -117,8 +117,9 @@ fn every_name() {
         .struct_type(&[TypeId::X86_FP80, TypeId::FLOAT, TypeId::FLOAT, TypeId::FLOAT], false)
         .expect("a type");
     let v3f64 = t.vector(TypeId::DOUBLE, 3).expect("a type");
-    let avx = Features { avx: true, avx512: false };
-    let avx512 = Features { avx: true, avx512: true };
+    let avx = Features { avx: true, avx512: false, assumed: false };
+    let avx512 = Features { avx: true, avx512: true, assumed: false };
+    let assumed = Features { avx: true, avx512: true, assumed: true };
 
     let c = CallConv::C;
     let cases: Vec<(&str, Option<&'static str>)> = vec![
@@ -192,8 +193,19 @@ fn every_name() {
         ("abi:vector-element", refusal(&t, c, void, &[(v2i24, NONE)], None)),
         ("x64:mask-vector", refusal(&t, c, void, &[(v3i1, NONE)], None)),
         ("x64:mask-vector", refusal(&t, c, (v32i1, NONE), &[], None)),
-        ("x64:wide-vector-abi", refusal_with(&t, avx, c, void, &[(v8f32, NONE)], None)),
-        ("x64:wide-vector-abi", refusal_with(&t, avx, c, (v16f32, NONE), &[], None)),
+        // WP-203: under AVX a 256-bit vector is a `ymm` piece; beyond 256
+        // bits under AVX-512, or in a `preserve_*` signature, it is refused.
+        ("x64:wide-vector-abi", refusal_with(&t, avx512, c, void, &[(v16f32, NONE)], None)),
+        ("x64:wide-vector-abi", refusal_with(&t, avx512, c, (v16f32, NONE), &[], None)),
+        ("x64:wide-vector-abi", refusal_with(&t, assumed, c, void, &[(v8f32, NONE)], None)),
+        (
+            "x64:wide-vector-abi",
+            refusal_with(&t, avx, CallConv::PRESERVE_MOST, void, &[(v8f32, NONE)], None),
+        ),
+        (
+            "x64:wide-vector-abi",
+            refusal_with(&t, avx, CallConv::PRESERVE_ALL, (v8f32, NONE), &[], None),
+        ),
         ("x64:wide-vector-abi", refusal_with(&t, avx512, c, void, &[(v4i1, NONE)], None)),
         ("x64:nest", refusal(&t, c, void, &[(ptr, flags(ParamAttrs::NEST))], None)),
         ("x64:nest", refusal(&t, c, (ptr, flags(ParamAttrs::NEST)), &[], None)),

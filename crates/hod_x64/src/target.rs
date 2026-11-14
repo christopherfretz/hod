@@ -85,7 +85,10 @@ impl X64 {
 /// The target for a function without `target-cpu` and
 /// `target-features` (the baseline x86-64 CPU, no AVX).
 pub const X64: X64 = X64 {
-    features: FnFeatures { abi: abi::Features { avx: false, avx512: false }, no_x87: false },
+    features: FnFeatures {
+        abi: abi::Features { avx: false, avx512: false, assumed: false },
+        no_x87: false,
+    },
     coro: false,
     own: false,
 };
@@ -452,7 +455,10 @@ impl Target for X64 {
         if reg::is_x87(reg) {
             return x87::load_part(cx, reg, src);
         }
-        if reg::is_fpr(reg) {
+        if reg::is_fpr(reg) && bytes > 16 {
+            // WP-203: a `ymm` part (`spec/abi-x64.md` §8.7).
+            vector::load_wide(cx, xm(reg), src, bytes);
+        } else if reg::is_fpr(reg) {
             common::load_fpr(cx, xm(reg), src, bytes);
         } else {
             common::load_gpr(cx, gp(reg), src, bytes);
@@ -463,7 +469,9 @@ impl Target for X64 {
         if reg::is_x87(reg) {
             return x87::store_part(cx, reg, dst);
         }
-        if reg::is_fpr(reg) {
+        if reg::is_fpr(reg) && bytes > 16 {
+            vector::store_wide(cx, xm(reg), dst, bytes);
+        } else if reg::is_fpr(reg) {
             common::store_fpr(cx, xm(reg), dst, bytes);
         } else {
             common::store_gpr(cx, gp(reg), dst, bytes);

@@ -191,6 +191,7 @@ fn variadic_against_c() {
             args: &args,
             ret: None,
             variadic: true,
+            avx: false,
         };
         emit::caller(&mut asm, func);
         let callee =

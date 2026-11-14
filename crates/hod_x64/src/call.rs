@@ -354,6 +354,59 @@ fn byval_align(cx: &FnCx<'_, X64>, site: &CallSite<'_>) -> u64 {
     align
 }
 
+/// WP-203 (`spec/abi-x64.md` §3.2, §8.7): 32 when an argument of
+/// `site` has a `ymm` piece on the stack (a 32-byte slot aligned to 32,
+/// which `llc`'s callee reads with `vmovaps`); 0 otherwise.
+fn wide_stack_align(cx: &FnCx<'_, X64>, site: &CallSite<'_>) -> u64 {
+    let features = cx.target.features.abi;
+    let types = cx.types();
+    if !features.avx {
+        return 0;
+    }
+    let TypeKind::Function { ret, params, variadic } = types.kind(site.fn_type()) else {
+        return 0;
+    };
+    let args = site.args();
+    if args.len() < params.len() {
+        return 0;
+    }
+    // The variable arguments typed by their values, as the call sequence
+    // types them (WP-115).
+    let tys: Vec<TypeId> = params
+        .iter()
+        .copied()
+        .chain(args[params.len()..].iter().map(|&value| value_ty(cx, value)))
+        .collect();
+    if !tys.iter().any(|&ty| crate::abi::has_wide_leaf(types, ty, features)) {
+        return 0;
+    }
+    let Ok(ret_attrs) = hod_ir::call_ret_attrs(cx.module, site) else { return 0 };
+    let Some(param_attrs) = (0..args.len())
+        .map(|index| hod_ir::call_arg_attrs(cx.module, site, index).ok())
+        .collect::<Option<Vec<ParamAttrs>>>()
+    else {
+        return 0;
+    };
+    let sig = Sig {
+        cc: site.cc(),
+        ret,
+        ret_attrs,
+        params: &tys,
+        param_attrs: &param_attrs,
+        fixed: params.len() as u32,
+        variadic,
+    };
+    let mut asg = Assignment::default();
+    if cx.target.assign(types, &sig, &mut asg).is_err() {
+        return 0;
+    }
+    let on_stack = asg.args.iter().any(|part| {
+        matches!(part.place, Place::Stack(_))
+            && crate::abi::has_wide_leaf(types, tys[part.arg as usize], features)
+    });
+    if on_stack { 32 } else { 0 }
+}
+
 /// WP-152 (`spec/codegen.md` §5.6.18): before the call sequence of a
 /// call with a `byval` argument aligned to `a > 16`, `rsp` is lowered so
 /// that the stack-argument area the sequence then allocates (`area`
@@ -367,7 +420,7 @@ fn byval_align(cx: &FnCx<'_, X64>, site: &CallSite<'_>) -> u64 {
 /// `musttail` call writes its caller's incoming area and is not aligned.
 /// Writes the flags (no compare is live across a call).
 fn align_stack_area(cx: &mut FnCx<'_, X64>, site: &CallSite<'_>) {
-    let a = byval_align(cx, site);
+    let a = byval_align(cx, site).max(wide_stack_align(cx, site));
     if a <= 16 || a > crate::abi::MAX_BYVAL_ALIGN {
         return;
     }

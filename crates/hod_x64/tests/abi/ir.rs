@@ -54,7 +54,18 @@ fn header() -> String {
 
 /// The module for `plans`. A case for which `runs(index, hod_calls)` is
 /// false gets a stub in that direction.
+#[allow(dead_code, reason = "`tests/call.rs` uses it; the grid passes attributes")]
 pub fn module(plans: &[Plan], runs: &dyn Fn(usize, bool) -> bool) -> String {
+    module_with(plans, runs, None)
+}
+
+/// [`module`] with every function in the attribute group `attributes`
+/// (`#0`, WP-203), when given.
+pub fn module_with(
+    plans: &[Plan],
+    runs: &dyn Fn(usize, bool) -> bool,
+    attributes: Option<&str>,
+) -> String {
     let mut text = header();
     for (index, plan) in plans.iter().enumerate() {
         if runs(index, true) {
@@ -67,6 +78,11 @@ pub fn module(plans: &[Plan], runs: &dyn Fn(usize, bool) -> bool) -> String {
         } else {
             let _ = writeln!(text, "define void @lc_{index}() {{\n  ret void\n}}\n");
         }
+    }
+    if let Some(attributes) = attributes {
+        // Every definition carries the group.
+        text = text.replace(") {\n", ") #0 {\n");
+        text.push_str(attributes);
     }
     text
 }

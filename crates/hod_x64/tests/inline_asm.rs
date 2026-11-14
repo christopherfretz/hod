@@ -259,8 +259,12 @@ fn what_is_not_assembled_is_refused_by_name() {
         (one("void", "call void asm \"nop\", \"{rsp}\"(i32 %x)"), template::FRAME_REGISTER),
         (one("void", "call void asm \"nop\", \"~{rbp}\"()"), template::FRAME_REGISTER),
         (one("void", "call void asm \"nop\", \"~{ebp}\"()"), template::FRAME_REGISTER),
-        (one("i32", "%r = call i32 asm \"movl $1, $0\", \"=r,r\"(i1 0)"), template::OPERAND_TYPE),
-        (one("i32", "%r = call i32 asm \"movl $1, $0\", \"=r,0\"(i64 0)"), template::OPERAND_TYPE),
+        // An i1 is held in a byte register, as llc holds it; `movl` with a
+        // byte register is the assembler's refusal.
+        (one("i32", "%r = call i32 asm \"movl $1, $0\", \"=r,r\"(i1 0)"), "asm:operand/register"),
+        // A tied input of another width shares the register, as in llc;
+        // `movl` with a 64-bit register is the assembler's refusal.
+        (one("i32", "%r = call i32 asm \"movl $1, $0\", \"=r,0\"(i64 0)"), "asm:operand/register"),
         (
             one("void", "call void asm \"nop\", \"r\"({ i32, i32 } zeroinitializer)"),
             template::OPERAND_TYPE,

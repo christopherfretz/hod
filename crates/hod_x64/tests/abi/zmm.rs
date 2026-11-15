@@ -513,9 +513,10 @@ fn differences(
         let fast19 = config.major < 22 && !config.dag;
         let source = if fast19 { &source19 } else { &source };
         // A grid module holds two functions per case: more than the
-        // default minute for `llc` 19 on some machines.
+        // default minute for `llc` 19 on some machines. Its memory is
+        // capped as the grid's (`run::LLC_MEMORY_KIB`).
         let outcome = hod_testutil::run_with(
-            std::process::Command::new(llc).args([
+            crate::run::capped_llc(llc).args([
                 "-O0".as_ref(),
                 if config.dag { "-fast-isel=0" } else { "-fast-isel=1" }.as_ref(),
                 "-relocation-model=pic".as_ref(),

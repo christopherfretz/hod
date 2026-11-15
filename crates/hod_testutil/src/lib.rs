@@ -299,6 +299,17 @@ fn run_on(
             timeout.as_secs()
         );
     }
+    // A child a signal ended (the kernel's OOM killer sends SIGKILL) says
+    // so too: its standard error is often empty.
+    #[cfg(unix)]
+    if let Some(signal) = status.as_ref().and_then(std::os::unix::process::ExitStatusExt::signal) {
+        let _ = write!(
+            stderr,
+            "\n[hod_testutil: {} killed by signal {signal}{}]\n",
+            command.get_program().display(),
+            if signal == 9 { " (SIGKILL: the OOM killer, if no one else)" } else { "" }
+        );
+    }
     Outcome { status, stdout, stderr }
 }
 
@@ -434,6 +445,25 @@ mod tests {
         // The kill is said, not left as an empty standard error.
         assert!(
             outcome.stderr_text().contains("sleep killed: timed out after 0 s"),
+            "{}",
+            outcome.stderr_text()
+        );
+    }
+
+    /// WP-238: a child a signal killed says which, not an empty standard
+    /// error (the OOM killer's SIGKILL looked like nothing at all).
+    #[test]
+    fn run_says_which_signal_killed_the_child() {
+        let outcome = run("sh", ["-c", "kill -KILL $$"]);
+        assert!(!outcome.timed_out() && !outcome.success());
+        assert!(
+            outcome.stderr_text().contains("sh killed by signal 9 (SIGKILL"),
+            "{}",
+            outcome.stderr_text()
+        );
+        let outcome = run("sh", ["-c", "kill -TERM $$"]);
+        assert!(
+            outcome.stderr_text().contains("sh killed by signal 15]"),
             "{}",
             outcome.stderr_text()
         );

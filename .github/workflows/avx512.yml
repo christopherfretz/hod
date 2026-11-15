@@ -43,6 +43,18 @@ jobs:
           echo "HOD_AVX512_REPORT=$RUNNER_TEMP/avx512-report.tsv" >> "$GITHUB_ENV"
           grep -m1 '^model name' /proc/cpuinfo
           nproc
+          free -m
+      # The memory of the steps after this one, every 5 s: the time, `free
+      # -m`'s Mem line, the number of llc processes and the three largest
+      # processes (RSS in MB); printed by the memory step at the end.
+      - name: memory watch
+        run: |
+          log="$RUNNER_TEMP/memory.log"
+          echo "MEMORY_LOG=$log" >> "$GITHUB_ENV"
+          nohup bash -c 'while true; do
+            echo "$(date -u +%T) $(free -m | awk "/^Mem/ {print \"used \" \$3 \" avail \" \$7}") llc $(ps -eo comm= | grep -c "^llc") top: $(ps -eo rss=,comm= --sort=-rss | head -3 | awk "{printf \"%s=%d \", \$2, \$1/1024}")"
+            sleep 5
+          done' >> "$log" 2>&1 &
       # Step limits under the job's, so that a slow step still leaves the
       # job its log and its summary.
       - name: build
@@ -55,6 +67,12 @@ jobs:
         if: always()
         timeout-minutes: 35
         run: cargo test -q -p hod_x64 --test abi -- zmm --nocapture
+      - name: memory
+        if: always()
+        run: |
+          echo "least memory available (MB): $(awk '{print $5}' "$MEMORY_LOG" | sort -n | head -1)"
+          echo "most llc processes at once: $(awk '{print $7}' "$MEMORY_LOG" | sort -n | tail -1)"
+          cat "$MEMORY_LOG"
       - name: avx512 execution summary
         if: always()
         run: scripts/avx512-summary.sh "$RUNNER_TEMP/avx512-report.tsv" | tee -a "$GITHUB_STEP_SUMMARY"

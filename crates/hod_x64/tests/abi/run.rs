@@ -469,11 +469,26 @@ impl Harness {
 /// steps crashed.
 pub type Ran = (Vec<u8>, Vec<bool>);
 
-/// Runs `llc` on `source`.
+/// The address space an `llc` of a grid may take (`ulimit -v`, KiB): 2
+/// GiB. A batch takes under 120 MB at its peak; LLVM 19's `FastISel` on
+/// `sapphirerapids`' second batch, with the `<32 x bfloat>` cases it
+/// mishandles (§12, now left out), took 5.9 GB in a minute, and two at
+/// once killed a 16 GB hosted runner. Capped, such an `llc` aborts
+/// ("LLVM ERROR: out of memory", naming the function) within seconds.
+pub const LLC_MEMORY_KIB: u64 = 2 << 20;
+
+/// `llc` under [`LLC_MEMORY_KIB`]: run through `sh`, which sets the
+/// limit and becomes `llc` (`exec`); arguments go after this.
+pub fn capped_llc(llc: &Path) -> Command {
+    let mut command = Command::new("sh");
+    command.arg("-c").arg(format!("ulimit -v {LLC_MEMORY_KIB} && exec \"$0\" \"$@\"")).arg(llc);
+    command
+}
+
+/// Runs `llc` on `source`, under [`LLC_MEMORY_KIB`].
 pub fn compile(llc: &Path, config: Config, source: &Path, object: &Path) -> Outcome {
-    run(
-        llc,
-        [
+    run_with(
+        capped_llc(llc).args([
             config.opt.as_ref(),
             if config.dag { "-fast-isel=0" } else { "-fast-isel=1" }.as_ref(),
             "-filetype=obj".as_ref(),
@@ -481,7 +496,9 @@ pub fn compile(llc: &Path, config: Config, source: &Path, object: &Path) -> Outc
             source.as_os_str(),
             "-o".as_ref(),
             object.as_os_str(),
-        ],
+        ]),
+        &[],
+        hod_testutil::DEFAULT_TIMEOUT,
     )
 }
 
@@ -755,4 +772,17 @@ fn compare_slot(
         hex(&got[first..end]),
         hex(&mask[first..end])
     ))
+}
+
+/// WP-238: what [`capped_llc`] runs gets its arguments and the address
+/// space limit (`sh` standing in for `llc`).
+#[test]
+fn llc_runs_under_the_memory_cap() {
+    let outcome = run_with(
+        capped_llc(Path::new("sh")).args(["-c", "echo \"$1\" $(ulimit -v)", "sh", "the argument"]),
+        &[],
+        hod_testutil::DEFAULT_TIMEOUT,
+    );
+    assert!(outcome.success(), "{}", outcome.stderr_text());
+    assert_eq!(outcome.stdout_text(), format!("the argument {LLC_MEMORY_KIB}\n"));
 }

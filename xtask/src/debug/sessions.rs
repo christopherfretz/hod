@@ -563,6 +563,9 @@ pub fn run(options: &Options) -> Result<Report, String> {
     Ok(report)
 }
 
+/// Links a variant's objects (its name, the objects) into its program.
+type Link<'a> = dyn Fn(&str, &[PathBuf]) -> Result<PathBuf, String> + 'a;
+
 /// `selector-split` (WP-250, `spec/harness.md` "debug", "Lines"): for a
 /// unit whose hod-only pairs include an unclassified one, the modules
 /// `irs` built by the oracle's `llc` (`tools.0`) with each of
@@ -575,7 +578,7 @@ fn selector_splits(
     irs: &[PathBuf],
     hod: &Path,
     (llc, line_tools): (&Path, &LineTools),
-    link: &dyn Fn(&str, &[PathBuf]) -> Result<PathBuf, String>,
+    link: &Link<'_>,
     report: &mut LinesReport,
     limits: Limits,
 ) -> Result<Vec<SelectorSplit>, String> {

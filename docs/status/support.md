@@ -50,8 +50,8 @@ skipped (`docs/design/0007-avx512.md` §4.4).
 | `landingpad` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 1020 | 364 | 11 | 645 | 779 | 10 | 231 |
-| total | 1346 | 585 | 60 | 701 | 1004 | 61 | 281 |
+| `intrinsic` | 1029 | 373 | 11 | 645 | 779 | 10 | 240 |
+| total | 1355 | 594 | 60 | 701 | 1004 | 61 | 290 |
 
 ## `module`
 
@@ -915,6 +915,15 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.aarch64.frint64x` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
 | `intrinsic:llvm.aarch64.frint64z` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
 | `intrinsic:llvm.aarch64.fjcvtzs` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
+| `intrinsic:llvm.aarch64.ldxr` | supported (int, ptr, aggregate) | rejected | x86_64: an AArch64 property. WP-245 |
+| `intrinsic:llvm.aarch64.ldaxr` | supported (int, ptr, aggregate) | rejected | x86_64: an AArch64 property. WP-245 |
+| `intrinsic:llvm.aarch64.stxr` | supported (int, ptr, aggregate) | rejected | x86_64: an AArch64 property. WP-245 |
+| `intrinsic:llvm.aarch64.stlxr` | supported (int, ptr, aggregate) | rejected | x86_64: an AArch64 property. WP-245 |
+| `intrinsic:llvm.aarch64.ldxp` | supported (int, ptr, aggregate) | rejected | x86_64: an AArch64 property. WP-245 |
+| `intrinsic:llvm.aarch64.ldaxp` | supported (int, ptr, aggregate) | rejected | x86_64: an AArch64 property. WP-245 |
+| `intrinsic:llvm.aarch64.stxp` | supported (int, ptr, aggregate) | rejected | x86_64: an AArch64 property. WP-245 |
+| `intrinsic:llvm.aarch64.stlxp` | supported (int, ptr, aggregate) | rejected | x86_64: an AArch64 property. WP-245 |
+| `intrinsic:llvm.aarch64.clrex` | supported | rejected | x86_64: an AArch64 property. WP-245 |
 | `intrinsic:llvm.x86.sse.cmp.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
 | `intrinsic:llvm.x86.sse.comieq.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
 | `intrinsic:llvm.x86.sse.comige.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE |

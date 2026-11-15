@@ -163,12 +163,14 @@ fn require_tools() -> bool {
 
 /// The L7 step of the full gate (`spec/harness.md` "debug", "In the
 /// gate"): every debugger test, then every `-g` module of the corpus
-/// verified. The quick gate has no step of its own: `cargo test` runs the
-/// quick tests (`xtask/tests/debug_real.rs`).
-pub fn gate() -> bool {
+/// verified, for `target` (`None` this machine's). The quick gate has no
+/// step of its own: `cargo test` runs the quick tests
+/// (`xtask/tests/debug_real.rs`).
+pub fn gate(target: Option<crate::irdiff::directives::Arch>) -> bool {
     let build_dir = crate::irdiff::default_build_dir();
     let mut options = sessions::Options::new(build_dir.clone());
     options.require_tools = require_tools();
+    options.target = target;
     let sessions_ok = match sessions::run(&options) {
         Ok(report) => {
             eprint!("{}", report.summary(false));
@@ -186,7 +188,7 @@ pub fn gate() -> bool {
         build_dir,
         require_tools: require_tools(),
         limits: verify::LIMITS,
-        target: None,
+        target,
     };
     let verify_ok = match verify::run(&options) {
         Ok(report) => {

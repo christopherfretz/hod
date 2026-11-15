@@ -1,0 +1,30 @@
+# Provenance of the x86-64 real-project reports (oss-report.py status
+# --provenance; the format is in oss-report.py). Hand-kept from the lanes'
+# state notes; it says what a report.json does not: the hod commit of a
+# frozen copy named by its sha256, and the kiln of a report written before
+# reports carried a `kiln` field. Rows of a report that has `kiln` are not
+# needed. Update it with the lane when a lane re-freezes hod or kiln.
+#
+# hod: frozen copies named by the first 8 hex digits of their sha256
+hod	hod-715150d4	e7b8796d
+hod	hod-8ec6b21e	9e25d3f1
+hod	hod-f59b4cc6	56a4695f
+#
+# kiln, first lane set (WP-191): runs 10 to 12 on kiln 1.1.0; abseil's
+# -O0 -g strict tree and re2's -O0 trees on kiln 1.2.0 (kiln++ rebuilt in
+# place at 01:19Z on 2026-11-15) and re2's on kiln 1.2.0 (run 15)
+kiln	abseil	O0g	strict	8f93304ee
+kiln	re2	*	*	8f93304ee
+kiln	eigen	O0	*	21b9110a4
+kiln	eigen	O0g	*	8f93304ee
+kiln	highway	*	*	8f93304ee
+kiln	range_v3	*	*	8f93304ee
+kiln	boost_tmpl	*	*	8f93304ee
+kiln	*	*	*	21b9110a4
+#
+note	Boost (`boost_tmpl`, -O0): the strict build stopped at the refusal `asm:section` (module assembly that switches to `.debug_gdb_scripts`) at hod 56a4695f; WP-255 builds it since. The strict tests are of a partial build (programs not built count as failed), not a miscompile; the row is to be measured again at the candidate. Every build, the control's included, ends with one of its 528 links failing, hence `failed (0 TUs)`; the hybrid build's tests equal the control's.
+note	Boost (`boost_tmpl`): one of the 528 links fails in every build, the control's included: `multi_index-test_serialization` (undefined `test_serialization2()`, `test_serialization3()` and Boost.Serialization symbols). The lane's Jamfile shim reads only the first line of a multi-line `run` rule and Boost.Serialization is not in the subset; not a compiler difference.
+note	range_v3: one translation unit (`view/tokenize.cpp`) fails to compile upstream in every build, the control's included (clang 19 rejects it too); every object the strict build makes is hod's.
+note	A test that runs an x86-64 program itself rather than through ctest (a death test re-executing `/proc/self/exe`, a python test script) fails under qemu in the control and in hod's builds alike: the comparison with the control holds, the absolute count does not (googletest's 45 of 63).
+note	glog -O0: `logging` is a thread race of the test under qemu, failing and passing in the control and in strict alike (the lane's A/B runs); not a miscompile.
+note	ctre has no ctest tests: its build (the compile-time tests) is the measurement.

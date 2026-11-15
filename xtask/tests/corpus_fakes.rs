@@ -307,7 +307,7 @@ impl World {
         config.mode = Mode::Hybrid;
         config.hod = Some(self.scratch.join("hod"));
         config.search = self.search();
-        verify::Options { dir: self.out(), config, manifest_only: false }
+        verify::Options { dir: self.out(), config, manifest_only: false, expected: None }
     }
 
     /// The corpus's deterministic files (not `CAPTURE.tsv` and

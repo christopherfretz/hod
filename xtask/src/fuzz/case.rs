@@ -967,8 +967,9 @@ impl Bench {
             let report = self.compare_lines(&ir, &hod_x, &oracle_x).map_err(harness)?;
             // As `cargo xtask debug`: an unclassified pair fails, the
             // columns are counted. hod's pairs at a statement `x = x`,
-            // which llc deletes, and llc's at a line that is only a
-            // constant branch, which hod folds, are counted apart
+            // which llc deletes, and llc's at a line of only unused
+            // values and a `br label`, where hod emits nothing (WP-252
+            // narrowed it: not `br i1 true|false`), are counted apart
             // ([`self_assignment`], [`constant_branch`]).
             let text = fs::read_to_string(&ir).unwrap_or_default();
             let mut report = report;
@@ -1261,19 +1262,20 @@ fn at_line<'t>(text: &'t str, function: &str, line: u32) -> Option<AtLine<'t>> {
     Some((defs, at, body))
 }
 
-/// Whether `function`'s instructions at `line` of `text` are a branch
-/// whose destination is known, `br label %b` or `br i1 true|false, ...`,
-/// and loads (neither volatile nor atomic), `getelementptr`s, comparisons
-/// and casts whose values nothing uses but another such unused value of
-/// the line: csmith's `if ((x, -6L))` and `if (((&x == 0), 7L))`. hod folds
-/// the branch (and omits a branch to the block it emits next,
-/// `spec/codegen.md` §6.2) and emits nothing for the unused values, so its
-/// object has no row at the line; `llc -O0` keeps a test and a jump (all
-/// three of its selectors keep one row there: a debug-quality difference,
-/// the programs agree). `spec/dwarf.md` §5.7 has no class for this
-/// yet (`xtask/src/debug/permitted.rs` `pair_class`): until it has,
-/// `--debug` counts llc's pairs there apart instead of calling them
-/// findings.
+/// Whether `function`'s instructions at `line` of `text` are unconditional
+/// branches, `br label %b`, and loads (neither volatile nor atomic),
+/// `getelementptr`s, comparisons and casts whose values nothing uses but
+/// another such unused value of the line. hod omits a branch to the block
+/// it emits next
+/// (`spec/codegen.md` §6.2) and emits nothing for the unused values, so
+/// its object has no row at the line; `llc -O0` keeps a jump (P1 of
+/// `spec/dwarf.md` §5.7, which `--debug` classifies by `llc`'s code when
+/// nothing else of the line has code there). Since WP-252 a line with a
+/// branch on a constant, `br i1 true|false, ...` (`if (((&x == 0),
+/// 7L))`, seed 110478), is no such line: hod writes a `nop` with a row
+/// there when the folded branch would leave the line without one
+/// (`spec/dwarf.md` §5.10), as all three of `llc`'s `-O0` selectors keep
+/// code there, so a pair `llc` alone has at it is a finding.
 pub fn constant_branch(text: &str, function: &str, line: u32) -> bool {
     let Some((_, at, body)) = at_line(text, function, line) else { return false };
     // The pure values at the line: `getelementptr`s, loads (neither
@@ -1321,10 +1323,9 @@ pub fn constant_branch(text: &str, function: &str, line: u32) -> bool {
             }
             return false;
         }
-        let known = inst.strip_prefix("br ").is_some_and(|b| {
-            b.starts_with("label ") || b.starts_with("i1 true,") || b.starts_with("i1 false,")
-        });
-        if !known {
+        // WP-252: `br i1 true|false` is not accepted any more (hod keeps a
+        // row there, `spec/dwarf.md` §5.10).
+        if !inst.starts_with("br label ") {
             return false;
         }
         branches += 1;
@@ -1649,8 +1650,9 @@ define void @h() {
         assert!(!self_assignment(text, "h", 6));
     }
 
-    // spec/harness.md "Random programs", "Modes" (Debug): llc's pairs at a
-    // branch whose destination is known, and only those, are taken apart.
+    // spec/harness.md "Random programs", "Modes" (Debug): llc's pairs at an
+    // unconditional branch, and only those, are taken apart (since WP-252
+    // not at a branch on a constant).
     #[test]
     fn constant_branches() {
         let text = "source
@@ -1675,11 +1677,18 @@ define i32 @f(ptr %0) {
 !13 = !DILocation(line: 7, column: 3, scope: !5)
 !14 = !DILocation(line: 8, column: 3, scope: !5)
 ";
-        assert!(constant_branch(text, "f", 5), "the first");
+        // WP-252: a branch on a constant keeps hod's row (spec/dwarf.md
+        // §5.10), so llc's pair there is not set apart.
+        assert!(!constant_branch(text, "f", 5), "a branch on a constant");
         // A load something uses, a branch on a value, a return: no.
         assert!(!constant_branch(text, "f", 6));
         assert!(!constant_branch(text, "f", 7));
         assert!(!constant_branch(text, "f", 8));
+        // The same line with an unconditional branch: yes.
+        let text =
+            text.replace("br i1 true, label %2, label %3, !dbg !11", "br label %2, !dbg !11");
+        assert!(constant_branch(&text, "f", 5), "an unused load and an unconditional branch");
+        assert!(!constant_branch(&text, "f", 6));
     }
 
     // Seed 110478 (aarch64, LLVM 22, debug): `if (((&l_1000 == (void*)0) ,
@@ -1705,9 +1714,14 @@ define i32 @f(ptr %0) {
 
 9:
   %11 = icmp eq ptr %0, null, !dbg !14
-  br i1 true, label %12, label %12, !dbg !14
+  br label %12, !dbg !14
 
 12:
+  %13 = icmp eq ptr %2, null, !dbg !16
+  %14 = zext i1 %13 to i32, !dbg !16
+  br label %15, !dbg !17
+
+15:
   ret i32 %7, !dbg !15
 }
 !10 = !DILocation(line: 5, column: 3, scope: !5)
@@ -1716,9 +1730,14 @@ define i32 @f(ptr %0) {
 !13 = !DILocation(line: 7, column: 3, scope: !5)
 !14 = !DILocation(line: 9, column: 3, scope: !5)
 !15 = !DILocation(line: 10, column: 3, scope: !5)
+!16 = !DILocation(line: 11, column: 3, scope: !5)
+!17 = !DILocation(line: 11, column: 4, scope: !5)
 ";
-        assert!(constant_branch(text, "f", 5), "a comparison used only by its unused extension");
+        assert!(constant_branch(text, "f", 11), "a comparison used only by its unused extension");
         assert!(constant_branch(text, "f", 9), "an unused comparison");
+        // WP-252: the seed's own shape, a branch on a constant after an
+        // unused comparison and its extension, keeps hod's row.
+        assert!(!constant_branch(text, "f", 5));
         // The extension is used by the return; an atomic load: no.
         assert!(!constant_branch(text, "f", 6));
         assert!(!constant_branch(text, "f", 7));

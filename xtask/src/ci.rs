@@ -73,8 +73,267 @@ pub fn cargo_step(args: &[&str]) -> bool {
 }
 
 /// The steps of `cargo xtask ci`, in the order they run (`spec/harness.md`
-/// "ci"). `debug` is the full gate's only.
-pub const STEPS: [&str; 6] = ["fmt", "clippy", "test", "irdiff", "roundtrip", "debug"];
+/// "ci"): the quick gate's, then [`FULL_ONLY`].
+pub const STEPS: [&str; 9] = [
+    "fmt",
+    "clippy",
+    "test",
+    "irdiff",
+    "roundtrip",
+    "debug-x86_64",
+    "debug-aarch64",
+    "corpus-aarch64",
+    "corpus-x86_64",
+];
+
+/// The steps only the full gate runs, cheapest first so that it fails
+/// fast: L7 (`debug` full tier and `debug verify`) and then L6 (`corpus
+/// verify --strict` with the list of expected results) for each target
+/// architecture, from this one host (`docs/VALIDATION.md` "Gates").
+pub const FULL_ONLY: [&str; 4] =
+    ["debug-x86_64", "debug-aarch64", "corpus-aarch64", "corpus-x86_64"];
+
+/// The target architecture a step of [`FULL_ONLY`] is for, by name.
+pub fn step_target(step: &str) -> Option<&'static str> {
+    let (_, arch) = step.split_once('-')?;
+    ["aarch64", "x86_64"].into_iter().find(|known| *known == arch)
+}
+
+/// How a step of the gate ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StepResult {
+    Passed,
+    Failed,
+    /// It needed what is not here, and tools are not required: what.
+    Skipped(String),
+    /// Not run: an earlier step failed, or the quick gate does not run it.
+    NotRun(&'static str),
+}
+
+impl StepResult {
+    /// The word in the table.
+    pub fn word(&self) -> String {
+        match self {
+            Self::Passed => "passed".to_owned(),
+            Self::Failed => "FAILED".to_owned(),
+            Self::Skipped(why) => format!("skipped ({why})"),
+            Self::NotRun(why) => format!("not run ({why})"),
+        }
+    }
+}
+
+/// A wall time as the gate prints it: `4.2 s`, `12:03`, `1:05:36`.
+pub fn wall(time: std::time::Duration) -> String {
+    let seconds = time.as_secs();
+    if seconds < 60 {
+        format!("{:.1} s", time.as_secs_f64())
+    } else if seconds < 3600 {
+        format!("{}:{:02}", seconds / 60, seconds % 60)
+    } else {
+        format!("{}:{:02}:{:02}", seconds / 3600, seconds / 60 % 60, seconds % 60)
+    }
+}
+
+/// The table the gate ends with: one line per selected step, its result
+/// and its wall time, and the total.
+pub fn table(rows: &[(&str, StepResult, Option<std::time::Duration>)]) -> String {
+    use std::fmt::Write as _;
+    let mut text = String::from("ci: step            result                       wall\n");
+    for (step, result, time) in rows {
+        let time = time.map_or_else(|| "-".to_owned(), wall);
+        let _ = writeln!(text, "ci: {step:<15} {:<28} {time}", result.word());
+    }
+    let total: std::time::Duration = rows.iter().filter_map(|(_, _, time)| *time).sum();
+    let _ = writeln!(text, "ci: {:<15} {:<28} {}", "total", "", wall(total));
+    text
+}
+
+/// Runs the selected steps in order, stops at the first that fails,
+/// prints each step's wall time and the table, and says `ci: ok` when
+/// every step passed or was skipped (`spec/harness.md` "ci"). Whether the
+/// gate passed.
+pub fn run(args: &Args) -> bool {
+    let mut rows = Vec::new();
+    let mut failed = false;
+    for step in args.steps.iter().copied() {
+        if args.quick && FULL_ONLY.contains(&step) {
+            rows.push((step, StepResult::NotRun("full gate only"), None));
+            continue;
+        }
+        if failed {
+            rows.push((step, StepResult::NotRun("an earlier step failed"), None));
+            continue;
+        }
+        match args.part {
+            Some(part) if step == "test" => eprintln!("ci: {step} (part {part})"),
+            _ => eprintln!("ci: {step}"),
+        }
+        let start = std::time::Instant::now();
+        let result = run_one(step, args);
+        let time = start.elapsed();
+        eprintln!("ci: {step}: {} in {}", result.word(), wall(time));
+        if result == StepResult::Failed {
+            eprintln!("ci: {step} FAILED");
+            failed = true;
+        }
+        rows.push((step, result, Some(time)));
+    }
+    eprint!("{}", table(&rows));
+    if !failed {
+        eprintln!("ci: ok");
+    }
+    !failed
+}
+
+/// Runs one step.
+fn run_one(step: &str, args: &Args) -> StepResult {
+    let passed = |ok: bool| if ok { StepResult::Passed } else { StepResult::Failed };
+    match step {
+        "fmt" => passed(cargo_step(&["fmt", "--all", "--check"])),
+        // spec/cli.md "Embedding": the facade without its readers, as a
+        // program that builds `hod_ir` itself takes it. Part of the
+        // `clippy` step, so every lane that lints runs it.
+        "clippy" => passed(
+            cargo_step(&["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"])
+                && cargo_step(&[
+                    "clippy",
+                    "-p",
+                    "hod",
+                    "--no-default-features",
+                    "--",
+                    "-D",
+                    "warnings",
+                ]),
+        ),
+        "test" => {
+            let test = test_args(args.part);
+            passed(cargo_step(&test.iter().map(String::as_str).collect::<Vec<_>>()))
+        }
+        "irdiff" => passed(irdiff_gate(args.quick)),
+        "roundtrip" => roundtrip_gate(args.quick),
+        _ => match (step.split_once('-'), step_target(step)) {
+            (Some(("debug", _)), Some(arch)) => passed(debug_gate(arch)),
+            (Some(("corpus", _)), Some(arch)) => corpus_gate(arch),
+            _ => unreachable!("Args::parse accepts only the gate's steps, not '{step}'"),
+        },
+    }
+}
+
+/// The L4 step of the gate (spec/harness.md "irdiff", "In the gate"): the
+/// runs [`irdiff_runs`] plans for the tier, the other architecture's
+/// under its emulator among them.
+#[cfg(unix)]
+fn irdiff_gate(quick: bool) -> bool {
+    use crate::irdiff::{Arch, Config, run, workspace_root};
+    let mut ok = true;
+    for planned in irdiff_runs(quick, Arch::host()) {
+        eprintln!("ci: {}", irdiff_command(&planned));
+        let mut config = Config::for_workspace();
+        config.llvm = planned.llvm.map(|major| major.to_string());
+        (config.target, config.tier, config.mode) = (planned.target, planned.tier, planned.mode);
+        config.witness = planned.witness;
+        config.paths = planned.paths.iter().map(|path| workspace_root().join(path)).collect();
+        match run(&config) {
+            Ok(report) => {
+                eprint!("{}", report.summary(false));
+                ok &= report.exit_status() == 0;
+            }
+            Err(message) => {
+                eprintln!("xtask irdiff: {message}");
+                ok = false;
+            }
+        }
+    }
+    ok
+}
+
+/// The L2 step of the gate (spec/harness.md "roundtrip", "In the gate"):
+/// the quick tier of the corpus, or all of it.
+#[cfg(unix)]
+fn roundtrip_gate(quick: bool) -> StepResult {
+    let mut options = crate::roundtrip::Options::for_workspace();
+    options.quick = quick;
+    match crate::roundtrip::gate(&options) {
+        Ok(text) => {
+            eprint!("{text}");
+            match text.strip_prefix("roundtrip: skipped: ") {
+                Some(why) => StepResult::Skipped(why.split(';').next().unwrap_or(why).to_owned()),
+                None => StepResult::Passed,
+            }
+        }
+        Err(text) => {
+            eprint!("{text}");
+            StepResult::Failed
+        }
+    }
+}
+
+/// The L7 step of one target architecture (spec/harness.md "debug", "In
+/// the gate").
+#[cfg(unix)]
+fn debug_gate(arch: &str) -> bool {
+    crate::debug::gate(crate::irdiff::Arch::from_name(arch))
+}
+
+/// The L6 step of one target architecture (spec/harness.md "corpus",
+/// "In the gate"): `corpus verify --strict` of that architecture's
+/// default corpus, with the workspace's list of expected results. A
+/// missing corpus skips the step, or fails it under `HOD_REQUIRE_TOOLS=1`.
+#[cfg(unix)]
+fn corpus_gate(arch: &str) -> StepResult {
+    use crate::corpus::{self, manifest, verify};
+    let target = crate::irdiff::Arch::from_name(arch);
+    let build_dir = crate::irdiff::default_build_dir();
+    let mut options = corpus::verify_defaults(&build_dir, target);
+    options.config.mode = crate::irdiff::Mode::Strict;
+    options.config.jobs = crate::irdiff::Config::for_workspace().jobs;
+    if !options.dir.join(manifest::MANIFEST).is_file() {
+        let why = format!("no corpus at '{}' (cargo xtask corpus capture)", options.dir.display());
+        if options.config.require_tools {
+            eprintln!("corpus: error: {why} (HOD_REQUIRE_TOOLS=1)");
+            return StepResult::Failed;
+        }
+        eprintln!("corpus: skipped: {why}; under HOD_REQUIRE_TOOLS=1 this fails");
+        return StepResult::Skipped(why);
+    }
+    eprintln!(
+        "ci: cargo xtask corpus verify --target {arch} --strict -j {} {}",
+        options.config.jobs,
+        options.dir.display()
+    );
+    match verify::verify(&options) {
+        Ok(report) => {
+            eprint!("{}", report.summary(false));
+            if report.exit_status() == 0 { StepResult::Passed } else { StepResult::Failed }
+        }
+        Err(message) => {
+            eprintln!("xtask corpus: {message}");
+            StepResult::Failed
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn irdiff_gate(_: bool) -> bool {
+    eprintln!("ci: irdiff is only available on Unix hosts; skipped");
+    true
+}
+
+#[cfg(not(unix))]
+fn roundtrip_gate(_: bool) -> StepResult {
+    StepResult::Skipped("only available on Unix hosts".to_owned())
+}
+
+#[cfg(not(unix))]
+fn debug_gate(_: &str) -> bool {
+    eprintln!("ci: debug is only available on Unix hosts; skipped");
+    true
+}
+
+#[cfg(not(unix))]
+fn corpus_gate(_: &str) -> StepResult {
+    StepResult::Skipped("only available on Unix hosts".to_owned())
+}
 
 /// The steps of the quick gate the hosted CI lane runs
 /// (`.github/workflows/ci-lane.yml`, `spec/harness.md` "CI").
@@ -309,6 +568,50 @@ mod tests {
         assert!(parse(&["--step", "test", "--part", "b"]).unwrap_err().contains("unknown part"));
         assert!(parse(&["--part", "a64"]).is_err(), "a part of every step");
         assert!(parse(&["--step", "fmt", "--step", "test", "--part", "a64"]).is_err());
+        // The full gate's steps by name, in the gate's order.
+        let full = parse(&["--step", "corpus-x86_64", "--step=debug-aarch64", "--step", "fmt"]);
+        assert_eq!(full.unwrap().steps, ["fmt", "debug-aarch64", "corpus-x86_64"]);
+        assert!(parse(&["--step", "debug"]).unwrap_err().contains("unknown step 'debug'"));
+        assert!(parse(&["--step", "corpus-i386"]).is_err());
+    }
+
+    // spec/harness.md "ci": the full gate's own steps come after the quick
+    // gate's, L7 before L6 (cheapest first), one per target architecture.
+    #[test]
+    fn the_full_gates_steps() {
+        use super::{FULL_ONLY, STEPS, step_target};
+        assert_eq!(STEPS[STEPS.len() - FULL_ONLY.len()..], FULL_ONLY);
+        assert_eq!(
+            FULL_ONLY.map(step_target),
+            [Some("x86_64"), Some("aarch64"), Some("aarch64"), Some("x86_64")]
+        );
+        assert!(FULL_ONLY.iter().take(2).all(|s| s.starts_with("debug-")));
+        assert!(FULL_ONLY.iter().skip(2).all(|s| s.starts_with("corpus-")));
+        assert_eq!(step_target("fmt"), None);
+        assert_eq!(step_target("corpus-arm"), None);
+    }
+
+    // spec/harness.md "ci": every step's wall time, and the table the gate
+    // ends with names a step that did not run.
+    #[test]
+    fn the_gates_table() {
+        use super::{StepResult, table, wall};
+        use std::time::Duration;
+        assert_eq!(wall(Duration::from_millis(4_240)), "4.2 s");
+        assert_eq!(wall(Duration::from_secs(723)), "12:03");
+        assert_eq!(wall(Duration::from_secs(3936)), "1:05:36");
+        let rows = [
+            ("fmt", StepResult::Passed, Some(Duration::from_secs(2))),
+            ("roundtrip", StepResult::Skipped("no corpus at '/c'".into()), Some(Duration::ZERO)),
+            ("test", StepResult::Failed, Some(Duration::from_secs(70))),
+            ("corpus-aarch64", StepResult::NotRun("an earlier step failed"), None),
+        ];
+        let text = table(&rows);
+        assert!(text.contains("ci: fmt             passed"), "{text}");
+        assert!(text.contains("skipped (no corpus at '/c')"), "{text}");
+        assert!(text.contains("ci: test            FAILED                       1:10"), "{text}");
+        assert!(text.contains("ci: corpus-aarch64  not run (an earlier step failed) -"), "{text}");
+        assert!(text.lines().last().unwrap().ends_with("1:12"), "{text}");
     }
 
     // The test step's parts are the whole step: each package of the
@@ -364,7 +667,8 @@ mod tests {
         let mut steps: Vec<&str> = super::HOSTED_STEPS.to_vec();
         steps.extend(super::NOT_HOSTED);
         steps.sort_unstable();
-        let mut quick: Vec<&str> = super::STEPS.into_iter().filter(|s| *s != "debug").collect();
+        let mut quick: Vec<&str> =
+            super::STEPS.into_iter().filter(|s| !super::FULL_ONLY.contains(s)).collect();
         quick.sort_unstable();
         assert_eq!(steps, quick, "every quick step is hosted or said not to be");
         assert_eq!(lane.matches("run: cargo xtask ci").count(), super::HOSTED_STEPS.len());

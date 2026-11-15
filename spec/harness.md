@@ -14,10 +14,21 @@ binary in one log), then the `irdiff` runs of
 "irdiff", "In the gate" (the quick gate's include a few seeds for the
 other architecture under its emulator, the full gate's every seed with
 both oracles and hybrid mode), then the `roundtrip` run of "roundtrip", "In the
-gate", then (full gate only) the `debug` run of "debug", "In the gate". It
-stops at the first step that fails, printing
-`ci: <step> FAILED`, and ends with `ci: ok` and exit status 0 only if every
-step passed.
+gate", then (full gate only, `xtask::ci::FULL_ONLY`, cheapest first)
+`debug-x86_64` and `debug-aarch64`, the runs of "debug", "In the gate"
+for each target architecture, and `corpus-aarch64` and `corpus-x86_64`,
+L6: `corpus verify --strict` of that architecture's default corpus
+("corpus", "Where things are"; the other architecture's under its
+emulator) with the list of expected results ("corpus", "Expected
+results"), `-j` of `irdiff`'s default (4), the workspace's hod. It
+stops at the first step that fails, printing `ci: <step> FAILED`. Each
+step that runs ends with `ci: <step>: <result> in <wall time>`; the gate
+then prints a table of every selected step, its result (`passed`,
+`FAILED`, `skipped (<what was missing>)`, `not run (an earlier step
+failed)`, or `not run (full gate only)` under `--quick`) and its wall
+time, and the total, also when a step failed; it ends with `ci: ok` and
+exit status 0 only if every step passed or was skipped. Tests:
+`xtask::ci::tests::the_full_gates_steps`, `the_gates_table`.
 
 **A step that needs build output or tools** follows one rule. What it
 needs and does not find is a note and the step passes with what there is
@@ -56,7 +67,9 @@ links no dylib), and a second failure of the step, fails the gate.
 `retries_a_crate_seen_only_as_rmeta_once`.
 
 `--step <name>` (repeatable; `fmt`, `clippy`, `test`, `irdiff`,
-`roundtrip`, `debug`) runs only the named steps, in the gate's order
+`roundtrip`, `debug-x86_64`, `debug-aarch64`, `corpus-aarch64`,
+`corpus-x86_64`; WP-251 replaced `debug` by the two `debug-<arch>`)
+runs only the named steps, in the gate's order
 whatever the order they are named in; without it every step runs. An
 unknown step or argument is a usage error (exit status 2). Test:
 `xtask::ci::tests::steps_are_selected_by_name`.
@@ -139,11 +152,15 @@ kiln's lanes). Its rules:
    1.5), x86-64 about 120 runner minutes and AArch64 about 90; the two
    builds 2 minutes each, the summary under 1. A kiln revision not yet in
    the cache adds about 5 minutes to each build job.
-7. **Random programs (reserved).** When `cargo xtask fuzz` (WP-154,
-   csmith) is on `main`, a lane job (marked in `ci-lane.yml`) runs a
-   fixed range of seeds natively: every program built by hod and by
-   `llc`, a difference a failure. `.github/actions/hod-ci` already
-   installs `csmith` and `libcsmith-dev`.
+7. **Random programs.** `cargo xtask fuzz` (WP-154, csmith) is on
+   `main`, but the lane has no job of its own for it (`ci-lane.yml`
+   keeps a comment where one would go). What runs: the `test` step's
+   `xtask/tests/fuzz_real.rs` (`cargo xtask fuzz` end to end on a few
+   seeds with the real tools; csmith and `libcsmith-dev` are installed
+   by `.github/actions/hod-ci`, and without csmith the csmith tests skip
+   with a note), and, on
+   the development machine, the budget of a release candidate ("fuzz",
+   "The budget") and sweeps run by hand.
 8. **AVX-512 execution (WP-229, WP-238).** `qemu-x86_64` executes no
    AVX-512 (Debian 13's 10.0 lists the flags, and its TCG faults on the
    first EVEX instruction), so the AVX-512 execution tests
@@ -193,10 +210,13 @@ kiln's lanes). Its rules:
    and some without: what the processor runs runs natively, the rest
    under SDE, and the summary says how many of each and names the
    runner's processor. In the `test x64` job SDE is set up only when
-   the repository variable `HOD_CI_SDE` is `1` (not yet: the operator's
-   agreement to the download in that lane is pending, and SDE adds about
-   20 minutes there on a runner without AVX-512); without it what the
-   processor lacks is skipped, as before WP-238. With it, a last step,
+   the repository variable `HOD_CI_SDE` is `1` (set since 2026-11-15;
+   measured: the job took 20 min 40 s on an AMD EPYC 9V74 with 17
+   programs native, the 2 AVX512-FP16 ones under SDE and `knl`'s machine
+   built and compared but not executed, and 17 min on an Intel Xeon
+   6975P-C with 19 native; a runner with no AVX-512, all 19 under SDE, is
+   estimated at about 40 of the job's 45 minutes and not measured yet);
+   without it what the processor lacks is skipped, as before WP-238. With it, a last step,
    `scripts/avx512-summary.sh --check`, fails the job unless every
    program executed but the skipped `knl` machine. `avx512.yml` (a push
    to an `avx512/**` branch, or `workflow_dispatch`; never a gate)
@@ -555,7 +575,7 @@ What is missing:
 | the linker driver | objects are built, nothing is linked or run ("Cross targets"), with a note | failure |
 | the emulator or the system root, for the other architecture | objects are built, nothing is linked or run ("Cross targets"), with a note | failure |
 | `bfd`, `lld` or `mold` | that linker is not in the matrix, with a note | failure |
-| `wild` | not in the matrix, with a note | still a note: optional until a hosted run proves the set-up installs it (`hod_testutil::linkers::WILD_REQUIRED`) |
+| `wild` | not in the matrix, with a note | still a note: wild is optional (`hod_testutil::linkers::WILD_REQUIRED` is false and stays so; not a condition of 1.0) |
 | a linker named with `--linker` | usage error (exit status 2) | the same |
 
 A failure for a missing tool does not stop the run: the tests still run
@@ -1261,10 +1281,11 @@ report order; `present(target)` is the ones found for a target;
      installs the pinned release, `docs/status/linkers.md`);
   3. `wild`, then `ld.wild`, on `PATH`.
 - **Missing.** A missing `bfd`, `lld` or `mold` is a note, and a failure
-  under `HOD_REQUIRE_TOOLS=1`. A missing wild is a note even then while
-  `WILD_REQUIRED` is false: it becomes true once a hosted run has shown
-  that the lanes' set-up (`.github/actions/hod-ci`, which exports
-  `HOD_WILD`) installs it.
+  under `HOD_REQUIRE_TOOLS=1`. A missing wild is a note even then:
+  `WILD_REQUIRED` is false and stays so (wild is an optional linker of
+  the matrix, used where it is installed, as by the lanes' set-up
+  `.github/actions/hod-ci`, which exports `HOD_WILD`; its cases are
+  excepted on the harness side, never worked around in hod).
 - **Selecting.** Each linker gets a directory `<dir>/use-<name>`, passed
   with `-B`. GNU ld, lld and mold are in it as `ld.<name>` and selected
   with `-fuse-ld=<name>`. GCC 14's driver refuses `-fuse-ld=wild`, so
@@ -2169,13 +2190,66 @@ used and not committed.
 2. **irdiff.** For each LLVM major of the corpus, newest first, one
    `irdiff` run over that major's group directories, in hybrid mode
    (`--strict` for strict), with the workspace's hod (or `--hod`); results
-   in `<build>/corpus/verify-llvm<N>-<mode>.tsv`. `--manifest-only` stops
-   after step 1.
+   in `<build>/corpus/verify-llvm<N>-<mode>.tsv` (`irdiff`'s records,
+   before step 3). `--manifest-only` stops after step 1 and the list's
+   check that each row names a test of the corpus.
+3. **Expected results** (WP-251, below): the list's rows for the
+   corpus's target (`--target`, else this machine's) are applied to the
+   runs' records.
 
-Exit status: 1 when an `irdiff` run has a FAIL or XPASS; else 3 when the
+Exit status: 1 when an `irdiff` run has a FAIL or XPASS (after step 3),
+or the list has a problem; else 3 when the
 corpus differs from its manifest, or a run has an ERROR or a missing
 required tool; else 0. A directory without a corpus is an error (status
 3), not a pass.
+
+### Expected results
+
+An entry cannot say that hod refuses it or that its program is undefined
+on one target: entries are `capture`'s, checked against `sha256` and
+`bytes` in the manifest, and each is captured for one target. So the
+repository keeps a list, `docs/status/corpus-expected.tsv` (beside the
+table `compare` reads; `--expected <file>` names another), tab-separated,
+`#` lines and blank lines ignored, one row per target and test (both
+LLVM majors of the test):
+
+```
+<target>  refused    <source> <test>  <refusal name>  <reason or backlog reference>
+<target>  undefined  <source> <test>  -               <the evidence in one line>
+```
+
+`<target>` is `aarch64` or `x86_64`; `<source> <test>` is a manifest
+test as `covers` writes it (`kiln tests/conformance/...`, `gcc-torture
+builtins/strncmp.c`). No wildcard, no directory rows, no second row for
+a target and test, a reason or evidence on every row; anything else is a
+usage error of the list (`corpus::expected::Expected::parse`).
+
+- **refused** (strict mode only; hybrid mode falls back): a FAIL of the
+  test whose step is the decline and whose reason is the row's name is
+  UNSUPPORTED (detail `expected (<reason>)`), counted, and listed as
+  `EXPECTED <test>: refused <name> (<n> results)`. A refusal of the test
+  under another name stays a FAIL and is a list problem; a test the list
+  does not name is a FAIL as always; a result of the test hod built (any
+  outcome) makes the row **stale**, a list problem: the list only
+  shrinks by an edit.
+- **undefined** (both modes): both sides are still built and linked; a
+  refusal, a failure of hod, of the reference or of a link keeps its
+  outcome. A PASS, and a FAIL whose step is the run or the comparison
+  (`Failure::Run`, `Comparison`) with an object hod (or its fallback)
+  built, become SKIP with the detail `undefined on <target>, built, not
+  compared (<evidence>)`, counted, and listed as `UNDEFINED`.
+- A row whose test is not in the corpus is a list problem.
+
+The summary ends with the rows applied and the line `corpus: expected on
+<target>: <n> refused tests (<results>), <n> undefined (<results>), <n>
+list problems`; each problem is a `LIST <problem>` line and makes the
+exit status 1. The first undefined row is `builtins/strncmp.c` on x86-64
+(`spec/landed/harness/WP-244.md`, Findings 1). Tests:
+`corpus::expected::tests` (expected, unlisted, another name, stale, no
+such test, strict only, undefined built and not compared, undefined that
+does not build, the format, the workspace's list reads),
+`xtask/tests/corpus_real.rs` (an undefined and a stale row over real
+entries).
 
 ### census
 
@@ -3697,22 +3771,30 @@ kiln is read, never written.
 ### verify
 
 `debug verify` builds every `-g` module (a `.ll` with `!llvm.dbg.cu`) of
-the corpus (default `corpus::default_dir`) or of the paths with `hod
+the corpus of the target (default `corpus::default_dir_for` of
+`--target`, WP-251: `corpus-x64` for `--target x86_64` on an AArch64
+host) or of the paths with `hod
 --strict -O0 -filetype=obj` and the module's `;@ llc-args:`, then runs
 `llvm-dwarfdump --verify` of LLVM 22 and of 19 on the object. A module
 whose `;@ target:` is not the host's (with `--target <arch>`, WP-136:
 not that architecture's) is skipped; a decline is counted
 with its reason; a module that does not verify fails (exit 1), as does
-hod failing. `-j` at most 16, default 4.
+hod failing. A run that verifies nothing (no `-g` module, or every one
+declined or skipped) is an error (exit 3, the note `nothing verified`);
+a missing default corpus is a note, an error under `HOD_REQUIRE_TOOLS=1`.
+`-j` at most 16, default 4. Tests: `debug::verify::tests::summary_and_status`,
+`verifies_the_targets_corpus_and_not_nothing`.
 
 ### In the gate
 
 The quick gate has no step of its own: `cargo test` runs
 `xtask/tests/debug_real.rs`, whose `quick_tier_matches_llc` is the quick
 tier (about 20 s on the development host at load, 120 sessions; the
-result does not depend on time or load). The full gate runs every
-debugger test, then `debug verify` (`debug::gate`), and fails on a
-non-zero exit status of either.
+result does not depend on time or load). The full gate runs, once per
+target architecture (its steps `debug-x86_64` and `debug-aarch64`,
+"ci"), every debugger test for that target, then `debug verify` of that
+target's corpus (`debug::gate(target)`), and fails on a non-zero exit
+status of either.
 
 ### Library
 
@@ -3970,16 +4052,18 @@ fold and `debug::permitted` has no class yet:
   `llvm.memmove` whose source and destination number the same counts as
   such a store (a struct's `s = s;`);
 - llc-only, a **constant branch** (`case::constant_branch`): the line's
-  instructions are `br label` or `br i1 true|false`, and loads (neither
-  volatile nor atomic), `getelementptr`s, `icmp`s and casts that nothing
-  uses except another such unused value of the line (no call, no store).
-  That is csmith's `if ((x, -6L))` and `if (((&x == (void*)0), 7L))`
-  (seed 110478 of the 1.0 budget: an unused `icmp eq ptr` and its `zext`):
-  hod folds the branch (and omits one to the block it emits next) and
-  emits nothing for the unused values, `llc` keeps a test and a jump.
-  This is a debug-quality difference, not a wrong program: all three of
-  LLVM's `-O0` selectors keep one row at such a line, hod has none, and
-  the programs agree;
+  instructions are `br label`, and loads (neither volatile nor atomic),
+  `getelementptr`s, `icmp`s and casts that nothing uses except another
+  such unused value of the line (no call, no store): hod omits the
+  branch to the block it emits next and emits nothing for the unused
+  values, `llc` keeps a jump (P1 of `spec/dwarf.md` §5.7 with unused
+  values beside it). Narrowed by WP-252: a line with `br i1 true|false`
+  is not set apart any more. That was csmith's `if ((x, -6L))` and `if
+  (((&x == (void*)0), 7L))` (seed 110478 of the 1.0 budget: an unused
+  `icmp eq ptr` and its `zext`), where all three of LLVM's `-O0`
+  selectors keep code and a row; hod now writes a `nop` with the row
+  where the folded branch would leave the line without one
+  (`spec/dwarf.md` §5.10), so an `llc`-only pair there is a finding;
 - hod-only, a **selector split** (`selector-split`,
   `case::selector_split`): a pair (function F, line L) left unclassified
   where hod has rows and the oracle (`SelectionDAG`) has none. The same

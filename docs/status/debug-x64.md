@@ -1,40 +1,50 @@
 # Debug information on x86-64, measured
 
 What WP-136 measured of hod's debug information on
-`x86_64-unknown-linux-gnu`, once, at the branch head that landed it. The
-contract is `spec/dwarf.md` §6.17 and `spec/harness.md` "debug" ("Other
-targets", "Trees"). The reference is `llc -O0 -fast-isel=0
--relocation-model=pic` for x86-64 (`docs/VALIDATION.md` "Oracles").
+`x86_64-unknown-linux-gnu` at the branch head that landed it, with the
+sessions, `--verify` and the corpus's DIE trees measured again by WP-244
+(the other sections are WP-136's). The contract is `spec/dwarf.md` §6.17
+and `spec/harness.md` "debug" ("Other targets", "Trees"). The reference
+is `llc -O0 -fast-isel=0 -relocation-model=pic` for x86-64
+(`docs/VALIDATION.md` "Oracles").
 
 | | |
 |---|---|
-| date | 2026-11-13 |
-| hod | branch `wp/136-x64-debug` (on `main` at `73865eb`), debug build |
+| date | 2026-11-15 (WP-244); WP-136's sections 2026-11-13 |
+| hod | `e7e473af` (wave 25: `main` at `56a4695f` with kiln's pin at 1.2.0, wild and WP-238 part 1), release build; WP-136's sections: branch `wp/136-x64-debug` (on `main` at `73865eb`), debug build |
+| kiln | 1.2.0 at `8f93304ee`; corpus-x64 captured with it |
 | LLVM | 22.1.8 and 19.1.7 (`llc`, `llvm-dwarfdump`, clang), Debian packages |
 | debuggers | gdb-multiarch 16.3; lldb 19.1.7 (`gdb-remote`); `lldb-22` is not installed |
-| emulator | `qemu-x86_64` user mode, its gdb stub on a port the system chose |
-| linkers | GNU ld 2.44, lld 22.1.8, mold 2.37.1 |
+| emulator | `qemu-x86_64` 10.0.13 user mode, its gdb stub on a port the system chose |
+| linkers | GNU ld 2.44, lld 22.1.8, mold 2.37.1, wild 0.11.0 |
 | host | aarch64 Linux (the sessions are remote) |
 
 ## Sessions: `cargo xtask debug --target x86_64`
 
-`tests/debug` by clang 19, clang 22 and kiln, every linker, gdb and lldb;
-hod's transcripts against `llc`'s.
+`tests/debug` (56 tests) by clang 19, clang 22 and kiln, every linker,
+gdb and lldb; hod's transcripts against `llc`'s. `HOD_REQUIRE_TOOLS=1`,
+`-j 4`.
 
 | | |
 |---|---|
-| results | 236: **210 PASS**, 12 XFAIL, 14 SKIP; 0 FAIL, 0 XPASS, 0 crash |
-| debugger sessions | 384 |
-| by debugger | gdb 99 PASS, 12 SKIP; lldb-19 111 PASS |
-| by linker | bfd 70, lld 70, mold 70 PASS |
-| breakpoint lines | same 512; `llc` only 2 (P1); unclassified 0 |
-| wall time / peak RSS | 1:18 / 136 MB (`-j 4`) |
+| results | 921: **880 PASS**, 8 XFAIL, 33 SKIP; 0 FAIL, 0 XPASS, 0 ERROR, 0 crash |
+| debugger sessions | 1 680 |
+| breakpoint lines | same 1 733; `llc` only 14 (P1); hod only 1, **unclassified** |
+| wall time | 1:50 (`-j 4`) |
+| exit status | **1**, from the unclassified pair alone |
 
-The XFAILs are refusals of hod_x64 that are not debug information's:
-`attr:signext` (`places.c`), `attr:zeroext` (`local_type_inlined.cpp`,
-`coro_labels.cpp` by kiln), `attr:presplitcoroutine` (`coroutine.cpp`).
-The SKIPs are gdb on `tls.c` and `tls_static.c` (the stub has no
-`qGetTLSAddr`) and `sret_entry.c` (`target: aarch64`).
+The unclassified pair is `declare_fragment.c:18` (`j--`) in `sort`, by
+clang 22 (AArch64 has it too, by clang 19 and 22: `docs/status/debug.md`
+"kiln's debugger tests and `tests/debug`"): hod gives the line's `add`
+a row of its own, `llc` folds it into the loop's compare at line 17.
+
+The XFAILs are `key_call.c` under gdb, by clang 19 and 22 and every
+linker (`llc`'s code shows the parameter before its spill after `step`).
+The SKIPs are gdb on `tls.c`, `tls_static.c` and `dwarf4_tls.c` (24: the
+stub has no `qGetTLSAddr`) and the tests for AArch64 only (9:
+`call_sites.c`, `sret_entry.c`, `hardening_a64.cpp`, `local_static.ll`,
+`local_type_no_code.ll`). WP-136's XFAILs (`attr:signext`,
+`attr:zeroext`, `attr:presplitcoroutine`) are gone.
 
 ### What qemu's gdb stub cannot do
 
@@ -54,6 +64,15 @@ relocations of `.debug_info`.
 | `tests/debug` by clang 19 (`llc` 19), clang 22 and kiln (`llc` 22) | 52 | 33 (2700 DIEs) | 6 | **0** | 13 |
 | `tests/debug` by clang 19, against `llc` 22 | 21 | 13 | 3 | **0** | 5 |
 | corpus-x64, the 14 `-g` modules | 14 | 10 (380 DIEs) | 0 | **0** | 4 |
+| corpus-x64 (kiln 1.2.0), the 18 `-g` modules, WP-244 | 18 | 16 (1722 DIEs) | 0 | **2** | 0 |
+
+WP-244's two that differ are `lifetime-markers-O2-g-fpic-run.cpp` (LLVM
+22 and 19), an `-O2` unit, which earlier hods declined: its value
+records' locations (hod writes location lists where `llc` writes a
+single expression, a constant or nothing), `DW_AT_rnglists_base` for
+`DW_AT_loclists_base`, and `DW_AT_ranges` for a `low_pc`/`high_pc` pair.
+Both objects verify clean and the program passes strict (L6). The
+AArch64 corpus shows the same two (and 8 permitted, `realigned frame`).
 
 Permitted classes (`spec/dwarf.md` §6.7, §6.17): `sret` (`llc`'s
 location list, also of a variable-length array), `byval`, `realigned
@@ -67,6 +86,11 @@ frame`. Declined: `attr:zeroext` 9, `attr:signext` 2, `debug:call-sites`
 `-g` modules, **49 built, 49 clean**, 17 declined (`attr:zeroext` 9,
 `debug:call-sites` 2, `debug:dwarf-version` 2, `inst:insertelement` 2,
 the rest `attr:signext` and `attr:presplitcoroutine`).
+
+WP-244: `cargo xtask debug verify --target x86_64 -j 4 --hod <release
+hod> .build/corpus-x64` (the corpus directory must be named: without
+it the command takes the AArch64 corpus and skips all 18): 18 `-g`
+modules, **18 built, 18 clean**, 0 declined.
 
 ## Line tables on the corpus
 

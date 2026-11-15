@@ -6,7 +6,7 @@
 ; @ensure_compile_error is declared and never defined: the program links
 ; only if neither the invoke nor the deleted landing pad is emitted.
 ; Needs the C++ runtime.
-;@ covers: spec/codegen.md §5.6.8 (Folded constants and the blocks they remove)
+;@ covers: spec/ir.md §5.4 call (Invoke), §5.5 intrinsics (is.constant)
 ;@ tier: quick
 ;@ link: c++
 ;@ stdout: own pad 1

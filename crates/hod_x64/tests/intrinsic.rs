@@ -365,6 +365,42 @@ fn the_operands_of_a_folded_call_are_marked_dropped() {
     assert_eq!(marked, [0, 1], "the load and the add, not the rest");
 }
 
+/// WP-261 (`spec/codegen.md` §5.6.8): a folded call that feeds no
+/// branch rewrites no terminator and removes no block; one that feeds a
+/// branch turns it into a jump and removes the dead arm.
+#[test]
+fn a_folded_branch_removes_its_dead_arm_and_only_then() {
+    use hod_cg::const_fold::{Action, analyse};
+    let no_branch = format!(
+        "{}declare i1 @llvm.is.constant.i32(i32)\n\
+         define i32 @f(i32 %x, i1 %p) {{\nentry:\n  %c = call i1 @llvm.is.constant.i32(i32 %x)\n  \
+         %z = zext i1 %c to i32\n  br i1 %p, label %a, label %b\na:\n  ret i32 %z\nb:\n  ret i32 %x\n}}\n",
+        ll_header()
+    );
+    let (module, bodies) = parse(&no_branch);
+    let folding = analyse(&module, &bodies[0]).expect("no refusal");
+    assert!(folding.removed.is_empty(), "nothing removed");
+    assert!(
+        !folding.actions.iter().any(|a| matches!(a, Action::Jump(_) | Action::Unreachable)),
+        "no terminator rewritten"
+    );
+    let branch = format!(
+        "{}declare i1 @llvm.is.constant.i32(i32)\ndeclare void @u()\n\
+         define void @f(i32 %x) {{\nentry:\n  %c = call i1 @llvm.is.constant.i32(i32 %x)\n  \
+         br i1 %c, label %dead, label %live\ndead:\n  call void @u()\n  br label %live\n\
+         live:\n  ret void\n}}\n",
+        ll_header()
+    );
+    let (module, bodies) = parse(&branch);
+    let folding = analyse(&module, &bodies[0]).expect("no refusal");
+    assert_eq!(folding.removed.len(), 1, "the dead arm");
+    assert_eq!(
+        folding.actions.iter().filter(|a| matches!(a, Action::Jump(_))).count(),
+        1,
+        "the branch on the call"
+    );
+}
+
 // ---- the memory intrinsics ----
 
 mod mem_intrinsics {

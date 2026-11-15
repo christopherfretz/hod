@@ -304,6 +304,18 @@ fn lower_cast<'a>(
     }
 }
 
+/// What `llc` deletes or rewrites in a function that calls
+/// `is.constant` or `objectsize` (`spec/codegen.md` §5.6.8); `None` for
+/// an instruction lowered as usual.
+fn folded(cx: &mut FnCx<'_, X64>, inst: Inst<'_>) -> Option<CgResult<()>> {
+    match cx.fold_action(inst) {
+        FoldAction::Emit => None,
+        FoldAction::Drop => Some(Ok(())),
+        FoldAction::Jump(target) => Some(term::br(cx, target)),
+        FoldAction::Unreachable => Some(term::unreachable(cx)),
+    }
+}
+
 impl Target for X64 {
     type FnState = FnState;
 
@@ -393,13 +405,8 @@ impl Target for X64 {
     }
 
     fn lower<'a>(&self, cx: &mut FnCx<'a, Self>, inst: Inst<'a>) -> CgResult<()> {
-        // What `llc` deletes or rewrites in a function that asks
-        // `is.constant` or `objectsize` (`spec/codegen.md` §5.6.8).
-        match cx.fold_action(inst) {
-            FoldAction::Emit => {}
-            FoldAction::Drop => return Ok(()),
-            FoldAction::Jump(target) => return term::br(cx, target),
-            FoldAction::Unreachable => return term::unreachable(cx),
+        if let Some(done) = folded(cx, inst) {
+            return done;
         }
         if let Some(done) = mask::lower(cx, inst) {
             return done;

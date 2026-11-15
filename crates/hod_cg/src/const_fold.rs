@@ -503,7 +503,7 @@ impl Lci {
             if self.action[i as usize] != Action::Emit {
                 continue;
             }
-            let (target, other) = match self.opd(module,cond) {
+            let (target, other) = match self.opd(module, cond) {
                 Opd::Int(0) => (if_false, if_true),
                 Opd::Int(1) => (if_true, if_false),
                 _ => continue,
@@ -592,12 +592,12 @@ impl Lci {
         match inst.kind() {
             InstKind::Binary { lhs, rhs } => {
                 let bits = int_bits(module, inst.ty())?;
-                binary(op, bits, self.opd(module,lhs), self.opd(module,rhs))
+                binary(op, bits, self.opd(module, lhs), self.opd(module, rhs))
             }
             InstKind::Cast { arg } if matches!(op, Opcode::ZExt | Opcode::SExt | Opcode::Trunc) => {
                 let bits = int_bits(module, inst.ty())?;
                 let from = int_bits(module, body.value_type(module, arg))?;
-                match self.opd(module,arg) {
+                match self.opd(module, arg) {
                     Opd::Int(k) => Some(Lat::Int(match op {
                         Opcode::SExt => sext(k, from) as u64 & mask(bits),
                         _ => k & mask(bits),
@@ -608,20 +608,20 @@ impl Lci {
             }
             InstKind::ICmp { pred, lhs, rhs } => {
                 let bits = int_bits(module, body.value_type(module, lhs))?;
-                icmp(pred, bits, self.opd(module,lhs), self.opd(module,rhs))
+                icmp(pred, bits, self.opd(module, lhs), self.opd(module, rhs))
             }
-            InstKind::Select { cond, if_true, if_false } => match self.opd(module,cond) {
+            InstKind::Select { cond, if_true, if_false } => match self.opd(module, cond) {
                 Opd::Int(k) => {
                     let arm = if k & 1 == 1 { if_true } else { if_false };
-                    Some(Self::lat_of(self.opd(module,arm)))
+                    Some(Self::lat_of(self.opd(module, arm)))
                 }
                 Opd::Top => Some(Lat::Top),
                 Opd::Val(_) => {
-                    let (a, b) = (self.opd(module,if_true), self.opd(module,if_false));
+                    let (a, b) = (self.opd(module, if_true), self.opd(module, if_false));
                     (a == b && a != Opd::Top).then(|| Self::lat_of(a))
                 }
             },
-            InstKind::Unary { arg } if op == Opcode::Freeze => match self.opd(module,arg) {
+            InstKind::Unary { arg } if op == Opcode::Freeze => match self.opd(module, arg) {
                 Opd::Int(k) => Some(Lat::Int(k)),
                 Opd::Top => Some(Lat::Top),
                 Opd::Val(_) => None,
@@ -645,7 +645,7 @@ impl Lci {
                         undef = true;
                         continue;
                     }
-                    let opd = self.opd(module,value);
+                    let opd = self.opd(module, value);
                     if opd == Opd::Top || common.is_some_and(|c| c != opd) {
                         return None;
                     }
@@ -689,7 +689,7 @@ impl Lci {
                 if value.as_inst() == Some(phi.id()) {
                     continue;
                 }
-                let opd = self.opd(module,value);
+                let opd = self.opd(module, value);
                 if opd == Opd::Top || common.is_some_and(|c| c != opd) {
                     same = false;
                     break;
@@ -788,79 +788,85 @@ impl Lci {
                 self.end_block(module, body, b, stop);
                 continue;
             }
-            let term = block.terminator();
-            let t = term.id().index();
-            match term.kind() {
-                InstKind::Call(site) if term.opcode() == Opcode::Invoke => {
-                    if let Callee::Value(callee) = site.callee()
-                        && ptr_kind(module, callee) != Ptr::Other
-                    {
-                        return Err(CgError::unsupported(NULL_ACCESS));
-                    }
-                    let normal = term.successors().next();
-                    if no_return(module, &site)
-                        && normal.is_some_and(|n| {
-                            body.block(n).insts().next().map(Inst::opcode)
-                                != Some(Opcode::Unreachable)
-                        })
-                    {
-                        return Err(CgError::unsupported(NORETURN_INVOKE));
-                    }
-                    if no_unwind(module, &site) {
-                        return Err(CgError::unsupported(NOUNWIND_INVOKE));
-                    }
-                }
-                // `ConstantFoldTerminator`.
-                InstKind::CondBr { cond, if_true, if_false } if self.action[t] == Action::Emit => {
-                    if if_true == if_false {
-                        self.remove_pred(module, body, if_true, b.raw());
-                        self.action[t] = Action::Jump(if_true);
-                    } else {
-                        let (target, other) = match self.opd(module,cond) {
-                            Opd::Int(0) => (Some(if_false), if_true),
-                            Opd::Int(1) => (Some(if_true), if_false),
-                            _ => (None, if_true),
-                        };
-                        if let Some(target) = target {
-                            self.remove_pred(module, body, other, b.raw());
-                            self.action[t] = Action::Jump(target);
-                        }
-                    }
-                }
-                InstKind::Switch(switch) => {
-                    if let Opd::Int(k) = self.opd(module,switch.cond) {
-                        let dest = switch
-                            .cases()
-                            .find(|&(c, _)| {
-                                matches!(module.consts.get(c), Const::Int { value, .. } if value == k)
-                            })
-                            .map_or(switch.default, |(_, d)| d);
-                        let mut kept = false;
-                        for s in term.successors() {
-                            if s == dest && !kept {
-                                kept = true;
-                            } else {
-                                self.remove_pred(module, body, s, b.raw());
-                            }
-                        }
-                        self.action[t] = Action::Jump(dest);
-                    }
-                }
-                InstKind::IndirectBr { addr, .. } => {
-                    if addr.as_const().is_some_and(|id| {
-                        matches!(module.consts.get(id), Const::BlockAddr { .. })
-                    }) {
-                        return Err(CgError::unsupported(INDIRECTBR));
-                    }
-                }
-                _ => {}
-            }
+            self.alive_terminator(module, body, b)?;
             for s in self.succs(body, b) {
                 if !self.reach[s.index()] {
                     self.reach[s.index()] = true;
                     work.push(s);
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// Step 3 at the terminator of `b`: the `invoke` rewrites hod
+    /// declines, and `ConstantFoldTerminator`.
+    fn alive_terminator(&mut self, module: &Module, body: &Body, b: BlockId) -> CgResult<()> {
+        let term = body.block(b).terminator();
+        let t = term.id().index();
+        match term.kind() {
+            InstKind::Call(site) if term.opcode() == Opcode::Invoke => {
+                if let Callee::Value(callee) = site.callee()
+                    && ptr_kind(module, callee) != Ptr::Other
+                {
+                    return Err(CgError::unsupported(NULL_ACCESS));
+                }
+                let normal = term.successors().next();
+                if no_return(module, &site)
+                    && normal.is_some_and(|n| {
+                        body.block(n).insts().next().map(Inst::opcode) != Some(Opcode::Unreachable)
+                    })
+                {
+                    return Err(CgError::unsupported(NORETURN_INVOKE));
+                }
+                if no_unwind(module, &site) {
+                    return Err(CgError::unsupported(NOUNWIND_INVOKE));
+                }
+            }
+            // `ConstantFoldTerminator`.
+            InstKind::CondBr { cond, if_true, if_false } if self.action[t] == Action::Emit => {
+                if if_true == if_false {
+                    self.remove_pred(module, body, if_true, b.raw());
+                    self.action[t] = Action::Jump(if_true);
+                } else {
+                    let (target, other) = match self.opd(module, cond) {
+                        Opd::Int(0) => (Some(if_false), if_true),
+                        Opd::Int(1) => (Some(if_true), if_false),
+                        _ => (None, if_true),
+                    };
+                    if let Some(target) = target {
+                        self.remove_pred(module, body, other, b.raw());
+                        self.action[t] = Action::Jump(target);
+                    }
+                }
+            }
+            InstKind::Switch(switch) => {
+                if let Opd::Int(k) = self.opd(module, switch.cond) {
+                    let dest = switch
+                            .cases()
+                            .find(|&(c, _)| {
+                                matches!(module.consts.get(c), Const::Int { value, .. } if value == k)
+                            })
+                            .map_or(switch.default, |(_, d)| d);
+                    let mut kept = false;
+                    for s in term.successors() {
+                        if s == dest && !kept {
+                            kept = true;
+                        } else {
+                            self.remove_pred(module, body, s, b.raw());
+                        }
+                    }
+                    self.action[t] = Action::Jump(dest);
+                }
+            }
+            InstKind::IndirectBr { addr, .. }
+                if addr
+                    .as_const()
+                    .is_some_and(|id| matches!(module.consts.get(id), Const::BlockAddr { .. })) =>
+            {
+                return Err(CgError::unsupported(INDIRECTBR));
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -956,9 +962,9 @@ impl Lci {
 }
 
 /// `InstSimplify` on an integer binary operation of `bits` bits.
-fn binary(op: Opcode, bits: u32, a: Opd, b: Opd) -> Option<Lat> {
-    let m = mask(bits);
-    match (a, b) {
+fn binary(op: Opcode, bits: u32, lhs: Opd, rhs: Opd) -> Option<Lat> {
+    let ones = mask(bits);
+    match (lhs, rhs) {
         (Opd::Top, _) | (_, Opd::Top) => Some(Lat::Top),
         (Opd::Int(x), Opd::Int(y)) => Some(fold_binary(op, bits, x, y).map_or(Lat::Top, Lat::Int)),
         (Opd::Val(x), Opd::Val(y)) if x == y => match op {
@@ -968,23 +974,21 @@ fn binary(op: Opcode, bits: u32, a: Opd, b: Opd) -> Option<Lat> {
         },
         (Opd::Val(_), Opd::Val(_)) => None,
         (Opd::Int(k), Opd::Val(v)) | (Opd::Val(v), Opd::Int(k)) => {
-            let left = matches!(a, Opd::Int(_));
+            let left = matches!(lhs, Opd::Int(_));
             match op {
-                Opcode::And if k == 0 => Some(Lat::Int(0)),
-                Opcode::And if k == m => Some(Lat::Alias(v)),
-                Opcode::Or if k == m => Some(Lat::Int(m)),
+                Opcode::And | Opcode::Mul if k == 0 => Some(Lat::Int(0)),
+                Opcode::And if k == ones => Some(Lat::Alias(v)),
+                Opcode::Or if k == ones => Some(Lat::Int(ones)),
                 Opcode::Or | Opcode::Xor | Opcode::Add if k == 0 => Some(Lat::Alias(v)),
-                Opcode::Mul if k == 0 => Some(Lat::Int(0)),
                 Opcode::Mul if k == 1 => Some(Lat::Alias(v)),
-                Opcode::Sub if !left && k == 0 => Some(Lat::Alias(v)),
-                Opcode::Shl | Opcode::LShr | Opcode::AShr if !left && k == 0 => {
+                Opcode::Sub | Opcode::Shl | Opcode::LShr | Opcode::AShr if !left && k == 0 => {
                     Some(Lat::Alias(v))
                 }
                 Opcode::Shl | Opcode::LShr | Opcode::AShr if !left && k >= u64::from(bits) => {
                     Some(Lat::Top)
                 }
                 Opcode::Shl | Opcode::LShr | Opcode::AShr if left && k == 0 => Some(Lat::Int(0)),
-                Opcode::AShr if left && k == m => Some(Lat::Int(m)),
+                Opcode::AShr if left && k == ones => Some(Lat::Int(ones)),
                 _ => None,
             }
         }
@@ -1052,11 +1056,11 @@ fn fold_binary(op: Opcode, bits: u32, x: u64, y: u64) -> Option<u64> {
 }
 
 /// `InstSimplify` on an integer compare of `bits` bits.
-fn icmp(pred: IntPredicate, bits: u32, a: Opd, b: Opd) -> Option<Lat> {
+fn icmp(pred: IntPredicate, bits: u32, lhs: Opd, rhs: Opd) -> Option<Lat> {
     use IntPredicate as P;
-    let m = mask(bits);
+    let ones = mask(bits);
     let truth = |t: bool| Some(Lat::Int(u64::from(t)));
-    match (a, b) {
+    match (lhs, rhs) {
         (Opd::Top, _) | (_, Opd::Top) => Some(Lat::Top),
         (Opd::Int(x), Opd::Int(y)) => {
             let (sx, sy) = (sext(x, bits), sext(y, bits));
@@ -1079,13 +1083,13 @@ fn icmp(pred: IntPredicate, bits: u32, a: Opd, b: Opd) -> Option<Lat> {
         (Opd::Val(_), Opd::Val(_)) => None,
         (Opd::Int(k), Opd::Val(v)) | (Opd::Val(v), Opd::Int(k)) => {
             // As `value pred k`.
-            let pred = if matches!(a, Opd::Int(_)) { swapped(pred) } else { pred };
-            let (smin, smax) = (1u64 << (bits - 1), m >> 1);
+            let pred = if matches!(lhs, Opd::Int(_)) { swapped(pred) } else { pred };
+            let (smin, smax) = (1u64 << (bits - 1), ones >> 1);
             match pred {
                 P::Ult if k == 0 => truth(false),
                 P::Uge if k == 0 => truth(true),
-                P::Ugt if k == m => truth(false),
-                P::Ule if k == m => truth(true),
+                P::Ugt if k == ones => truth(false),
+                P::Ule if k == ones => truth(true),
                 P::Slt if k == smin => truth(false),
                 P::Sge if k == smin => truth(true),
                 P::Sgt if k == smax => truth(false),

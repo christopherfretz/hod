@@ -125,10 +125,11 @@ fn gep_with_offset_has_a_row() {
 }
 
 // Class `is-constant`: `llc` deletes the blocks under a folded
-// `llvm.is.constant`, hod keeps them (40 pairs, 13 modules).
+// `llvm.is.constant` (40 pairs, 13 modules); since WP-261 hod deletes
+// them too, and the lines agree.
 #[test]
-fn is_constant_blocks_are_permitted() {
-    classified_as("is_constant.c", Class::IsConstant);
+fn is_constant_blocks_are_deleted() {
+    agrees_with_llc("is_constant.c");
 }
 
 // Class `compare-at-user`: hod's compare is at its user's location

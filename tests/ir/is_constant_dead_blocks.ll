@@ -7,7 +7,7 @@
 ; which is declared and never defined (a C++ library's way of making a
 ; misuse fail to link): the program links only if no such block is
 ; emitted.
-;@ covers: spec/codegen.md §5.6.8 (Folded constants and the blocks they remove)
+;@ covers: spec/ir.md §5.5 intrinsics (is.constant, objectsize)
 ;@ tier: quick
 ;@ stdout: direct 3
 ;@ stdout: manifest 1

@@ -931,7 +931,10 @@ refusal of "Memory (WP-036)" below: those names are no longer produced.
 - **`condbr`** tests bit 0 (§2.2): `tbz` to the false block when the
   true block is emitted next, else `tbnz` to the true block and `b` to
   the false one unless it comes next. A constant condition, and two
-  equal targets, are a `br`. A deferred condition is asked for (emitted)
+  equal targets, are a `br`; a constant condition's `br` that writes
+  nothing (its block comes next) writes one `nop` instead when its line
+  would otherwise have no row there (`control::folded_br`, WP-252,
+  `spec/dwarf.md` §5.10). A deferred condition is asked for (emitted)
   first; fusing a deferred compare into the branch is left to the
   integration package after WP-035 and WP-039, at the place marked in
   `control.rs`.
@@ -1714,7 +1717,8 @@ that refused it before.
   order, each limb of the condition (the top one zero-extended) is
   loaded into `x16`, the case's limb built in `x17`, compared by `cmp`
   then `ccmp …, #0, eq`, and `b.eq` to the case; then the default. A
-  constant condition is a `br`.
+  constant condition is a `br` (`control::folded_br`: `spec/dwarf.md`
+  §5.10).
 - **`readcyclecounter`** is `mrs rd, CNTVCT_EL0` (`SysReg::CntvctEl0`,
   read only), as `llc`.
 - **`aarch64.crc32{,c}{b,h,w,x}`** are the `crc32*` instructions on the
@@ -2527,7 +2531,11 @@ x86-64 settles:
 - **`condbr` on an `i1`**: `test r8, 1` (only bit 0 is defined), then
   `jne` to the true block, or `je` to the false one when the true block
   is next; the branch to the block emitted next is omitted. A constant
-  condition (`undef`, `poison` false) or two equal targets is a `br`.
+  condition (`undef`, `poison` false) or two equal targets is a `br`;
+  for a constant condition (also of a `switch`, of any width) it is
+  `control::folded_br`, which writes a one-byte `nop` (`90`) where the
+  `br` writes nothing and the line would have no row (WP-252,
+  `spec/dwarf.md` §5.10).
 - **`condbr` on a deferred integer `icmp`** (§4.6, operands of class
   `Gpr`, pointers included): the compare's operands are placed first
   (a constant on the left is swapped to the right with the predicate),
@@ -5560,7 +5568,10 @@ target emits the compares and branches.
 - Case values and the condition are compared zero-extended
   (`case_mask(bits)`).
 - A constant condition goes to the first case of its value, else the
-  default (`constant_target`): one `br`.
+  default (`constant_target`): one `br`, through the target's
+  `control::folded_br` as a `condbr` on a constant (a `nop` where the
+  `br` writes nothing and the line would have no row: WP-252,
+  `spec/dwarf.md` §5.10).
 - `canonical_cases` drops the cases that go to the default, sorts the
   others by unsigned value (stable; skipped when they come sorted, so
   compile time is linear for a frontend's usual order and `n log n`

@@ -11,9 +11,12 @@
 //! IR instruction is at its own location, wherever the lowering placed
 //! it, which is where `llc` puts it (its machine instructions keep the
 //! location of the IR instruction they were selected from). Nothing here
-//! changes a byte of code.
+//! changes a byte of code, except what [`FnCx::folded_branch_row`] asks a
+//! target for: one `nop` at a folded branch whose line has no code.
 
-use hod_ir::{Inst, InstKind, LocId, Opcode};
+use hod_ir::{
+    BlockId, DebugInfo, DiId, DiNode, EmissionKind, Inst, InstKind, LocId, Opcode, SymbolKind,
+};
 
 use crate::cx::FnCx;
 use crate::record::{LineRow, ROW_CALL};
@@ -101,5 +104,56 @@ impl<'a, T: Target> FnCx<'a, T> {
     #[inline]
     pub fn row_loc_of(&self, inst: Inst<'a>) -> LocId {
         row_loc(inst)
+    }
+
+    /// WP-252 (`spec/dwarf.md` §5.10, `spec/codegen.md` "`condbr`"): whether a
+    /// branch on a constant (a `condbr` on a constant, a `switch` on a
+    /// constant) folded to `target`, the block emitted next, writes one
+    /// `nop` so that its line has a row. It does when the function's rows
+    /// are written (a location on the open segment, a subprogram of a unit
+    /// that is not `NoDebug`), the segment has no code yet (no edge
+    /// store), its location would be a new row, and that row starts a
+    /// line: it is the first code of its block, or the row before it is
+    /// at another line (or file). Otherwise the line already has code
+    /// that runs just before, and nothing is added.
+    pub fn folded_branch_row(&self, target: BlockId) -> bool {
+        let (offset, loc) = self.line_seg;
+        if !self.lines
+            || loc == LocId::NONE
+            || self.offset() != offset
+            || self.last_loc == Some(loc)
+            || !self.falls_through(target)
+        {
+            return false;
+        }
+        let debug = &self.module.debug;
+        let Some(here) = debug.location(loc) else { return false };
+        if !self.line_block_start
+            && let Some(last) = self.last_loc.and_then(|l| debug.location(l))
+            && last.line == here.line
+            && scope_file(debug, last.scope) == scope_file(debug, here.scope)
+        {
+            return false;
+        }
+        let SymbolKind::Function { subprogram: Some(sp), .. } =
+            self.module.symbol(self.body.symbol()).kind()
+        else {
+            return false;
+        };
+        let DiNode::Subprogram(node) = debug.node(sp) else { return false };
+        node.unit.is_some_and(|unit| {
+            matches!(debug.node(unit), DiNode::CompileUnit(cu)
+                if cu.emission_kind != EmissionKind::NoDebug)
+        })
+    }
+}
+
+/// The file of local scope `scope` (`None` for another node).
+fn scope_file(debug: &DebugInfo, scope: DiId) -> Option<DiId> {
+    match debug.node(scope) {
+        DiNode::Subprogram(n) => n.file,
+        DiNode::LexicalBlock(n) => n.file,
+        DiNode::LexicalBlockFile(n) => n.file,
+        _ => None,
     }
 }

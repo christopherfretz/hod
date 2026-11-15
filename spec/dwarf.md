@@ -792,6 +792,47 @@ the same `is_stmt` sequence; `memcpy-1.c` and `memcpy-bi.c` (gcc
 torture) differ only inside line runs (more `is_stmt` rows on a line
 whose copy one side calls and the other inlines), the class above.
 
+### 5.10 A row at a branch on a constant (implemented, WP-252)
+
+A `condbr` on a constant condition (`br i1 true|false`, `undef` and
+`poison` false) and a `switch` on a constant are folded to a `br` to the
+chosen block (`spec/codegen.md` "`condbr`", "`switch`"), which writes no
+code when that block is emitted next. csmith writes such branches with
+nothing else of their line left: `if (((&x == 0), 7))`, `while ((x ==
+0, 0))`, `switch ((x, 2))`; the compare and its extension are unused
+and have no code (seed 110478 of the 1.0 budget). `llc -O0` keeps code
+there with each of its three selectors, LLVM 19 and 22 alike
+(`spec/landed/codegen/WP-252.md`), so a debugger stops on the line in
+`llc`'s program; without code hod had no row and the stop moved to the
+next line.
+
+**Rule.** `control::folded_br` of each target asks
+`FnCx::folded_branch_row` (`crates/hod_cg/src/line_rows.rs`) and writes
+one `nop` (x86-64 `90`, AArch64 `d503201f`) instead of nothing when all
+hold:
+
+- the `br` writes nothing (its block is emitted next) and nothing else
+  was written for the branch (no edge store of a `phi`, §4.5 of
+  `spec/codegen.md`);
+- the function's rows are written: the branch has a location, the
+  function a subprogram whose unit is not `NoDebug` (a module without
+  debug information has no `nop` and no byte of difference);
+- the location would be a row of its own: it is not the location of the
+  last row, and the `nop` is the first code of its block, or the last
+  row is at another line or in another file.
+
+Otherwise the branch writes what it wrote before: a jump when its block
+is not next, and nothing when code of the same line runs right before
+it in the same block (a load the unused compare reads, `if ((x == 1,
+0))`). The `nop` is an ordinary segment of the branch's location (§5.8,
+`is_stmt` as §5.2 and §5.9 decide), at an address that runs once each
+time the statement is reached, so a breakpoint by line stops there once
+per execution, as in `llc`'s program. A `nop` rather than `llc`'s code:
+one byte on x86-64 and one word on AArch64 (`FastISel`'s `b` to the
+next instruction is as long), no fixup, nothing for the shrink pass or
+the far and stressed layouts to move but the row. An unconditional `br`
+hod falls through stays P1 (§5.7): it is not a branch on a constant.
+
 ## 6. DIEs (core implemented, WP-053; the type graph, WP-058; functions, WP-057)
 
 ### 6.1 Abbreviations: a fixed table (implemented)

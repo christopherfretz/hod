@@ -8,11 +8,10 @@ Every module of the captured corpus (`docs/status/corpus-x64-census.md`, capture
 
 | reason | LLVM 22 | LLVM 19 |
 |---|---:|---:|
-| `(compiled)` | 3510 | 3468 |
+| `(compiled)` | 3515 | 3473 |
 | `cc:win64cc` | 1 | 1 |
-| `debug:dbg-value-arglist` | 1 | 1 |
 | `x64:inline-asm` | 1 | 1 |
-| all | 3513 | 3471 |
+| all | 3517 | 3475 |
 
 ## Every reason (census)
 
@@ -21,7 +20,6 @@ Every module of the captured corpus (`docs/status/corpus-x64-census.md`, capture
 | `cc:win64cc` | 1 | 1 |
 | `cc:x86_regcallcc` | 1 | 1 |
 | `cc:x86_vectorcallcc` | 1 | 1 |
-| `debug:dbg-value-arglist` | 1 | 1 |
 | `x64:inline-asm` | 1 | 1 |
 
 ## The ten most frequent refusals
@@ -33,7 +31,6 @@ By the census (modules with the reason anywhere, all LLVM majors), with the modu
 | `cc:win64cc` | 2 | 2 | - |
 | `cc:x86_regcallcc` | 2 | 0 | - |
 | `cc:x86_vectorcallcc` | 2 | 0 | - |
-| `debug:dbg-value-arglist` | 2 | 2 | WP-136 |
 | `x64:inline-asm` | 2 | 2 | - |
 
 ## What the built modules do
@@ -51,13 +48,15 @@ Modules whose outcome and first reason are the same by two routes, and whose cen
 
 | LLVM | modules | text = native | native = `llvm-dis` | census: text = native | census: native = `llvm-dis` | census in the same order |
 |---|---:|---:|---:|---:|---:|---:|
-| 22 | 3513 | 3513 | 3512 | 3513 | 3512 | 3512 |
-| 19 | 3471 | 3471 | 3470 | 3471 | 3470 | 3470 |
+| 22 | 3517 | 3517 | 3515 | 3517 | 3515 | 3515 |
+| 19 | 3475 | 3475 | 3473 | 3475 | 3473 | 3473 |
 
 The modules that differ (at most 20):
 
 - `kiln/llvm22/conformance/temp.arg.nontype/class-type-argument-debuginfo-run.cpp.ll`: text `-` (-), native `-` (-), `llvm-dis` `malformed-input` (malformed-input)
+- `kiln/llvm22/conformance/temp.arg.nontype/class-type-argument-local-debuginfo-run.cpp.ll`: text `-` (-), native `-` (-), `llvm-dis` `malformed-input` (malformed-input)
 - `kiln/llvm19/conformance/temp.arg.nontype/class-type-argument-debuginfo-run.cpp.ll`: text `-` (-), native `-` (-), `llvm-dis` `malformed-input` (malformed-input)
+- `kiln/llvm19/conformance/temp.arg.nontype/class-type-argument-local-debuginfo-run.cpp.ll`: text `-` (-), native `-` (-), `llvm-dis` `malformed-input` (malformed-input)
 
 ## What a decline costs
 
@@ -65,13 +64,13 @@ Coverage-log field 7 (from the process's start to the decline) of the first-refu
 
 | LLVM | route | median | p99 | worst | share of `llc`: median | p99 | worst |
 |---|---|---:|---:|---:|---:|---:|---:|
-| 22 | text | 18485 | 57489 | 257265 | 26.8% | 74.4% | 182.9% |
-| 22 | bitcode, native | 17433 | 52786 | 177863 | 25.1% | 63.9% | 178.7% |
-| 22 | bitcode, `llvm-dis` | 77540 | 167487 | 669989 | 110.4% | 208.3% | 808.4% |
-| 22 | `llc -O0` | 70990 | 158025 | 3386401 | | | |
-| 22 | the `convert` of the `llvm-dis` route | 60198 | 126626 | 402811 | | | |
-| 19 | text | 17726 | 47031 | 310406 | 27.6% | 67.1% | 152.9% |
-| 19 | bitcode, native | 16949 | 44844 | 204868 | 26.0% | 63.9% | 153.2% |
-| 19 | bitcode, `llvm-dis` | 70777 | 137951 | 799792 | 108.3% | 193.9% | 306.9% |
-| 19 | `llc -O0` | 61903 | 139352 | 3076901 | | | |
-| 19 | the `convert` of the `llvm-dis` route | 53883 | 115740 | 496035 | | | |
+| 22 | text | 15745 | 72365 | 238642 | 25.7% | 73.6% | 201.9% |
+| 22 | bitcode, native | 15039 | 62205 | 267555 | 24.8% | 70.1% | 349.3% |
+| 22 | bitcode, `llvm-dis` | 61472 | 296352 | 658023 | 106.3% | 228.7% | 944.3% |
+| 22 | `llc -O0` | 60013 | 310309 | 3212878 | | | |
+| 22 | the `convert` of the `llvm-dis` route | 45999 | 250818 | 446995 | | | |
+| 19 | text | 14894 | 63992 | 358075 | 23.5% | 90.9% | 277.4% |
+| 19 | bitcode, native | 15396 | 64005 | 1091554 | 23.9% | 75.1% | 935.3% |
+| 19 | bitcode, `llvm-dis` | 69510 | 240785 | 762786 | 108.8% | 235.1% | 738.4% |
+| 19 | `llc -O0` | 61702 | 216768 | 3017692 | | | |
+| 19 | the `convert` of the `llvm-dis` route | 52461 | 197252 | 502577 | | | |

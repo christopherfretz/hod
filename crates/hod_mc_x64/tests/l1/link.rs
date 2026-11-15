@@ -19,7 +19,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use hod_mc_x64::*;
-use hod_testutil::{run, tool};
+use hod_testutil::run;
 
 use crate::harness::Tools;
 
@@ -185,14 +185,14 @@ struct Linker {
     path: PathBuf,
 }
 
-/// GNU ld for x86-64 (the host's on an x86-64 host, else the cross
-/// linker), lld and mold. A missing one is skipped with a note, or a
-/// failure under `HOD_REQUIRE_TOOLS=1`.
+/// The linker matrix for x86-64 ([`hod_testutil::linkers::present`]): GNU
+/// ld (the host's on an x86-64 host, else the cross linker), lld, mold and
+/// wild. A missing one is skipped with a note, or a failure under
+/// `HOD_REQUIRE_TOOLS=1` (wild: `hod_testutil::linkers::WILD_REQUIRED`).
 fn linkers() -> Vec<Linker> {
-    let bfd = if cfg!(target_arch = "x86_64") { "ld.bfd" } else { "x86_64-linux-gnu-ld.bfd" };
-    [("bfd", bfd), ("lld", "ld.lld"), ("mold", "mold")]
+    hod_testutil::linkers::present(hod_testutil::Target::X86_64)
         .into_iter()
-        .filter_map(|(name, program)| Some(Linker { name, path: tool(program)? }))
+        .map(|(name, path)| Linker { name, path })
         .collect()
 }
 

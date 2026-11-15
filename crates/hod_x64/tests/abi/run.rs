@@ -264,8 +264,17 @@ impl Report {
 }
 
 /// Whether a case runs against a configuration, with hod calling or with
-/// LLVM calling.
-fn runs(plan: &Plan, config: Config, hod_calls: bool) -> bool {
+/// LLVM calling, on a machine where `bfloat` vectors are legal (`bf16`)
+/// or not.
+fn runs(plan: &Plan, config: Config, hod_calls: bool, bf16: bool) -> bool {
+    // LLVM 19's FastISel drops a `<32 x bfloat>` argument where `bf16`
+    // makes it legal (the next vector argument takes its register; on
+    // `sapphirerapids` it runs out of memory), as `same_as_llc` found
+    // (WP-208), at `-O2` too (`-fast-isel=1`); its SelectionDAG and LLVM
+    // 22 pass it in `zmm0`, as hod does (spec/abi-x64.md §12, WP-238).
+    if config.major < 22 && !config.dag && bf16 && plan.case.has_bf16_zmm() {
+        return false;
+    }
     // LLVM 19 keeps an integer wider than 64 bits (and a vector of `i64`
     // split into general pieces) all in registers or all on the stack,
     // and then gives up the registers left (§4.2).
@@ -441,6 +450,11 @@ impl Harness {
                 .clamp(from, to - 1);
             crashed[step] = true;
             crashes += 1;
+            let status = outcome.status.map_or_else(|| "timed out".to_owned(), |s| s.to_string());
+            eprintln!(
+                "{tag}: steps {from}..{to}: {status}, step {step} crashed; {}",
+                tail(&stderr).lines().last().unwrap_or("")
+            );
             if crashes > 16 {
                 return Err(("more than 16 steps crash".to_string(), crashed));
             }
@@ -455,11 +469,26 @@ impl Harness {
 /// steps crashed.
 pub type Ran = (Vec<u8>, Vec<bool>);
 
-/// Runs `llc` on `source`.
+/// The address space an `llc` of a grid may take (`ulimit -v`, KiB): 2
+/// GiB. A batch takes under 120 MB at its peak; LLVM 19's `FastISel` on
+/// `sapphirerapids`' second batch, with the `<32 x bfloat>` cases it
+/// mishandles (§12, now left out), took 5.9 GB in a minute, and two at
+/// once killed a 16 GB hosted runner. Capped, such an `llc` aborts
+/// ("LLVM ERROR: out of memory", naming the function) within seconds.
+pub const LLC_MEMORY_KIB: u64 = 2 << 20;
+
+/// `llc` under [`LLC_MEMORY_KIB`]: run through `sh`, which sets the
+/// limit and becomes `llc` (`exec`); arguments go after this.
+pub fn capped_llc(llc: &Path) -> Command {
+    let mut command = Command::new("sh");
+    command.arg("-c").arg(format!("ulimit -v {LLC_MEMORY_KIB} && exec \"$0\" \"$@\"")).arg(llc);
+    command
+}
+
+/// Runs `llc` on `source`, under [`LLC_MEMORY_KIB`].
 pub fn compile(llc: &Path, config: Config, source: &Path, object: &Path) -> Outcome {
-    run(
-        llc,
-        [
+    run_with(
+        capped_llc(llc).args([
             config.opt.as_ref(),
             if config.dag { "-fast-isel=0" } else { "-fast-isel=1" }.as_ref(),
             "-filetype=obj".as_ref(),
@@ -467,7 +496,9 @@ pub fn compile(llc: &Path, config: Config, source: &Path, object: &Path) -> Outc
             source.as_os_str(),
             "-o".as_ref(),
             object.as_os_str(),
-        ],
+        ]),
+        &[],
+        hod_testutil::DEFAULT_TIMEOUT,
     )
 }
 
@@ -514,6 +545,7 @@ impl Batch {
                 ret,
                 variadic: plan.case.fixed.is_some(),
                 avx: tools.features().avx,
+                avx512: tools.features().avx512,
             };
             emit::caller(&mut asm, func);
             let callee =
@@ -525,6 +557,49 @@ impl Batch {
         Batch { plans, harness }
     }
 
+    /// The one LLVM function (case, and whether it is the callee `lf_`)
+    /// of those `keep` selects that `llc` refuses in a module of its own,
+    /// found by halving the selection; `None` when no half is refused
+    /// alone (two functions that fail only together) or `llc` times out.
+    pub fn bisect(
+        &self,
+        config: Config,
+        llc: &Path,
+        tools: &Tools,
+        keep: &dyn Fn(usize, bool) -> bool,
+    ) -> Option<(usize, bool)> {
+        let scratch = &self.harness.scratch;
+        let tag = config.tag();
+        let attrs = tools.machine.as_ref().map(Machine::attributes);
+        let refused = |set: &[(usize, bool)]| {
+            let set: HashSet<(usize, bool)> = set.iter().copied().collect();
+            let module = ir::module_with(
+                &self.plans,
+                &|index, hod_calls| set.contains(&(index, hod_calls)),
+                attrs.as_deref(),
+            );
+            let source = scratch.write(&format!("llvm{tag}-half.ll"), module);
+            let compiled =
+                compile(llc, config, &source, &scratch.join(format!("llvm{tag}-half.o")));
+            !compiled.success() && !compiled.timed_out()
+        };
+        let mut candidates: Vec<(usize, bool)> = (0..self.plans.len())
+            .flat_map(|index| [(index, true), (index, false)])
+            .filter(|&(index, hod_calls)| keep(index, hod_calls))
+            .collect();
+        while candidates.len() > 1 {
+            let (low, high) = candidates.split_at(candidates.len() / 2);
+            candidates = if refused(low) {
+                low.to_vec()
+            } else if refused(high) {
+                high.to_vec()
+            } else {
+                return None;
+            };
+        }
+        candidates.first().copied().filter(|one| refused(std::slice::from_ref(one)))
+    }
+
     /// Compiles the LLVM side with `llc`, links, runs and compares.
     pub fn run(&self, config: Config, llc: &Path, tools: &Tools) -> Report {
         let mut report = Report::default();
@@ -534,8 +609,13 @@ impl Batch {
         // A function `llc` crashes on says nothing about the convention:
         // it is left out, reported, and the rest of the batch runs.
         let mut left_out: HashSet<(usize, bool)> = HashSet::new();
+        let bf16 = tools
+            .machine
+            .as_ref()
+            .is_some_and(|m| m.features.split(',').any(|f| f == "+avx512bf16"));
         let runs = |left_out: &HashSet<(usize, bool)>, index: usize, hod_calls: bool| {
-            runs(&self.plans[index], config, hod_calls) && !left_out.contains(&(index, hod_calls))
+            runs(&self.plans[index], config, hod_calls, bf16)
+                && !left_out.contains(&(index, hod_calls))
         };
         loop {
             let attrs = tools.machine.as_ref().map(Machine::attributes);
@@ -558,6 +638,12 @@ impl Batch {
                     .take_while(char::is_ascii_digit)
                     .collect();
                 Some((digits.parse::<usize>().ok()?, hod_calls))
+            });
+            // WP-238: an error that names no function ("Cannot emit
+            // physreg copy instruction") is pinned on one by halving.
+            let culprit = culprit.or_else(|| {
+                (!compiled.timed_out())
+                    .then(|| self.bisect(config, llc, tools, &|i, h| runs(&left_out, i, h)))?
             });
             match culprit {
                 Some(culprit) if left_out.len() < 32 && left_out.insert(culprit) => {
@@ -686,4 +772,17 @@ fn compare_slot(
         hex(&got[first..end]),
         hex(&mask[first..end])
     ))
+}
+
+/// WP-238: what [`capped_llc`] runs gets its arguments and the address
+/// space limit (`sh` standing in for `llc`).
+#[test]
+fn llc_runs_under_the_memory_cap() {
+    let outcome = run_with(
+        capped_llc(Path::new("sh")).args(["-c", "echo \"$1\" $(ulimit -v)", "sh", "the argument"]),
+        &[],
+        hod_testutil::DEFAULT_TIMEOUT,
+    );
+    assert!(outcome.success(), "{}", outcome.stderr_text());
+    assert_eq!(outcome.stdout_text(), format!("the argument {LLC_MEMORY_KIB}\n"));
 }

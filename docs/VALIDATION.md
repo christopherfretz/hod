@@ -118,7 +118,9 @@ Preparing (on the branch; nothing shared is written):
    whose tests run kiln++ (`hod`, `hod_cli`, `hod_a64`, `hod_dwarf`,
    `hod_ir`, `xtask`), `cargo xtask debug --frontend kiln --kiln
    <P>/kiln-target/release/kiln++`, and `cargo xtask debug verify
-   <P>/new/corpus`.
+   <P>/new/corpus` and `cargo xtask debug verify --target x86_64
+   <P>/new/corpus-x64` (without `--target x86_64` every module of the
+   x86-64 corpus is skipped).
 
 Switching (the supervisor, no gate in flight, in this order):
 
@@ -268,11 +270,30 @@ pass count does not.
 
 ### Linker matrix
 
-Every linking test runs with each of: GNU ld, lld, mold, and wild once it
-is provisioned (until then it is optional and its absence a note). The same
-object must link with all of them and the programs must behave identically.
+Every linking test runs with each of: GNU ld, lld, mold and wild
+(`hod_testutil::linkers`, `spec/harness.md` "Linkers"). The same object
+must link with all of them and the programs must behave identically.
 Linker versions are pinned in the provisioning script and recorded in
-status reports.
+status reports; what links and runs per linker and target, and every
+exception with its reason, is `docs/status/linkers.md`.
+
+wild is not a Debian package: a pinned release (0.11.0) is installed by
+the workspace's provisioning script under `.toolchain/wild/<version>/`
+and by the hosted set-up (`.github/actions/hod-ci`, checksum verified,
+`HOD_WILD`). It is selected as the driver's `ld` with `-B` (GCC 14 has no
+`-fuse-ld=wild`) and given `--no-gc-sections`, since it discards unused
+sections by default where the other three do not. A missing wild stays a
+note under `HOD_REQUIRE_TOOLS=1` until a hosted run proves the set-up
+(`linkers::WILD_REQUIRED`).
+
+A case one linker cannot pass is excepted in ONE table,
+`hod_testutil::linkers::EXCEPTIONS` (linker, version, case, class,
+reason), never by skipping a test: the test changes that one assertion
+and still fails when the linker regresses on anything else. A failure
+with one linker is triaged as (a) hod writing something the others
+accept by leniency and the ABI forbids: fixed in hod; (b) the linker's
+bug or an allowed difference, kept with a reproduction from objects hod
+did not write; (c) a feature the linker says it does not support.
 
 ### Debug information (L7)
 
@@ -413,6 +434,18 @@ GitHub Actions runs the gate on real hardware of both architectures
 Every job sets `HOD_REQUIRE_TOOLS=1`. On the x86-64 runner an x86-64
 program is not held to the baseline CPU: the emulated AArch64 lane is
 where a use of an instruction beyond the baseline faults.
+
+**AVX-512 execution** (WP-229, WP-238; `spec/harness.md` "CI" item 8).
+No `qemu` executes AVX-512, so its execution tests (`hod_x64`'s
+`x86_avx512::*_on_hardware` and `abi::zmm_grid`) run on the x86-64 lane
+only: natively when the runner's processor has a program's features
+(the fleet is mixed: some runners have AVX-512, some none), else under
+Intel SDE emulating a Sapphire Rapids (`.github/actions/sde`); only the
+grid's Knights Landing machine (ER, PF) stays skipped. `avx512.yml` (an
+`avx512/**` branch) runs them alone under SDE and fails when anything
+else did not execute. The `test x64` job's summary says what ran where;
+it uses SDE, and then fails the same way, only with the repository
+variable `HOD_CI_SDE=1` (not yet set), and skips otherwise.
 
 The libc++ suite with kiln runs natively on both runners in the `sweep`
 workflow (a `sweep/**` branch or by hand; never a required check), once

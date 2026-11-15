@@ -499,6 +499,14 @@ fn runs_with_code_got_and_data_far_apart() {
                     continue;
                 };
                 for link in &linkers {
+                    // wild leaves the GOT, `.init_array` and the frame
+                    // index where it lays them out and puts `.ltext` after
+                    // the large data: no layout of `--section-start`s
+                    // gives it the far layout (case `section-start`). The
+                    // programs linked with the start files still run.
+                    if hod_testutil::linkers::exception(&link.label, "section-start").is_some() {
+                        continue;
+                    }
                     let output = scratch.join(format!(
                         "far-{tag}.{}.{}.{}",
                         mode.name(),

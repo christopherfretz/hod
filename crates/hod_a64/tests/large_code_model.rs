@@ -305,6 +305,11 @@ fn far_flags(label: &str) -> Vec<String> {
             starts.push((".got.plt", 0x2000_0000));
             flags.push("-Wl,--no-relax".to_owned());
         }
+        // wild keeps `.rodata` and the PLT where it lays them out whatever
+        // `--section-start` says (`hod_testutil::linkers::EXCEPTIONS`,
+        // case `section-start`): the code stays with them, the data alone
+        // is moved.
+        "wild" => {}
         _ => {
             starts.extend([
                 (".text", 0x8_0000_0000),
@@ -328,7 +333,9 @@ fn check_far_layout(program: &Path, label: &str) {
     let at = |name: &str| *found.get(name).unwrap_or_else(|| panic!("{label}: no {name}"));
     let code = at(".text");
     let mut far = vec![".data", ".bss"];
-    if label != "mold" {
+    let rodata_moves =
+        label != "mold" && hod_testutil::linkers::exception(label, "section-start").is_none();
+    if rodata_moves {
         far.push(".rodata");
     }
     for name in far {

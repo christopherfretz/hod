@@ -12,7 +12,8 @@
 //! test binary is a jobserver client like the cargo that built it.
 //!
 //! [`target`] names a target's tools, system root and emulator, for the
-//! tests that link and run programs of another architecture.
+//! tests that link and run programs of another architecture; [`linkers`]
+//! finds the linker matrix (GNU ld, lld, mold, wild) and selects one.
 //!
 //! [`avx512`] decides whether a program needing AVX-512 runs: by
 //! `HOD_X64_AVX512_RUNNER`, or natively on an x86-64 processor whose
@@ -20,6 +21,7 @@
 
 pub mod avx512;
 pub mod jobs;
+pub mod linkers;
 pub mod target;
 
 pub use target::Target;
@@ -259,6 +261,12 @@ fn run_on(
     // path, kill or panic by `Drop`); the time limit starts once it is held.
     let _slot = client.acquire();
     command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // The child leads a process group of its own, so that at the time
+    // limit everything it started dies with it (an emulator's program, a
+    // compiler's subprocess): a descendant left running would hold the
+    // pipes open, and the reads below would never end.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(command, 0);
     let mut child = spawn(command)
         .unwrap_or_else(|e| panic!("cannot run {}: {e}", command.get_program().display()));
     let mut input = child.stdin.take().expect("piped stdin");
@@ -283,6 +291,29 @@ fn run_on(
         let status = wait_until(&mut child, Instant::now() + timeout);
         (out_reader.join().unwrap_or_default(), err_reader.join().unwrap_or_default(), status)
     });
+    let mut stderr = stderr;
+    if status.is_none() {
+        // Said where every report of a failure prints standard error.
+        let _ = write!(
+            stderr,
+            "\n[hod_testutil: {} killed: timed out after {} s]\n",
+            command.get_program().display(),
+            timeout.as_secs()
+        );
+    }
+    // A child a signal ended (the kernel's OOM killer sends SIGKILL) says
+    // so too: its standard error is often empty. The note does not name
+    // the program: two programs that are expected to die the same way (an
+    // uncaught exception built two ways) must still have equal standard
+    // errors.
+    #[cfg(unix)]
+    if let Some(signal) = status.as_ref().and_then(std::os::unix::process::ExitStatusExt::signal) {
+        let _ = write!(
+            stderr,
+            "\n[hod_testutil: killed by signal {signal}{}]\n",
+            if signal == 9 { " (SIGKILL: the OOM killer, if no one else)" } else { "" }
+        );
+    }
     Outcome { status, stdout, stderr }
 }
 
@@ -313,6 +344,25 @@ fn spawn(command: &mut Command) -> std::io::Result<Child> {
     }
 }
 
+/// Kills the process group `child` leads ([`run_with`] makes one per
+/// child), with `kill(1)`: safe Rust has no `kill(2)` of a group. The
+/// group's id is the child's, which is not reaped yet, so it is not
+/// reused.
+fn kill_group(child: &Child) {
+    #[cfg(unix)]
+    {
+        let group = format!("-{}", child.id());
+        let _ = Command::new("kill")
+            .args(["-KILL", "--", &group])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    #[cfg(not(unix))]
+    let _ = child;
+}
+
 fn wait_until(child: &mut Child, deadline: Instant) -> Option<ExitStatus> {
     loop {
         match child.try_wait() {
@@ -321,6 +371,7 @@ fn wait_until(child: &mut Child, deadline: Instant) -> Option<ExitStatus> {
                 std::thread::sleep(Duration::from_millis(2));
             }
             _ => {
+                kill_group(child);
                 let _ = child.kill();
                 let _ = child.wait();
                 return None;
@@ -395,6 +446,52 @@ mod tests {
     fn run_kills_at_the_time_limit() {
         let outcome = run_with(Command::new("sleep").arg("30"), &[], Duration::from_millis(100));
         assert!(outcome.timed_out());
+        // The kill is said, not left as an empty standard error.
+        assert!(
+            outcome.stderr_text().contains("sleep killed: timed out after 0 s"),
+            "{}",
+            outcome.stderr_text()
+        );
+    }
+
+    /// WP-238: a child a signal killed says which, not an empty standard
+    /// error (the OOM killer's SIGKILL looked like nothing at all).
+    #[test]
+    fn run_says_which_signal_killed_the_child() {
+        let outcome = run("sh", ["-c", "kill -KILL $$"]);
+        assert!(!outcome.timed_out() && !outcome.success());
+        assert!(
+            outcome.stderr_text().contains("[hod_testutil: killed by signal 9 (SIGKILL"),
+            "{}",
+            outcome.stderr_text()
+        );
+        let outcome = run("sh", ["-c", "kill -TERM $$"]);
+        assert!(
+            outcome.stderr_text().contains("[hod_testutil: killed by signal 15]"),
+            "{}",
+            outcome.stderr_text()
+        );
+        // The note is the same for any program a given signal ended.
+        let other = run("bash", ["-c", "kill -TERM $$"]);
+        assert_eq!(other.stderr_text(), outcome.stderr_text());
+    }
+
+    /// WP-238: at the time limit the child's descendants die with it. One
+    /// left running would keep the pipes open, and `run_with` would wait
+    /// for it (here 600 s) instead of returning.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn run_kills_the_childs_descendants_at_the_time_limit() {
+        let mut shell = Command::new("sh");
+        shell.args(["-c", "sleep 600 & echo $!; sleep 600"]);
+        let outcome = run_with(&mut shell, &[], Duration::from_millis(500));
+        assert!(outcome.timed_out());
+        let pid = outcome.stdout_text().trim().to_owned();
+        assert!(pid.parse::<u32>().is_ok(), "{pid:?}");
+        // Gone, or a zombie its new parent has not reaped yet.
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+        let state = stat.rsplit(") ").next().and_then(|rest| rest.chars().next());
+        assert!(matches!(state, None | Some('Z' | 'X')), "{pid} is still running: {stat}");
     }
 
     // spec/harness.md "Jobserver", "Scope" and "Release": a child of

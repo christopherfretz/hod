@@ -2772,6 +2772,21 @@ fn avx512_refusals_and_rows() {
     eprintln!("avx512 refusals: {checked} rows");
 }
 
+/// The features [`avx512_driver`] checks beyond `avx512f`, in the order
+/// of its `have` bits.
+const DRIVER_FEATURES: [&str; 10] = [
+    "avx512vl",
+    "avx512bw",
+    "avx512dq",
+    "avx512vbmi2",
+    "avx512vbmi",
+    "gfni",
+    "vaes",
+    "vpclmulqdq",
+    "avx512bf16",
+    "avx512fp16",
+];
+
 /// The C driver of the execution test: every function of `cases` as hod
 /// built it (`h_tK`) and as `llc` 22 did (`l_tK`), run on the same inputs
 /// where the CPU has the function's features (`__builtin_cpu_supports`);
@@ -2904,7 +2919,7 @@ fn avx512_names_agree_with_llc_on_hardware() {
     let program = scratch.join("avx512");
     let linker = &toolchain.linkers[0];
     toolchain.link_ok(linker, &["-static"], &[&driver, &hod, &llc22], &program);
-    execute_compared("x86_avx512 avx512_names", &program, cases.len());
+    execute_compared("x86_avx512 avx512_names", &program, cases.len(), &DRIVER_FEATURES);
 }
 
 /// Runs a driver `program` of `functions` functions that compares hod's
@@ -2915,10 +2930,13 @@ fn avx512_names_agree_with_llc_on_hardware() {
 /// not at all; and reports the outcome under `name`
 /// (`HOD_AVX512_REPORT`). A failure or a disagreement fails the test with
 /// the program's whole output: hod's bytes and `llc`'s for each
-/// disagreement.
-fn execute_compared(name: &str, program: &Path, functions: usize) {
+/// disagreement. WP-238: a runner with its processor's flags
+/// (`HOD_X64_AVX512_RUNNER_CPUINFO`, an emulator) is preferred to a host
+/// that lacks one of `wanted`, the features the driver checks, so that
+/// no function is skipped where it can run.
+fn execute_compared(name: &str, program: &Path, functions: usize, wanted: &[&str]) {
     use hod_testutil::avx512::{self, Execution};
-    let (prefix, how) = match avx512::execution(&["avx512f"]) {
+    let (prefix, how) = match avx512::execution_wanting(&["avx512f"], wanted) {
         Execution::Run { prefix, how } => (prefix, how),
         Execution::DryRun(why) => return avx512::skip(name, "dry-run", &why),
         Execution::Skip(why) => {
@@ -3621,5 +3639,5 @@ fn vsib_names_agree_with_llc_on_hardware() {
     let program = scratch.join("vsib");
     let linker = &toolchain.linkers[0];
     toolchain.link_ok(linker, &["-static"], &[&driver, &hod, &llc22], &program);
-    execute_compared("x86_avx512 vsib", &program, cases.len());
+    execute_compared("x86_avx512 vsib", &program, cases.len(), &["avx512vl"]);
 }

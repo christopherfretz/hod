@@ -144,20 +144,41 @@ kiln's lanes). Its rules:
    fixed range of seeds natively: every program built by hod and by
    `llc`, a difference a failure. `.github/actions/hod-ci` already
    installs `csmith` and `libcsmith-dev`.
-8. **AVX-512 execution (WP-229).** No emulator of either lane executes
-   AVX-512 (`qemu-x86_64` has none), so the AVX-512 execution tests
+8. **AVX-512 execution (WP-229, WP-238).** `qemu-x86_64` executes no
+   AVX-512 (Debian 13's 10.0 lists the flags, and its TCG faults on the
+   first EVEX instruction), so the AVX-512 execution tests
    (`hod_x64`: `x86_avx512::avx512_names_agree_with_llc_on_hardware`,
    `x86_avx512::vsib_names_agree_with_llc_on_hardware`, `abi::zmm_grid`)
    run a program only (a) by the command `HOD_X64_AVX512_RUNNER` names
    (a command prefix, the program's path appended; `native`: directly),
-   which wins, or (b) natively on x86-64 Linux when the first
+   which alone wins, (b) natively on x86-64 Linux when the first
    processor's `flags` line of `/proc/cpuinfo` has every feature the
    program requires (`hod_testutil::avx512`; the requirements are
-   `docs/design/0007-avx512.md` §4.4). Otherwise the program is linked
-   and skipped, as on the AArch64 lane. **Executed** means the program
+   `docs/design/0007-avx512.md` §4.4), or (c) by the runner when
+   `HOD_X64_AVX512_RUNNER_CPUINFO` names a file of the runner's
+   processor (`/proc/cpuinfo`'s form) whose flags have them and the host
+   lacks them (first the host, then the runner, with every feature the
+   program uses where present: the `x86_avx512` drivers' checks; then
+   with the required ones alone). Otherwise the program is linked and
+   skipped, as on the AArch64 lane. **The emulator** (WP-238): on the
+   x86-64 lane `.github/actions/sde` sets up Intel's Software
+   Development Emulator, 10.13.1 (Linux kit
+   `sde-external-10.13.1-2026-07-28-lin.tar.xz` from Intel's download
+   mirror, sha256 `94e97d62…bf2b50` as Intel's download page publishes
+   it, kept in the Actions cache under the sha256; "free of charge for
+   any type of use" under the Intel Simplified Software License, used
+   unmodified, not redistributed), with `HOD_X64_AVX512_RUNNER=sde64
+   -spr --` and the flags `cpu-flags.c` reads from CPUID under it: a
+   Sapphire Rapids has every feature of the grid's machines but Knights
+   Landing's ER and PF, which no SDE of this version emulates (its chips
+   are listed by `sde64 -help`), so `knl`'s machine is the one program
+   that stays skipped. **Executed** means the program
    ran on that processor and hod's results equaled `llc` 22's for every
    function or call it ran; an executed program that disagrees fails its
-   test with the whole output. With `HOD_AVX512_REPORT=<file>` each test
+   test with the whole output. `abi::zmm_grid` executes each machine
+   against two of the six `llc` configurations (`llc` 22 at `-O0` and one
+   other, in turn by machine; `zmm::executed_configs`), which its line
+   names: all six under an emulator took about 35 minutes. With `HOD_AVX512_REPORT=<file>` each test
    appends one line per program: `program`, `executed`, `skipped`,
    `dry-run` or `failed`, and a detail (how it ran and the processor's
    model, or the missing features), separated by tabs. On the x86-64
@@ -169,16 +190,28 @@ kiln's lanes). Its rules:
    flags, the counts executed, skipped, dry-run and failed, each
    program's line, and in bold that nothing executed when nothing did.
    GitHub's `ubuntu-24.04` runners are a mixed fleet, some with AVX-512
-   and some without; the lane does not set `HOD_REQUIRE_AVX512`, so a
-   run on a processor without it stays green with every program skipped,
-   and only its summary says whether AVX-512 code ran. `HOD_REQUIRE_AVX512=1`
+   and some without: what the processor runs runs natively, the rest
+   under SDE, and the summary says how many of each and names the
+   runner's processor. In the `test x64` job SDE is set up only when
+   the repository variable `HOD_CI_SDE` is `1` (not yet: the operator's
+   agreement to the download in that lane is pending, and SDE adds about
+   20 minutes there on a runner without AVX-512); without it what the
+   processor lacks is skipped, as before WP-238. With it, a last step,
+   `scripts/avx512-summary.sh --check`, fails the job unless every
+   program executed but the skipped `knl` machine. `avx512.yml` (a push
+   to an `avx512/**` branch, or `workflow_dispatch`; never a gate)
+   always sets up SDE and runs only these tests, with `--check`, for
+   iterating on them and for the verdict on any processor. The lane does not set `HOD_REQUIRE_AVX512`
+   (the `knl` skip would fail it). `HOD_REQUIRE_AVX512=1`
    (for a host known to have AVX-512) makes a skip a failure.
    `HOD_AVX512_CPUINFO=<file>` exists only to test this plumbing: the
    flags are read from that file on any host, and a program they would
    run natively is reported `dry-run` and not run. Tests:
    `hod_testutil::avx512::tests` (the parser on an Intel Xeon's flags
    with AVX-512, an AMD EPYC 7763's without, malformed files; the
-   decision), `abi::zmm::zmm_machines_require_their_features`.
+   decision; `a_runner_with_flags_runs_what_the_host_cannot`),
+   `abi::zmm::zmm_machines_require_their_features`,
+   `abi::zmm::generator_makes_every_signature`.
 
 What runs where, and the tests compiled or run for one host only, is
 `docs/VALIDATION.md` "Hosted CI".
@@ -498,8 +531,11 @@ The build directory is `$CARGO_TARGET_DIR` when it is set, else
 - **Linkers.** `bfd`: `ld.bfd`, or `<prefix>-ld.bfd` for the other
   architecture (lld, mold and wild link every target as they are). `lld`: `ld.lld-N` on `PATH` or
   `/usr/lib/llvm-N/bin/ld.lld` for 22 then 19, then `ld.lld`. `mold`:
-  `mold`, then `ld.mold`. `wild`: `wild`, then `ld.wild`. The matrix is
-  every one of these that is found, in this order.
+  `mold`, then `ld.mold`. `wild`: the one `hod_testutil` finds ("Linkers"
+  under "Toolchain for tests": `HOD_WILD`, else the pinned release in
+  `.toolchain/wild/<version>/`) when its file is named `wild`, then
+  `wild`, then `ld.wild` on `PATH`. The matrix is every one of these
+  that is found, in this order.
 - **Emulator**, for the architecture that is not the host's ("Cross
   runs"): `qemu-<arch>` on `PATH`, then `qemu-<arch>-static`; and the
   cross system root `/usr/<prefix>` (the target's C library and dynamic
@@ -519,7 +555,7 @@ What is missing:
 | the linker driver | objects are built, nothing is linked or run ("Cross targets"), with a note | failure |
 | the emulator or the system root, for the other architecture | objects are built, nothing is linked or run ("Cross targets"), with a note | failure |
 | `bfd`, `lld` or `mold` | that linker is not in the matrix, with a note | failure |
-| `wild` | not in the matrix, with a note | still a note: it is optional until it is provisioned |
+| `wild` | not in the matrix, with a note | still a note: optional until a hosted run proves the set-up installs it (`hod_testutil::linkers::WILD_REQUIRED`) |
 | a linker named with `--linker` | usage error (exit status 2) | the same |
 
 A failure for a missing tool does not stop the run: the tests still run
@@ -557,13 +593,14 @@ run (else it is SKIP), in its own directory under the work directory:
    -B<dir with that linker as ld> -pie -Wl,--fatal-warnings -o <program>
    <objects>` and then `-lstdc++` and `-lm` as the test's `link` directive
    asks; `-no-pie` instead of `-pie` for `link: no-pie`, and no
-   `-Wl,--fatal-warnings` for `link: allow-warnings`. lld and mold are
-   told to use one thread (`-Wl,--threads=1`, `-Wl,--thread-count=1`): the
-   harness is what runs things in parallel. The harness then checks which
-   linker made the program, by the signature in its `.comment` section
-   (`LLD <digit>`, `mold <digit>`, neither for GNU ld; wild's is not
-   specified yet and is not checked); a program made by another linker is
-   an ERROR. The program runs in its directory with the test's `args` and
+   `-Wl,--fatal-warnings` for `link: allow-warnings`. lld, mold and wild
+   are told to use one thread (`-Wl,--threads=1`, `-Wl,--thread-count=1`):
+   the harness is what runs things in parallel. wild also gets
+   `-Wl,--no-gc-sections`: it discards unused sections by default, the
+   other three do not. The harness then checks which linker made the
+   program, by the signature in its `.comment` section (`LLD <digit>`,
+   `mold <digit>`, `Linker: Wild <digit>`, none for GNU ld); a program
+   made by another linker is an ERROR. The program runs in its directory with the test's `args` and
    `stdin`.
 4. **Compare.** The oracle's program against the directives: how it ended
    (`exit`) and its standard output, byte for byte. hod's program against
@@ -1185,9 +1222,8 @@ Nothing is ever installed by a test.
 `crates/hod_obj/tests/common/linking.rs`'s `Toolchain` holds a target, its
 drivers, its linkers and its runner: `Toolchain::host` is the host's
 (unchanged from before targets: `gcc`, the linkers as they are, the
-program run directly), `Toolchain::for_target` any target's. A linker is
-selected with `-B<dir>` holding it as `ld.<name>` and `-fuse-ld=<name>`
-(`spec/object.md` "Toolchains"); lld is selected per major
+program run directly), `Toolchain::for_target` any target's. Its linkers
+are the matrix's ("Linkers" below); lld is also selected per major
 (`Toolchain::lld(scratch, 19 or 22)`, since only `ld.lld-19` and
 `ld.lld-22` are installed). An emulated program has a five-minute limit.
 
@@ -1204,6 +1240,54 @@ the cross gcc and of `llc` only, no hod code generation):
 `cxx_exceptions_and_thread_locals_run`, `llc_objects_run`,
 `the_emulated_cpu_is_the_baseline` (the emulated x86-64 CPU reports SSE2
 and not SSE3, CMPXCHG16B or POPCNT, and `popcnt` dies with SIGILL).
+
+### Linkers
+
+`hod_testutil::linkers` (`crates/hod_testutil/src/linkers.rs`) is the one
+description of the linker matrix (`docs/VALIDATION.md` "Linker matrix")
+for every test that links: `MATRIX` is `bfd`, `lld`, `mold`, `wild`, in
+report order; `present(target)` is the ones found for a target;
+`driver_flags(dir, name, program)` the `gcc`/`g++` flags that select one.
+
+- **Finding.** `bfd`: `ld.bfd`, or `<prefix>-ld.bfd` for the other
+  architecture. `lld`: as `find_tool` finds `ld.lld` (22, then 19).
+  `mold`: `ld.mold`. lld, mold and wild link both targets from either
+  host: they take the target from the driver's `-m <emulation>`
+  (`elf_x86_64`, `aarch64linux`). `wild`, by `find_wild`, first found of:
+  1. `HOD_WILD`, the path of the executable (set to anything but a file,
+     it panics: a misconfiguration is not a skip);
+  2. `.toolchain/wild/<WILD_VERSION>/wild` in the checkout or any
+     directory above it (where the workspace's provisioning script
+     installs the pinned release, `docs/status/linkers.md`);
+  3. `wild`, then `ld.wild`, on `PATH`.
+- **Missing.** A missing `bfd`, `lld` or `mold` is a note, and a failure
+  under `HOD_REQUIRE_TOOLS=1`. A missing wild is a note even then while
+  `WILD_REQUIRED` is false: it becomes true once a hosted run has shown
+  that the lanes' set-up (`.github/actions/hod-ci`, which exports
+  `HOD_WILD`) installs it.
+- **Selecting.** Each linker gets a directory `<dir>/use-<name>`, passed
+  with `-B`. GNU ld, lld and mold are in it as `ld.<name>` and selected
+  with `-fuse-ld=<name>`. GCC 14's driver refuses `-fuse-ld=wild`, so
+  wild is in it as `ld`, the program the driver runs without
+  `-fuse-ld`, and it also gets `WILD_FLAGS` (`-Wl,--no-gc-sections`:
+  wild discards unused sections unless told not to, the other three keep
+  them unless told to; a test's own `-Wl,--gc-sections`, given later,
+  still wins).
+- **Which linker ran.** `signer(comment)` names the linker that signed
+  a program's `.comment` text: `LLD <version>`, `mold <version>`,
+  `Linker: Wild <version>`; GNU ld signs nothing. `Toolchain::link_ok`
+  requires the selected linker's signature.
+- **Exceptions.** `EXCEPTIONS` is the one table of the cases a linker is
+  excepted from: linker, version, a stable case name, class (`Linker`:
+  the linker's bug or an allowed difference, with a reproduction from
+  objects hod did not write; `Unsupported`: a feature the linker says it
+  lacks) and reason. A test asks `exception(linker, case)` and changes
+  that one assertion (to the excepted behaviour where it is known, so a
+  linker that changes makes the test fail and the row is revisited);
+  `tolerated_warning` is the diagnostic a silent link may print for one.
+  Unit tests: `signatures`, `exceptions_name_linkers_of_the_matrix_once`,
+  `the_pinned_wild_is_found_above_the_start`,
+  `wild_is_selected_as_ld_and_the_others_by_fuse_ld`.
 
 ## Jobserver
 

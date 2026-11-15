@@ -25,7 +25,10 @@ fn main_returning_42_links_and_runs_with_every_linker() {
     let object = write_object(&dir, "main.o", &emitted);
     let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
     assert!(
-        !hod_testutil::tools_required() || toolchain.linkers.len() == 3,
+        !hod_testutil::tools_required()
+            || ["bfd", "lld", "mold"]
+                .iter()
+                .all(|name| toolchain.linkers.iter().any(|linker| linker.name == *name)),
         "bfd, lld and mold are all required"
     );
     for linker in &toolchain.linkers {

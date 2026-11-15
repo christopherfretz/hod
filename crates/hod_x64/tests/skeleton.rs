@@ -154,7 +154,10 @@ fn pie_programs_link_and_run_with_every_linker() {
     let dir = Scratch::new("x64-skeleton");
     let Some(toolchain) = Toolchain::x86_64(&dir) else { return };
     assert!(
-        !hod_testutil::tools_required() || toolchain.linkers.len() == 3,
+        !hod_testutil::tools_required()
+            || ["bfd", "lld", "mold"]
+                .iter()
+                .all(|name| toolchain.linkers.iter().any(|linker| linker.name == *name)),
         "bfd, lld and mold are all required"
     );
     for (name, body, c_main) in programs() {

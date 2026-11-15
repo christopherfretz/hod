@@ -80,12 +80,19 @@ jobs:
           cache-key: "${{ inputs.cache-key }}"
           save-cache: "${{ matrix.part == 'harness' }}"
       - uses: ./.github/actions/kiln
-      # WP-229: on the x86-64 lane the AVX-512 execution tests of the `x64`
-      # part run natively when this runner's processor has the features
-      # (hod_testutil::avx512), and write one line per program to the
-      # report; the last step writes it to the job's summary and its log. The lane
-      # does not set HOD_REQUIRE_AVX512: the hosted runners are a mixed
-      # fleet, and one without AVX-512 skips (spec/harness.md "CI" 8).
+      # WP-229, WP-238: on the x86-64 lane the AVX-512 execution tests of
+      # the `x64` part run natively when this runner's processor has the
+      # features, else (only when the repository variable HOD_CI_SDE is 1,
+      # until the operator has agreed to Intel SDE in this lane; it adds
+      # about 20 minutes on a runner without AVX-512) under Intel SDE (the
+      # sde action; the hosted runners are a mixed fleet, some without
+      # AVX-512), else they are skipped; each writes one line per program
+      # to the report (hod_testutil::avx512); the summary step writes it to
+      # the job's summary and its log, and with SDE the last fails unless
+      # every program executed but Knights Landing's machine of the zmm
+      # grid (spec/harness.md "CI" 8). avx512.yml always uses SDE.
+      - if: matrix.part == 'x64' && runner.arch == 'X64' && vars.HOD_CI_SDE == '1'
+        uses: ./.github/actions/sde
       - name: avx512 report
         if: matrix.part == 'x64' && runner.arch == 'X64'
         run: |
@@ -95,6 +102,9 @@ jobs:
       - name: avx512 execution summary
         if: always() && matrix.part == 'x64' && runner.arch == 'X64'
         run: scripts/avx512-summary.sh "$RUNNER_TEMP/avx512-report.tsv" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: avx512 executed
+        if: matrix.part == 'x64' && runner.arch == 'X64' && vars.HOD_CI_SDE == '1'
+        run: scripts/avx512-summary.sh --check "$RUNNER_TEMP/avx512-report.tsv"
   # A random-program job goes here when `cargo xtask fuzz` (WP-154,
   # csmith; the hod-ci action installs the package) is on main: a fixed
   # seed range per run, every program compiled by hod and by llc and run

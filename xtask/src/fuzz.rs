@@ -14,11 +14,13 @@
 //! - [`split`]: `--mix`, the module in two halves;
 //! - [`profile`]: the option sets of the generator, and the census;
 //! - [`abi`]: the ABI generator (`--profile abi`);
+//! - [`int128`]: the `llc19-int128-last-register` class of its findings;
 //! - [`reduce`]: a finding cut down to a small module, and the witness.
 
 pub mod abi;
 pub mod budget;
 pub mod case;
+pub mod int128;
 pub mod profile;
 pub mod reduce;
 pub mod split;
@@ -395,6 +397,7 @@ fn find_tools(options: &Options, arch: Arch, work: &Path) -> Result<Tools, Strin
         None => build_workspace_hod(&options.build_dir)?,
     };
     let ubsan_cc = if csmith.is_some() { find_ubsan_cc(search, work)? } else { None };
+    let newer_llc = find_newer_llc(search, arch, llvm_major, options)?;
     Ok(Tools {
         csmith,
         csmith_include,
@@ -410,7 +413,37 @@ fn find_tools(options: &Options, arch: Arch, work: &Path) -> Result<Tools, Strin
         dwarfdump,
         lines,
         ubsan_cc,
+        newer_llc,
     })
+}
+
+/// `llc` 22, the evidence of `llc19-int128-last-register`: required where
+/// the class applies (as every tool of the run), `None` elsewhere.
+fn find_newer_llc(
+    search: &Search,
+    arch: Arch,
+    llvm: u32,
+    options: &Options,
+) -> Result<Option<PathBuf>, String> {
+    if !int128::applies(arch, llvm, options.profile.name) {
+        return Ok(None);
+    }
+    let llc = search.versioned("llc", int128::NEWER_LLVM).ok_or(format!(
+        "llc-{} not found (the evidence of {})",
+        int128::NEWER_LLVM,
+        int128::LLC19_INT128
+    ))?;
+    Ok(Some(llc))
+}
+
+/// The detail of a seed's line in the results file.
+fn result_detail(outcome: &Outcome) -> String {
+    let detail = match (&outcome.ub_report, &outcome.int128) {
+        (Some(line), _) => format!("{}: {line}", outcome.verdict.detail()),
+        (None, Some(apart)) => apart.line(outcome.seed),
+        (None, None) => outcome.verdict.detail(),
+    };
+    detail.replace(['\t', '\n'], " ")
 }
 
 /// A finding as it was saved.
@@ -452,6 +485,9 @@ pub struct Summary {
     /// `--debug`: hod's pairs set apart as `selector-split`, with their
     /// seed and evidence ([`case::selector_split`]).
     pub selector_splits: Vec<(u64, case::SelectorSplit)>,
+    /// Seeds whose finding a class set apart on its evidence (verdict
+    /// `set-apart`): the seed, the class and the evidence's line.
+    pub set_apart: Vec<(u64, &'static str, String)>,
 }
 
 impl Summary {
@@ -474,6 +510,11 @@ impl Summary {
             Verdict::Skipped(why) => *self.skipped.entry((*why).to_owned()).or_default() += 1,
             Verdict::Error(detail) => self.errors.push((outcome.seed, detail.clone())),
             Verdict::Finding(_) => {}
+            Verdict::SetApart(class) => self.set_apart.push((
+                outcome.seed,
+                class,
+                outcome.int128.as_ref().map_or_else(String::new, |e| e.line(outcome.seed)),
+            )),
         }
         self.oracle_times.extend(outcome.oracle_time);
         if let Some(features) = &outcome.census {
@@ -527,6 +568,10 @@ impl Summary {
         row(&mut text, "error (the oracle's side)", self.errors.len());
         for (seed, detail) in &self.errors {
             let _ = writeln!(text, "    seed {seed}: {detail}");
+        }
+        row(&mut text, "set apart (by a class's evidence)", self.set_apart.len());
+        for (_, _, line) in &self.set_apart {
+            let _ = writeln!(text, "    {line}");
         }
         row(&mut text, "FINDINGS", self.findings.len());
         for found in &self.findings {
@@ -646,7 +691,8 @@ pub fn run(options: &Options) -> Result<Summary, String> {
                         .then(|| save(&bench, options, &outcome, &files, &findings_dir));
                     let _ = fs::remove_dir_all(&files.dir);
                     let finished = done.fetch_add(1, Ordering::Relaxed) + 1;
-                    if options.verbose || saved.is_some() {
+                    let apart = matches!(outcome.verdict, Verdict::SetApart(_));
+                    if options.verbose || saved.is_some() || apart {
                         eprintln!(
                             "fuzz: seed {seed} ({}): {} {}",
                             outcome.flavour.name,
@@ -670,11 +716,7 @@ pub fn run(options: &Options) -> Result<Summary, String> {
     {
         summary.add(&outcome);
         let ms = outcome.oracle_time.map_or_else(|| "-".to_owned(), |t| t.as_millis().to_string());
-        let detail = match &outcome.ub_report {
-            Some(line) => format!("{}: {line}", outcome.verdict.detail()),
-            None => outcome.verdict.detail(),
-        };
-        let detail = detail.replace(['\t', '\n'], " ");
+        let detail = result_detail(&outcome);
         let _ = writeln!(
             results,
             "{}\t{}\t{}\t{detail}\t{ms}",

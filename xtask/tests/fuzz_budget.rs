@@ -142,15 +142,28 @@ fn rows_and_the_table() {
     (options.seed, options.count) = (slice.first, slice.count);
     let mut summary = summary_of(&options, true);
     summary.errors.push((7, "llc failed:\tsomething; else".to_owned()));
+    // A seed set apart by a class (`llc19-int128-last-register`): counted
+    // in the set-apart column and listed with its seed.
+    summary.set_apart.push((9, "llc19-int128-last-register", "the evidence".to_owned()));
     let row = Row::new(&slice, &summary);
     assert_eq!(row.seed_count(), slice.count);
     assert_eq!((row.refused, row.skipped, row.error, row.finding), (1, 1, 1, 1));
+    assert_eq!(row.set_apart, "llc19-int128-last-register=1");
+    assert_eq!(row.set_apart_seeds, "9:llc19-int128-last-register");
     assert_eq!(Row::parse(&row.line()), Some(row.clone()));
     assert_eq!(Row::parse(budget::HEADER), None);
+    // A row written before the set-apart-seeds column still parses.
+    let old = row.line().rsplit_once('\t').unwrap().0.to_owned();
+    assert_eq!(Row::parse(&old).map(|r| r.set_apart_seeds), Some("-".to_owned()));
     let table = budget::markdown(&[row.clone(), row], 3);
     assert!(table.contains("2 of 3 slices run"), "{table}");
     let total = format!("| x86_64 | 22 | {} | ", 2 * slice.count);
     assert!(table.contains(&total), "{table}");
+    // refused, skipped, error, finding, set apart; minutes.
+    assert!(table.contains(" | 2 | 2 | 2 | 2 | 2 | 3 | "), "{table}");
+    assert!(table.contains("| `llc19-int128-last-register` | 2 |"), "{table}");
+    assert!(table.contains("## Set apart (seeds)\n\n- x86_64 LLVM 22"), "{table}");
+    assert!(table.contains(": 9:llc19-int128-last-register"), "{table}");
     assert!(table.contains("7:llc failed: something  else"), "{table}");
 }
 

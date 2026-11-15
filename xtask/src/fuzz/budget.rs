@@ -158,15 +158,19 @@ pub struct Row {
     pub findings: String,
     /// `seed:detail;...`, each detail cut to 160 characters.
     pub errors: String,
-    /// `--debug`'s pairs set apart by evidence, `class=count,...`
-    /// (`selector-split`); `-` for none, and for a row written before the
-    /// column existed.
+    /// What a class set apart by evidence, `class=count,...`: `--debug`'s
+    /// pairs (`selector-split`) and seeds (`llc19-int128-last-register`);
+    /// `-` for none, and for a row written before the column existed.
     pub set_apart: String,
+    /// The seeds set apart (verdict `set-apart`), `seed:class;...`; `-`
+    /// for none, and for a row written before the column existed.
+    pub set_apart_seeds: String,
 }
 
 /// The header of `budget.tsv`.
 pub const HEADER: &str = "# target\tllvm\tprofile\tmode\tseeds\tagree\trefused\tskipped\terror\t\
-                          finding\tminutes\trefusals\tskips\tfindings\terrors\tset-apart";
+                          finding\tminutes\trefusals\tskips\tfindings\terrors\tset-apart\t\
+                          set-apart-seeds";
 
 fn clean(text: &str) -> String {
     text.replace(['\t', '\n', ';', ','], " ")
@@ -235,11 +239,26 @@ impl Row {
                     })
                     .collect::<Vec<_>>(),
             ),
-            set_apart: if summary.selector_splits.is_empty() {
-                "-".to_owned()
-            } else {
-                format!("{}={}", super::case::SELECTOR_SPLIT, summary.selector_splits.len())
+            set_apart: {
+                let mut classes: BTreeMap<String, usize> = BTreeMap::new();
+                if !summary.selector_splits.is_empty() {
+                    classes.insert(
+                        super::case::SELECTOR_SPLIT.to_owned(),
+                        summary.selector_splits.len(),
+                    );
+                }
+                for (_, class, _) in &summary.set_apart {
+                    *classes.entry((*class).to_owned()).or_default() += 1;
+                }
+                counts(&classes)
             },
+            set_apart_seeds: list(
+                &summary
+                    .set_apart
+                    .iter()
+                    .map(|(seed, class, _)| format!("{seed}:{class}"))
+                    .collect::<Vec<_>>(),
+            ),
         }
     }
 
@@ -259,7 +278,7 @@ impl Row {
     /// The row as a line of `budget.tsv`.
     pub fn line(&self) -> String {
         format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{:.2}\t{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{:.2}\t{}\t{}\t{}\t{}\t{}\t{}",
             self.key(),
             self.agree,
             self.refused,
@@ -271,7 +290,8 @@ impl Row {
             self.skips,
             self.findings,
             self.errors,
-            self.set_apart
+            self.set_apart,
+            self.set_apart_seeds
         )
     }
 
@@ -282,8 +302,9 @@ impl Row {
             return None;
         }
         let f: Vec<&str> = line.split('\t').collect();
-        // 15 fields: a row written before the `set-apart` column.
-        if f.len() != 15 && f.len() != 16 {
+        // 15 fields: a row written before the `set-apart` column; 16:
+        // before `set-apart-seeds`.
+        if !(15..=17).contains(&f.len()) {
             return None;
         }
         let n = |i: usize| f[i].parse::<usize>().ok();
@@ -304,6 +325,7 @@ impl Row {
             findings: f[13].to_owned(),
             errors: f[14].to_owned(),
             set_apart: f.get(15).map_or("-", |s| *s).to_owned(),
+            set_apart_seeds: f.get(16).map_or("-", |s| *s).to_owned(),
         })
     }
 }
@@ -406,6 +428,9 @@ pub fn run(
         for (seed, split) in &summary.selector_splits {
             eprintln!("fuzz budget: {}", split.line(*seed));
         }
+        for (_, _, line) in &summary.set_apart {
+            eprintln!("fuzz budget: {line}");
+        }
         let mut appended = fs::OpenOptions::new()
             .append(true)
             .open(&file)
@@ -438,6 +463,7 @@ struct Sum {
     skipped: usize,
     error: usize,
     finding: usize,
+    set_apart: usize,
     minutes: f64,
     ranges: Vec<String>,
 }
@@ -450,6 +476,7 @@ impl Sum {
         self.skipped += row.skipped;
         self.error += row.error;
         self.finding += row.finding;
+        self.set_apart += row.set_apart_seeds.split(';').filter(|s| *s != "-").count();
         self.minutes += row.minutes;
         self.ranges.push(row.seeds.clone());
     }
@@ -458,13 +485,14 @@ impl Sum {
         #[expect(clippy::cast_precision_loss, reason = "a rate, for people")]
         let rate = if self.minutes > 0.0 { self.seeds as f64 / self.minutes } else { 0.0 };
         format!(
-            "{} | {} | {} | {} | {} | {} | {:.0} | {rate:.1}",
+            "{} | {} | {} | {} | {} | {} | {} | {:.0} | {rate:.1}",
             self.seeds,
             self.agree,
             self.refused,
             self.skipped,
             self.error,
             self.finding,
+            self.set_apart,
             self.minutes
         )
     }
@@ -476,8 +504,9 @@ impl Sum {
 pub fn markdown(rows: &[Row], planned: usize) -> String {
     let mut text = String::new();
     let _ = writeln!(text, "# Fuzzing budget\n\n{} of {planned} slices run.\n", rows.len());
-    let head = "seeds | agree | refused | skipped | error | finding | minutes | programs/min";
-    let rule = "---:|---:|---:|---:|---:|---:|---:|---:";
+    let head =
+        "seeds | agree | refused | skipped | error | finding | set apart | minutes | programs/min";
+    let rule = "---:|---:|---:|---:|---:|---:|---:|---:|---:";
     let mut by_line: BTreeMap<(String, String, String, String), Sum> = BTreeMap::new();
     let mut order: Vec<(String, String, String, String)> = Vec::new();
     let mut totals: BTreeMap<(String, String), Sum> = BTreeMap::new();
@@ -541,38 +570,33 @@ pub fn markdown(rows: &[Row], planned: usize) -> String {
     census(&mut text, "Refusals", &refusals, "seeds");
     census(&mut text, "Skipped", &skips, "seeds");
     // The evidence of each pair is in the slice's summary in the run's log.
-    census(&mut text, "Set apart (debug pairs)", &set_apart, "pairs");
-    let _ = writeln!(text, "\n## Findings\n");
-    let mut any = false;
-    for row in rows.iter().filter(|r| r.findings != "-") {
-        for item in row.findings.split(';') {
-            any = true;
-            let _ = writeln!(
-                text,
-                "- {} LLVM {} {} {}: {item}",
-                row.target, row.llvm, row.profile, row.mode
-            );
-        }
-    }
-    if !any {
-        let _ = writeln!(text, "None.");
-    }
-    let _ = writeln!(text, "\n## Errors (the oracle's side)\n");
-    any = false;
-    for row in rows.iter().filter(|r| r.errors != "-") {
-        for item in row.errors.split(';') {
-            any = true;
-            let _ = writeln!(
-                text,
-                "- {} LLVM {} {} {}: {item}",
-                row.target, row.llvm, row.profile, row.mode
-            );
-        }
-    }
-    if !any {
-        let _ = writeln!(text, "None.");
-    }
+    census(&mut text, "Set apart (debug pairs, seeds)", &set_apart, "count");
+    // The seeds set apart, each with its class; the evidence of each is
+    // in the run's log and the slice's results file.
+    listed(&mut text, "Set apart (seeds)", rows, |r| &r.set_apart_seeds);
+    listed(&mut text, "Findings", rows, |r| &r.findings);
+    listed(&mut text, "Errors (the oracle's side)", rows, |r| &r.errors);
     text
+}
+
+/// A section of `budget.md`: every item of `field` (`;`-joined, `-` for
+/// none) of every row, with its slice.
+fn listed(text: &mut String, title: &str, rows: &[Row], field: impl Fn(&Row) -> &String) {
+    let _ = writeln!(text, "\n## {title}\n");
+    let mut any = false;
+    for row in rows.iter().filter(|r| field(r) != "-") {
+        for item in field(row).split(';') {
+            any = true;
+            let _ = writeln!(
+                text,
+                "- {} LLVM {} {} {}: {item}",
+                row.target, row.llvm, row.profile, row.mode
+            );
+        }
+    }
+    if !any {
+        let _ = writeln!(text, "None.");
+    }
 }
 
 /// `a-b` ranges joined where one ends where the next starts.

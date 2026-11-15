@@ -73,6 +73,9 @@ pub struct Tools {
     /// float flavour's seed and a finding's `ubsan.txt` ("Float casts");
     /// `None`: not found, and the run said so.
     pub ubsan_cc: Option<PathBuf>,
+    /// `llc` of LLVM 22, for [`super::int128::LLC19_INT128`] (a run where
+    /// it applies only).
+    pub newer_llc: Option<PathBuf>,
 }
 
 /// The skip of a float flavour's seed whose program converts a
@@ -399,6 +402,10 @@ pub enum Verdict {
     Error(String),
     /// hod is suspected.
     Finding(Finding),
+    /// A finding set apart by a class on the evidence gathered for it
+    /// (`spec/harness.md` "Set apart (seeds)"): the class's name; the
+    /// evidence is in the outcome.
+    SetApart(&'static str),
 }
 
 impl Verdict {
@@ -410,6 +417,7 @@ impl Verdict {
             Self::Skipped(_) => "skipped",
             Self::Error(_) => "error",
             Self::Finding(_) => "FINDING",
+            Self::SetApart(_) => "set-apart",
         }
     }
 
@@ -418,7 +426,7 @@ impl Verdict {
         match self {
             Self::Agree => String::new(),
             Self::Refused(reason) => reason.clone(),
-            Self::Skipped(why) => (*why).to_owned(),
+            Self::Skipped(why) | Self::SetApart(why) => (*why).to_owned(),
             Self::Error(detail) => detail.clone(),
             Self::Finding(finding) => format!("{}: {}", finding.kind.name(), finding.detail),
         }
@@ -516,6 +524,9 @@ pub struct Outcome {
     pub selector_splits: Vec<SelectorSplit>,
     /// [`UB_FLOAT_CAST`]: the sanitizer's report line.
     pub ub_report: Option<String>,
+    /// [`super::int128::LLC19_INT128`]: the evidence of the seed set
+    /// apart.
+    pub int128: Option<super::int128::Int128SetApart>,
 }
 
 impl Outcome {
@@ -535,6 +546,7 @@ impl Outcome {
             constant_branches: Vec::new(),
             selector_splits: Vec::new(),
             ub_report: None,
+            int128: None,
         }
     }
 }
@@ -949,7 +961,7 @@ impl Bench {
         if matches!(verdict, Verdict::Finding(_)) {
             outcome.oracle = Some(oracle);
             outcome.hod = Some(hod);
-            return Ok(verdict);
+            return Ok(self.set_apart_int128(verdict, files, outcome, None));
         }
         if self.mode == Mode::Debug && verdict == Verdict::Agree {
             let report = self.compare_lines(&ir, &hod_x, &oracle_x).map_err(harness)?;
@@ -1763,5 +1775,63 @@ define i32 @f(ptr %0) {
             shell_line(Path::new("/bin/cc"), &args, Some(Path::new("/w d"))),
             "cd '/w d' && /bin/cc -o 'a b' 'it'\\''s' -x=1"
         );
+    }
+
+    // spec/harness.md "Modes", step 1: csmith runs in the seed's directory
+    // (under the run's output directory), where its `platform.info` stays;
+    // nothing is written into the checkout. A csmith that writes a file
+    // named so into its current directory, with this test's token.
+    #[test]
+    fn csmith_writes_only_in_the_seed_directory() {
+        let scratch = hod_testutil::Scratch::new("fuzz-csmith-cwd");
+        let token = format!("written by the test {}", std::process::id());
+        let csmith = scratch.write_script(
+            "csmith",
+            &format!(
+                "printf '%s\\n' '{token}' > platform.info\n\
+                 for last; do :; done\n\
+                 echo 'int main(void) {{ return 0; }}' > \"$last\""
+            ),
+        );
+        let limits = Limits { time: Duration::from_secs(30), memory_kib: 1 << 20 };
+        let bench = Bench {
+            tools: Tools {
+                csmith: Some(csmith),
+                csmith_include: None,
+                clang: PathBuf::from("clang"),
+                llc: PathBuf::from("llc"),
+                llvm_major: 22,
+                hod: PathBuf::from("hod"),
+                driver: PathBuf::from("gcc"),
+                linker_dir: None,
+                linker_name: "ld".to_owned(),
+                emulator: None,
+                extract: None,
+                dwarfdump: None,
+                lines: None,
+                ubsan_cc: None,
+                newer_llc: None,
+            },
+            arch: Arch::X86_64,
+            tool_limits: limits,
+            run_limits: limits,
+            mode: Mode::Whole,
+            profile: Profile::by_name("default").unwrap(),
+        };
+        let files = Files { dir: scratch.join("out/run-1/seed-7") };
+        fs::create_dir_all(&files.dir).unwrap();
+        let mut log = Vec::new();
+        bench.generate(7, flavour(7), &files, &mut log).unwrap();
+        assert!(log[0].starts_with(&format!("cd {} && ", files.dir.display())), "{log:?}");
+        let written = fs::read_to_string(files.dir.join("platform.info")).unwrap();
+        assert_eq!(written.trim_end(), token);
+        // Not in this process's directory (the crate's), nor the workspace's.
+        let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        for dir in
+            [std::env::current_dir().unwrap().as_path(), crate_dir, crate_dir.parent().unwrap()]
+        {
+            let stray = fs::read_to_string(dir.join("platform.info")).unwrap_or_default();
+            assert!(!stray.contains(&token), "{}", dir.display());
+        }
     }
 }

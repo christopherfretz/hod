@@ -311,6 +311,15 @@ fn is_unconditional_branch(mnemonic: &str) -> bool {
     matches!(mnemonic, "b" | "jmp")
 }
 
+/// The `is_stmt` rows (line not 0) of `program` at each pair, counted: the
+/// pairs [`compare`] compares, each with the number of its rows.
+pub fn stmt_row_counts(program: &Path, tools: &LineTools) -> Result<BTreeMap<Pair, usize>, String> {
+    let lines = tool_output(&tools.dwarfdump, &["--debug-line"], program)?;
+    let symbols = tool_output(&tools.nm, &["-S", "--defined-only"], program)?;
+    let pairs = pairs_of(&parse_line_tables(&lines), &parse_symbols(&symbols));
+    Ok(pairs.ranges.into_iter().map(|(pair, rows)| (pair, rows.len())).collect())
+}
+
 /// Compares the pairs of two programs built from the same IR, and their
 /// rows with columns ([`compare_function_rows`]); `facts` is that IR's
 /// (for the classes it decides).

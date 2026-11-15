@@ -157,9 +157,8 @@ pub(crate) struct FnInline {
     /// The abstract entities made: `(scope, class, key, node)`, as
     /// `FnScratch::ents`.
     ents: Vec<(u32, u8, u32, DiId)>,
-    /// `(variable, inlinedAt)` seen, and whether its first row was a
-    /// slot (`LocalPlace::Frame`).
-    seen: HashMap<(u32, u32), bool>,
+    /// `(variable, inlinedAt)` seen, and its first row.
+    seen: HashMap<(u32, u32), u32>,
     child_start: Vec<u32>,
     children: Vec<u32>,
     vars: Vec<bool>,
@@ -185,14 +184,13 @@ impl FnInline {
         self.keys.insert((node.raw(), ia.raw()), index);
     }
 
-    /// `None` when this is the first entity `(node, ia)` of the
-    /// function, whose first row is a slot when `frame`; else whether the
-    /// first one's was (WP-195).
-    pub(crate) fn first_of(&mut self, node: DiId, ia: LocId, frame: bool) -> Option<bool> {
+    /// `None` when `row` is the first of entity `(node, ia)` in the
+    /// function; else the first one's row (WP-195, WP-236).
+    pub(crate) fn first_of(&mut self, node: DiId, ia: LocId, row: u32) -> Option<u32> {
         match self.seen.entry((node.raw(), ia.raw())) {
             std::collections::hash_map::Entry::Occupied(e) => Some(*e.get()),
             std::collections::hash_map::Entry::Vacant(e) => {
-                e.insert(frame);
+                e.insert(row);
                 None
             }
         }
@@ -509,7 +507,7 @@ impl UnitPlan<'_> {
 
     /// `createAbstractSubprogramDIE`: the DIE in its context (a member
     /// function's after its class), its return type made now.
-    fn create_abstract(&mut self, sp_id: DiId) -> Result<u32, Error> {
+    pub(crate) fn create_abstract(&mut self, sp_id: DiId) -> Result<u32, Error> {
         let DiNode::Subprogram(sp) = self.node_of(sp_id, "scope", sp_id)? else {
             return Err(bad(sp_id, "scope"));
         };

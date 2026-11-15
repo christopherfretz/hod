@@ -4,7 +4,8 @@
 //! - a variable two `#dbg_declare`s of slots name in one instance of its
 //!   scope (a macro's `while (T r = ...)` expanded twice on one line) is
 //!   one DIE located by the first slot, as `llc` writes it; it was
-//!   `debug:variable-twice`, and any other repetition still is;
+//!   `debug:variable-twice`, and other repetitions still are (one stored
+//!   address declared twice is accepted since WP-236, `declare_twice.rs`);
 //! - a function's static whose class declaration reaches a type local to
 //!   the function (an `auto` member returning a local class) is one
 //!   subprogram DIE; it was `debug:local-static`;

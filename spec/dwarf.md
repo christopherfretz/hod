@@ -1105,7 +1105,7 @@ reports a `debug:*` name as itself and §6.5's unnamed shapes as
 | `debug:dbg-value-arglist`, `debug:dbg-value-coroutine` | a value record with a `DIArgList`; one in a coroutine body (`hod_cg`, §6.23) |
 | `debug:expression` | any other op that is not a plain DWARF op |
 | `debug:variable-without-type` | as named |
-| `debug:variable-twice` | a variable recorded twice in one instance of its scope, except slot after slot, which is located by the first (WP-195, §6.25), or by its fragments, and value records beside a slot, which are not used (WP-230, §6.32) |
+| `debug:variable-twice` | a variable recorded twice in one instance of its scope, except slot after slot, which is located by the first (WP-195, §6.25), or by its fragments, and value records beside a slot, which are not used (WP-230, §6.32), and a stored address declared again with the same expression, which is located by the first (WP-236, §6.36) |
 | `debug:variable-alignment` | an `alignas` parameter, or an unnamed one; an `alignas` variable of an abstract instance (§6.9). A named local's `alignment` is written since WP-087 (family 88, in bytes, after `name`) |
 | `debug:label-attribute` | no longer refused: every label is written since WP-098 (§6.14) |
 | `debug:object-pointer` | two `this` parameters |
@@ -1767,7 +1767,7 @@ It appends 81 to 86 for the other shapes.
 | `debug:template-address` | the address of a symbol the bridge gives no place (since WP-189 the bridge places an undefined symbol as itself, §6.24; the name is kept for other callers of `UnitPlan::place_symbols`) |
 | `debug:import` | an import of another tag, with `elements:`, an `imported_module` with a name, a line without a file |
 | `debug:import-scope` | a unit's import scoped outside the unit, a file or a namespace; a function's import scoped elsewhere than its function |
-| `debug:import-entity` | an import of a module, of another import, of a function's definition or of a function-local variable |
+| `debug:import-entity` | an import of a module, of another import, of a function-local variable, or of a function's definition with neither code nor an abstract instance whose retained nodes have imports (the others are §6.35, §6.36) |
 | `debug:declaration-scope` | a function declaration scoped outside a class, the unit, a file or a namespace, or virtual outside a class |
 
 A function's `static` (`debug:local-static`), inlined subroutines,
@@ -3566,13 +3566,63 @@ definition with neither code nor an abstract instance keeps
 `std::__math::isnormal`, a definition with a retained parameter that
 the module neither places nor inlines, and `llc` 22 writes it as an
 abstract instance (`DW_AT_inline DW_INL_inlined`, no concrete or
-inlined instance) that the import names; hod does not make one
-(follow-up).
+inlined instance) that the import names; hod makes it since WP-236
+(§6.36).
 
 **Tests.** `crates/hod/tests/inlined_import.rs` (the entity inlined
 only, and also placed out of line; both targets; trees equal to `llc`
 22's, the import naming the abstract instance). Evidence:
 `spec/landed/dwarf/WP-230.md`.
+
+### 6.36 The last refusals of the optimized `-g` census (implemented, WP-236)
+
+Two shapes of kiln's `-O1` and `-O2` `-g` modules of libc++ tests (10 of
+the 886, both targets). No abbreviation family is added.
+
+**One stored address declared twice** (`debug:variable-twice`, libc++
+`ctor.pass`, `formatter.local_time.pass` and `ostream.pass` at `-O2`).
+In the optimized module the inlined body of
+`__format_buffer_hexadecimal_lower_case` is duplicated into two blocks
+of `__format_buffer`, and its `__result` (the caller's `sret` pointer
+argument) is declared in each, with the same `DILocalVariable`, the same
+`inlinedAt`, the same address (`ptr %0`) and the same expression. Both
+records say the variable is where the pointer points, for the whole
+instance. `llc` 22 (SelectionDAG, both targets) writes one DIE located
+through the pointer's spill slot (`DW_OP_fbreg n, DW_OP_deref`), the
+same as for one record; when the pointer has no use outside the entry
+block it is not spilled and `llc` drops the variable instead (an
+accident of where its value lives, not a rule; with the record in the
+entry block it writes `DW_OP_bregN`). hod keeps the first record and
+skips any later one of the same `(variable, inlinedAt)` whose place is
+the same stored address (`LocalPlace::FrameIndirect` at the same offset)
+with the same expression (`func.rs` `collect_entities`,
+`FnInline::first_of` returning the first row). Declarations at two
+different pointers stay refused: `llc` 22 writes one location for the
+whole scope, by one of the pointers, which is wrong in the other block.
+A DIE without a location would be correct there; no module needs it.
+
+**An imported definition neither placed nor inlined**
+(`debug:import-entity`, libc++ `isnormal.pass`, `-O1` and `-O2`): the
+import's entity (`std::__math::isnormal`) is a definition with a
+retained parameter, and the module has no code for it and no inlined
+instance of it. `llc` 22's `constructImportedEntityDIE` finds no
+abstract instance and calls `getOrCreateSubprogramDIE`, which, for a
+definition `LexicalScopes` has no function for, makes its abstract
+instance (`getOrCreateAbstractSubprogramDIE`): the subprogram's
+attributes and `DW_AT_inline DW_INL_inlined` under its context, made
+when the import is written (after the functions' DIEs), with no
+children: the retained parameter is not written. hod makes it in
+`import.rs` `import_target` with `create_abstract`, and the import names
+it as any abstract instance (§6.35). A definition whose retained nodes
+include imports keeps `debug:import-entity` (`llc` would defer them;
+hod does not model it, no module has it).
+
+**Tests.** `crates/hod/tests/declare_twice.rs` (both targets: the tree
+equals `llc` 22's with locations masked and hod's for one record, one
+variable DIE located through a stored pointer; two pointers refused);
+`crates/hod/tests/inlined_import.rs` shape `imported-only` (both
+targets, trees equal to `llc` 22's). Evidence:
+`spec/landed/dwarf/WP-236.md`.
 
 ## 7. Speed and memory
 

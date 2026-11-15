@@ -74,5 +74,6 @@ fn the_corpus_module_builds_and_runs_as_llc_s() {
             }
         }
     }
-    eprintln!("a64 exclusive corpus: {runs} runs print the corpus entry's output");
+    let linkers: Vec<&str> = toolchain.linkers.iter().map(|l| l.name).collect();
+    eprintln!("a64 exclusive corpus: {runs} runs ({linkers:?}) print the corpus entry's output");
 }

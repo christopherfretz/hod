@@ -5146,7 +5146,11 @@ LLVM 19 and 22 selects for it; the intrinsic emits nothing else.
   modulo 64 (for `llc`'s object as for hod's: `llc`'s `ldaxp`/`stlxp`
   loop stores both halves to the frame before `stlxp`), and ran to the
   end every time under `qemu-aarch64`, which reserves an address, not a
-  granule, and checks the value at the store. Not done (a follow-up
+  granule, and checks the value at the store. The corpus module's
+  `ldaxp`/`stlxp` target is an `alloca` too; in hod's build the nearest
+  of the ten frame stores between the pair is 64 bytes past the
+  target's first byte, so it runs on this host (20 of 20 runs), and a
+  host with a granule of 128 bytes or more could hang it. Not done (a follow-up
   candidate): keeping a load-exclusive's result in registers up to the
   store-exclusive of the same block, so that no frame store lies
   between them. Counted over the test table: in hod's plain build 3 of

@@ -687,7 +687,13 @@ const CC: [SupportRow; 26] = [
         ON,
         "assigned as `ccc`: the System V convention is x86-64 Linux's C convention (`llc` 19 and 22 emit the same code)",
     ),
-    both("cc:win64cc", never(WINDOWS), ""),
+    // WP-246: `ms_abi` on Linux.
+    row(
+        "cc:win64cc",
+        ON,
+        ON,
+        "AArch64: assigned as `ccc` but a variadic call's `float`s and `double`s in general registers; the callee also keeps `x18` (`spec/abi-a64.md` §13, WP-247); x86-64: four positions in `rcx`/`xmm0`..`r9`/`xmm3`, a 32-byte shadow area; the callee also keeps `rsi`, `rdi`, `xmm6`..`xmm15` (`spec/abi-x64.md` §13)",
+    ),
     row("cc:x86_vectorcallcc", never(X86_CC), never(WINDOWS), "`__vectorcall`"),
     row("cc:hhvmcc", never(X86_CC), todo(LATER), ""),
     row("cc:hhvm_ccc", never(X86_CC), todo(LATER), ""),
@@ -698,7 +704,12 @@ const CC: [SupportRow; 26] = [
         "",
     ),
     row("cc:x86_regcallcc", never(X86_CC), never("Intel's `__regcall` is refused by design"), ""),
-    row("cc:aarch64_vector_pcs", todo(LATER), never("an AArch64 convention"), ""),
+    row(
+        "cc:aarch64_vector_pcs",
+        ON,
+        never("an AArch64 convention"),
+        "assigned as `ccc`; the callee also keeps `q8`..`q23` whole (`spec/abi-a64.md` §13, WP-247)",
+    ),
     row("cc:aarch64_sve_vector_pcs", never(SCALABLE), never("an AArch64 convention"), ""),
 ];
 
@@ -3504,7 +3515,22 @@ const INTRINSIC_A64: &[SupportRow] = &[
     row("intrinsic:llvm.aarch64.frint64x", on(NEON), never(A64_ONLY), "WP-205"),
     row("intrinsic:llvm.aarch64.frint64z", on(NEON), never(A64_ONLY), "WP-205"),
     row("intrinsic:llvm.aarch64.fjcvtzs", on(NEON), never(A64_ONLY), "WP-205"),
+    // WP-245: the exclusive accesses; the size is the `elementtype`
+    // (`spec/codegen.md` §5.6.39).
+    row("intrinsic:llvm.aarch64.ldxr", on(EXCLUSIVE), never(A64_ONLY), "WP-245"),
+    row("intrinsic:llvm.aarch64.ldaxr", on(EXCLUSIVE), never(A64_ONLY), "WP-245"),
+    row("intrinsic:llvm.aarch64.stxr", on(EXCLUSIVE), never(A64_ONLY), "WP-245"),
+    row("intrinsic:llvm.aarch64.stlxr", on(EXCLUSIVE), never(A64_ONLY), "WP-245"),
+    row("intrinsic:llvm.aarch64.ldxp", on(EXCLUSIVE), never(A64_ONLY), "WP-245"),
+    row("intrinsic:llvm.aarch64.ldaxp", on(EXCLUSIVE), never(A64_ONLY), "WP-245"),
+    row("intrinsic:llvm.aarch64.stxp", on(EXCLUSIVE), never(A64_ONLY), "WP-245"),
+    row("intrinsic:llvm.aarch64.stlxp", on(EXCLUSIVE), never(A64_ONLY), "WP-245"),
+    row("intrinsic:llvm.aarch64.clrex", ON, never(A64_ONLY), "WP-245"),
 ];
+
+/// The classes of WP-245's exclusive accesses: the `i64` value, the
+/// `i32` status, the pointer, the `{i64, i64}` pair.
+const EXCLUSIVE: &[TypeClass] = &[TypeClass::Int, TypeClass::Ptr, TypeClass::Aggregate];
 
 /// The x86 target intrinsics of WP-173, which follow [`INTRINSIC_A64`] on
 /// the list, then WP-190's system and state ones. Above SSE2 (and for

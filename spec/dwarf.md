@@ -3060,7 +3060,7 @@ type's first element and object pointer, line, name, linkage name), 55
 when the convention is not told apart. Every one is written, and every
 built module's DIE tree is `llc` 19's and 22's (DWARF 5; family 114
 also in DWARF 4, §6.20). The conventions whose code hod refuses
-(`cc:win64cc`, `cc:preserve_nonecc`, `cc:x86_vectorcallcc`,
+(`cc:win64cc` before WP-246, `cc:preserve_nonecc`, `cc:x86_vectorcallcc`,
 `cc:x86_regcallcc`, `cc:aarch64_vector_pcs`,
 `cc:aarch64_sve_vector_pcs`, `cc:swiftcc`, `spec/codegen.md`) are
 compared on clang's nodes with `preserve_most`'s `cc:` replaced by

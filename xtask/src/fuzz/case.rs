@@ -69,6 +69,277 @@ pub struct Tools {
     /// comparison (`--debug`).
     pub dwarfdump: Option<PathBuf>,
     pub lines: Option<LineTools>,
+    /// The host's gcc with libubsan, for the float-cast pre-run of a
+    /// float flavour's seed and a finding's `ubsan.txt` ("Float casts");
+    /// `None`: not found, and the run said so.
+    pub ubsan_cc: Option<PathBuf>,
+}
+
+/// The skip of a float flavour's seed whose program converts a
+/// floating-point value to an integer type that cannot represent it
+/// (C's undefined behaviour, `fptosi`/`fptoui` poison): "Float casts".
+pub const UB_FLOAT_CAST: &str = "ub-float-cast";
+
+/// What the undefined-behaviour sanitizer says of an out-of-range float-to-integer conversion, in
+/// gcc's and clang's wording alike.
+const FLOAT_CAST_REPORT: &str = "is outside the range of representable values of type";
+
+/// The checks of the pre-run: only this one may skip a seed.
+pub const PRERUN_CHECKS: &str = "float-cast-overflow";
+
+/// The checks of a finding's `ubsan.txt` (a label; it skips nothing).
+pub const TRIAGE_CHECKS: &str = "float-cast-overflow,undefined";
+
+/// `--debug`: the set-apart class of hod's pair at a line where the
+/// oracle (`SelectionDAG`) has no row and LLVM's two other `-O0`
+/// selectors both have one ("Set apart", [`selector_split`]).
+pub const SELECTOR_SPLIT: &str = "selector-split";
+
+/// The `-O0` selectors other than the oracle's, with `llc`'s arguments:
+/// `FastISel`, and `GlobalISel` falling back to `SelectionDAG` (with a
+/// warning naming the function) where it cannot select.
+pub const OTHER_SELECTORS: [(&str, [&str; 2]); 2] = [
+    ("fast-isel", ["-global-isel=0", "-fast-isel=1"]),
+    ("global-isel", ["-global-isel=1", "-global-isel-abort=2"]),
+];
+
+/// What `llc` writes for a function `GlobalISel` handed back to
+/// `SelectionDAG` (`-global-isel-abort=2`).
+const FALLBACK_WARNING: &str = "Instruction selection used fallback path for ";
+
+/// The rows of a module built by one of [`OTHER_SELECTORS`]: each pair's
+/// `is_stmt` row count, and the functions that give no evidence (the
+/// build failed: all of them; `GlobalISel` fell back: those it names).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SelectorRows {
+    pub rows: BTreeMap<lines::Pair, usize>,
+    pub no_evidence: std::collections::BTreeSet<String>,
+    /// The build failed: no function gives evidence.
+    pub failed: bool,
+}
+
+impl SelectorRows {
+    /// The rows at `pair`, `None` where the selector gives no evidence.
+    pub fn at(&self, pair: &lines::Pair) -> Option<usize> {
+        if self.failed || self.no_evidence.contains(&pair.0) {
+            return None;
+        }
+        Some(self.rows.get(pair).copied().unwrap_or(0))
+    }
+}
+
+/// A pair set apart as [`SELECTOR_SPLIT`], with its evidence: the
+/// `is_stmt` rows at it under hod and under the three selectors (the
+/// oracle's, `SelectionDAG`, has none).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SelectorSplit {
+    pub pair: lines::Pair,
+    pub hod: usize,
+    pub fast_isel: usize,
+    pub global_isel: usize,
+}
+
+impl SelectorSplit {
+    /// The evidence as a line of the run's output.
+    pub fn line(&self, seed: u64) -> String {
+        let (function, file, line) = &self.pair;
+        let file = Path::new(file).file_name().map_or(file.clone(), |f| f.to_string_lossy().into());
+        format!(
+            "{SELECTOR_SPLIT}: seed {seed} {function} at {file}:{line}: rows hod {} \
+             selection-dag 0 fast-isel {} global-isel {}",
+            self.hod, self.fast_isel, self.global_isel
+        )
+    }
+}
+
+/// Whether hod's unclassified pair `pair` (`hod_rows` rows; the oracle
+/// has none) is set apart as [`SELECTOR_SPLIT`]: both other selectors
+/// (`fast`, `global`, [`OTHER_SELECTORS`]) give evidence and have at least
+/// one row at it. `None`: it stays unclassified.
+pub fn selector_split(
+    pair: &lines::Pair,
+    hod_rows: usize,
+    fast: &SelectorRows,
+    global: &SelectorRows,
+) -> Option<SelectorSplit> {
+    let (fast_isel, global_isel) = (fast.at(pair)?, global.at(pair)?);
+    (hod_rows > 0 && fast_isel > 0 && global_isel > 0).then(|| SelectorSplit {
+        pair: pair.clone(),
+        hod: hod_rows,
+        fast_isel,
+        global_isel,
+    })
+}
+
+/// The functions `llc`'s `stderr` says `GlobalISel` fell back on.
+fn fallbacks(stderr: &[u8]) -> std::collections::BTreeSet<String> {
+    String::from_utf8_lossy(stderr)
+        .lines()
+        .filter_map(|l| l.split_once(FALLBACK_WARNING).map(|(_, f)| f.trim().to_owned()))
+        .collect()
+}
+
+/// What the float-cast pre-run of a seed came to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PreRun {
+    /// The sanitizer reported an out-of-range float-to-integer conversion: its
+    /// line, the source's directory taken off.
+    Fired(String),
+    /// The program ran to its end without that report.
+    Clean,
+    /// The pre-run did not build, or did not end in time: the seed is
+    /// built and compared as any other (why, for the log).
+    Inconclusive(String),
+}
+
+/// gcc's arguments for a sanitizer build of `source` into `out` at `-O0`:
+/// `checks`, aborting at the first report or recovering from every one.
+pub fn ubsan_args(
+    source: &Path,
+    include: Option<&Path>,
+    out: &Path,
+    checks: &str,
+    recover: bool,
+) -> Vec<OsString> {
+    let mut args: Vec<OsString> = ["-O0", "-w"].iter().map(OsString::from).collect();
+    // As clang's arguments: csmith writes C that gcc 14 rejects by default.
+    args.extend(
+        ["-Wno-error=incompatible-pointer-types", "-Wno-error=int-conversion"]
+            .iter()
+            .map(OsString::from),
+    );
+    args.push(format!("-fsanitize={checks}").into());
+    if !recover {
+        args.push(format!("-fno-sanitize-recover={checks}").into());
+    }
+    if let Some(include) = include {
+        args.push(tools::prefixed("-I", include));
+    }
+    args.push("-o".into());
+    args.push(out.into());
+    args.push(source.into());
+    args
+}
+
+/// The sanitizer's report lines in `stderr`, the directory `dir` taken off.
+fn ubsan_lines(stderr: &[u8], dir: &Path) -> Vec<String> {
+    let prefix = format!("{}/", dir.display());
+    String::from_utf8_lossy(stderr)
+        .lines()
+        .filter(|line| line.contains("runtime error:"))
+        .map(|line| line.replace(&prefix, ""))
+        .collect()
+}
+
+/// Builds `source` with `cc` under the float-cast check and runs it in
+/// `dir`, natively, with no argument (as the fuzzed programs run).
+pub fn float_cast_prerun(
+    log: &mut Vec<String>,
+    cc: &Path,
+    include: Option<&Path>,
+    source: &Path,
+    dir: &Path,
+    limits: (Limits, Limits),
+) -> PreRun {
+    let program = dir.join("ubsan-prerun");
+    let args = ubsan_args(source, include, &program, PRERUN_CHECKS, false);
+    match timed_step(log, cc, &args, None, limits.0) {
+        Ok((built, _)) if built.end == End::Exit(0) && program.is_file() => {}
+        Ok((built, _)) => {
+            return PreRun::Inconclusive(format!(
+                "the pre-run's build {}: {}",
+                ended(built.end),
+                built.first_error_line()
+            ));
+        }
+        Err(e) => return PreRun::Inconclusive(format!("the pre-run's build: {e}")),
+    }
+    let ran = match timed_step(log, &program, &[], Some(dir), limits.1) {
+        Ok((ran, _)) => ran,
+        Err(e) => return PreRun::Inconclusive(format!("the pre-run: {e}")),
+    };
+    let _ = fs::remove_file(&program);
+    if let Some(line) =
+        ubsan_lines(&ran.stderr, dir).into_iter().find(|line| line.contains(FLOAT_CAST_REPORT))
+    {
+        return PreRun::Fired(line);
+    }
+    match ran.end {
+        End::TimedOut => PreRun::Inconclusive("the pre-run timed out".to_owned()),
+        _ => PreRun::Clean,
+    }
+}
+
+/// Whether `cc` builds and runs a program under the pre-run's check (gcc
+/// is there, and so is libubsan): an empty program in `dir`.
+pub fn ubsan_works(cc: &Path, dir: &Path, limits: Limits) -> Result<(), String> {
+    let (source, program) = (dir.join("ubsan-probe.c"), dir.join("ubsan-probe"));
+    fs::write(&source, "int main(void) { return 0; }\n")
+        .map_err(|e| format!("cannot write '{}': {e}", source.display()))?;
+    let mut log = Vec::new();
+    let args = ubsan_args(&source, None, &program, PRERUN_CHECKS, false);
+    let built = timed_step(&mut log, cc, &args, None, limits)?.0;
+    let result = if built.end == End::Exit(0) && program.is_file() {
+        match timed_step(&mut log, &program, &[], Some(dir), limits)?.0.end {
+            End::Exit(0) => Ok(()),
+            end => Err(format!(
+                "'{}' -fsanitize={PRERUN_CHECKS}: the probe {}",
+                cc.display(),
+                ended(end)
+            )),
+        }
+    } else {
+        Err(format!(
+            "'{}' -fsanitize={PRERUN_CHECKS} does not build (libubsan?): {}",
+            cc.display(),
+            built.first_error_line()
+        ))
+    };
+    let _ = fs::remove_file(&source);
+    let _ = fs::remove_file(&program);
+    result
+}
+
+/// A finding's `ubsan.txt`: every report of a recovering build of
+/// `source` under [`TRIAGE_CHECKS`], run in `dir`. A label for the
+/// triage; it decides nothing.
+pub fn ubsan_triage(
+    cc: &Path,
+    include: Option<&Path>,
+    source: &Path,
+    dir: &Path,
+    limits: (Limits, Limits),
+) -> String {
+    let mut log = Vec::new();
+    let program = dir.join("ubsan-triage");
+    let args = ubsan_args(source, include, &program, TRIAGE_CHECKS, true);
+    let mut text = String::from("# A label for the triage (spec/harness.md \"Float casts\").\n");
+    let built = timed_step(&mut log, cc, &args, None, limits.0);
+    let ran = match built {
+        Ok((built, _)) if built.end == End::Exit(0) && program.is_file() => {
+            timed_step(&mut log, &program, &[], Some(dir), limits.1)
+        }
+        Ok((built, _)) => Err(format!("did not build: {}", built.first_error_line())),
+        Err(e) => Err(e),
+    };
+    for line in &log {
+        let _ = writeln!(text, "# {line}");
+    }
+    match ran {
+        Ok((ran, _)) => {
+            let lines = ubsan_lines(&ran.stderr, dir);
+            let _ = writeln!(text, "# {}; {} report(s)", ended(ran.end), lines.len());
+            for line in lines {
+                text.push_str(&line);
+                text.push('\n');
+            }
+        }
+        Err(e) => {
+            let _ = writeln!(text, "# no verdict: {e}");
+        }
+    }
+    let _ = fs::remove_file(&program);
+    text
 }
 
 /// Everything that is the same for every seed of a run.
@@ -240,6 +511,11 @@ pub struct Outcome {
     /// `--debug`: llc's pairs at a constant branch ([`constant_branch`]),
     /// taken out of the report and counted apart.
     pub constant_branches: Vec<lines::Pair>,
+    /// `--debug`: hod's pairs set apart as [`SELECTOR_SPLIT`], with their
+    /// evidence.
+    pub selector_splits: Vec<SelectorSplit>,
+    /// [`UB_FLOAT_CAST`]: the sanitizer's report line.
+    pub ub_report: Option<String>,
 }
 
 impl Outcome {
@@ -257,6 +533,8 @@ impl Outcome {
             lines: None,
             self_assigned: Vec::new(),
             constant_branches: Vec::new(),
+            selector_splits: Vec::new(),
+            ub_report: None,
         }
     }
 }
@@ -524,6 +802,70 @@ impl Bench {
         }
     }
 
+    /// `--debug`: `ir` built by `llc -O0` with `selector` (one of
+    /// [`OTHER_SELECTORS`]) into `<name>.o` and linked into `<name>`, and
+    /// its rows. A build or link that fails gives no evidence; it is no
+    /// error of the run.
+    fn selector_rows(
+        &self,
+        log: &mut Vec<String>,
+        ir: &Path,
+        files: &Files,
+        (name, selector): (&str, [&str; 2]),
+        tools: &LineTools,
+    ) -> Result<SelectorRows, String> {
+        let (object, program) = (files.at(&format!("{name}.o")), files.at(name));
+        let mut args: Vec<OsString> = vec!["-O0".into()];
+        args.extend(selector.iter().map(OsString::from));
+        args.extend(self.codegen_tail(ir, &object));
+        let built = self.step(log, &self.tools.llc, &args, None, self.tool_limits)?;
+        let failed = SelectorRows { failed: true, ..SelectorRows::default() };
+        if built.end != End::Exit(0) || !object.is_file() {
+            return Ok(failed);
+        }
+        if self.link(log, &object, &program).is_err() {
+            return Ok(failed);
+        }
+        Ok(SelectorRows {
+            rows: lines::stmt_row_counts(&program, tools)?,
+            no_evidence: fallbacks(&built.stderr),
+            failed: false,
+        })
+    }
+
+    /// `--debug`: hod's pairs left unclassified where the oracle has no
+    /// row, decided by LLVM's other `-O0` selectors ([`selector_split`]);
+    /// those are built only for such a pair (so per finding, not per
+    /// seed). The pairs set apart go to `outcome.selector_splits`.
+    fn set_apart_selector_splits(
+        &self,
+        report: &mut LinesReport,
+        ir: &Path,
+        hod_x: &Path,
+        files: &Files,
+        outcome: &mut Outcome,
+    ) -> Result<(), String> {
+        if !report.hod_only.iter().any(|(_, class)| *class == lines::Class::Unclassified) {
+            return Ok(());
+        }
+        let tools = self.tools.lines.as_ref().ok_or("no line tools")?;
+        let hod_rows = lines::stmt_row_counts(hod_x, tools)?;
+        let mut other = Vec::new();
+        for selector in OTHER_SELECTORS {
+            other.push(self.selector_rows(&mut outcome.commands, ir, files, selector, tools)?);
+        }
+        report.hod_only.retain(|(pair, class)| {
+            let rows = hod_rows.get(pair).copied().unwrap_or(0);
+            let split = (*class == lines::Class::Unclassified)
+                .then(|| selector_split(pair, rows, &other[0], &other[1]))
+                .flatten();
+            let apart = split.is_some();
+            outcome.selector_splits.extend(split);
+            !apart
+        });
+        Ok(())
+    }
+
     /// Runs one seed in `files.dir` (which exists).
     pub fn run_seed(&self, seed: u64, files: &Files) -> Outcome {
         let flavour = self.profile.flavour(seed);
@@ -545,6 +887,21 @@ impl Bench {
         let harness = |e: String| Verdict::Error(format!("harness: {e}"));
         self.generate(seed, flavour, files, &mut outcome.commands)?;
         let (source, ir) = (files.source(), files.ir());
+        if flavour.extra.contains(&"--float")
+            && let Some(cc) = &self.tools.ubsan_cc
+        {
+            let include = self.tools.csmith_include.as_deref();
+            let limits = (self.tool_limits, self.run_limits);
+            match float_cast_prerun(&mut outcome.commands, cc, include, &source, &files.dir, limits)
+            {
+                PreRun::Fired(line) => {
+                    outcome.ub_report = Some(line);
+                    return Err(Verdict::Skipped(UB_FLOAT_CAST));
+                }
+                PreRun::Clean => {}
+                PreRun::Inconclusive(why) => outcome.commands.push(format!("# {why}")),
+            }
+        }
         let compiled = self
             .step(
                 &mut outcome.commands,
@@ -611,6 +968,8 @@ impl Bench {
                 }
                 !apart
             });
+            self.set_apart_selector_splits(&mut report, &ir, &hod_x, files, outcome)
+                .map_err(harness)?;
             report.llc_only.retain(|(pair, class)| {
                 let apart =
                     *class == lines::Class::Unclassified && constant_branch(&text, &pair.0, pair.2);
@@ -892,33 +1251,60 @@ fn at_line<'t>(text: &'t str, function: &str, line: u32) -> Option<AtLine<'t>> {
 
 /// Whether `function`'s instructions at `line` of `text` are a branch
 /// whose destination is known, `br label %b` or `br i1 true|false, ...`,
-/// and loads (non-volatile) and `getelementptr`s whose values nothing
-/// uses: csmith's `if ((x, -6L))`. hod folds the branch (and omits a
-/// branch to the block it emits next, `spec/codegen.md` §6.2) and drops
-/// the unused loads, so its object has no row at the line; `llc -O0`
-/// keeps a test and a jump. `spec/dwarf.md` §5.7 has no class for this
+/// and loads (neither volatile nor atomic), `getelementptr`s, comparisons
+/// and casts whose values nothing uses but another such unused value of
+/// the line: csmith's `if ((x, -6L))` and `if (((&x == 0), 7L))`. hod folds
+/// the branch (and omits a branch to the block it emits next,
+/// `spec/codegen.md` §6.2) and emits nothing for the unused values, so its
+/// object has no row at the line; `llc -O0` keeps a test and a jump (all
+/// three of its selectors keep one row there: a debug-quality difference,
+/// the programs agree). `spec/dwarf.md` §5.7 has no class for this
 /// yet (`xtask/src/debug/permitted.rs` `pair_class`): until it has,
 /// `--debug` counts llc's pairs there apart instead of calling them
 /// findings.
 pub fn constant_branch(text: &str, function: &str, line: u32) -> bool {
     let Some((_, at, body)) = at_line(text, function, line) else { return false };
-    let used = |name: &str| {
-        body.iter().filter_map(|l| l.split_once(" = ").map_or(Some(*l), |(_, r)| Some(r))).any(
-            |l| {
-                l.match_indices(name).any(|(i, _)| {
+    // The pure values at the line: `getelementptr`s, loads (neither
+    // volatile nor atomic), comparisons and casts. One is unused when no
+    // instruction uses it but another unused pure value of the line
+    // (csmith's `if (((&x == 0), 7))`: a comparison and its extension).
+    let pure_at: Vec<(&str, &str)> = at
+        .iter()
+        .filter_map(|i| i.split_once(" = ").filter(|(n, _)| n.starts_with('%')))
+        .filter(|(_, rest)| {
+            let op = rest.split_whitespace().next().unwrap_or("");
+            op == "getelementptr"
+                || op == "icmp"
+                || CASTS.contains(&op)
+                || op == "load"
+                    && !rest.starts_with("load volatile")
+                    && !rest.starts_with("load atomic")
+        })
+        .collect();
+    let mut unused: Vec<&str> = pure_at.iter().map(|(n, _)| *n).collect();
+    loop {
+        let before = unused.len();
+        let kept = unused.clone();
+        unused.retain(|name| {
+            let uses = |l: &str| {
+                l.match_indices(*name).any(|(i, _)| {
                     !l[i + name.len()..]
                         .starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '.')
                 })
-            },
-        )
-    };
+            };
+            body.iter().all(|l| match l.split_once(" = ") {
+                Some((n, r)) if n.starts_with('%') => !uses(r) || kept.contains(&n),
+                _ => !uses(l),
+            })
+        });
+        if unused.len() == before {
+            break;
+        }
+    }
     let mut branches = 0;
     for inst in &at {
-        if let Some((name, rest)) = inst.split_once(" = ").filter(|(n, _)| n.starts_with('%')) {
-            let unused = !used(name);
-            let pure = rest.starts_with("getelementptr")
-                || rest.starts_with("load ") && !rest.starts_with("load volatile");
-            if pure && unused {
+        if let Some((name, _)) = inst.split_once(" = ").filter(|(n, _)| n.starts_with('%')) {
+            if unused.contains(&name) {
                 continue;
             }
             return false;
@@ -1282,6 +1668,92 @@ define i32 @f(ptr %0) {
         assert!(!constant_branch(text, "f", 6));
         assert!(!constant_branch(text, "f", 7));
         assert!(!constant_branch(text, "f", 8));
+    }
+
+    // Seed 110478 (aarch64, LLVM 22, debug): `if (((&l_1000 == (void*)0) ,
+    // 0x5326CD0DL))`, an unused comparison and its extension before a
+    // constant branch.
+    #[test]
+    fn constant_branches_with_unused_comparisons() {
+        let text = "source
+define i32 @f(ptr %0) {
+  %2 = alloca i32, align 4
+  %3 = icmp eq ptr %2, null, !dbg !10
+  %4 = zext i1 %3 to i32, !dbg !10
+  br i1 true, label %5, label %9, !dbg !11
+
+5:
+  %6 = icmp eq ptr %0, null, !dbg !12
+  %7 = zext i1 %6 to i32, !dbg !12
+  br i1 true, label %8, label %9, !dbg !12
+
+8:
+  %10 = load atomic i32, ptr %0 seq_cst, align 4, !dbg !13
+  br i1 true, label %9, label %9, !dbg !13
+
+9:
+  %11 = icmp eq ptr %0, null, !dbg !14
+  br i1 true, label %12, label %12, !dbg !14
+
+12:
+  ret i32 %7, !dbg !15
+}
+!10 = !DILocation(line: 5, column: 3, scope: !5)
+!11 = !DILocation(line: 5, column: 4, scope: !5)
+!12 = !DILocation(line: 6, column: 3, scope: !5)
+!13 = !DILocation(line: 7, column: 3, scope: !5)
+!14 = !DILocation(line: 9, column: 3, scope: !5)
+!15 = !DILocation(line: 10, column: 3, scope: !5)
+";
+        assert!(constant_branch(text, "f", 5), "a comparison used only by its unused extension");
+        assert!(constant_branch(text, "f", 9), "an unused comparison");
+        // The extension is used by the return; an atomic load: no.
+        assert!(!constant_branch(text, "f", 6));
+        assert!(!constant_branch(text, "f", 7));
+    }
+
+    fn rows(pairs: &[(&str, u32, usize)]) -> SelectorRows {
+        SelectorRows {
+            rows: pairs
+                .iter()
+                .map(|&(f, l, n)| ((f.to_owned(), "prog.c".to_owned(), l), n))
+                .collect(),
+            ..SelectorRows::default()
+        }
+    }
+
+    // "Set apart": hod's pair is `selector-split` only when FastISel and
+    // GlobalISel both give evidence and both have a row at it.
+    #[test]
+    fn selector_splits() {
+        let pair = ("func_1".to_owned(), "prog.c".to_owned(), 258);
+        let both = rows(&[("func_1", 258, 4)]);
+        let split = selector_split(&pair, 4, &both, &rows(&[("func_1", 258, 3)]));
+        assert_eq!(split.as_ref().map(|s| (s.hod, s.fast_isel, s.global_isel)), Some((4, 4, 3)));
+        assert_eq!(
+            split.unwrap().line(110_043),
+            "selector-split: seed 110043 func_1 at prog.c:258: rows hod 4 selection-dag 0 \
+             fast-isel 4 global-isel 3"
+        );
+        // A fabricated hod-only row that neither other selector has: a finding.
+        let none = rows(&[("func_1", 257, 2), ("func_2", 258, 1)]);
+        assert_eq!(selector_split(&pair, 4, &none, &none), None);
+        // Only one of them has it: a finding.
+        assert_eq!(selector_split(&pair, 4, &both, &none), None);
+        assert_eq!(selector_split(&pair, 4, &none, &both), None);
+        // GlobalISel fell back on the function, or a build failed: no evidence.
+        let mut fell_back = both.clone();
+        fell_back.no_evidence = fallbacks(
+            b"warning: Instruction selection used fallback path for func_1\n\
+              warning: Instruction selection used fallback path for func_9\n",
+        );
+        assert_eq!(fell_back.no_evidence.len(), 2);
+        assert_eq!(selector_split(&pair, 4, &both, &fell_back), None);
+        let failed = SelectorRows { failed: true, ..both.clone() };
+        assert_eq!(selector_split(&pair, 4, &failed, &both), None);
+        // Another function's fallback is no matter.
+        fell_back.no_evidence.remove("func_1");
+        assert!(selector_split(&pair, 4, &both, &fell_back).is_some());
     }
 
     #[test]

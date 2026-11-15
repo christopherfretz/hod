@@ -43,9 +43,9 @@ use crate::target::X64;
 /// `ret` to the handler does not match the shadow stack (`llc` writes
 /// the plain `ret`).
 pub const EH_RETURN_SHADOW_STACK: &str = "x64:eh-return-shadow-stack";
-/// `llvm.eh.return.i64` in a `preserve_mostcc` or `preserve_allcc`
-/// function or a coroutine body: their exits restore other registers
-/// (`rax` and `rdx` among them) or another frame base.
+/// `llvm.eh.return.i64` in a `preserve_mostcc`, `preserve_allcc` or
+/// (WP-246) `win64cc` function or a coroutine body: their exits restore
+/// other registers (`rax` and `rdx` among them) or another frame base.
 pub const EH_RETURN_CONVENTION: &str = "x64:eh-return-convention";
 
 /// Every name this module refuses with.
@@ -88,7 +88,7 @@ pub fn enter(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
     if bits & hod_ir::BranchProtection::CET_SHSTK != 0 {
         return unsupported(EH_RETURN_SHADOW_STACK);
     }
-    if crate::frame::is_preserving(cx) || cx.has_coro_frame() {
+    if crate::frame::is_preserving(cx) || crate::frame::is_win64(cx) || cx.has_coro_frame() {
         return unsupported(EH_RETURN_CONVENTION);
     }
     let slot = cx.alloc_slot(16, 8)?;

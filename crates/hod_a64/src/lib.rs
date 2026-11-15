@@ -50,6 +50,7 @@
 //! | `tail2` | WP-095 | scalar `bfloat` arithmetic, compares and conversions, `extractelement` of `i128` lanes | `tests/tail2.rs` |
 //! | `unwind` | WP-215 | the frame as an unwinder sees it: `llvm.sponentry`, `llvm.addressofreturnaddress`, `llvm.eh.unwind.init` (§5.6.38) | `tests/frame_intrinsics.rs` |
 //! | `tail3` | WP-101 | vectors of `i128` and `fp128` lanes, `bfloat` vectors and intrinsics, `preserve_allcc` | `tests/tail3.rs` |
+//! | `cconv` | WP-247 | what `win64cc`, `aarch64_vector_pcs` and `preserve_allcc` keep beyond AAPCS64, their save area and unwind rules | `tests/cconv.rs`, `tests/tail3.rs` |
 //! | `protect` | WP-185 | branch protection: `bti c`/`bti j` landing pads, `paciasp`/`autiasp` and their CFI rows | `tests/protect.rs` |
 //!
 //! The differential harness that runs generated programs natively and
@@ -60,11 +61,13 @@ pub mod aggr;
 pub mod atomic;
 pub mod barrier;
 pub mod call;
+pub mod cconv;
 pub mod common;
 pub mod constaddr;
 pub mod control;
 pub mod coro;
 pub mod coro_body;
+pub mod exclusive;
 pub mod features;
 pub mod float;
 pub mod fpintr;

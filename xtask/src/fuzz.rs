@@ -17,6 +17,7 @@
 //! - [`reduce`]: a finding cut down to a small module, and the witness.
 
 pub mod abi;
+pub mod budget;
 pub mod case;
 pub mod profile;
 pub mod reduce;
@@ -53,6 +54,12 @@ it is saved with its commands, reduced, and makes the exit status 1.
                       object, and its (function, line) pairs against llc's
   --census            count the IR's opcodes, types and attributes; build
                       nothing
+  --budget            run the release budget's slices (both targets, or
+                      --target's; LLVM 22 and 19; every profile and mode)
+                      from seed --seed; needs --hod; resumable: the slices
+                      in <out>/budget.tsv are not run again; writes
+                      <out>/budget.md
+  --plan              with --budget: print the slices, run nothing
   --profile <name>    the generator's option set (default: default):
 PROFILES
   --seed <N>          the first seed (default 1)
@@ -103,6 +110,9 @@ pub struct Options {
     pub search: Search,
     pub mode: Mode,
     pub profile: &'static Profile,
+    /// `--budget`: run the budget's slices from `seed` (`budget`), or with
+    /// `--plan` print them and run nothing.
+    pub budget: Option<budget::Action>,
 }
 
 impl Options {
@@ -124,14 +134,31 @@ impl Options {
             search: Search::from_env(),
             mode: Mode::Whole,
             profile: Profile::default_profile(),
+            budget: None,
         }
     }
 }
 
 /// Parses the arguments into `options`. `Ok(false)` is the help.
+#[expect(clippy::too_many_lines, reason = "one arm per option")]
 pub fn parse_args(args: &[String], options: &mut Options) -> Result<bool, String> {
     let mut rest = args.iter();
+    // What `--budget` needs (`--seed`) and refuses (a slice's options).
+    let (mut budget, mut plan, mut seed_given, mut slice_given) = (false, false, false, false);
     while let Some(arg) = rest.next() {
+        match arg.split_once('=').map_or(arg.as_str(), |(name, _)| name) {
+            "--budget" if arg == "--budget" => {
+                budget = true;
+                continue;
+            }
+            "--plan" if arg == "--plan" => {
+                plan = true;
+                continue;
+            }
+            "--seed" => seed_given = true,
+            "--count" | "--profile" | "--mix" | "--debug" | "--census" => slice_given = true,
+            _ => {}
+        }
         let (name, joined) = match arg.split_once('=') {
             Some((name, value)) => (name, Some(value.to_owned())),
             None => {
@@ -215,7 +242,77 @@ pub fn parse_args(args: &[String], options: &mut Options) -> Result<bool, String
             _ => return Err(format!("unknown option '{arg}'")),
         }
     }
+    if plan && !budget {
+        return Err("'--plan' needs '--budget'".to_owned());
+    }
+    if budget {
+        if slice_given {
+            return Err("'--budget' runs its own profiles, modes and counts: \
+                        '--count', '--profile', '--mix', '--debug' and '--census' do not apply"
+                .to_owned());
+        }
+        if !seed_given {
+            return Err("'--budget' needs '--seed <first>': the candidate's fresh seeds \
+                        (docs/status/fuzz.md says which)"
+                .to_owned());
+        }
+        if options.hod.is_none() && !plan {
+            return Err("'--budget' needs '--hod <binary>': the frozen hod it measures".to_owned());
+        }
+        options.budget = Some(if plan { budget::Action::Plan } else { budget::Action::Run });
+    }
     Ok(true)
+}
+
+/// `cargo xtask fuzz --budget`: every slice of the budget not run yet,
+/// then the table (`budget`).
+fn budget_command(options: &Options) -> u8 {
+    let targets: Vec<Arch> = options.target.map_or_else(|| Arch::ALL.to_vec(), |arch| vec![arch]);
+    let slices = budget::plan(options.seed, &targets);
+    if options.budget == Some(budget::Action::Plan) {
+        print!("{}", budget::plan_text(&slices));
+        return 0;
+    }
+    match budget::run(options, &slices, run) {
+        Ok(outcome) => {
+            println!(
+                "fuzz budget: {} slices run, {} already in the file, of {}; table: {}",
+                outcome.ran,
+                outcome.kept,
+                slices.len(),
+                outcome.table.display()
+            );
+            outcome.exit_status()
+        }
+        Err(message) => {
+            eprintln!("xtask fuzz --budget: {message}");
+            3
+        }
+    }
+}
+
+/// The host's gcc with libubsan for the float-cast pre-run ("Float
+/// casts"). Missing: an error under `HOD_REQUIRE_TOOLS=1`, else `None`
+/// and a warning that the filter is off.
+fn find_ubsan_cc(search: &Search, work: &Path) -> Result<Option<PathBuf>, String> {
+    let limits = Limits { time: Duration::from_mins(1), memory_kib: 4 << 20 };
+    let found = search.on_path("gcc").ok_or_else(|| "gcc not found".to_owned()).and_then(|cc| {
+        fs::create_dir_all(work).map_err(|e| format!("cannot create '{}': {e}", work.display()))?;
+        case::ubsan_works(&cc, work, limits).map(|()| cc)
+    });
+    match found {
+        Ok(cc) => Ok(Some(cc)),
+        Err(why) if std::env::var_os("HOD_REQUIRE_TOOLS").is_some_and(|v| v == "1") => {
+            Err(format!("the float-cast pre-run cannot run: {why} (HOD_REQUIRE_TOOLS=1)"))
+        }
+        Err(why) => {
+            eprintln!(
+                "xtask fuzz: warning: the float-cast pre-run is OFF: {why}; float seeds are not \
+                 filtered (under HOD_REQUIRE_TOOLS=1 this fails)"
+            );
+            Ok(None)
+        }
+    }
 }
 
 /// The tools of a run, or what is missing.
@@ -297,6 +394,7 @@ fn find_tools(options: &Options, arch: Arch, work: &Path) -> Result<Tools, Strin
         None if options.mode == Mode::Census => PathBuf::from("hod"),
         None => build_workspace_hod(&options.build_dir)?,
     };
+    let ubsan_cc = if csmith.is_some() { find_ubsan_cc(search, work)? } else { None };
     Ok(Tools {
         csmith,
         csmith_include,
@@ -311,6 +409,7 @@ fn find_tools(options: &Options, arch: Arch, work: &Path) -> Result<Tools, Strin
         extract,
         dwarfdump,
         lines,
+        ubsan_cc,
     })
 }
 
@@ -350,6 +449,9 @@ pub struct Summary {
     pub lines: Option<LinesReport>,
     pub self_assigned: usize,
     pub constant_branches: usize,
+    /// `--debug`: hod's pairs set apart as `selector-split`, with their
+    /// seed and evidence ([`case::selector_split`]).
+    pub selector_splits: Vec<(u64, case::SelectorSplit)>,
 }
 
 impl Summary {
@@ -382,6 +484,8 @@ impl Summary {
         }
         self.self_assigned += outcome.self_assigned.len();
         self.constant_branches += outcome.constant_branches.len();
+        self.selector_splits
+            .extend(outcome.selector_splits.iter().map(|split| (outcome.seed, split.clone())));
     }
 
     /// The table a run prints.
@@ -460,6 +564,15 @@ impl Summary {
                  deletes) {}, llc's at a constant branch (which hod folds) {}",
                 self.self_assigned, self.constant_branches
             );
+            let _ = writeln!(
+                text,
+                "  not counted above: hod's pairs where LLVM's -O0 selectors split (FastISel and \
+                 GlobalISel have rows, SelectionDAG has none) {}",
+                self.selector_splits.len()
+            );
+            for (seed, split) in &self.selector_splits {
+                let _ = writeln!(text, "    {}", split.line(*seed));
+            }
             let _ = writeln!(text, "  columns: {}", report.columns.summary());
         }
         if let Some(file) = &self.results_file {
@@ -557,7 +670,11 @@ pub fn run(options: &Options) -> Result<Summary, String> {
     {
         summary.add(&outcome);
         let ms = outcome.oracle_time.map_or_else(|| "-".to_owned(), |t| t.as_millis().to_string());
-        let detail = outcome.verdict.detail().replace(['\t', '\n'], " ");
+        let detail = match &outcome.ub_report {
+            Some(line) => format!("{}: {line}", outcome.verdict.detail()),
+            None => outcome.verdict.detail(),
+        };
+        let detail = detail.replace(['\t', '\n'], " ");
         let _ = writeln!(
             results,
             "{}\t{}\t{}\t{detail}\t{ms}",
@@ -658,6 +775,15 @@ fn save(
         commands.replace(&*files.dir.to_string_lossy(), &dir.to_string_lossy()),
     );
     let ir = dir.join("prog.ll");
+    let source = dir.join("prog.c");
+    if let Some(cc) = &bench.tools.ubsan_cc
+        && source.is_file()
+    {
+        let include = bench.tools.csmith_include.as_deref();
+        let limits = (bench.tool_limits, bench.run_limits);
+        let text = case::ubsan_triage(cc, include, &source, &dir, limits);
+        let _ = fs::write(dir.join("ubsan.txt"), text);
+    }
     if let Some(oracle) = &outcome.oracle {
         let _ = fs::write(dir.join("oracle.stdout"), &oracle.stdout);
     }
@@ -922,6 +1048,9 @@ pub fn command(args: &[String]) -> u8 {
             eprint!("xtask fuzz: {message}\n{}", usage());
             return 2;
         }
+    }
+    if options.budget.is_some() {
+        return budget_command(&options);
     }
     match run(&options) {
         Ok(summary) => {

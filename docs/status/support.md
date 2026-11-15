@@ -38,7 +38,7 @@ skipped (`docs/design/0007-avx512.md` §4.4).
 | `comdat` | 5 | 2 | 0 | 3 | 2 | 0 | 3 |
 | `init` | 10 | 6 | 3 | 1 | 6 | 3 | 1 |
 | `function` | 6 | 6 | 0 | 0 | 6 | 0 | 0 |
-| `cc` | 26 | 6 | 7 | 13 | 5 | 11 | 10 |
+| `cc` | 26 | 8 | 6 | 12 | 6 | 11 | 9 |
 | `attr` | 62 | 36 | 23 | 3 | 35 | 24 | 3 |
 | `type` | 15 | 12 | 0 | 3 | 13 | 0 | 2 |
 | `inst` | 67 | 60 | 0 | 7 | 60 | 0 | 7 |
@@ -50,8 +50,8 @@ skipped (`docs/design/0007-avx512.md` §4.4).
 | `landingpad` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 1020 | 364 | 11 | 645 | 779 | 10 | 231 |
-| total | 1346 | 585 | 59 | 702 | 1003 | 61 | 282 |
+| `intrinsic` | 1029 | 373 | 11 | 645 | 779 | 10 | 240 |
+| total | 1355 | 596 | 58 | 701 | 1004 | 61 | 290 |
 
 ## `module`
 
@@ -229,13 +229,13 @@ Calling conventions, of a body's function and of a call.
 | `cc:x86_thiscallcc` | rejected | rejected | aarch64: an x86 convention; x86_64: a 32-bit x86 convention |
 | `cc:intel_ocl_bicc` | rejected | not-implemented | aarch64: an x86 convention; x86_64: unplanned. OpenCL built-ins |
 | `cc:x86_64_sysvcc` | rejected | supported | an x86 convention. assigned as `ccc`: the System V convention is x86-64 Linux's C convention (`llc` 19 and 22 emit the same code) |
-| `cc:win64cc` | rejected | rejected | a Windows construct |
+| `cc:win64cc` | supported | supported | AArch64: assigned as `ccc` but a variadic call's `float`s and `double`s in general registers; the callee also keeps `x18` (`spec/abi-a64.md` §13, WP-247); x86-64: four positions in `rcx`/`xmm0`..`r9`/`xmm3`, a 32-byte shadow area; the callee also keeps `rsi`, `rdi`, `xmm6`..`xmm15` (`spec/abi-x64.md` §13) |
 | `cc:x86_vectorcallcc` | rejected | rejected | aarch64: an x86 convention; x86_64: a Windows construct. `__vectorcall` |
 | `cc:hhvmcc` | rejected | not-implemented | aarch64: an x86 convention; x86_64: unplanned |
 | `cc:hhvm_ccc` | rejected | not-implemented | aarch64: an x86 convention; x86_64: unplanned |
 | `cc:x86_intrcc` | rejected | rejected | aarch64: an x86 convention; x86_64: interrupt and exception handlers are refused by design |
 | `cc:x86_regcallcc` | rejected | rejected | aarch64: an x86 convention; x86_64: Intel's `__regcall` is refused by design |
-| `cc:aarch64_vector_pcs` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 convention |
+| `cc:aarch64_vector_pcs` | supported | rejected | x86_64: an AArch64 convention. assigned as `ccc`; the callee also keeps `q8`..`q23` whole (`spec/abi-a64.md` §13, WP-247) |
 | `cc:aarch64_sve_vector_pcs` | rejected | rejected | aarch64: scalable vectors are refused by design; x86_64: an AArch64 convention |
 
 ## `attr`
@@ -915,6 +915,15 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.aarch64.frint64x` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
 | `intrinsic:llvm.aarch64.frint64z` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
 | `intrinsic:llvm.aarch64.fjcvtzs` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-205 |
+| `intrinsic:llvm.aarch64.ldxr` | supported (int, ptr, aggregate) | rejected | x86_64: an AArch64 property. WP-245 |
+| `intrinsic:llvm.aarch64.ldaxr` | supported (int, ptr, aggregate) | rejected | x86_64: an AArch64 property. WP-245 |
+| `intrinsic:llvm.aarch64.stxr` | supported (int, ptr, aggregate) | rejected | x86_64: an AArch64 property. WP-245 |
+| `intrinsic:llvm.aarch64.stlxr` | supported (int, ptr, aggregate) | rejected | x86_64: an AArch64 property. WP-245 |
+| `intrinsic:llvm.aarch64.ldxp` | supported (int, ptr, aggregate) | rejected | x86_64: an AArch64 property. WP-245 |
+| `intrinsic:llvm.aarch64.ldaxp` | supported (int, ptr, aggregate) | rejected | x86_64: an AArch64 property. WP-245 |
+| `intrinsic:llvm.aarch64.stxp` | supported (int, ptr, aggregate) | rejected | x86_64: an AArch64 property. WP-245 |
+| `intrinsic:llvm.aarch64.stlxp` | supported (int, ptr, aggregate) | rejected | x86_64: an AArch64 property. WP-245 |
+| `intrinsic:llvm.aarch64.clrex` | supported | rejected | x86_64: an AArch64 property. WP-245 |
 | `intrinsic:llvm.x86.sse.cmp.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
 | `intrinsic:llvm.x86.sse.comieq.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
 | `intrinsic:llvm.x86.sse.comige.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE |

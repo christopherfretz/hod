@@ -1922,7 +1922,8 @@ that refused it before (WP-084's "stays refused" list is settled here).
     module (`-O2`) now stops at `debug:dbg-value-arglist`.
   - `cc:preserve_allcc`, `cc:win64cc` (`cc:79` before WP-141) and `cc:aarch64_vector_pcs`
     (WP-082), which the one `preserve_mostcc` corpus module also uses.
-    (`preserve_allcc` since WP-101, below.)
+    (`preserve_allcc` since WP-101, below; `win64cc` on x86-64 since
+    WP-246, `spec/abi-x64.md` §13.)
 
 #### The short tail, third part (WP-101)
 
@@ -5068,6 +5069,102 @@ their matrix rows (`spec/ir.md` §8).
   gdb walk through it.
 
 Evidence: `spec/landed/codegen/WP-215.md`.
+
+#### 5.6.39 AArch64 exclusive accesses (WP-245)
+
+`<arm_acle.h>`'s `__ldrex`/`__strex` family and clang's
+`__builtin_arm_ldrex`, `_ldaex`, `_strex`, `_stlex` and `_clrex` reach
+the back end as nine AArch64 intrinsics (`crates/hod_a64/src/exclusive.rs`).
+Each is the ONE instruction `llc -O0 -global-isel=0 -fast-isel=0` of
+LLVM 19 and 22 selects for it; the intrinsic emits nothing else.
+
+| intrinsic | instruction | result |
+|---|---|---|
+| `i64 ldxr.p0(ptr elementtype(T) p)` | `ldxrb`, `ldxrh`, `ldxr w`, `ldxr x` for `T` = `i8`, `i16`, `i32`, `i64` | the loaded `T` zero-extended to `i64` (the `w` forms zero bits 32..63) |
+| `i64 ldaxr.p0(ptr elementtype(T) p)` | `ldaxrb`, `ldaxrh`, `ldaxr w`, `ldaxr x` | as `ldxr` |
+| `i32 stxr.p0(i64 v, ptr elementtype(T) p)` | `stxrb`, `stxrh`, `stxr ws, w`, `stxr ws, x` | status: 0 when the low `T` bits of `v` were stored, 1 when not |
+| `i32 stlxr.p0(i64 v, ptr elementtype(T) p)` | `stlxrb`, `stlxrh`, `stlxr` | as `stxr` |
+| `{i64, i64} ldxp(ptr p)` | `ldxp xa, xb, [p]` | `{a, b}`: field 0 from `[p]`, field 1 from `[p + 8]` |
+| `{i64, i64} ldaxp(ptr p)` | `ldaxp xa, xb, [p]` | as `ldxp` |
+| `i32 stxp(i64 lo, i64 hi, ptr p)` | `stxp ws, xlo, xhi, [p]` (`lo` to `[p]`) | status as `stxr` |
+| `i32 stlxp(i64 lo, i64 hi, ptr p)` | `stlxp ws, xlo, xhi, [p]` | as `stxp` |
+| `void clrex()` | `clrex` (`#15`) | — |
+
+- **Size.** The access size of the four single forms is the pointer
+  argument's `elementtype`, which LLVM's verifier requires there. A
+  missing one (hod's reader keeps the call) and any other type (`i1`,
+  `i24`, `i128`, a float, `ptr`: `llc` aborts on each) are
+  `a64:exclusive-element-type`. A call whose types are not the
+  intrinsic's (`i64` value, `i32` status, `{i64, i64}` pair) is
+  `a64:exclusive-type`. The classifier accepts `elementtype` on these
+  four intrinsics' arguments, as on an inline-assembly operand
+  (`attr:elementtype` stays not implemented elsewhere). On x86-64 the
+  nine rows are rejected (an AArch64 property).
+- **Registers.** The operands are placed by the value policy (§4) before
+  the instruction, the result defined after it. A load-exclusive loads
+  into its pointer's register when that register may be overwritten; a
+  store-exclusive's status is a fresh temporary, never a transferred
+  register or the base (the architecture's constraint); the pair is
+  loaded into two distinct temporaries and stored to the result's slot
+  (`{i64, i64}` is class `Mem`).
+- **What lies between a load-exclusive and its store-exclusive.** hod
+  adds no memory access of its own. What the policy does is still code
+  between them: an operand that lives in the frame (a value used more
+  than once or in another block, §4.1) is loaded before its use, a
+  result that lives there (a home value, every `Mem`-class value such as
+  the pair and an `i128` built from it) is stored after its definition,
+  and stress modes displace more. On the one-block retry loop
+  `ldxr; add; stxr; icmp; br` hod reloads the pointer before `stxr`
+  (`llc` keeps it in a register); on the corpus module's `ldaxp`/`stlxp`
+  loop over `i128` arithmetic hod makes ten frame stores between the
+  pair (`llc` none). `llc -O0` is no stronger as soon as a value crosses
+  a block or a C variable: clang's `-O0`
+  `do v = __builtin_arm_ldrex(p); while (__builtin_arm_strex(v + 1, p));`
+  becomes `ldxr; str v, [sp]; ldr; ldr p; stxr` under `llc` 22. The
+  architecture (Arm ARM, the local and global monitors) lets a load,
+  and a store of the same PE outside the reservation granule, leave the
+  monitor as it is; a store inside the granule (64 bytes on this host's
+  `CTR_EL0`, up to 2048 bytes by the architecture) may clear it, and
+  forward progress is promised only to loops without explicit memory
+  accesses between the pair.
+- **The reservation granule (the rule).** What hod guarantees: between
+  a load-exclusive and its store-exclusive the only stores hod adds of
+  its own are into the function's own frame (the slots above), never
+  into any other memory (what the program itself does there, a store or
+  a call, it does as written).
+  What it cannot guarantee: that a store-exclusive succeeds when its
+  target shares a reservation granule with the frame (an `alloca` of the
+  same function, or a caller's stack object close by): a frame store
+  between the pair then clears the monitor and on hardware every attempt
+  of a retry loop can fail, so the loop never ends. `llc -O0` has the
+  same property for the values it spills between the pair. A target in
+  a global or on the heap, which is where a program keeps the memory
+  threads share, is not affected. Measured on this host (ERG 4, 64
+  bytes): an `str` 8 or 56 bytes from the target fails 1000 of 1000
+  attempts, one 64 bytes or more away 0 of 1000, an `ldr` 8 bytes away
+  1 of 1000. The retry loops of `tests/exclusive.rs` when their target
+  was an `alloca` hung natively or not depending on the stack address
+  modulo 64 (for `llc`'s object as for hod's: `llc`'s `ldaxp`/`stlxp`
+  loop stores both halves to the frame before `stlxp`), and ran to the
+  end every time under `qemu-aarch64`, which reserves an address, not a
+  granule, and checks the value at the store. The corpus module's
+  `ldaxp`/`stlxp` target is an `alloca` too; in hod's build the nearest
+  of the ten frame stores between the pair is 64 bytes past the
+  target's first byte, so it runs on this host (20 of 20 runs), and a
+  host with a granule of 128 bytes or more could hang it. Not done (a follow-up
+  candidate): keeping a load-exclusive's result in registers up to the
+  store-exclusive of the same block, so that no frame store lies
+  between them. Counted over the test table: in hod's plain build 3 of
+  16 pairs have frame stores between them (8 stores, all the `{i64,
+  i64}` results of `ldxp`/`ldaxp`, which are class `Mem`), stressed 8
+  (18 stores), `llc` 1 (2 stores); single-register loops of one block
+  have none in the plain build. Avoiding them changes where a `Mem`
+  value lives, which is the frame policy of §4.1, not this lowering.
+- **`clrex`** clears the local monitor: the next store-exclusive fails
+  with status 1 and stores nothing, on hardware by the architecture and
+  under `qemu-user`, which forgets the reserved address.
+
+Evidence: `spec/landed/codegen/WP-245.md`.
 
 ## 6. Control flow
 

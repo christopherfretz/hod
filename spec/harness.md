@@ -1285,7 +1285,8 @@ report order; `present(target)` is the ones found for a target;
   that one assertion (to the excepted behaviour where it is known, so a
   linker that changes makes the test fail and the row is revisited);
   `tolerated_warning` is the diagnostic a silent link may print for one.
-  Unit tests: `signatures`, `exceptions_name_linkers_of_the_matrix_once`,
+  The debugger layer consults it for the cases that break the oracle's
+  session ("debug", "Linker exceptions"). Unit tests: `signatures`, `exceptions_name_linkers_of_the_matrix_once`,
   `the_pinned_wild_is_found_above_the_start`,
   `wild_is_selected_as_ld_and_the_others_by_fuse_ld`.
 
@@ -3463,6 +3464,7 @@ One record per session of a hod variant (and per failure before one):
 | XPASS | a PASS that an `xfail` covers: the directive is stale | fails |
 | CRASH | the debugger crashed: on hod's program it fails the run, on `llc`'s it is an error of the tools | fails / error |
 | ERROR | the front end or `llc` failed, `llc`'s program did not link, `llc`'s session timed out or does not meet the checks (hod's sessions still run; the detail says what hod's would have been), the directives do not parse | error |
+| XLINK | an ERROR because `llc`'s session does not meet the checks that a linker exception explains ("Linker exceptions" below); the detail names the exception, the missing check and what hod's would have been | |
 | SKIP | a front end or `llc` this unit needs is missing | |
 
 ### Lines
@@ -3599,6 +3601,42 @@ line (`^`) after such a line
 (`spec/dwarf.md` §5.7 `return-column`). A `pre-opt: checks` test's
 sessions are judged by its checks (above). Nothing else is permitted.
 
+### Linker exceptions
+
+A case of `hod_testutil::linkers::EXCEPTIONS` ("Linkers") can break the
+ORACLE's session: `llc`'s object, linked by that linker, does not meet a
+check that it meets linked by every other linker (WP-248). The table
+`debug::xlink::EXPECTED` lists each (linker, case, target, test file,
+debugger family: `gdb`, or `lldb` for every lldb) measured to do so. A
+hod variant's record is XLINK, and neither fails the run nor errs, when
+all of these hold:
+
+1. `EXPECTED` lists the linker, the target, the test's file name and the
+   session's debugger family, and `linkers::exception(linker, case)`
+   lists the case;
+2. `llc`'s session ended and does not meet a check;
+3. the case's witness (`xlink::witness`, a reading of the linked program
+   with LLVM's tools) holds for `llc`'s program and for that variant's:
+   `tls-dtpoff-debug`, a TLS location (`DW_OP_const8u <offset>,
+   DW_OP_GNU_push_tls_address` or `DW_OP_form_tls_address` in
+   `llvm-dwarfdump --debug-info`) whose offset is negative (an offset
+   from the thread pointer where the module's TLS block offset belongs);
+   `plt-got-gdb`, a `.plt.got` section with neither `.plt` nor
+   `.rela.plt` (`llvm-objdump --section-headers`).
+
+Otherwise the record is what it was: an ERROR whenever `llc`'s session is
+broken in any other way, under any other linker, target or test, or
+without the witness on both programs; and hod's session is compared with
+`llc`'s as usual whenever `llc`'s meets the checks. A listed case whose
+`llc` session meets every check is stale: hod's PASS becomes an XPASS
+(fails the run) whose detail names the entry to remove; any other
+outcome of hod's stands, with the same note appended. Unit tests:
+`xlink::tests::{the_tls_witness_is_a_negative_tls_offset,
+the_plt_witness_is_a_plt_got_alone,
+only_listed_cases_of_the_exceptions_are_expected,
+an_excepted_error_is_an_xlink_and_nothing_else_is,
+a_listed_case_that_passes_is_reported_stale}`.
+
 ### Results file
 
 One line per record, tab-separated: test, front end, variant, linker
@@ -3669,8 +3707,8 @@ reads_instructions, summary_counts_classes, compares_columns}`;
 
 `xtask/tests/debug_real.rs` (real tools; skips without them, fails under
 `HOD_REQUIRE_TOOLS=1`): `quick_tier_matches_llc` (the quick tier: no
-FAIL, ERROR, XPASS or crash; no unclassified pair, at least 95% of pairs
-the same) and `catches_differences_and_broken_tests` (a hod whose line 2
+FAIL, ERROR, XPASS or crash; every XLINK a listed case of `EXPECTED`; no
+unclassified pair, at least 95% of pairs the same) and `catches_differences_and_broken_tests` (a hod whose line 2
 is line 3 FAILs; the same test PASSes with hod; a check `llc`'s session
 does not meet is an ERROR; an `xfail` on a passing test is an XPASS).
 
@@ -3902,10 +3940,47 @@ fold and `debug::permitted` has no class yet:
   `llvm.memmove` whose source and destination number the same counts as
   such a store (a struct's `s = s;`);
 - llc-only, a **constant branch** (`case::constant_branch`): the line's
-  instructions are `br label` or `br i1 true|false` and loads and
-  `getelementptr`s nothing uses. That is csmith's `if ((x, -6L))`: hod
-  folds the branch (and omits one to the block it emits next) and drops
-  the loads, `llc` keeps a test and a jump.
+  instructions are `br label` or `br i1 true|false`, and loads (neither
+  volatile nor atomic), `getelementptr`s, `icmp`s and casts that nothing
+  uses except another such unused value of the line (no call, no store).
+  That is csmith's `if ((x, -6L))` and `if (((&x == (void*)0), 7L))`
+  (seed 110478 of the 1.0 budget: an unused `icmp eq ptr` and its `zext`):
+  hod folds the branch (and omits one to the block it emits next) and
+  emits nothing for the unused values, `llc` keeps a test and a jump.
+  This is a debug-quality difference, not a wrong program: all three of
+  LLVM's `-O0` selectors keep one row at such a line, hod has none, and
+  the programs agree;
+- hod-only, a **selector split** (`selector-split`,
+  `case::selector_split`): a pair (function F, line L) left unclassified
+  where hod has rows and the oracle (`SelectionDAG`) has none. The same
+  `llc` (same LLVM, target, `-O0` and other flags) builds the module with
+  the two other selectors, `FastISel` (`-global-isel=0 -fast-isel=1`) and
+  `GlobalISel` (`-global-isel=1 -global-isel-abort=2`, falling back to
+  `SelectionDAG` with a warning that names the function); each is linked
+  as the oracle is and its `is_stmt` rows are counted per pair. The pair
+  is set apart when both selectors give evidence (the build and link
+  succeed, and `GlobalISel` did not fall back on F) and both have at
+  least one row at L in F: LLVM's own `-O0` selectors disagree at that
+  line and hod agrees with two of three. One with a row and one without,
+  or one with no evidence: the pair stays unclassified and is a finding.
+  It never applies to llc-only pairs, nor outside the line comparison.
+  The two builds run only for a seed with such a pair, so the cost is per
+  finding, not per seed. Each pair set apart is printed with its evidence
+  (`selector-split: seed S F at prog.c:L: rows hod H selection-dag 0
+  fast-isel A global-isel B`), counted in the summary, and in the budget's
+  `set-apart` column and its "Set apart" census. Evidence: the 1.0
+  budget's aarch64 LLVM 22 debug slice, where `SelectionDAG` deletes a
+  statement `x |= c` whose `c` it folds to 0 (a pointer comparison it
+  folds, or a 0-or-1 value compared with a constant out of that range).
+  `is_stmt` rows at the pair, hod / `SelectionDAG` / `FastISel` /
+  `GlobalISel`, are 1/0/1/1 at each of seed 110011 func_48 prog.c:590,
+  110043 func_1 :258, 110164 func_19 :425, 110267 func_1 :279, 110360
+  func_23 :811, 110367 func_1 :412 and func_26 :723, 110393 func_1 :396
+  (all rows of prog.c at the line, any flag: 5/0/5/5, 4/0/4/4, 6/0/6/6,
+  6/0/6/6, 7/0/7/7, 7/0/6/6 at :412, 7/0/7/7). This
+  class replaces any further folding in the self-assignment's numbering
+  (which stays as above): `SelectionDAG`'s folder is not emulated piece by
+  piece.
 
 The summary adds the
 comparisons of every seed,
@@ -3938,9 +4013,44 @@ its occurrences.
 | agree | same end (exit status or signal), same stdout | 0 |
 | scanned | `--census`: the module was counted | 0 |
 | refused | hod exited 2 with a coverage-log line whose outcome is `error`; counted by the reason | 0 |
-| skipped | `csmith-failed`, `clang-failed`, `both-timed-out`, `oracle-timed-out`, and in `--mix` `split-timed-out`, `nothing-to-split` | 0 |
+| skipped | `csmith-failed`, `ub-float-cast` ("Float casts"), `clang-failed`, `both-timed-out`, `oracle-timed-out`, and in `--mix` `split-timed-out`, `nothing-to-split` | 0 |
 | error | `llc` failed, the oracle's link failed, `llc`'s halves disagree with the whole module, both objects fail the verifier: about the oracle's or the harness's side | 3 |
 | finding | `disagree` (end or stdout differs), `hod-failed` (any other end of hod, a panic, no object or coverage log), `hod-link` (hod's object does not link), `hod-hang` (hod's program did not end in four times the limit), `debug-verify`, `debug-lines` | 1 |
+
+### Float casts
+
+csmith's `--float` programs can convert a floating-point value to an
+integer type that cannot represent it: undefined behaviour in C, and in
+the module an `fptosi`/`fptoui` whose result is poison (or a `poison`
+that clang folded in its place). Two correct compilers may then differ:
+the budget at df415453 saved four such seeds as findings, among them seed
+101105 at AArch64, where `llc`'s own selectors split (GlobalISel as hod,
+SelectionDAG and FastISel as the oracle) on `-8.4375` converted to
+`uint16_t`. So a seed of a flavour whose csmith options include `--float`
+is first built from `prog.c` by the host's gcc with `-O0
+-fsanitize=float-cast-overflow -fno-sanitize-recover=float-cast-overflow`
+(and clang's `-Wno-error` options), and run natively, with no argument,
+under the programs' limit. When UBSan reports an out-of-range conversion
+(`is outside the range of representable values of type`), the seed is
+skipped as `ub-float-cast`, counted by that name as every skip, and the
+results file's detail is `ub-float-cast: <UBSan's line>`. This filters
+the input on a sanitizer's verdict; no comparison is loosened. Only this
+check may skip a seed. A pre-run that does not build, ends otherwise
+without that report, or times out decides nothing: the seed is built and
+compared as any other, and the log of its commands says why. The pre-run
+is native on a cross target too (csmith's programs mean the same on
+both 64-bit targets).
+
+The tools: `gcc` on the path, and libubsan, probed once per run with an
+empty program. Without them the run fails under `HOD_REQUIRE_TOOLS=1`;
+otherwise it prints `xtask fuzz: warning: the float-cast pre-run is OFF:
+<why>` and runs the seeds unfiltered. A run without csmith (`--profile
+abi`) does not look for them.
+
+Every saved finding with a `prog.c`, of every flavour, also gets
+`ubsan.txt`: the commands and every report of a recovering build under
+`-fsanitize=float-cast-overflow,undefined`. It is a label for the triage
+and decides nothing.
 
 ### Findings
 
@@ -3950,8 +4060,8 @@ then `-<mode>` unless it is the whole mode. It holds `prog.c`, `prog.ll`,
 the objects and programs (in `--mix` also `a.ll`, `b.ll` and the
 halves' objects), `commands.sh` (every command run, in order, as shell
 lines with the final paths), `oracle.stdout`, `hod.stdout`, `hod.stderr`,
-`verdict.txt` (seed, flavour, mode, profile, kind, detail, witness) and,
-from the reduction, `reduced.ll` and `seed.ll`.
+`verdict.txt` (seed, flavour, mode, profile, kind, detail, witness),
+`ubsan.txt` ("Float casts") and, from the reduction, `reduced.ll` and `seed.ll`.
 
 The witness: the module is built with `llc -O2`, linked and run with four
 times the limit; the verdict says whether its program agrees with the
@@ -4023,6 +4133,49 @@ results file, `<out>/results-<run>.tsv`, one line per seed: seed,
 flavour, verdict, detail, the oracle's run time in ms; in `--census` the
 census table.
 
+### Budget
+
+`cargo xtask fuzz --budget --seed <first> --hod <binary> [--target T]
+[-j J] [--linker L] [--timeout S] [--reduce-budget P] [--out <dir>]
+[--plan]` (WP-241, `xtask/src/fuzz/budget.rs`) runs the release
+budget (`docs/VALIDATION.md` "Random programs (L10)", "The budget"):
+
+- **The plan** is a function of `--seed` alone: LLVM 22 then 19; within
+  each, AArch64 then x86-64; within each, the lines of `budget::BUDGET`
+  in order (profile, mode, seeds per target at LLVM 22; LLVM 19 runs
+  `ceil(seeds / 4)`); each line cut into slices of at most 500 seeds.
+  Each slice's seeds start where the previous slice's end, so no two
+  slices share a seed. `--target` keeps that target's slices with the
+  same ranges. `--plan` prints the slices and runs nothing.
+- `--seed` and `--hod` are required (`--hod` not with `--plan`): the
+  candidate's fresh range and the frozen binary measured. `--count`,
+  `--profile`, `--mix`, `--debug` and `--census` are refused (exit 2);
+  the other options go to every slice. `--llvm` is ignored: the budget
+  runs both.
+- **One slice at a time**, each a run of the command ("Options") with
+  the slice's target, LLVM, profile, mode and seeds, `-j` seeds at once,
+  under the jobserver as every run.
+- **Resumable**: `<out>/budget.tsv` has a header line and one line per
+  finished slice, appended (and synced) when the slice ends: target,
+  LLVM, profile, mode, `first-last`, agree, refused, skipped, error,
+  finding, minutes, then the refusals and the skips as `name=count`
+  joined by `,` (`-` for none), the findings as `seed:kind:directory`
+  and the errors as `seed:detail` (cut to 160 characters) joined by `;`.
+  At the start the file is read and rewritten without any line that does
+  not parse (a write cut short); a slice whose key (the first five
+  fields) is there is not run again; an interrupted slice runs again
+  whole. The slice's per-seed results file is kept as
+  `<out>/results/<target>-<llvm>-<profile>-<mode>-<first>-<last>.tsv`;
+  findings are saved as in any run, under `<out>/findings/`.
+- **The table**: `<out>/budget.md`, rewritten after every slice: the
+  slices run of those planned; seeds, the verdicts, minutes and programs
+  per minute per target and LLVM and in all, then per target, LLVM,
+  profile and mode with the seed ranges; the refusals and the skips
+  added by name; every finding and every error with its slice.
+- Exit status: 1 when a row has a finding, 3 when one has an error and
+  none a finding, 0 otherwise; 3 also when a slice cannot run (a missing
+  tool), with the rows so far kept.
+
 ### In the gate
 
 `cargo xtask ci` does not run the command: csmith is not a required tool.
@@ -4043,6 +4196,12 @@ when their tools are missing, whatever `HOD_REQUIRE_TOOLS` says:
   reduced with the split kept, with a seed of two modules;
 - `the_census_of_the_abi_profile` (clang 22): the ABI generator's
   programs have variadic definitions, `i128`, `va_start` and `sret`.
+
+`xtask/tests/fuzz_budget.rs` tests the budget's own logic with a
+stand-in for a slice's run (no tools, nothing generated or compiled):
+the plan's ranges and counts, resuming after an interruption and after
+a line cut short, a row read back as written, the table's sums and
+census, and the options.
 
 A sweep runs fixed ranges, for example per target `cargo xtask fuzz
 --seed 1 --count 200 -j 4`, `--mix --count 200`, `--debug --count 100`

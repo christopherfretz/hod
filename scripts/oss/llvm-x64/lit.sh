@@ -18,6 +18,12 @@ which="${1:?usage: lit.sh hod|llc|both <slice>...}"
 shift
 case "$which" in both) trees="hod llc" ;; hod | llc) trees=$which ;; *) exit 2 ;; esac
 for slice in "$@"; do
+  # WP-222: no slice starts below $HOD_OSS_MIN_FREE_GB (default 45) free.
+  free=$(df -BG --output=avail "$HOD_OSS_ROOT" | tail -1 | tr -dc 0-9)
+  if [ "$free" -lt "${HOD_OSS_MIN_FREE_GB:-45}" ]; then
+    echo "lit.sh: STOP before $slice: ${free}G free" >&2
+    exit 3
+  fi
   case "$slice" in
     *=@*) key="${slice%%=@*}"; mapfile -t paths < <(sed "s#^#$HOD_OSS_SRC/llvm/test/#" "${slice#*=@}") ;;
     *) key=$(echo "$slice" | tr / _); paths=() ;;
@@ -27,7 +33,7 @@ for slice in "$@"; do
     js="$HOD_OSS_ROOT/$HOD_X64_PREFIX$f/logs/lit-$key.json"
     rm -f "$js"
     start=$(date +%s)
-    (ulimit -v 16000000 && timeout 10800 nice -n 10 python3 "$b/bin/llvm-lit" -sv -j 4 -o "$js" "${paths[@]:-$b/$slice}" \
+    (ulimit -v 16000000 && timeout 10800 nice -n 10 python3 "$HOD_OSS_TOKEN_PY" -n 4 python3 "$b/bin/llvm-lit" -sv -j 4 -o "$js" "${paths[@]:-$b/$slice}" \
       > "$HOD_OSS_ROOT/$HOD_X64_PREFIX$f/logs/lit-$key.log" 2>&1)
     rc=$?
     echo "lit-$key $start $(date +%s) $rc" >> "$HOD_OSS_ROOT/$HOD_X64_PREFIX$f/logs/stages.txt"

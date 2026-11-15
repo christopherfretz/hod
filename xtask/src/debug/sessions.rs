@@ -15,6 +15,7 @@ use super::directives::{self, DebugTest, Lang, Objects};
 use super::lines::{self, LineTools, LinesReport};
 use super::permitted::{self, IrFacts};
 use super::transcript::{self, Debugger, Ended};
+use super::xlink;
 use crate::irdiff::directives::Arch;
 use crate::irdiff::process::Limits;
 use crate::irdiff::tools::Linker;
@@ -38,6 +39,11 @@ pub enum Outcome {
     /// program did not link, `llc`'s session did not meet the checks or
     /// timed out, the directives do not parse.
     Error,
+    /// An ERROR a linker exception explains (`super::xlink`): `llc`'s
+    /// session lacks a check because of a case of
+    /// `hod_testutil::linkers::EXCEPTIONS` its program shows. Neither fails
+    /// the run nor errs.
+    Xlink,
     /// A tool this session needs is missing.
     Skip,
 }
@@ -51,12 +57,21 @@ impl Outcome {
             Self::Xpass => "XPASS",
             Self::Crash => "CRASH",
             Self::Error => "ERROR",
+            Self::Xlink => "XLINK",
             Self::Skip => "SKIP",
         }
     }
 
-    pub const ALL: [Self; 7] =
-        [Self::Pass, Self::Fail, Self::Xfail, Self::Xpass, Self::Crash, Self::Error, Self::Skip];
+    pub const ALL: [Self; 8] = [
+        Self::Pass,
+        Self::Fail,
+        Self::Xfail,
+        Self::Xpass,
+        Self::Crash,
+        Self::Error,
+        Self::Xlink,
+        Self::Skip,
+    ];
 }
 
 /// One result.
@@ -802,6 +817,29 @@ impl Run<'_> {
                         continue;
                     }
                 };
+                // A broken session a linker exception explains is an XLINK
+                // (`super::xlink`); a listed case that is not broken, stale.
+                let test_path = test.path.to_string_lossy();
+                let case = xlink::expected(xlink::Session {
+                    linker: &linker.name,
+                    debugger: &debugger.name,
+                    target: self.target_name(),
+                    test: &test_path,
+                });
+                let fallback_tools;
+                let witness_tools = match self.line_tools {
+                    Some(t) => Some(t),
+                    None if case.is_some() => {
+                        fallback_tools = find_line_tools();
+                        fallback_tools.as_ref()
+                    }
+                    None => None,
+                };
+                let witness = |p: &Path| {
+                    let (entry, _) = case?;
+                    xlink::witness(entry.case, p, witness_tools?).ok()
+                };
+                let theirs_witnessed = if broken.is_some() { witness(&reference) } else { None };
                 for (variant, ours) in &programs {
                     done.sessions += 1;
                     let (outcome, detail) = match session(ours) {
@@ -852,10 +890,13 @@ impl Run<'_> {
                         }
                         Err(e) => (Outcome::Error, e),
                     };
-                    let (outcome, detail) = match &broken {
-                        Some(why) => (Outcome::Error, format!("{why} (hod's: {})", outcome.name())),
-                        None => (outcome, detail),
+                    let witnessed = match theirs_witnessed {
+                        Some(theirs) => witness(ours).map(|hods| (theirs, hods)),
+                        None => None,
                     };
+                    let verdict = xlink::verdict(case, broken.as_deref(), witnessed);
+                    let (outcome, detail) =
+                        xlink::apply(&verdict, broken.as_deref(), outcome, detail);
                     done.records.push(record(variant, at_linker, at_debugger, outcome, detail));
                 }
             }

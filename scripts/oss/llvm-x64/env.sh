@@ -36,4 +36,10 @@ export HOD_X64_NATIVE_TOOLS="${HOD_X64_NATIVE_TOOLS:-$HOD_OSS_ROOT/${HOD_X64_PRE
 export HOD_X64_HOST_LLVM="${HOD_X64_HOST_LLVM:-/usr/lib/llvm-19/bin}"
 # The trees are $HOD_OSS_ROOT/llvm-x64-hod and llvm-x64-llc.
 export HOD_X64_PREFIX="${HOD_X64_PREFIX:-llvm-x64-}"
-unset _here _wt _ws
+# Builds and tests draw from the real-project pool (WP-222; the brief's
+# "Two token pools"): wrap.sh, lit.sh and unittests.sh take their tokens
+# with ../llvm/lane-token.py from the fifo MAKEFLAGS names.
+_lanes="${HOD_OSS_JOBSERVER_FIFO:-/run/hod/lanes.fifo}"
+[ -p "$_lanes" ] && export MAKEFLAGS="--jobserver-auth=fifo:$_lanes"
+export HOD_OSS_TOKEN_PY="$_here/../llvm/lane-token.py"
+unset _here _wt _ws _lanes

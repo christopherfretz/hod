@@ -130,6 +130,9 @@ fn vmem(bytes: u32) -> VMemSize {
 /// `call:part-lanes` for a mask or promoted vector whose value side is a
 /// vector register; `Internal` for a part `abi::assign` does not make.
 pub fn lanes_out(cx: &mut FnCx<'_, A64>, part: &Part, from: LaneLoc, to: LaneLoc) -> CgResult<()> {
+    if let Some(elem) = gpr_fp_of(part) {
+        return gpr_fp_out(cx, elem, from, to);
+    }
     if let Some(limb) = limb_of(cx, part)? {
         return limb_out(cx, limb, from, to);
     }
@@ -215,6 +218,11 @@ fn promoted_out(cx: &mut FnCx<'_, A64>, l: Lanes, from: LaneLoc, to: LaneLoc) ->
 /// # Errors
 /// As [`lanes_out`].
 pub fn lanes_in(cx: &mut FnCx<'_, A64>, part: &Part, from: LaneLoc, to: LaneLoc) -> CgResult<()> {
+    if gpr_fp_of(part).is_some() {
+        // Only a variadic `win64cc` call has such parts, and its
+        // definitions are refused (`cconv::WIN64_VARIADIC_DEFINITION`).
+        return cx.bug("a variadic win64cc argument received");
+    }
     if let Some(limb) = limb_of(cx, part)? {
         return limb_in(cx, limb, from, to);
     }
@@ -337,6 +345,43 @@ fn value_side_ok(value: LaneLoc) -> bool {
         LaneLoc::Reg(r) => reg::is_gpr(r),
         LaneLoc::Frame(_) => true,
     }
+}
+
+/// WP-247 (`spec/abi-a64.md` §13.3): the element size of a part of a
+/// variadic `win64cc` call's `float` (`S`) or `double` (`D`), which
+/// travels as an integer of its bits; `None` for any other part.
+fn gpr_fp_of(part: &Part) -> Option<Elem> {
+    match part.kind {
+        PartKind::Lanes { bits: 32, lane: 4, first: 0, len: 1 } => Some(Elem::S),
+        PartKind::Lanes { bits: 64, lane: 8, first: 0, len: 1 } => Some(Elem::D),
+        _ => None,
+    }
+}
+
+/// WP-247: the `float` or `double` at `from` (a vector register, or its
+/// image) to its place `to` as an integer: a general register (a `W`
+/// one's upper half zero) or an 8-byte stack slot. Writes `x16`, `x17`
+/// and `to` only.
+fn gpr_fp_out(cx: &mut FnCx<'_, A64>, elem: Elem, from: LaneLoc, to: LaneLoc) -> CgResult<()> {
+    let t = match to {
+        LaneLoc::Reg(r) if reg::is_gpr(r) => xr(r),
+        LaneLoc::Reg(_) => return cx.bug("a variadic win64cc float in a vector register"),
+        LaneLoc::Frame(_) => X16,
+    };
+    match from {
+        LaneLoc::Reg(v) if reg::is_fpr(v) => put(cx, mc::umov(elem, t.zr(), vr(v), 0)),
+        LaneLoc::Reg(_) => return cx.bug("a floating-point value in a general register"),
+        LaneLoc::Frame(image) => {
+            let load = if elem == Elem::S { Load::W } else { Load::X };
+            let mut at = Cursor::frame(cx, image, other_scratch(t));
+            load_gpr_at(cx, load, t, &mut at);
+        }
+    }
+    if let LaneLoc::Frame(slot) = to {
+        let mut at = Cursor::frame(cx, slot, X17);
+        store_gpr_at(cx, MemSize::X, t.zr(), &mut at);
+    }
+    Ok(())
 }
 
 /// WP-167: the limb (0 low, 1 high) a part of a lone `<1 x i128>`

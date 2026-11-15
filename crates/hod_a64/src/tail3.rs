@@ -38,9 +38,9 @@
 //! - A number minus an address as an operand ([`neg_addr`], from
 //!   `common::materialize_gpr_const`): the address, then `neg`.
 //!
-//! - `preserve_allcc` ([`assign_preserve_all`] from `Target::assign`;
-//!   [`save_all`], [`all_rows`], [`restore_all`] from `frame.rs`): saves
-//!   `x9`..`x15` and `q8`..`q31` with their unwind rules.
+//! - `preserve_allcc` ([`assign_preserve_all`] from `Target::assign`):
+//!   arguments as `ccc`; `crate::cconv` saves `x9`..`x15` and `q8`..`q31`
+//!   with their unwind rules.
 //!
 //! A lane index is `vector`'s rule: a constant out of range writes
 //! nothing, a variable one is masked (`N` a power of two) or clamped to
@@ -1129,28 +1129,11 @@ pub fn neg_addr(cx: &mut FnCx<'_, A64>, rd: Reg, id: ConstId) -> CgResult<()> {
 }
 
 // ---- preserve_allcc ----
-
-/// The vector registers `preserve_allcc` saves whole: `q8`..`q31`. With
-/// `tail2::PRESERVED` (`x9`..`x15`) they are what it adds to the AAPCS64
-/// callee-saved set (LLVM's `CSR_AArch64_RT_AllRegs`, the same in 19 and
-/// 22); `x8`, `x16`..`x18` and `q0`..`q7` stay as `ccc` has them.
-const ALL_V: std::ops::Range<u8> = 8..32;
-/// Where a `preserve_allcc` function saves its registers: the general
-/// ones in the 64 bytes after the frame record (`x9` lowest), then the
-/// vector ones, 16 bytes each, `q8` lowest.
-const ALL_AREA: u32 = 16;
-const ALL_V_AREA: u32 = ALL_AREA + 64;
-const ALL_SIZE: u32 = 64 + 16 * 24;
-/// The bytes [`save_all`] emits: four general stores and twelve pairs.
-const ALL_BYTES: u32 = 4 * (4 + 12);
-
-/// Whether the function being compiled is `preserve_allcc`.
-fn is_preserve_all(cx: &FnCx<'_, A64>) -> bool {
-    matches!(
-        cx.module.symbol(cx.body.symbol()).kind(),
-        hod_ir::SymbolKind::Function { cc: hod_ir::CallConv::PRESERVE_ALL, .. }
-    )
-}
+//
+// What the callee keeps (`x9`..`x15`, `q8`..`q31`, LLVM's
+// `CSR_AArch64_RT_AllRegs`, the same in 19 and 22) is saved by
+// `cconv` (WP-247 made its save plan the one of every convention that
+// keeps more than AAPCS64 but `preserve_mostcc`).
 
 /// `Target::assign` for `preserve_allcc`: arguments and results travel
 /// as for `ccc`; only the callee-saved set differs. `None` for another
@@ -1163,94 +1146,4 @@ pub fn assign_preserve_all(
     (sig.cc == hod_ir::CallConv::PRESERVE_ALL).then(|| {
         crate::abi::assign(types, &hod_cg::abi::Sig { cc: hod_ir::CallConv::C, ..*sig }, out)
     })
-}
-
-/// The vector register pairs of [`ALL_V`], with each pair's offset from
-/// `x29`.
-fn all_v_pairs() -> impl Iterator<Item = (VReg, VReg, i64)> {
-    ALL_V.step_by(2).filter_map(|n| {
-        let at = i64::from(ALL_V_AREA) + 16 * i64::from(n - ALL_V.start);
-        Some((VReg::new(n)?, VReg::new(n + 1)?, at))
-    })
-}
-
-/// From `frame::begin`, right after `mov x29, sp`: a `preserve_allcc`
-/// function stores `x9`..`x15` and `q8`..`q31` in its save area. Every
-/// lowering may write them and every call clobbers them, so all are
-/// saved (`llc` saves those its allocator touched, which at `-O0` with a
-/// call is all of them).
-///
-/// # Errors
-/// What `alloc_slot` reports.
-pub fn save_all(cx: &mut FnCx<'_, A64>) -> CgResult<()> {
-    if !is_preserve_all(cx) {
-        return Ok(());
-    }
-    if cx.alloc_slot(u64::from(ALL_SIZE), 16)? != FrameRef::Local(ALL_AREA) {
-        return cx.bug("the preserve_all save area is not after the frame record");
-    }
-    for (index, pair) in tail2::PRESERVED.chunks(2).enumerate() {
-        let at = i64::from(ALL_AREA) + 16 * index as i64;
-        match *pair {
-            [a, b] => put(cx, mc::stp_off(Size::X, a.zr(), b.zr(), crate::common::FP, at)),
-            [a] => put(cx, mc::str_off(MemSize::X, a.zr(), crate::common::FP, at)),
-            _ => {}
-        }
-    }
-    for (a, b, at) in all_v_pairs() {
-        put(cx, mc::stp_fp_off(mc::VPairSize::Q, a, b, crate::common::FP, at));
-    }
-    Ok(())
-}
-
-/// The rules saying where [`save_all`] saved each register, given the
-/// CFA is `x29 + frame`: from `after_prologue` plus the bytes of the
-/// stores in `end`, and again (`None`) in the body rows a tail exit
-/// restates. A vector register's DWARF number is 64 plus its index.
-///
-/// # Errors
-/// What `cfi_at` reports.
-pub fn all_rows(cx: &mut FnCx<'_, A64>, after_prologue: Option<u32>, frame: u32) -> CgResult<()> {
-    if !is_preserve_all(cx) {
-        return Ok(());
-    }
-    let general = tail2::PRESERVED
-        .iter()
-        .enumerate()
-        .map(|(index, reg)| (u16::from(reg.index()), ALL_AREA as i32 + 8 * index as i32));
-    let vector = ALL_V.map(|n| (64 + u16::from(n), (ALL_V_AREA + 16 * u32::from(n - 8)) as i32));
-    for (reg, saved) in general.chain(vector) {
-        let op = hod_cg::CfiOp::Offset { reg, cfa_offset: saved - frame as i32 };
-        match after_prologue {
-            Some(at) => cx.cfi_at(at + ALL_BYTES, op)?,
-            None => cx.cfi(op),
-        }
-    }
-    Ok(())
-}
-
-/// From `frame::teardown`, before the frame record is reloaded: the
-/// registers [`save_all`] saved, reloaded, each rule back to "same
-/// value".
-pub fn restore_all(cx: &mut FnCx<'_, A64>) {
-    if !is_preserve_all(cx) {
-        return;
-    }
-    for (index, pair) in tail2::PRESERVED.chunks(2).enumerate() {
-        let at = i64::from(ALL_AREA) + 16 * index as i64;
-        match *pair {
-            [a, b] => put(cx, mc::ldp_off(Size::X, a.zr(), b.zr(), crate::common::FP, at)),
-            [a] => put(cx, mc::ldr_off(Load::X, a.zr(), crate::common::FP, at)),
-            _ => {}
-        }
-    }
-    for (a, b, at) in all_v_pairs() {
-        put(cx, mc::ldp_fp_off(mc::VPairSize::Q, a, b, crate::common::FP, at));
-    }
-    for reg in tail2::PRESERVED {
-        cx.cfi(hod_cg::CfiOp::Restore { reg: u16::from(reg.index()) });
-    }
-    for n in ALL_V {
-        cx.cfi(hod_cg::CfiOp::Restore { reg: 64 + u16::from(n) });
-    }
 }

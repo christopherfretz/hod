@@ -1885,7 +1885,7 @@ Reasons no `Support` takes away (`STRUCTURAL_RULES`):
 Also refused on both targets, as matrix rows whose status is `rejected`:
 `attr:naked`, `inst:va_arg`, the 19 `const-expr:*` rows (constant
 expressions without a normal form, §4.2), and the calling conventions
-`cc:cfguard_checkcc`, `cc:win64cc` (Windows), `cc:x86_vectorcallcc`
+`cc:cfguard_checkcc`, `cc:x86_vectorcallcc`
 (Windows on x86-64), `cc:x86_stdcallcc`, `cc:x86_fastcallcc`,
 `cc:x86_thiscallcc` (32-bit x86: `llc` treats them as `ccc` on x86-64,
 and no x86-64 front end emits them), `cc:x86_intrcc` and
@@ -1899,7 +1899,11 @@ x86-64 and assigned as `ccc`: it is the System V convention, which is
 x86-64 Linux's C convention (`llc` 19 and 22 emit identical code for the
 two, `-O0` with and without fast instruction selection, SSE2, AVX2 and
 AVX-512, over arguments of every class, on the stack, `byval`, `sret`,
-`x86_fp80`, `fp128`, `i128` and variadic calls). `coldcc`, `ghccc`,
+`x86_fp80`, `fp128`, `i128` and variadic calls). `win64cc`
+(`__attribute__((ms_abi))`) is supported on x86-64 (WP-246,
+`spec/abi-x64.md` §13) and not yet implemented on AArch64, whose `llc`
+compiles it too (the one x86 keyword that is not refused there by
+design). `coldcc`, `ghccc`,
 `anyregcc`, `tailcc`, `swifttailcc` and `preserve_nonecc` are `unplanned`
 on both targets; `intel_ocl_bicc`, `hhvmcc` and `hhvm_ccc` on x86-64. `inst:callbr` was one until
 WP-103; it is supported on AArch64 (`spec/codegen.md` §5.5.3).

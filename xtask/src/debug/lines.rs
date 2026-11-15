@@ -133,7 +133,7 @@ pub struct LineTools {
 
 const LIMITS: Limits = Limits { time: Duration::from_mins(2), memory_kib: 4 << 20 };
 
-fn tool_output(tool: &Path, args: &[&str], program: &Path) -> Result<String, String> {
+pub(crate) fn tool_output(tool: &Path, args: &[&str], program: &Path) -> Result<String, String> {
     let configure = |c: &mut Command| {
         c.args(args).arg(program).env("LC_ALL", "C");
     };
@@ -309,6 +309,15 @@ fn ir_class(facts: &IrFacts, (function, file, line): &Pair, hod_side: bool) -> C
 
 fn is_unconditional_branch(mnemonic: &str) -> bool {
     matches!(mnemonic, "b" | "jmp")
+}
+
+/// The `is_stmt` rows (line not 0) of `program` at each pair, counted: the
+/// pairs [`compare`] compares, each with the number of its rows.
+pub fn stmt_row_counts(program: &Path, tools: &LineTools) -> Result<BTreeMap<Pair, usize>, String> {
+    let lines = tool_output(&tools.dwarfdump, &["--debug-line"], program)?;
+    let symbols = tool_output(&tools.nm, &["-S", "--defined-only"], program)?;
+    let pairs = pairs_of(&parse_line_tables(&lines), &parse_symbols(&symbols));
+    Ok(pairs.ranges.into_iter().map(|(pair, rows)| (pair, rows.len())).collect())
 }
 
 /// Compares the pairs of two programs built from the same IR, and their

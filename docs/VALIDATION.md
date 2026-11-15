@@ -190,7 +190,10 @@ Per seed the verdict is:
 - **refused**: hod declined, counted by its coverage-log reason (that is
   coverage, not a bug);
 - **skipped**: the generator or clang failed, a program timed out (both,
-  or the oracle's), or there was nothing to split;
+  or the oracle's), there was nothing to split, or a `--float` program
+  converts a float to an integer type that cannot hold it (`ub-float-cast`:
+  gcc's UBSan pre-run fired; undefined behaviour, on which `llc`'s own
+  instruction selectors differ; `spec/harness.md` "Float casts");
 - **error**: the oracle's side failed (`llc`, its link, `llc`'s two
   halves disagreeing with its whole module);
 - **finding**: the programs disagree, hod failed, hod's object does not
@@ -208,6 +211,53 @@ its share of L10, and its tests of the command (`xtask/tests/fuzz_real.rs`)
 skip without the tools; a planted calling-convention bug that only
 `--mix` can see shows the mode works. The numbers of the long runs are
 in `docs/status/fuzz.md`.
+
+**The budget** (WP-241) is what a release candidate runs: `cargo xtask
+fuzz --budget --seed <first> --hod <frozen hod> -j 4` (contract:
+`spec/harness.md` "Random programs", "Budget"). Per target (AArch64
+natively, x86-64 under `qemu-x86_64`), with clang and `llc` 22:
+
+| profile | mode | seeds |
+|---|---|---:|
+| `default` | whole | 2000 |
+| `aggregates`, `float`, `wide`, `volatile`, `narrow` | whole | 1000 each |
+| `abi` | whole | 2000 |
+| `default` | `--mix` | 500 |
+| `abi` | `--mix` | 500 |
+| `default` | `--debug` | 500 |
+
+and with LLVM 19 a quarter of each line (500, 250 each, 500, 125, 125,
+125): 10,500 seeds per target with LLVM 22, 2625 with 19, 26,250 in
+all, in 62 slices of at most 500 seeds. Why these numbers: the budget
+has to run on the shared reference machine (load about 20 to 30 on 24
+cores, the shared jobserver's tokens mostly taken) in one working day at
+`-j 4`, one slice at a time. The cost is set by csmith's seeds whose
+programs run past the 5 s limit on both sides (about one in eight; each
+costs 10 s); the first slice of WP-241's run (500 `default` seeds on
+AArch64) ran at 114 programs per minute, the `abi` profile is several
+times faster, `--mix` and `--debug` slower, which puts the whole budget
+at about 5 to 6 hours. A smaller budget (half the csmith lines) was
+planned from a 20-seed smoke that measured 10 to 200 programs per
+minute, and given up when the first slice showed the rate. The time
+limit stays 5 s (a shorter one would turn more seeds into skips). If a
+later machine is slower, cut seeds evenly, never a profile or a mode,
+and say so here.
+
+**Fresh seeds.** Every slice has its own range, disjoint from every
+other slice's (targets and LLVM majors included); the plan lays them out
+one after another from `--seed`. A candidate's first seed is the next
+multiple of 100,000, plus 1, above every seed an earlier budget or
+recorded run used; `docs/status/fuzz.md` names the ranges each measured
+candidate used (the runs of WP-154 and WP-160 used 1 to 2500; WP-241's
+budget 100001 to 126250, so the next candidate starts at 200001).
+
+**Met** when the run on the candidate's frozen hod has no finding left
+open: each is fixed (with a regression test in the crate that owns the
+defect), or shown not to be hod's (`llc`, clang, csmith's undefined
+behaviour, the harness, a timeout of the loaded machine that does not
+happen when the seed runs alone) with its evidence on the page. A
+refusal is coverage, not a finding; errors (the oracle's side) are
+listed and explained.
 
 ### Real projects (L9)
 
@@ -293,7 +343,14 @@ and still fails when the linker regresses on anything else. A failure
 with one linker is triaged as (a) hod writing something the others
 accept by leniency and the ABI forbids: fixed in hod; (b) the linker's
 bug or an allowed difference, kept with a reproduction from objects hod
-did not write; (c) a feature the linker says it does not support.
+did not write; (c) a feature the linker says it does not support. In
+the debugger layer, a listed case that breaks the ORACLE's session (the
+`llc` program linked by that linker misses a check it meets with the
+other three) is reported as XLINK, counted and listed, without failing
+the run; only for the (linker, case, target, test, debugger) measured, and only
+when the linked programs show the case (`spec/harness.md` "debug",
+"Linker exceptions"). The exceptions are listed in
+`docs/status/linkers.md` "Exceptions".
 
 ### Debug information (L7)
 
@@ -349,6 +406,14 @@ with the cross settings:
   (`LLVM_CONFIG_PATH`, `LLVM_NM`, `LLVM_READOBJ`), so no `NATIVE`
   sub-build is configured;
 - links get 16 GB of address space (mold maps -O0 archives whole);
+- job slots (WP-222, both `scripts/oss/llvm/` and `llvm-x64/`): ninja is
+  not a jobserver client, so the compiler wrapper takes one token of the
+  real-project pool (`MAKEFLAGS`, set by the scripts' `env.sh` to
+  `/run/hod/lanes.fifo`) per compile or link, and `lit.sh` (4) and
+  `unittests.sh` (1) take theirs, through `scripts/oss/llvm/lane-token.py`:
+  a blocking read of one byte per token, the same bytes written back once
+  on every exit (also SIGINT, SIGTERM, SIGHUP); hod inside counts the
+  first as its implicit slot. ninja's `-j` stays the upper bound;
 - tests: the container has no `binfmt_misc` entry, so unit-test binaries
   run as `qemu-x86_64 -L /usr/x86_64-linux-gnu <binary>`
   (`unittests.sh`), and `qemu-tools.sh` replaces each x86-64 tool of
@@ -411,7 +476,9 @@ quick gate; `HOD_REQUIRE_TOOLS=1` makes each missing one a failure
 
 **Release candidate:** all of the above with `HOD_REQUIRE_TOOLS=1`, on both
 targets, with every linker; L8 strict at the pass rate kiln achieves with
-`llc`; L9; a fuzzing budget with no open findings; and the support matrix
+`llc`; L9; the fuzzing budget (L10, "The budget": `cargo xtask fuzz
+--budget` on the candidate's frozen hod, fresh seeds) with no open
+findings; and the support matrix
 in `docs/status/` regenerated. The benchmark gate is not a condition of
 the first release (decided 2026-11-14): `docs/status/perf.md` stays as
 last measured, and the gate returns as a release condition with the

@@ -24,7 +24,7 @@ for rel in "$@"; do
     fi
     js="$HOD_OSS_ROOT/llvm-$f/logs/unit-$stage-$name.json"
     rm -f "$js"
-    (cd "$(dirname "$b")" && ulimit -v 4000000 && timeout 1800 nice -n 10 "$b" --gtest_output="json:$js" \
+    (cd "$(dirname "$b")" && ulimit -v 4000000 && timeout 1800 nice -n 10 python3 "$HOD_OSS_SCRIPTS/lane-token.py" "$b" --gtest_output="json:$js" \
       > "$HOD_OSS_ROOT/llvm-$f/logs/unit-$stage-$name.log" 2>&1)
     rc=$?
     python3 - "$js" "$rc" > "$lst" <<'EOF'

@@ -1255,6 +1255,18 @@ impl<'a, S: Sink> Walker<'a, S> {
             self.operand(cx, row, classes, site.callee_value(), at)?;
         }
         let asm_callee = matches!(site.callee_value().kind(), ValueKind::Asm(_));
+        // The exclusive accesses (WP-245) read their access size from
+        // the pointer's `elementtype`, as an inline-assembly operand does
+        // its type: the target judges it.
+        let reads_elementtype = matches!(
+            intrinsic,
+            Some(
+                Intrinsic::Aarch64Ldxr
+                    | Intrinsic::Aarch64Ldaxr
+                    | Intrinsic::Aarch64Stxr
+                    | Intrinsic::Aarch64Stlxr
+            )
+        );
         for (index, &arg) in site.args().iter().enumerate() {
             match arg.kind() {
                 // The one place a thread-local symbol may stand.
@@ -1271,7 +1283,7 @@ impl<'a, S: Sink> Walker<'a, S> {
             if has_attrs {
                 let theirs = of_param.get(index).copied().unwrap_or(ParamAttrs::NONE);
                 let own = site.arg_attrs(index);
-                if asm_callee && theirs.is_none() {
+                if (asm_callee || reads_elementtype) && theirs.is_none() {
                     self.param_attrs_slow(own, true, at)?;
                 } else {
                     self.call_attrs(own, theirs, at)?;

@@ -9,19 +9,29 @@
 # lists present, logs/lit-<slice>.diff in the hod tree is the comparison
 # and a summary line is printed: the tests that pass in the control and
 # fail with hod are the findings.
+#
+# WP-222: no slice starts below $HOD_OSS_MIN_FREE_GB (default 45) free on
+# the build root's volume (exit 3, naming the slice), and with
+# HOD_OSS_LIT_CLEAN=1 each slice's Output directories are deleted from
+# both trees after its lists are written.
 set -uo pipefail
 source "$(dirname "$0")/env.sh"
 which="${1:?usage: lit.sh hod|llc|both <slice>...}"
 shift
 case "$which" in both) trees="hod llc" ;; hod | llc) trees=$which ;; *) exit 2 ;; esac
 for slice in "$@"; do
+  free=$(df -BG --output=avail "$HOD_OSS_ROOT" | tail -1 | tr -dc 0-9)
+  if [ "$free" -lt "${HOD_OSS_MIN_FREE_GB:-45}" ]; then
+    echo "lit.sh: STOP before $slice: ${free}G free" >&2
+    exit 3
+  fi
   key=$(echo "$slice" | tr / _)
   for f in $trees; do
     b="$HOD_OSS_ROOT/llvm-$f/build"
     js="$HOD_OSS_ROOT/llvm-$f/logs/lit-$key.json"
     rm -f "$js"
     start=$(date +%s)
-    (ulimit -v 4000000 && timeout 10800 nice -n 10 python3 "$b/bin/llvm-lit" -sv -j 4 -o "$js" "$b/$slice" \
+    (ulimit -v 4000000 && timeout 10800 nice -n 10 python3 "$HOD_OSS_SCRIPTS/lane-token.py" -n 4 python3 "$b/bin/llvm-lit" -sv -j 4 -o "$js" "$b/$slice" \
       > "$HOD_OSS_ROOT/llvm-$f/logs/lit-$key.log" 2>&1)
     rc=$?
     echo "lit-$key $start $(date +%s) $rc" >> "$HOD_OSS_ROOT/llvm-$f/logs/stages.txt"
@@ -58,5 +68,12 @@ for n in sorted(set(c) | set(h)):
 EOF
     summ() { awk '!/^#/{n[$1]++} END{for(k in n) printf "%s %d ", k, n[k]}' "$1"; }
     echo "$slice: control: $(summ "$c")| hod: $(summ "$h")| regressions $(grep -c '^REGRESSION' "$HOD_OSS_ROOT/llvm-hod/logs/lit-$key.diff"), other differences $(grep -c '^differ' "$HOD_OSS_ROOT/llvm-hod/logs/lit-$key.diff")"
+    # Output kept while the slice has a regression (the findings need it).
+    if [ "${HOD_OSS_LIT_CLEAN:-0}" = 1 ] && [ ! -s "$HOD_OSS_ROOT/llvm-hod/logs/lit-$key.diff" ]; then
+      for f in hod llc; do
+        find "$HOD_OSS_ROOT/llvm-$f/build/$slice" -depth -path '*/Output/*' -delete 2>/dev/null
+        find "$HOD_OSS_ROOT/llvm-$f/build/$slice" -depth -type d -name Output -empty -delete 2>/dev/null
+      done
+    fi
   fi
 done

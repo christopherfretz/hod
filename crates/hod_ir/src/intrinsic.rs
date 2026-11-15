@@ -464,6 +464,18 @@ intrinsics! {
     Aarch64Frint64x = "llvm.aarch64.frint64x" [Ret],
     Aarch64Frint64z = "llvm.aarch64.frint64z" [Ret],
     Aarch64Fjcvtzs = "llvm.aarch64.fjcvtzs" [],
+    // The exclusive-access intrinsics of `<arm_acle.h>`'s `__ldrex` and
+    // `__strex` family and clang's `__builtin_arm_*ex` (WP-245): the
+    // access size is the pointer argument's `elementtype`.
+    Aarch64Ldxr = "llvm.aarch64.ldxr" [P(0)],
+    Aarch64Ldaxr = "llvm.aarch64.ldaxr" [P(0)],
+    Aarch64Stxr = "llvm.aarch64.stxr" [P(1)],
+    Aarch64Stlxr = "llvm.aarch64.stlxr" [P(1)],
+    Aarch64Ldxp = "llvm.aarch64.ldxp" [],
+    Aarch64Ldaxp = "llvm.aarch64.ldaxp" [],
+    Aarch64Stxp = "llvm.aarch64.stxp" [],
+    Aarch64Stlxp = "llvm.aarch64.stlxp" [],
+    Aarch64Clrex = "llvm.aarch64.clrex" [],
     // x86 target intrinsics (WP-173): the names clang 19 and 22 emit at
     // `-O0` for the SSE, SSE2, SSE3 and SSSE3 headers that hod builds.
     X86SseCmpSs = "llvm.x86.sse.cmp.ss" [],

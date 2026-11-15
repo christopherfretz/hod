@@ -21,4 +21,9 @@ export HOD_OSS_SCRIPTS="$_here"
 export HOD_OSS_SRC="${HOD_OSS_SRC:-$HOD_OSS_ROOT/llvm-src}"
 export HOD_OSS_FINDINGS="${HOD_OSS_FINDINGS:-$_ws/.build/findings/oss}"
 LLVM_TAG=llvmorg-19.1.7
-unset _here _wt _ws
+# Builds and tests draw from the real-project pool (WP-222; the brief's
+# "Two token pools"): wrap.sh, lit.sh and unittests.sh take their tokens
+# with lane-token.py from the fifo MAKEFLAGS names.
+_lanes="${HOD_OSS_JOBSERVER_FIFO:-/run/hod/lanes.fifo}"
+[ -p "$_lanes" ] && export MAKEFLAGS="--jobserver-auth=fifo:$_lanes"
+unset _here _wt _ws _lanes

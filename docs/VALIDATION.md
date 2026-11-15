@@ -118,7 +118,9 @@ Preparing (on the branch; nothing shared is written):
    whose tests run kiln++ (`hod`, `hod_cli`, `hod_a64`, `hod_dwarf`,
    `hod_ir`, `xtask`), `cargo xtask debug --frontend kiln --kiln
    <P>/kiln-target/release/kiln++`, and `cargo xtask debug verify
-   <P>/new/corpus`.
+   <P>/new/corpus` and `cargo xtask debug verify --target x86_64
+   <P>/new/corpus-x64` (without `--target x86_64` every module of the
+   x86-64 corpus is skipped).
 
 Switching (the supervisor, no gate in flight, in this order):
 

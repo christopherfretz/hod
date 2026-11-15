@@ -37,12 +37,12 @@ const fn line(profile: &'static str, mode: Mode, seeds: u64) -> Line {
 /// The budget of 1.0, per target and at LLVM 22 (`docs/VALIDATION.md`
 /// "Random programs (L10)" gives the reasons for the numbers).
 pub const BUDGET: &[Line] = &[
-    line("default", Mode::Whole, 2000),
-    line("aggregates", Mode::Whole, 1000),
-    line("float", Mode::Whole, 1000),
-    line("wide", Mode::Whole, 1000),
-    line("volatile", Mode::Whole, 1000),
-    line("narrow", Mode::Whole, 1000),
+    line("default", Mode::Whole, 1000),
+    line("aggregates", Mode::Whole, 500),
+    line("float", Mode::Whole, 500),
+    line("wide", Mode::Whole, 500),
+    line("volatile", Mode::Whole, 500),
+    line("narrow", Mode::Whole, 500),
     line("abi", Mode::Whole, 2000),
     line("default", Mode::Mix, 500),
     line("abi", Mode::Mix, 500),

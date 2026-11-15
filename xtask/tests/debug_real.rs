@@ -64,9 +64,13 @@ fn quick_tier_matches_llc() {
     // An XLINK (WP-248) is a listed case of a linker exception, nothing else:
     // on hosted x86-64, tls_static.c under wild (`tls-dtpoff-debug`).
     for r in report.records.iter().filter(|r| r.outcome == Outcome::Xlink) {
-        let linker = r.linker.as_deref().unwrap_or("-");
-        let target = irdiff::directives::Arch::host().map_or("", |a| a.name());
-        assert!(xtask::debug::xlink::expected(linker, target, &r.test).is_some(), "{r:?}");
+        let session = xtask::debug::xlink::Session {
+            linker: r.linker.as_deref().unwrap_or("-"),
+            debugger: r.debugger.as_deref().unwrap_or("-"),
+            target: irdiff::directives::Arch::host().map_or("", |a| a.name()),
+            test: &r.test,
+        };
+        assert!(xtask::debug::xlink::expected(session).is_some(), "{r:?}");
     }
     let finding = |r: &&sessions::Record| r.test.ends_with("tls_static.c");
     assert!(report.records.iter().filter(finding).all(|r| r.outcome != Outcome::Fail), "{summary}");

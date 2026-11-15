@@ -297,7 +297,7 @@ did not write; (c) a feature the linker says it does not support. In
 the debugger layer, a listed case that breaks the ORACLE's session (the
 `llc` program linked by that linker misses a check it meets with the
 other three) is reported as XLINK, counted and listed, without failing
-the run; only for the (linker, case, target, test) measured, and only
+the run; only for the (linker, case, target, test, debugger) measured, and only
 when the linked programs show the case (`spec/harness.md` "debug",
 "Linker exceptions"). The exceptions are listed in
 `docs/status/linkers.md` "Exceptions".

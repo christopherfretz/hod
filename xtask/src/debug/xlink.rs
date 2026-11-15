@@ -8,7 +8,7 @@
 //! broken) and fails the run. With it, a result is an XLINK when ALL of
 //! these hold:
 //!
-//! 1. [`EXPECTED`] lists the (linker, case, target, test);
+//! 1. [`EXPECTED`] lists the (linker, case, target, test, debugger);
 //! 2. the linker has that case in [`linkers::EXCEPTIONS`];
 //! 3. `llc`'s session lacks a check;
 //! 4. the case's witness ([`witness`]: a mechanical reading of the linked
@@ -39,23 +39,58 @@ pub struct Expected {
     pub target: &'static str,
     /// The test's file name in `tests/debug`.
     pub test: &'static str,
+    /// The debugger family (`gdb`, `lldb`: `lldb-19` and `lldb-22` too).
+    pub debugger: &'static str,
 }
 
-/// Every (linker, case, target, test) measured to break the oracle's
-/// session (`spec/landed/harness/WP-248.md`).
+/// Every (linker, case, target, test, debugger) measured to break the
+/// oracle's session (`spec/landed/harness/WP-248.md`).
 pub const EXPECTED: [Expected; 3] = [
-    Expected { linker: "wild", case: "tls-dtpoff-debug", target: "x86_64", test: "tls_static.c" },
-    Expected { linker: "wild", case: "plt-got-gdb", target: "aarch64", test: "stack_protector.c" },
-    Expected { linker: "wild", case: "plt-got-gdb", target: "aarch64", test: "hardening_a64.cpp" },
+    Expected {
+        linker: "wild",
+        case: "tls-dtpoff-debug",
+        target: "x86_64",
+        test: "tls_static.c",
+        debugger: "gdb",
+    },
+    Expected {
+        linker: "wild",
+        case: "plt-got-gdb",
+        target: "aarch64",
+        test: "stack_protector.c",
+        debugger: "gdb",
+    },
+    Expected {
+        linker: "wild",
+        case: "plt-got-gdb",
+        target: "aarch64",
+        test: "hardening_a64.cpp",
+        debugger: "gdb",
+    },
 ];
 
-/// The entry of [`EXPECTED`] for `test` (a path or a name) linked by
-/// `linker` for `target`, when the linker's exception lists its case.
-pub fn expected(linker: &str, target: &str, test: &str) -> Option<(Expected, &'static Exception)> {
-    let file = Path::new(test).file_name()?.to_str()?;
-    let entry =
-        EXPECTED.iter().find(|e| e.linker == linker && e.target == target && e.test == file)?;
-    Some((*entry, linkers::exception(linker, entry.case)?))
+/// Where a session ran: the linker, the debugger (`gdb`, `lldb-19`), the
+/// target's name and the test (a path or a file name).
+#[derive(Clone, Copy, Debug)]
+pub struct Session<'a> {
+    pub linker: &'a str,
+    pub debugger: &'a str,
+    pub target: &'a str,
+    pub test: &'a str,
+}
+
+/// The entry of [`EXPECTED`] for `session`, when the linker's exception
+/// lists its case.
+pub fn expected(session: Session<'_>) -> Option<(Expected, &'static Exception)> {
+    let file = Path::new(session.test).file_name()?.to_str()?;
+    let family = session.debugger.split('-').next().unwrap_or(session.debugger);
+    let entry = EXPECTED.iter().find(|e| {
+        e.linker == session.linker
+            && e.target == session.target
+            && e.test == file
+            && e.debugger == family
+    })?;
+    Some((*entry, linkers::exception(session.linker, entry.case)?))
 }
 
 /// Whether `program` shows the case: what the linker wrote that the
@@ -191,14 +226,27 @@ mod tests {
         assert!(!plt_got_only(header));
     }
 
+    fn at(
+        linker: &str,
+        debugger: &str,
+        target: &str,
+        test: &str,
+    ) -> Option<(Expected, &'static Exception)> {
+        expected(Session { linker, debugger, target, test })
+    }
+
     #[test]
     fn only_listed_cases_of_the_exceptions_are_expected() {
-        let (entry, exception) = expected("wild", "x86_64", "tests/debug/tls_static.c").unwrap();
+        let tls = "tests/debug/tls_static.c";
+        let (entry, exception) = at("wild", "gdb", "x86_64", tls).unwrap();
         assert_eq!((entry.case, exception.case), ("tls-dtpoff-debug", "tls-dtpoff-debug"));
-        assert!(expected("wild", "aarch64", "tests/debug/tls_static.c").is_none());
-        assert!(expected("bfd", "x86_64", "tests/debug/tls_static.c").is_none());
-        assert!(expected("wild", "x86_64", "tests/debug/stepping.c").is_none());
-        assert!(expected("wild", "aarch64", "hardening_a64.cpp").is_some());
+        assert!(at("wild", "gdb", "aarch64", tls).is_none());
+        assert!(at("bfd", "gdb", "x86_64", tls).is_none());
+        assert!(at("wild", "lldb-22", "x86_64", tls).is_none());
+        assert!(at("wild", "gdb", "x86_64", "tests/debug/stepping.c").is_none());
+        assert!(at("wild", "gdb", "aarch64", "hardening_a64.cpp").is_some());
+        // lldb steps over wild's PLT stubs: the case is gdb's only.
+        assert!(at("wild", "lldb-19", "aarch64", "hardening_a64.cpp").is_none());
         for entry in EXPECTED {
             assert!(linkers::exception(entry.linker, entry.case).is_some(), "{entry:?}");
             let none = Path::new("/nonexistent");
@@ -211,7 +259,7 @@ mod tests {
 
     #[test]
     fn an_excepted_error_is_an_xlink_and_nothing_else_is() {
-        let case = expected("wild", "x86_64", "tls_static.c");
+        let case = at("wild", "gdb", "x86_64", "tls_static.c");
         let why = "llc's session lacks the check '$1 = 6'";
         // Broken by the case, witnessed on both programs: XLINK.
         let v = verdict(case, Some(why), Some((true, true)));
@@ -226,7 +274,7 @@ mod tests {
             assert_eq!(apply(&v, Some(why), Outcome::Pass, String::new()).0, Outcome::Error);
         }
         // Not listed (another linker, target or test): an ERROR.
-        let v = verdict(expected("lld", "x86_64", "tls_static.c"), Some(why), Some((true, true)));
+        let v = verdict(at("lld", "gdb", "x86_64", "tls_static.c"), Some(why), Some((true, true)));
         assert_eq!(apply(&v, Some(why), Outcome::Fail, String::new()).0, Outcome::Error);
         // Not listed and the oracle usable: hod's result stands.
         let (outcome, detail) = apply(&Verdict::Stands, None, Outcome::Fail, "line 3".into());
@@ -235,7 +283,7 @@ mod tests {
 
     #[test]
     fn a_listed_case_that_passes_is_reported_stale() {
-        let case = expected("wild", "aarch64", "stack_protector.c");
+        let case = at("wild", "gdb", "aarch64", "stack_protector.c");
         let v = verdict(case, None, None);
         let Verdict::Stale(ref text) = v else { panic!("{v:?}") };
         assert!(text.contains("stale wild") && text.contains("`plt-got-gdb`"), "{text}");

@@ -3606,12 +3606,14 @@ sessions are judged by its checks (above). Nothing else is permitted.
 A case of `hod_testutil::linkers::EXCEPTIONS` ("Linkers") can break the
 ORACLE's session: `llc`'s object, linked by that linker, does not meet a
 check that it meets linked by every other linker (WP-248). The table
-`debug::xlink::EXPECTED` lists each (linker, case, target, test file)
-measured to do so. A hod variant's record is XLINK, and neither fails
-the run nor errs, when all of these hold:
+`debug::xlink::EXPECTED` lists each (linker, case, target, test file,
+debugger family: `gdb`, or `lldb` for every lldb) measured to do so. A
+hod variant's record is XLINK, and neither fails the run nor errs, when
+all of these hold:
 
-1. `EXPECTED` lists the linker, the target and the test's file name, and
-   `linkers::exception(linker, case)` lists the case;
+1. `EXPECTED` lists the linker, the target, the test's file name and the
+   session's debugger family, and `linkers::exception(linker, case)`
+   lists the case;
 2. `llc`'s session ended and does not meet a check;
 3. the case's witness (`xlink::witness`, a reading of the linked program
    with LLVM's tools) holds for `llc`'s program and for that variant's:

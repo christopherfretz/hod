@@ -819,8 +819,13 @@ impl Run<'_> {
                 };
                 // A broken session a linker exception explains is an XLINK
                 // (`super::xlink`); a listed case that is not broken, stale.
-                let case =
-                    xlink::expected(&linker.name, self.target_name(), &test_name(&test.path));
+                let test_path = test.path.to_string_lossy();
+                let case = xlink::expected(xlink::Session {
+                    linker: &linker.name,
+                    debugger: &debugger.name,
+                    target: self.target_name(),
+                    test: &test_path,
+                });
                 let fallback_tools;
                 let witness_tools = match self.line_tools {
                     Some(t) => Some(t),

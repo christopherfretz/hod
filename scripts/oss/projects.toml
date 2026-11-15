@@ -471,11 +471,18 @@ configure = ["-DBUILD_LIST=core,imgproc,ts", "-DBUILD_TESTS=ON", "-DBUILD_PERF_T
 # The image codec libraries (libjpeg-turbo, libpng, libwebp, ...) serve
 # imgcodecs only, which BUILD_LIST leaves out: off (kiln rejects their NEON
 # kernels and one libwebp C conversion, findings KILN-LIMITS-3.md 8-9).
-# OPENCV_TEST_DATA_PATH is not set (opencv_extra is not fetched): the tests
-# that need its data are skipped by the suite itself.
-test = "ctest --output-on-failure --timeout 9000"
+# Tests: opencv_test_core and opencv_test_imgproc only, with opencv_extra's
+# test data (4.14.0, cloned beside the sources). The build cannot be narrowed
+# further: modules/ts/CMakeLists.txt makes opencv_ts depend on imgcodecs,
+# videoio and highgui, so they are built whatever BUILD_LIST says; their
+# tests are left out instead (imgcodecs' segfault without codecs in every
+# tree, the control included).
+# (cloned by hand: `git clone --depth 1 -b 4.14.0
+# https://github.com/opencv/opencv_extra $HOD_OSS_ROOT/src/opencv_extra`;
+# the lane's environment exports HOD_OSS_ROOT).
+test = "OPENCV_TEST_DATA_PATH=$HOD_OSS_ROOT/src/opencv_extra/testdata ctest --output-on-failure --timeout 9000 -R '^opencv_test_(core|imgproc)$'"
 test_timeout = 10800
-notes = "WP-211. opencv_core and opencv_imgproc (with opencv_ts and the bundled zlib, C through kiln-cc), their accuracy tests opencv_test_core and opencv_test_imgproc. Natively NEON (and NEON_DOTPROD/FP16 dispatch where the CPU dispatch list has them); on x86-64 the dispatched files are compiled once per target (SSE2 .. AVX2, AVX-512) and dispatched at run time. No IPP, OpenCL, KleidiCV, Eigen, LAPACK (no downloads)."
+notes = "WP-211. opencv_core and opencv_imgproc (with opencv_ts and the bundled zlib, C through kiln-cc), their accuracy tests opencv_test_core and opencv_test_imgproc (run with opencv_extra 4.14.0's testdata). Natively NEON (and NEON_DOTPROD/FP16 dispatch where the CPU dispatch list has them); on x86-64 the dispatched files are compiled once per target (SSE2 .. AVX2, AVX-512) and dispatched at run time. No IPP, OpenCL, KleidiCV, Eigen, LAPACK (no downloads)."
 
 [grpc]
 url = "https://github.com/grpc/grpc"

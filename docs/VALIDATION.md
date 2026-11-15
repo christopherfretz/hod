@@ -207,6 +207,51 @@ skip without the tools; a planted calling-convention bug that only
 `--mix` can see shows the mode works. The numbers of the long runs are
 in `docs/status/fuzz.md`.
 
+**The budget** (WP-241) is what a release candidate runs: `cargo xtask
+fuzz --budget --seed <first> --hod <frozen hod> -j 4` (contract:
+`spec/harness.md` "Random programs", "Budget"). Per target (AArch64
+natively, x86-64 under `qemu-x86_64`), with clang and `llc` 22:
+
+| profile | mode | seeds |
+|---|---|---:|
+| `default` | whole | 1000 |
+| `aggregates`, `float`, `wide`, `volatile`, `narrow` | whole | 500 each |
+| `abi` | whole | 2000 |
+| `default` | `--mix` | 500 |
+| `abi` | `--mix` | 500 |
+| `default` | `--debug` | 500 |
+
+and with LLVM 19 a quarter of each line (250, 125 each, 500, 125, 125,
+125): 7000 seeds per target with LLVM 22, 1750 with 19, 17,500 in all,
+in 48 slices of at most 500 seeds. Why these numbers: the budget has to
+run on the shared reference machine (load about 20 to 30 on 24 cores,
+the shared jobserver's tokens mostly taken) in one working day at `-j 4`,
+one slice at a time. The smoke of WP-241 (20 seeds of every line on both
+targets) measured csmith's profiles at 10 to 200 programs per minute,
+dominated by the seeds whose programs run past the 5 s limit on both
+sides (about one in eight; each costs 10 s), and the `abi` profile at 75
+to 1200; at those rates twice the csmith seeds would not fit in 8 hours,
+so the csmith lines were halved and no profile or mode was dropped. The
+`abi` lines keep 2000 and 500: they are cheap and reach what csmith does
+not. The time limit stays 5 s (a shorter one would turn more seeds into
+skips).
+
+**Fresh seeds.** Every slice has its own range, disjoint from every
+other slice's (targets and LLVM majors included); the plan lays them out
+one after another from `--seed`. A candidate's first seed is the next
+multiple of 100,000, plus 1, above every seed an earlier budget or
+recorded run used; `docs/status/fuzz.md` names the ranges each measured
+candidate used (the runs of WP-154 and WP-160 used 1 to 2500; WP-241's
+budget 100001 to 117500, so the next candidate starts at 200001).
+
+**Met** when the run on the candidate's frozen hod has no finding left
+open: each is fixed (with a regression test in the crate that owns the
+defect), or shown not to be hod's (`llc`, clang, csmith's undefined
+behaviour, the harness, a timeout of the loaded machine that does not
+happen when the seed runs alone) with its evidence on the page. A
+refusal is coverage, not a finding; errors (the oracle's side) are
+listed and explained.
+
 ### Real projects (L9)
 
 Open-source projects built through their own build systems with kiln as
@@ -390,7 +435,9 @@ quick gate; `HOD_REQUIRE_TOOLS=1` makes each missing one a failure
 
 **Release candidate:** all of the above with `HOD_REQUIRE_TOOLS=1`, on both
 targets, with every linker; L8 strict at the pass rate kiln achieves with
-`llc`; L9; a fuzzing budget with no open findings; and the support matrix
+`llc`; L9; the fuzzing budget (L10, "The budget": `cargo xtask fuzz
+--budget` on the candidate's frozen hod, fresh seeds) with no open
+findings; and the support matrix
 in `docs/status/` regenerated. The benchmark gate is not a condition of
 the first release (decided 2026-11-14): `docs/status/perf.md` stays as
 last measured, and the gate returns as a release condition with the

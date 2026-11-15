@@ -3939,6 +3939,49 @@ results file, `<out>/results-<run>.tsv`, one line per seed: seed,
 flavour, verdict, detail, the oracle's run time in ms; in `--census` the
 census table.
 
+### Budget
+
+`cargo xtask fuzz --budget --seed <first> --hod <binary> [--target T]
+[-j J] [--linker L] [--timeout S] [--reduce-budget P] [--out <dir>]
+[--plan]` (WP-241, `xtask/src/fuzz/budget.rs`) runs the release
+budget (`docs/VALIDATION.md` "Random programs (L10)", "The budget"):
+
+- **The plan** is a function of `--seed` alone: LLVM 22 then 19; within
+  each, AArch64 then x86-64; within each, the lines of `budget::BUDGET`
+  in order (profile, mode, seeds per target at LLVM 22; LLVM 19 runs
+  `ceil(seeds / 4)`); each line cut into slices of at most 500 seeds.
+  Each slice's seeds start where the previous slice's end, so no two
+  slices share a seed. `--target` keeps that target's slices with the
+  same ranges. `--plan` prints the slices and runs nothing.
+- `--seed` and `--hod` are required (`--hod` not with `--plan`): the
+  candidate's fresh range and the frozen binary measured. `--count`,
+  `--profile`, `--mix`, `--debug` and `--census` are refused (exit 2);
+  the other options go to every slice. `--llvm` is ignored: the budget
+  runs both.
+- **One slice at a time**, each a run of the command ("Options") with
+  the slice's target, LLVM, profile, mode and seeds, `-j` seeds at once,
+  under the jobserver as every run.
+- **Resumable**: `<out>/budget.tsv` has a header line and one line per
+  finished slice, appended (and synced) when the slice ends: target,
+  LLVM, profile, mode, `first-last`, agree, refused, skipped, error,
+  finding, minutes, then the refusals and the skips as `name=count`
+  joined by `,` (`-` for none), the findings as `seed:kind:directory`
+  and the errors as `seed:detail` (cut to 160 characters) joined by `;`.
+  At the start the file is read and rewritten without any line that does
+  not parse (a write cut short); a slice whose key (the first five
+  fields) is there is not run again; an interrupted slice runs again
+  whole. The slice's per-seed results file is kept as
+  `<out>/results/<target>-<llvm>-<profile>-<mode>-<first>-<last>.tsv`;
+  findings are saved as in any run, under `<out>/findings/`.
+- **The table**: `<out>/budget.md`, rewritten after every slice: the
+  slices run of those planned; seeds, the verdicts, minutes and programs
+  per minute per target and LLVM and in all, then per target, LLVM,
+  profile and mode with the seed ranges; the refusals and the skips
+  added by name; every finding and every error with its slice.
+- Exit status: 1 when a row has a finding, 3 when one has an error and
+  none a finding, 0 otherwise; 3 also when a slice cannot run (a missing
+  tool), with the rows so far kept.
+
 ### In the gate
 
 `cargo xtask ci` does not run the command: csmith is not a required tool.
@@ -3959,6 +4002,12 @@ when their tools are missing, whatever `HOD_REQUIRE_TOOLS` says:
   reduced with the split kept, with a seed of two modules;
 - `the_census_of_the_abi_profile` (clang 22): the ABI generator's
   programs have variadic definitions, `i128`, `va_start` and `sret`.
+
+`xtask/tests/fuzz_budget.rs` tests the budget's own logic with a
+stand-in for a slice's run (no tools, nothing generated or compiled):
+the plan's ranges and counts, resuming after an interruption and after
+a line cut short, a row read back as written, the table's sums and
+census, and the options.
 
 A sweep runs fixed ranges, for example per target `cargo xtask fuzz
 --seed 1 --count 200 -j 4`, `--mix --count 200`, `--debug --count 100`

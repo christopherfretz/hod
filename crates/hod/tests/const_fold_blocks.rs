@@ -7,8 +7,12 @@
 //!   `indirectbr`, `callbr`, `switch`, `musttail`, an `invoke` and its
 //!   landing pad), on both targets, the undefined symbols of hod's
 //!   object are those of `llc` 19's and 22's;
-//! - `refusals`: the four rewrites hod does not model are declined by
-//!   name, and only in a function where blocks are deleted;
+//! - `kept_rewrites` (WP-269): the four rewrites hod does not model keep
+//!   their instruction as written; the program links without the dead
+//!   arm's callee and prints what `llc`'s prints, on both targets;
+//! - `kept_nounwind_invoke_unit` (WP-269): the reduced unit of the
+//!   finding compiles on both targets, its undefined symbols `llc`'s plus
+//!   the personality routine of the kept landing pad;
 //! - `debug_info`: `clang-22 -g` sources whose dead arm has a line and a
 //!   local: hod's object verifies, has no row at the dead line, the
 //!   lines `llc` has, and no DIE for the dead local.
@@ -19,7 +23,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use hod::{CompileError, OutputKind, Report, Settings, compile_with};
-use hod_testutil::{Scratch, run_with, tool, tools_required};
+use hod_testutil::{Scratch, Target, run_with, tool, tools_required};
 
 const TRIPLES: [&str; 2] = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"];
 
@@ -348,49 +352,153 @@ fn undefined_symbols_equal_llc() {
     }
 }
 
-/// A function in which a folded `br` deletes a block, followed by
-/// `tail`, which `llc` would rewrite and hod does not model.
-fn refused(tail: &str, decls: &str) -> String {
+/// A program whose `@f` folds a `br` that deletes a block calling the
+/// undefined `@dead`, followed by `tail`, which `llc` would rewrite and
+/// hod keeps as written (WP-269). `main` prints `f(1)`.
+fn kept(tail: &str, decls: &str) -> String {
     format!(
         "declare i1 @llvm.is.constant.i32(i32)\ndeclare void @dead()\n\
-         declare i32 @__gxx_personality_v0(...)\n{decls}\n\
-         define void @f(i32 %x) personality ptr @__gxx_personality_v0 {{\ne:\n  \
+         declare i32 @__gxx_personality_v0(...)\ndeclare i32 @printf(ptr, ...)\n\
+         @fmt = private constant [4 x i8] c\"%d\\0A\\00\"\n{decls}\n\
+         define i32 @f(i32 %x) personality ptr @__gxx_personality_v0 {{\ne:\n  \
          %c = call i1 @llvm.is.constant.i32(i32 %x)\n  br i1 %c, label %d, label %l\n\
-         d:\n  call void @dead()\n  br label %l\nl:\n{tail}\n}}\n"
+         d:\n  call void @dead()\n  br label %l\nl:\n{tail}\n}}\n\
+         define i32 @main() {{\n  %v = call i32 @f(i32 1)\n  \
+         %p = call i32 (ptr, ...) @printf(ptr @fmt, i32 %v)\n  ret i32 0\n}}\n"
     )
 }
 
+/// The four rewrites of `markAliveBlocks` hod does not model: name, tail
+/// of `@f`, declarations, what the program prints.
+const KEPT: [(&str, &str, &str, &str); 4] = [
+    (
+        // Reached only for `x == 12345`, which `main` does not pass.
+        "null-access",
+        "  %z = icmp eq i32 %x, 12345\n  br i1 %z, label %n, label %r\n\
+         n:\n  call void null()\n  store i32 0, ptr null\n  ret i32 0\nr:\n  ret i32 4",
+        "",
+        "4\n",
+    ),
+    (
+        "nounwind-invoke",
+        "  %v = invoke i32 @nw(i32 %x) to label %r unwind label %p\nr:\n  ret i32 %v\n\
+         p:\n  %lp = landingpad { ptr, i32 } cleanup\n  ret i32 -1",
+        "define i32 @nw(i32 %v) nounwind {\n  %r = add i32 %v, 6\n  ret i32 %r\n}",
+        "7\n",
+    ),
+    (
+        "noreturn-invoke",
+        "  invoke void @nr(i32 %x) to label %r unwind label %p\nr:\n  ret i32 9\n\
+         p:\n  %lp = landingpad { ptr, i32 } cleanup\n  ret i32 -1",
+        "declare void @exit(i32)\ndefine void @nr(i32 %v) noreturn {\n  \
+         %p = call i32 (ptr, ...) @printf(ptr @fmt, i32 %v)\n  call void @exit(i32 0)\n  \
+         unreachable\n}",
+        "1\n",
+    ),
+    (
+        "indirectbr",
+        "  indirectbr ptr blockaddress(@f, %t), [label %t, label %u]\nt:\n  ret i32 5\n\
+         u:\n  ret i32 6",
+        "",
+        "5\n",
+    ),
+];
+
+/// Links `object` with the C++ driver of `target` (the personality
+/// routine) and runs it, under the emulator off its host; its output,
+/// or `None` without the tools.
+fn link_and_run(scratch: &Scratch, target: Target, tag: &str, object: &Path) -> Option<String> {
+    let gxx = target.tool("g++")?;
+    let program = scratch.join(tag);
+    let mut link = Command::new(gxx);
+    link.args(["-no-pie", "-o"]).arg(&program).arg(object);
+    output(&mut link);
+    let mut run = if target.is_host() {
+        Command::new(&program)
+    } else {
+        let (emulator, root) = (target.tool("emulator")?, target.tool("sysroot")?);
+        let mut run = Command::new(emulator);
+        run.args(target.emulator_args(&root)).arg(&program);
+        run
+    };
+    Some(output(&mut run))
+}
+
+/// WP-269: the folding never refuses. Each rewrite hod does not model
+/// keeps its instruction: the object compiles, the dead arm is still
+/// gone (the program links without `@dead`), its undefined symbols are
+/// `llc`'s plus at most the personality routine of a kept landing pad,
+/// and it prints what `llc`'s object prints.
 #[test]
-fn refusals() {
-    let cases = [
-        ("intrinsic:const-fold-null-access", "  store i32 0, ptr null\n  ret void", ""),
-        (
-            "intrinsic:const-fold-nounwind-invoke",
-            "  invoke void @nw() to label %r unwind label %p\nr:\n  ret void\n\
-             p:\n  %lp = landingpad { ptr, i32 } cleanup\n  ret void",
-            "declare void @nw() nounwind",
-        ),
-        (
-            "intrinsic:const-fold-noreturn-invoke",
-            "  invoke void @nr() to label %r unwind label %p\nr:\n  ret void\n\
-             p:\n  %lp = landingpad { ptr, i32 } cleanup\n  ret void",
-            "declare void @nr() noreturn",
-        ),
-        (
-            "intrinsic:const-fold-indirectbr",
-            "  indirectbr ptr blockaddress(@f, %t), [label %t]\nt:\n  ret void",
-            "",
-        ),
-    ];
-    for triple in TRIPLES {
-        for (name, tail, decls) in cases {
-            let text = module(triple, &refused(tail, decls));
-            let error = compile(&text).expect_err(name).to_string();
-            assert!(error.contains(&format!("'{name}'")), "{triple}: {name}: {error}");
-            // Without a deleted block (the dead arm gone), the same tail
-            // is compiled as before.
+fn kept_rewrites() {
+    let (Some(nm), Some(llc19), Some(llc22)) = (tool("llvm-nm-22"), tool("llc-19"), tool("llc-22"))
+    else {
+        assert!(!tools_required(), "llvm-nm-22, llc-19 and llc-22 are required");
+        eprintln!("note: no llvm-nm-22, llc-19 or llc-22; skipping");
+        return;
+    };
+    let scratch = Scratch::new("const_fold_kept");
+    for (triple, target) in TRIPLES.into_iter().zip([Target::X86_64, Target::Aarch64]) {
+        let arch = target.name();
+        for (name, tail, decls, expected) in KEPT {
+            let text = module(triple, &kept(tail, decls));
+            let tag = format!("{name}-{arch}");
+            let object = compile(&text).unwrap_or_else(|e| panic!("{tag}: {e}"));
+            let object = scratch.write(&format!("{tag}.hod.o"), object);
+            let ours = undefined(&nm, &object);
+            assert!(!ours.contains("dead"), "{tag}: the dead arm is emitted");
+            let input = scratch.write(&format!("{tag}.ll"), &text);
+            for (v, llc) in [("19", &llc19), ("22", &llc22)] {
+                let out = scratch.join(format!("{tag}.llc{v}.o"));
+                llc_object(llc, triple, &input, &out);
+                let theirs = undefined(&nm, &out);
+                assert!(theirs.is_subset(&ours), "{tag}: llc {v}'s {theirs:?}, hod's {ours:?}");
+                assert!(
+                    ours.difference(&theirs).all(|s| s == "__gxx_personality_v0"),
+                    "{tag}: llc {v}'s {theirs:?}, hod's {ours:?}"
+                );
+                if v == "22"
+                    && let Some(printed) =
+                        link_and_run(&scratch, target, &format!("{tag}.llc"), &out)
+                {
+                    assert_eq!(printed, expected, "{tag}: llc 22's program");
+                }
+            }
+            if let Some(printed) = link_and_run(&scratch, target, &tag, &object) {
+                assert_eq!(printed, expected, "{tag}: hod's program");
+            }
+            // Without a deleted block the same tail compiles as before.
             let live = text.replace("br i1 %c, label %d, label %l", "br i1 %c, label %l, label %l");
-            compile(&live).unwrap_or_else(|e| panic!("{triple}: {name} without a fold: {e}"));
+            compile(&live).unwrap_or_else(|e| panic!("{tag} without a fold: {e}"));
+        }
+    }
+}
+
+/// WP-269's finding, reduced from a kiln-built unit: an `invoke` of a
+/// `noreturn nounwind` callee after a folded branch compiles on both
+/// targets; hod keeps the landing pad, so its undefined symbols are
+/// `llc`'s plus the personality routine.
+#[test]
+fn kept_nounwind_invoke_unit() {
+    let text = include_str!("data/const_fold/kept_nounwind_invoke.ll");
+    let tools = (tool("llvm-nm-22"), tool("llc-19"), tool("llc-22"));
+    if tools.0.is_none() || tools.1.is_none() || tools.2.is_none() {
+        assert!(!tools_required(), "llvm-nm-22, llc-19 and llc-22 are required");
+    }
+    let scratch = Scratch::new("const_fold_kept_unit");
+    for triple in TRIPLES {
+        let arch = &triple[..triple.find('-').unwrap()];
+        let text = module(triple, text);
+        let object = compile(&text).unwrap_or_else(|e| panic!("{arch}: {e}"));
+        let (Some(nm), Some(llc19), Some(llc22)) = &tools else { continue };
+        let ours = undefined(nm, &scratch.write(&format!("unit-{arch}.hod.o"), object));
+        let input = scratch.write(&format!("unit-{arch}.ll"), &text);
+        for (v, llc) in [("19", llc19), ("22", llc22)] {
+            let out = scratch.join(format!("unit-{arch}.llc{v}.o"));
+            llc_object(llc, triple, &input, &out);
+            let mut theirs = undefined(nm, &out);
+            theirs.insert("__gxx_personality_v0".to_owned());
+            assert_eq!(ours, theirs, "{arch}: hod's, then llc {v}'s plus the personality");
         }
     }
 }

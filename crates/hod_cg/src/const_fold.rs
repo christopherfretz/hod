@@ -19,6 +19,12 @@
 //!    through `undef`, and at a store to `undef`; folds a terminator on a
 //!    constant (`br`, `switch`); and deletes every block it did not reach.
 //!    Otherwise `llc`'s later pass deletes the blocks no longer reachable.
+//!    The walk's other rewrites (a store to or a call/`invoke` through
+//!    `null`, an `invoke` through `undef`, an `invoke` of a `nounwind` or
+//!    `noreturn` callee, an `indirectbr` on a `blockaddress`) are not
+//!    modelled: hod keeps the instruction as written with all its edges,
+//!    so it emits a superset of `llc`'s blocks (WP-269). The folding
+//!    never refuses a function.
 //!
 //! The result is per instruction an [`Action`], and the set of blocks
 //! emitted. A function without those calls costs a look at its call
@@ -30,22 +36,7 @@ use hod_ir::{
     Intrinsic, Module, Opcode, SymbolKind, TailKind, TypeId, TypeKind, Value, ValueKind,
 };
 
-use crate::error::{CgError, CgResult};
-
-/// A store to, or a call or `invoke` through, `null` in a function whose
-/// blocks the folding changes: `llc` ends the block there unless the
-/// function has `null_pointer_is_valid`, which hod's IR does not keep.
-pub const NULL_ACCESS: &str = "intrinsic:const-fold-null-access";
-/// An `invoke` of a `nounwind` callee in a function whose blocks the
-/// folding changes: `llc` turns it into a call and drops the unwind edge.
-pub const NOUNWIND_INVOKE: &str = "intrinsic:const-fold-nounwind-invoke";
-/// An `invoke` of a `noreturn` callee whose normal destination does not
-/// start with `unreachable`, in a function whose blocks the folding
-/// changes: `llc` gives it a new, unreachable normal destination.
-pub const NORETURN_INVOKE: &str = "intrinsic:const-fold-noreturn-invoke";
-/// An `indirectbr` on a constant `blockaddress` in a function whose
-/// blocks the folding changes: `llc` turns it into a `br`.
-pub const INDIRECTBR: &str = "intrinsic:const-fold-indirectbr";
+use crate::error::CgResult;
 
 /// What the target does with an instruction of the function.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -227,11 +218,6 @@ fn no_return(module: &Module, site: &CallSite<'_>) -> bool {
         )
 }
 
-/// `CallBase::doesNotThrow`; an intrinsic is `nounwind`.
-fn no_unwind(module: &Module, site: &CallSite<'_>) -> bool {
-    site.is_nounwind() || callee_has(module, site, FnAttrs::NOUNWIND) || site.intrinsic().is_some()
-}
-
 /// The analysis of one function, and its buffers (part of [`crate::Scratch`]).
 #[derive(Default, Debug)]
 pub struct Lci {
@@ -279,10 +265,11 @@ pub struct Folding {
 /// takes them.
 ///
 /// # Errors
-/// The refusals of this module.
+/// None: the folding never refuses a function (WP-269); the `Result`
+/// stays for the callers.
 pub fn analyse(module: &Module, body: &Body) -> CgResult<Folding> {
     let mut lci = Lci::default();
-    lci.plan(module, body)?;
+    lci.plan(module, body);
     let actions = body.insts().map(|inst| lci.action(inst.id())).collect();
     let mut plain = vec![false; body.block_count()];
     let mut work = vec![body.entry()];
@@ -349,15 +336,12 @@ impl Lci {
         if self.active { self.action.get(i).copied().unwrap_or_default() } else { Action::Emit }
     }
 
-    /// Decides everything for `body`.
-    ///
-    /// # Errors
-    /// The refusals of this module.
-    pub(crate) fn plan(&mut self, module: &Module, body: &Body) -> CgResult<()> {
+    /// Decides everything for `body`; never refuses (WP-269).
+    pub(crate) fn plan(&mut self, module: &Module, body: &Body) {
         self.active = false;
         self.drops = false;
         if !body.calls().any(|site| folds(&site)) {
-            return Ok(());
+            return;
         }
         let n = body.inst_count();
         self.lat.clear();
@@ -371,13 +355,12 @@ impl Lci {
         self.active = self.action.iter().any(|&a| a != Action::Emit);
         if self.active {
             if has_dead {
-                self.mark_alive(module, body)?;
+                self.mark_alive(module, body);
             } else {
                 self.walk(body);
             }
         }
         self.drops = self.decide(body);
-        Ok(())
     }
 
     /// Users, the block of each instruction, predecessor counts.
@@ -742,7 +725,7 @@ impl Lci {
     }
 
     /// Step 3: `markAliveBlocks`, in its order.
-    fn mark_alive(&mut self, module: &Module, body: &Body) -> CgResult<()> {
+    fn mark_alive(&mut self, module: &Module, body: &Body) {
         self.reach.clear();
         self.reach.resize(body.block_count(), false);
         self.reach[body.entry().index()] = true;
@@ -753,15 +736,13 @@ impl Lci {
             for inst in block.insts() {
                 match inst.kind() {
                     InstKind::Call(site) if inst.opcode() == Opcode::Call => {
-                        if let Callee::Value(callee) = site.callee() {
-                            match ptr_kind(module, callee) {
-                                Ptr::Null => return Err(CgError::unsupported(NULL_ACCESS)),
-                                Ptr::Undef => {
-                                    stop = Some(inst.id());
-                                    break;
-                                }
-                                Ptr::Other => {}
-                            }
+                        // A call through `null` is kept as written
+                        // (WP-269); `llc` would end the block here.
+                        if let Callee::Value(callee) = site.callee()
+                            && ptr_kind(module, callee) == Ptr::Undef
+                        {
+                            stop = Some(inst.id());
+                            break;
                         }
                         if no_return(module, &site) && site.tail() != TailKind::MustTail {
                             let next = InstId::new(inst.id().raw() + 1);
@@ -771,15 +752,12 @@ impl Lci {
                             break;
                         }
                     }
-                    InstKind::Store { ptr, mem, .. } if !mem.is_volatile() => {
-                        match ptr_kind(module, ptr) {
-                            Ptr::Null => return Err(CgError::unsupported(NULL_ACCESS)),
-                            Ptr::Undef => {
-                                stop = Some(inst.id());
-                                break;
-                            }
-                            Ptr::Other => {}
-                        }
+                    // A store to `null` is kept as written (WP-269).
+                    InstKind::Store { ptr, mem, .. }
+                        if !mem.is_volatile() && ptr_kind(module, ptr) == Ptr::Undef =>
+                    {
+                        stop = Some(inst.id());
+                        break;
                     }
                     _ => {}
                 }
@@ -788,7 +766,7 @@ impl Lci {
                 self.end_block(module, body, b, stop);
                 continue;
             }
-            self.alive_terminator(module, body, b)?;
+            self.alive_terminator(module, body, b);
             for s in self.succs(body, b) {
                 if !self.reach[s.index()] {
                     self.reach[s.index()] = true;
@@ -796,33 +774,17 @@ impl Lci {
                 }
             }
         }
-        Ok(())
     }
 
-    /// Step 3 at the terminator of `b`: the `invoke` rewrites hod
-    /// declines, and `ConstantFoldTerminator`.
-    fn alive_terminator(&mut self, module: &Module, body: &Body, b: BlockId) -> CgResult<()> {
+    /// Step 3 at the terminator of `b`: `ConstantFoldTerminator`. An
+    /// `invoke` (through `null` or `undef`, of a `nounwind` or `noreturn`
+    /// callee) and an `indirectbr` on a `blockaddress` are kept as
+    /// written with all their edges (WP-269): `llc` rewrites them, hod
+    /// emits them as it does outside the folding.
+    fn alive_terminator(&mut self, module: &Module, body: &Body, b: BlockId) {
         let term = body.block(b).terminator();
         let t = term.id().index();
         match term.kind() {
-            InstKind::Call(site) if term.opcode() == Opcode::Invoke => {
-                if let Callee::Value(callee) = site.callee()
-                    && ptr_kind(module, callee) != Ptr::Other
-                {
-                    return Err(CgError::unsupported(NULL_ACCESS));
-                }
-                let normal = term.successors().next();
-                if no_return(module, &site)
-                    && normal.is_some_and(|n| {
-                        body.block(n).insts().next().map(Inst::opcode) != Some(Opcode::Unreachable)
-                    })
-                {
-                    return Err(CgError::unsupported(NORETURN_INVOKE));
-                }
-                if no_unwind(module, &site) {
-                    return Err(CgError::unsupported(NOUNWIND_INVOKE));
-                }
-            }
             // `ConstantFoldTerminator`.
             InstKind::CondBr { cond, if_true, if_false } if self.action[t] == Action::Emit => {
                 if if_true == if_false {
@@ -859,16 +821,8 @@ impl Lci {
                     self.action[t] = Action::Jump(dest);
                 }
             }
-            InstKind::IndirectBr { addr, .. }
-                if addr
-                    .as_const()
-                    .is_some_and(|id| matches!(module.consts.get(id), Const::BlockAddr { .. })) =>
-            {
-                return Err(CgError::unsupported(INDIRECTBR));
-            }
             _ => {}
         }
-        Ok(())
     }
 
     /// Whether the edge `pred -> block` is taken in the emitted code.

@@ -1,0 +1,13 @@
+# sh run.sh on the shared AArch64 host, 2026-11-14 (qemu-i386 10.0.13,
+# ld.lld 22.1.8, mold, GNU ld 2.44 as x86_64-linux-gnu-ld.bfd, wild 0.11.0)
+ld.lld static: exit 42
+mold static: exit 42
+x86_64-linux-gnu-ld.bfd static: exit 42
+wild: error: Emulation 'elf_i386' is not yet supported (from -m)
+ld.lld pie: exit 139   (GOT32X not relaxed: `movl -0x4(%ebx), %eax` through a GOT
+                        slot that only an R_386_RELATIVE fills; no loader here)
+mold pie: exit 42      (GOT32X relaxed to `leal 0x1008(%ebx), %eax`)
+x86_64-linux-gnu-ld.bfd pie: exit 42  (GOT32X relaxed to `leal 0xc(%ebx), %eax`)
+# t.<linker>.dis: all three relax the GD sequence (leal x@tlsgd(,%ebx,1), %eax;
+# calll ___tls_get_addr@PLT) to `movl %gs:0, %eax; subl $off, %eax` (mold:
+# addl), and the LD sequence to `movl %gs:0, %eax` plus a 6-byte nop.

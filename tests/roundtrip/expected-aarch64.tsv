@@ -1,4 +1,4 @@
 # The corpus entries that do not survive `cargo xtask roundtrip` today, by
 # outcome (spec/harness.md "roundtrip"). An entry not listed must pass.
 # Fields: entry, outcome, detail (for the reader; not compared).
-# corpus: 6460 entries, MANIFEST.tsv sha256 68d590c88947cc40e49621393715c5054b9d701c5d313f18dbfa24979733a3e2
+# corpus: 6468 entries, MANIFEST.tsv sha256 23e5179f4f82dae21209d3cac534eda8f5d4cb626c6d57486caa79ffb72e943f

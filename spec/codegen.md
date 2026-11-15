@@ -6046,6 +6046,27 @@ exit:                           after the epilogue, with the other tail exits:
   does that itself; an `oracle-skip` of `spec/harness.md`). hod's
   program prints the expected output.
 
+*Suspend points in unreachable blocks* (WP-262). The plan numbers every
+`coro.suspend` of the body, reachable or not (instruction order, the
+final suspend last), and `coro_setup` gives each a re-entry label. A
+suspend whose block the driver does not emit (a block without a path
+from the entry: the final suspend of a body that never falls off its
+end and whose `unhandled_exception` does not return, a suspend after a
+`goto` past it, or one in any other block the driver does not reach)
+gets no code, so its label is never bound. Such a suspend's `coro.save`
+never runs either (it is in the same block, or in a block that leads
+only to it, which is then not emitted either; with an `invoke`d
+wrapper, the suspend is in the invoke's normal destination), so no
+frame ever holds its index. The rule: the stubs dispatch only to the
+re-entry labels of the suspends that were emitted (`FnCx::coro_reentry`
+records the emission, `FnCx::coro_reentries` lists only those); the
+indices of the others are unchanged, and an index no emitted suspend
+stores reaches the stub's trap. "Emitted" is the driver's own decision
+(whatever block or instruction it skips), not a second reachability
+analysis. Before WP-262 the dispatch branched to the unbound labels and
+the function was an internal error ("a label that code refers to was
+never bound").
+
 *Hooks.* `Target::CORO_BODIES`, `Target::coro_stubs`,
 `Target::coro_dispatch`, `Target::coro_transfer`; `FnCx::coro_*` for the
 target; one call each in the driver (`coro_plan`, `coro_setup`,

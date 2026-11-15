@@ -2947,9 +2947,9 @@ Refused names: `x64:intrinsic` (an intrinsic not listed), and also
 `x64:intrinsic-wide` (a width above 128, or i128 where only `Int` is
 on), `x64:intrinsic-vector`, `x64:mem-inline-length` (an `.inline` form
 with a variable length), `x64:frame-depth`, `x64:eh-typeid`,
-`x64:inline-asm` (a `callbr` whose template is not empty; other
-templates are §5.6.28's since WP-187), and
-`x64:inline-asm-{output,outputs,constraint,clobber,operand,bundle}`.
+and `x64:inline-asm-{output,outputs,constraint,clobber,operand,bundle}`
+(a template that is not empty is §5.6.28's since WP-187, in a `callbr`
+too since WP-254; `x64:inline-asm` is retired).
 
 Evidence: `crates/hod_x64/tests/intrinsic.rs` and `tests/barrier.rs`,
 summarized in `spec/landed/codegen/WP-128.md`.
@@ -3888,8 +3888,9 @@ Evidence: `spec/landed/codegen/WP-173.md`.
    edge: the indirect destinations are blocks like any other, emitted
    because they are successors, entered only from elsewhere (a branch,
    an `indirectbr` through their `blockaddress`), as `llc` builds them.
-   A template that assembles to something stays `x64:inline-asm` (no
-   assembler). A destination's `phi` that takes the result is written
+   A template that assembles to something is §5.6.28's since WP-254:
+   its branches to the labels go through per-destination trampolines
+   (`spec/asm.md` §21). A destination's `phi` that takes the result is written
    on the fallthrough edge after the result (§4.5; the refusal
    `x64:callbr-result-phi` of the first landing is retired: WP-181).
    AArch64 builds `callbr` through its assembler (§5.5.3) and is not
@@ -4283,8 +4284,9 @@ or the registers of a class: `x64:inline-asm-operands`.
 
 **Refused.** `inteldialect` (`x64:inline-asm-intel`), `unwind` on an
 `invoke` (`x64:inline-asm-unwind`), a bundle (`x64:inline-asm-bundle`),
-a `callbr` with a template (`x64:inline-asm`), `asm goto` labels in a
-call, a symbol outside a memory operand (`asm:operand/symbol`), and
+in a `callbr` with a template (WP-254, `spec/asm.md` §21) a label
+referred to other than by a branch and x87 operands
+(`x64:inline-asm-goto`), `asm goto` labels in a call, a symbol outside a memory operand (`asm:operand/symbol`), and
 `hod_asm`'s `asm:*` names.
 
 Evidence: `crates/hod_asm/tests/llvm_mc_x64.rs`,

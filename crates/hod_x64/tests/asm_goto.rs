@@ -1,4 +1,4 @@
-//! `asm goto` with a template on x86-64 (WP-254, `spec/asm.md` §20): a
+//! `asm goto` with a template on x86-64 (WP-254, `spec/asm.md` §21): a
 //! `callbr` whose template branches to its label operands. The template
 //! is assembled as any other (WP-187); each branch to a label goes to a
 //! trampoline that writes the outputs and that edge's `phi`s, then to

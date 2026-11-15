@@ -31,7 +31,7 @@
 //! 6. The result is loaded from its output slot, or the fields of the
 //!    struct of several are copied from theirs.
 //!
-//! # `asm goto` (WP-254, `spec/asm.md` §20)
+//! # `asm goto` (WP-254, `spec/asm.md` §21)
 //!
 //! A `callbr`'s label operands (`!i`) print as `.Lhod_asm_goto_<n>`, the
 //! `n`th indirect destination, whatever the modifier (`llc` prints the

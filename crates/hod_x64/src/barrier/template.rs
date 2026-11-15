@@ -5,9 +5,9 @@
 //! assembled by `hod_asm::x64` (every byte is one hod parsed and
 //! encoded), and the outputs are taken back.
 //!
-//! **Owner: WP-187.** Tests: `tests/inline_asm.rs`. Hook:
-//! `barrier::asm`, for a template that is not empty (a `callbr` with one
-//! stays [`INLINE_ASM`](super::INLINE_ASM)).
+//! **Owner: WP-187.** Tests: `tests/inline_asm.rs`,
+//! `tests/asm_goto.rs` (WP-254). Hook: `barrier::asm`, for a template
+//! that is not empty, a `callbr` (`asm goto`) included.
 //!
 //! # The sequence
 //!
@@ -30,6 +30,22 @@
 //!    `xmm15`).
 //! 6. The result is loaded from its output slot, or the fields of the
 //!    struct of several are copied from theirs.
+//!
+//! # `asm goto` (WP-254, `spec/asm.md` §20)
+//!
+//! A `callbr`'s label operands (`!i`) print as `.Lhod_asm_goto_<n>`, the
+//! `n`th indirect destination, whatever the modifier (`llc` prints the
+//! block's label bare for every one). After step 6 the fallthrough
+//! stores its `phi`s and branches to the default destination; then each
+//! destination the template refers to gets a trampoline, the field of
+//! every branch to its label bound to it, which does 5 and 6 again (the
+//! outputs are defined on every edge, as `llc` 22 writes them), stores
+//! that edge's `phi`s and branches to the block. A block is entered as
+//! everywhere else (nothing in a register, every value in the frame),
+//! which a branch straight from the template would not give: the outputs
+//! are still in their registers there. A reference to a label that is
+//! no branch to it (`lea`, data, an addend) and an x87 operand of an
+//! `asm goto` are [`GOTO`].
 //!
 //! Nothing of the sequence writes the flags or a register between 3 and
 //! 5 but the template; the code around it reads and writes only the
@@ -72,14 +88,14 @@ use hod_cg::asm_constraints::{
     self as constraints, Clobber, ConstraintError, ConstraintSyntax, Kind, MAX_OPS, TIED,
 };
 use hod_cg::{CfiOp, CgError, CgResult, Class, FnCx, FrameRef, PReg, SymRef};
-use hod_ir::{Const, InlineAsm, Inst, Opcode, SymId, TypeId, TypeKind, Value, ValueKind};
+use hod_ir::{BlockId, Const, InlineAsm, Inst, Opcode, SymId, TypeId, TypeKind, Value, ValueKind};
 use hod_mc_x64 as mc;
 use hod_mc_x64::{Cond, Size};
 use hod_obj::{RelocKind, X64Reloc};
 
 use crate::common::{
-    R10, R11, XMM15, branch, copy_frame, deferred_first, frame_address, frame_inst, gp, gpr_load,
-    load_fpr, load_gpr, put, store_fpr, store_gpr, unsupported, value_ty, xm,
+    R10, R11, REL32, XMM15, branch, copy_frame, deferred_first, frame_address, frame_inst, gp,
+    gpr_load, load_fpr, load_gpr, put, store_fpr, store_gpr, unsupported, value_ty, xm,
 };
 use crate::reg;
 use crate::target::X64;
@@ -104,11 +120,25 @@ pub const UNWIND: &str = "x64:inline-asm-unwind";
 /// Intel-dialect inline assembly (`inteldialect`): only AT&T is
 /// assembled.
 pub const INTEL: &str = "x64:inline-asm-intel";
+/// What an `asm goto` with a template (WP-254) does not take: a
+/// reference to a label operand other than a branch to it (`jmp`, `jcc`;
+/// a `lea` or a `.quad` of it, `jmp label+4`), an x87 operand or clobber.
+pub const GOTO: &str = "x64:inline-asm-goto";
 
 /// Every name this module refuses with, besides `hod_asm`'s `asm:*` and
 /// [`super::BUNDLE`].
 pub const UNSUPPORTED: &[&str] =
-    &[FRAME_REGISTER, FRAME_BASE, OPERAND_TYPE, TOO_MANY, UNWIND, INTEL];
+    &[FRAME_REGISTER, FRAME_BASE, OPERAND_TYPE, TOO_MANY, UNWIND, INTEL, GOTO];
+
+/// The name an `asm goto` label operand prints as, with its index among
+/// the labels: a name no template defines (`asm:label` refuses a named
+/// label definition in a template), bound to its trampoline.
+const LABEL_PREFIX: &str = ".Lhod_asm_goto_";
+
+/// The label a symbol reference of the template names, if it is one.
+fn label_index(name: &str) -> Option<u8> {
+    name.strip_prefix(LABEL_PREFIX)?.parse().ok()
+}
 
 fn refused(r: Refusal) -> CgError {
     CgError::unsupported(r.0)
@@ -176,6 +206,9 @@ enum Place {
     Flag(Cond),
     /// A symbol and a byte offset (`Ws`, `s`), printed by its name.
     Sym(SymId, i64),
+    /// The `n`th label of an `asm goto` (`!i`), printed as
+    /// [`LABEL_PREFIX`] and `n`.
+    Label(u8),
 }
 
 /// The register a name denotes, for an operand (`Ok(None)`: not one hod
@@ -462,6 +495,9 @@ fn operand_types(
     let mut tys = [TypeId::VOID; MAX_OPS];
     let args = site.args();
     for (i, op) in ops.ops().iter().enumerate() {
+        if op.kind == Kind::Label {
+            continue;
+        }
         tys[i] = match (op.indirect, op.arg, op.field) {
             (true, Some(a), _) => site.arg_attrs(usize::from(a)).mem_type().unwrap_or(TypeId::VOID),
             (false, Some(a), _) => value_ty(cx, args[usize::from(a)]),
@@ -642,7 +678,13 @@ fn decide(cx: &FnCx<'_, X64>, inst: Inst<'_>, ops: &Ops) -> CgResult<Plan> {
         tied_by[i] = op.kind == Kind::Output && ties.matching(i, chosen).is_some();
     }
     let mut wants = [None::<bool>; MAX_OPS];
+    let mut labels = 0u8;
     for (i, op) in ops.ops().iter().enumerate() {
+        if op.kind == Kind::Label {
+            plan.places[i] = Some(Place::Label(labels));
+            labels += 1;
+            continue;
+        }
         let alt = op.alt(chosen);
         let value = op.arg.map(|a| args[usize::from(a)]);
         plan.places[i] = first_place(cx, op, alt, value, tied_by[i], plan.tys[i], &mut wants[i])?;
@@ -741,7 +783,7 @@ fn decide(cx: &FnCx<'_, X64>, inst: Inst<'_>, ops: &Ops) -> CgResult<Plan> {
                     return unsupported(OPERAND_TYPE);
                 }
             }
-            Some(Place::Imm(_) | Place::Sym(..)) => {}
+            Some(Place::Imm(_) | Place::Sym(..) | Place::Label(_)) => {}
             None => return cx.bug("an inline-assembly operand without a place"),
         }
     }
@@ -782,14 +824,20 @@ pub fn call<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>) -> CgResult<()> {
     let ops = parse(asm.constraints)?;
     let args = site.args();
     let operands = ops.ops().iter().filter(|op| op.arg.is_some()).count();
+    let goto = inst.opcode() == Opcode::CallBr;
+    let dests = if goto { site.indirect_dests().count() } else { 0 };
     if operands != args.len()
         || (ops.direct_outputs == 0) != (inst.ty() == TypeId::VOID)
-        || ops.labels != 0
+        || usize::from(ops.labels) != dests
     {
         return Err(refused(reason::constraint("count")));
     }
     let plan = decide(cx, inst, &ops)?;
     let stack = x87_stack(&ops, &plan, x87_clobbers(asm.constraints))?;
+    // WP-254: the x87 stack is not modelled on the edges of an `asm goto`.
+    if goto && (stack.uses != 0 || stack.defs != 0 || x87_clobbers(asm.constraints) != 0) {
+        return unsupported(GOTO);
+    }
     // The text first: nothing is emitted for a template that refuses.
     let mut body = String::new();
     substitute(cx, inst, asm, &ops, &plan, &mut body)?;
@@ -815,7 +863,18 @@ pub fn call<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>) -> CgResult<()> {
         return unsupported(crate::tuning::UNMEASURED);
     }
     let mut fields = Vec::with_capacity(refs.len());
+    let mut gotos = Vec::new();
     for r in &refs {
+        // WP-254: a branch to an `asm goto` label (`jmp`, `jcc`: the
+        // field `llvm-mc` relocates as `R_X86_64_PLT32` of the label
+        // alone) is bound to the destination's trampoline.
+        if let Some(n) = label_index(&r.name) {
+            if usize::from(n) >= dests || r.kind != asm::RefKind::Plt32 || r.addend != -4 {
+                return unsupported(GOTO);
+            }
+            gotos.push((r.offset, n));
+            continue;
+        }
         // A symbol of the module, by its object name, as LLVM's
         // assembler binds it; another is not written.
         let Some(sym) = cx.module.find_symbol(r.name.as_bytes()) else {
@@ -841,7 +900,7 @@ pub fn call<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>) -> CgResult<()> {
         &ops,
         plan,
         stack,
-        Body { code: &code, fields: &fields, cfi: &cfi, aligns: &aligns },
+        Body { code: &code, fields: &fields, cfi: &cfi, aligns: &aligns, gotos: &gotos },
     )
 }
 
@@ -852,6 +911,8 @@ struct Body<'b> {
     fields: &'b [Field],
     cfi: &'b [asm::CfiRow],
     aligns: &'b [asm::AlignRow],
+    /// The branches to `asm goto` labels: the field's offset, the label.
+    gotos: &'b [(u32, u8)],
 }
 
 /// What a template does to the x87 stack (§14, LLVM's
@@ -931,6 +992,14 @@ fn substitute(
             Some(Place::Reg(p)) => Arg::Xmm(reg::number(p)),
             Some(Place::Mem(p)) => Arg::Mem(reg::number(p)),
             Some(Place::Imm(v)) => Arg::Imm(v),
+            // WP-254: `llc` 19 and 22 print a label operand as the
+            // block's label, bare, whatever the modifier (`l`, `P`, `c`,
+            // none, an unknown letter).
+            Some(Place::Label(n)) => {
+                out.push_str(LABEL_PREFIX);
+                out.push_str(&n.to_string());
+                return Ok(());
+            }
             Some(Place::Sym(sym, addend)) => {
                 let name = cx.module.symbol(sym).name();
                 let name =
@@ -977,7 +1046,7 @@ fn emit<'a>(
     stack: X87Stack,
     body: Body<'_>,
 ) -> CgResult<()> {
-    let Body { code, fields, cfi, aligns } = body;
+    let Body { code, fields, cfi, aligns, gotos } = body;
     let site = inst.call().expect("checked by the caller");
     let args = site.args();
     deferred_first(cx, inst, None)?;
@@ -1137,6 +1206,80 @@ fn emit<'a>(
         cx.cfi_at(start + row.offset, op)?;
     }
     // 5. Outputs: registers to slots, flags, indirect stores.
+    outputs(cx, ops, &plan, stack)?;
+    for r in &taken {
+        cx.free_temp(*r);
+    }
+    // 6. The result.
+    result(cx, inst, ops, &plan)?;
+    match inst.opcode() {
+        Opcode::Invoke => {
+            let Some(normal) = site.normal_dest() else {
+                return cx.bug("an invoke without a normal destination");
+            };
+            cx.phi_stores(normal)?;
+            if !cx.falls_through(normal) {
+                branch(cx, cx.block_label(normal))?;
+            }
+        }
+        Opcode::CallBr => goto_edges(cx, inst, ops, &plan, stack, start, gotos)?,
+        _ => {}
+    }
+    Ok(())
+}
+
+/// WP-254: the edges of an `asm goto` after step 6, the fallthrough's
+/// `phi`s and branch, then one trampoline for each indirect destination
+/// a branch of the template (`gotos`, offsets from `start`) goes to.
+fn goto_edges<'a>(
+    cx: &mut FnCx<'a, X64>,
+    inst: Inst<'a>,
+    ops: &Ops,
+    plan: &Plan,
+    stack: X87Stack,
+    start: u32,
+    gotos: &[(u32, u8)],
+) -> CgResult<()> {
+    let site = inst.call().expect("checked by the caller");
+    let Some(normal) = site.normal_dest() else {
+        return cx.bug("a callbr without a normal destination");
+    };
+    cx.phi_stores(normal)?;
+    // A register result no `phi` of the fallthrough took is let go: no
+    // register holds a value at a block's end, and each trampoline
+    // defines the result again.
+    cx.release(inst.result());
+    if !gotos.is_empty() || !cx.falls_through(normal) {
+        branch(cx, cx.block_label(normal))?;
+    }
+    let dests: Vec<BlockId> = site.indirect_dests().collect();
+    for (n, &dest) in dests.iter().enumerate() {
+        let n = u8::try_from(n).map_err(|_| CgError::unsupported(TOO_MANY))?;
+        if !gotos.iter().any(|g| g.1 == n) {
+            // Never branched to: the block is entered only from
+            // elsewhere, as for an empty template.
+            continue;
+        }
+        let here = cx.new_label();
+        cx.bind(here)?;
+        for &(at, _) in gotos.iter().filter(|g| g.1 == n) {
+            cx.fixup(start + at, REL32, here)?;
+        }
+        // Steps 5 and 6 again: the template left the outputs in their
+        // registers on this edge too (`llc` 22 stores them in the
+        // destination's block).
+        outputs(cx, ops, plan, stack)?;
+        result(cx, inst, ops, plan)?;
+        cx.phi_stores(dest)?;
+        cx.release(inst.result());
+        branch(cx, cx.block_label(dest))?;
+    }
+    Ok(())
+}
+
+/// Step 5: every register output to its slot, the x87 outputs and pops,
+/// the flag outputs, the indirect outputs through their pointers.
+fn outputs(cx: &mut FnCx<'_, X64>, ops: &Ops, plan: &Plan, stack: X87Stack) -> CgResult<()> {
     for i in 0..ops.len {
         let op = ops.list[i];
         if op.kind != Kind::Output {
@@ -1207,20 +1350,6 @@ fn emit<'a>(
                     _ => mc::movup_mr(mc::FpSize::S, m, XMM15),
                 },
             );
-        }
-    }
-    for r in &taken {
-        cx.free_temp(*r);
-    }
-    // 6. The result.
-    result(cx, inst, ops, &plan)?;
-    if inst.opcode() == Opcode::Invoke {
-        let Some(normal) = site.normal_dest() else {
-            return cx.bug("an invoke without a normal destination");
-        };
-        cx.phi_stores(normal)?;
-        if !cx.falls_through(normal) {
-            branch(cx, cx.block_label(normal))?;
         }
     }
     Ok(())

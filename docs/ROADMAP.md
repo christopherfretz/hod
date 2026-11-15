@@ -127,8 +127,24 @@ still point at the right milestone.
 - `hod_mc_x64` and `hod_x64` to the same gates as aarch64. (The encoder
   track can start any time after M0; it is listed here because this is
   where it gates.)
-- wild in the linker matrix. L9 on kiln's open-source project set. L10
-  fuzzing budget with no open findings.
+- The linker matrix with GNU ld (bfd), lld and mold required. wild is
+  not a condition of 1.0: it stays an optional linker of the test matrix,
+  used where installed, with its exceptions listed on the harness side;
+  hod's code generators and object writer take no workaround for it.
+- L9 on **the 1.0 set**: the real projects the lanes have measured up to
+  the candidate, not every row of kiln's `projects.toml`. On AArch64
+  (`docs/status/oss.md`, `O0` and `O0g`): fmt, googletest, abseil, re2,
+  benchmark, protobuf, spdlog, catch2, nlohmann_json, yaml_cpp, glog,
+  leveldb, cli11, doctest, simdjson, magic_enum, tl_expected, zlib, zstd,
+  mold, DuckDB, gRPC (`O0`). On x86-64 (`docs/status/oss-x64.md`): fmt,
+  googletest, abseil, protobuf, spdlog, yaml_cpp, glog, leveldb, cli11,
+  doctest, range_v3, cereal, ctre, entt (`O0` and `O0g`); re2, highway,
+  Eigen, Boost (`O0`). LLVM and Clang on both (`docs/status/oss-llvm.md`).
+  The other rows of `scripts/oss/projects.toml` and of kiln's set come
+  after 1.0. The rule for a row measured before the candidate is
+  `docs/RELEASE.md` section 5.
+- kiln's pin for 1.0 is `8f93304ee` (kiln 1.2.0).
+- L10 fuzzing budget with no open findings.
 
 **Gate:** the release-candidate gate of `docs/VALIDATION.md`, on both
 targets. This is 1.0. It does not include M5's gate.

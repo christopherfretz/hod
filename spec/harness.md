@@ -210,10 +210,13 @@ kiln's lanes). Its rules:
    and some without: what the processor runs runs natively, the rest
    under SDE, and the summary says how many of each and names the
    runner's processor. In the `test x64` job SDE is set up only when
-   the repository variable `HOD_CI_SDE` is `1` (not yet: the operator's
-   agreement to the download in that lane is pending, and SDE adds about
-   20 minutes there on a runner without AVX-512); without it what the
-   processor lacks is skipped, as before WP-238. With it, a last step,
+   the repository variable `HOD_CI_SDE` is `1` (set since 2026-11-15;
+   measured: the job took 20 min 40 s on an AMD EPYC 9V74 with 17
+   programs native, the 2 AVX512-FP16 ones under SDE and `knl`'s machine
+   built and compared but not executed, and 17 min on an Intel Xeon
+   6975P-C with 19 native; a runner with no AVX-512, all 19 under SDE, is
+   estimated at about 40 of the job's 45 minutes and not measured yet);
+   without it what the processor lacks is skipped, as before WP-238. With it, a last step,
    `scripts/avx512-summary.sh --check`, fails the job unless every
    program executed but the skipped `knl` machine. `avx512.yml` (a push
    to an `avx512/**` branch, or `workflow_dispatch`; never a gate)
@@ -572,7 +575,7 @@ What is missing:
 | the linker driver | objects are built, nothing is linked or run ("Cross targets"), with a note | failure |
 | the emulator or the system root, for the other architecture | objects are built, nothing is linked or run ("Cross targets"), with a note | failure |
 | `bfd`, `lld` or `mold` | that linker is not in the matrix, with a note | failure |
-| `wild` | not in the matrix, with a note | still a note: optional until a hosted run proves the set-up installs it (`hod_testutil::linkers::WILD_REQUIRED`) |
+| `wild` | not in the matrix, with a note | still a note: wild is optional (`hod_testutil::linkers::WILD_REQUIRED` is false and stays so; not a condition of 1.0) |
 | a linker named with `--linker` | usage error (exit status 2) | the same |
 
 A failure for a missing tool does not stop the run: the tests still run
@@ -1278,10 +1281,11 @@ report order; `present(target)` is the ones found for a target;
      installs the pinned release, `docs/status/linkers.md`);
   3. `wild`, then `ld.wild`, on `PATH`.
 - **Missing.** A missing `bfd`, `lld` or `mold` is a note, and a failure
-  under `HOD_REQUIRE_TOOLS=1`. A missing wild is a note even then while
-  `WILD_REQUIRED` is false: it becomes true once a hosted run has shown
-  that the lanes' set-up (`.github/actions/hod-ci`, which exports
-  `HOD_WILD`) installs it.
+  under `HOD_REQUIRE_TOOLS=1`. A missing wild is a note even then:
+  `WILD_REQUIRED` is false and stays so (wild is an optional linker of
+  the matrix, used where it is installed, as by the lanes' set-up
+  `.github/actions/hod-ci`, which exports `HOD_WILD`; its cases are
+  excepted on the harness side, never worked around in hod).
 - **Selecting.** Each linker gets a directory `<dir>/use-<name>`, passed
   with `-B`. GNU ld, lld and mold are in it as `ld.<name>` and selected
   with `-fuse-ld=<name>`. GCC 14's driver refuses `-fuse-ld=wild`, so

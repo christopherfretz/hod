@@ -291,6 +291,30 @@ fn budget_command(options: &Options) -> u8 {
     }
 }
 
+/// The host's gcc with libubsan for the float-cast pre-run ("Float
+/// casts"). Missing: an error under `HOD_REQUIRE_TOOLS=1`, else `None`
+/// and a warning that the filter is off.
+fn find_ubsan_cc(search: &Search, work: &Path) -> Result<Option<PathBuf>, String> {
+    let limits = Limits { time: Duration::from_mins(1), memory_kib: 4 << 20 };
+    let found = search.on_path("gcc").ok_or_else(|| "gcc not found".to_owned()).and_then(|cc| {
+        fs::create_dir_all(work).map_err(|e| format!("cannot create '{}': {e}", work.display()))?;
+        case::ubsan_works(&cc, work, limits).map(|()| cc)
+    });
+    match found {
+        Ok(cc) => Ok(Some(cc)),
+        Err(why) if std::env::var_os("HOD_REQUIRE_TOOLS").is_some_and(|v| v == "1") => {
+            Err(format!("the float-cast pre-run cannot run: {why} (HOD_REQUIRE_TOOLS=1)"))
+        }
+        Err(why) => {
+            eprintln!(
+                "xtask fuzz: warning: the float-cast pre-run is OFF: {why}; float seeds are not \
+                 filtered (under HOD_REQUIRE_TOOLS=1 this fails)"
+            );
+            Ok(None)
+        }
+    }
+}
+
 /// The tools of a run, or what is missing.
 fn find_tools(options: &Options, arch: Arch, work: &Path) -> Result<Tools, String> {
     let search = &options.search;
@@ -370,6 +394,7 @@ fn find_tools(options: &Options, arch: Arch, work: &Path) -> Result<Tools, Strin
         None if options.mode == Mode::Census => PathBuf::from("hod"),
         None => build_workspace_hod(&options.build_dir)?,
     };
+    let ubsan_cc = if csmith.is_some() { find_ubsan_cc(search, work)? } else { None };
     Ok(Tools {
         csmith,
         csmith_include,
@@ -384,6 +409,7 @@ fn find_tools(options: &Options, arch: Arch, work: &Path) -> Result<Tools, Strin
         extract,
         dwarfdump,
         lines,
+        ubsan_cc,
     })
 }
 
@@ -630,7 +656,11 @@ pub fn run(options: &Options) -> Result<Summary, String> {
     {
         summary.add(&outcome);
         let ms = outcome.oracle_time.map_or_else(|| "-".to_owned(), |t| t.as_millis().to_string());
-        let detail = outcome.verdict.detail().replace(['\t', '\n'], " ");
+        let detail = match &outcome.ub_report {
+            Some(line) => format!("{}: {line}", outcome.verdict.detail()),
+            None => outcome.verdict.detail(),
+        };
+        let detail = detail.replace(['\t', '\n'], " ");
         let _ = writeln!(
             results,
             "{}\t{}\t{}\t{detail}\t{ms}",
@@ -731,6 +761,15 @@ fn save(
         commands.replace(&*files.dir.to_string_lossy(), &dir.to_string_lossy()),
     );
     let ir = dir.join("prog.ll");
+    let source = dir.join("prog.c");
+    if let Some(cc) = &bench.tools.ubsan_cc
+        && source.is_file()
+    {
+        let include = bench.tools.csmith_include.as_deref();
+        let limits = (bench.tool_limits, bench.run_limits);
+        let text = case::ubsan_triage(cc, include, &source, &dir, limits);
+        let _ = fs::write(dir.join("ubsan.txt"), text);
+    }
     if let Some(oracle) = &outcome.oracle {
         let _ = fs::write(dir.join("oracle.stdout"), &oracle.stdout);
     }

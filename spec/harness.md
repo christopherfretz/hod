@@ -3854,9 +3854,44 @@ its occurrences.
 | agree | same end (exit status or signal), same stdout | 0 |
 | scanned | `--census`: the module was counted | 0 |
 | refused | hod exited 2 with a coverage-log line whose outcome is `error`; counted by the reason | 0 |
-| skipped | `csmith-failed`, `clang-failed`, `both-timed-out`, `oracle-timed-out`, and in `--mix` `split-timed-out`, `nothing-to-split` | 0 |
+| skipped | `csmith-failed`, `ub-float-cast` ("Float casts"), `clang-failed`, `both-timed-out`, `oracle-timed-out`, and in `--mix` `split-timed-out`, `nothing-to-split` | 0 |
 | error | `llc` failed, the oracle's link failed, `llc`'s halves disagree with the whole module, both objects fail the verifier: about the oracle's or the harness's side | 3 |
 | finding | `disagree` (end or stdout differs), `hod-failed` (any other end of hod, a panic, no object or coverage log), `hod-link` (hod's object does not link), `hod-hang` (hod's program did not end in four times the limit), `debug-verify`, `debug-lines` | 1 |
+
+### Float casts
+
+csmith's `--float` programs can convert a floating-point value to an
+integer type that cannot represent it: undefined behaviour in C, and in
+the module an `fptosi`/`fptoui` whose result is poison (or a `poison`
+that clang folded in its place). Two correct compilers may then differ:
+the budget at df415453 saved four such seeds as findings, among them seed
+101105 at AArch64, where `llc`'s own selectors split (GlobalISel as hod,
+SelectionDAG and FastISel as the oracle) on `-8.4375` converted to
+`uint16_t`. So a seed of a flavour whose csmith options include `--float`
+is first built from `prog.c` by the host's gcc with `-O0
+-fsanitize=float-cast-overflow -fno-sanitize-recover=float-cast-overflow`
+(and clang's `-Wno-error` options), and run natively, with no argument,
+under the programs' limit. When UBSan reports an out-of-range conversion
+(`is outside the range of representable values of type`), the seed is
+skipped as `ub-float-cast`, counted by that name as every skip, and the
+results file's detail is `ub-float-cast: <UBSan's line>`. This filters
+the input on a sanitizer's verdict; no comparison is loosened. Only this
+check may skip a seed. A pre-run that does not build, ends otherwise
+without that report, or times out decides nothing: the seed is built and
+compared as any other, and the log of its commands says why. The pre-run
+is native on a cross target too (csmith's programs mean the same on
+both 64-bit targets).
+
+The tools: `gcc` on the path, and libubsan, probed once per run with an
+empty program. Without them the run fails under `HOD_REQUIRE_TOOLS=1`;
+otherwise it prints `xtask fuzz: warning: the float-cast pre-run is OFF:
+<why>` and runs the seeds unfiltered. A run without csmith (`--profile
+abi`) does not look for them.
+
+Every saved finding with a `prog.c`, of every flavour, also gets
+`ubsan.txt`: the commands and every report of a recovering build under
+`-fsanitize=float-cast-overflow,undefined`. It is a label for the triage
+and decides nothing.
 
 ### Findings
 
@@ -3866,8 +3901,8 @@ then `-<mode>` unless it is the whole mode. It holds `prog.c`, `prog.ll`,
 the objects and programs (in `--mix` also `a.ll`, `b.ll` and the
 halves' objects), `commands.sh` (every command run, in order, as shell
 lines with the final paths), `oracle.stdout`, `hod.stdout`, `hod.stderr`,
-`verdict.txt` (seed, flavour, mode, profile, kind, detail, witness) and,
-from the reduction, `reduced.ll` and `seed.ll`.
+`verdict.txt` (seed, flavour, mode, profile, kind, detail, witness),
+`ubsan.txt` ("Float casts") and, from the reduction, `reduced.ll` and `seed.ll`.
 
 The witness: the module is built with `llc -O2`, linked and run with four
 times the limit; the verdict says whether its program agrees with the

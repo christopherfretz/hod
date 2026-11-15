@@ -95,6 +95,26 @@ fn seeds_on_the_host() {
     no_platform_info();
 }
 
+// "Float casts": csmith 2.3.0's seed 101105 (c-float) converts -8.4375 to
+// a uint16_t; the budget at df415453 saved it as a finding (LLVM's
+// selectors differ on it: GlobalISel as hod, SelectionDAG as the oracle).
+// The pre-run skips it with the counted reason and keeps UBSan's line.
+#[test]
+fn a_float_cast_seed_is_skipped() {
+    if !tools_found() {
+        return;
+    }
+    let scratch = Scratch::new("fuzz-float-cast");
+    let summary = run(&options(&scratch, 101_105, 1)).expect("the run");
+    let text = summary.text();
+    assert_eq!(summary.skipped.get("ub-float-cast"), Some(&1), "{text}");
+    assert!(summary.findings.is_empty(), "{text}");
+    let results = std::fs::read_to_string(summary.results_file.as_ref().unwrap()).unwrap();
+    let line = results.lines().find(|l| l.starts_with("101105\t")).expect("the seed's line");
+    assert!(line.contains("skipped\tub-float-cast: prog.c:"), "{line}");
+    assert!(line.contains("-8.4375 is outside the range"), "{line}");
+}
+
 // "Findings", "Reduction": a hod that miscompiles (every `xor` is built as
 // an `or`) gives a finding, saved with its commands and outputs, which
 // the witness blames on hod and which is reduced to a seed test.

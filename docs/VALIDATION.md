@@ -188,7 +188,10 @@ Per seed the verdict is:
 - **refused**: hod declined, counted by its coverage-log reason (that is
   coverage, not a bug);
 - **skipped**: the generator or clang failed, a program timed out (both,
-  or the oracle's), or there was nothing to split;
+  or the oracle's), there was nothing to split, or a `--float` program
+  converts a float to an integer type that cannot hold it (`ub-float-cast`:
+  gcc's UBSan pre-run fired; undefined behaviour, on which `llc`'s own
+  instruction selectors differ; `spec/harness.md` "Float casts");
 - **error**: the oracle's side failed (`llc`, its link, `llc`'s two
   halves disagreeing with its whole module);
 - **finding**: the programs disagree, hod failed, hod's object does not

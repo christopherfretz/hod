@@ -69,6 +69,188 @@ pub struct Tools {
     /// comparison (`--debug`).
     pub dwarfdump: Option<PathBuf>,
     pub lines: Option<LineTools>,
+    /// The host's gcc with libubsan, for the float-cast pre-run of a
+    /// float flavour's seed and a finding's `ubsan.txt` ("Float casts");
+    /// `None`: not found, and the run said so.
+    pub ubsan_cc: Option<PathBuf>,
+}
+
+/// The skip of a float flavour's seed whose program converts a
+/// floating-point value to an integer type that cannot represent it
+/// (C's undefined behaviour, `fptosi`/`fptoui` poison): "Float casts".
+pub const UB_FLOAT_CAST: &str = "ub-float-cast";
+
+/// What the undefined-behaviour sanitizer says of an out-of-range float-to-integer conversion, in
+/// gcc's and clang's wording alike.
+const FLOAT_CAST_REPORT: &str = "is outside the range of representable values of type";
+
+/// The checks of the pre-run: only this one may skip a seed.
+pub const PRERUN_CHECKS: &str = "float-cast-overflow";
+
+/// The checks of a finding's `ubsan.txt` (a label; it skips nothing).
+pub const TRIAGE_CHECKS: &str = "float-cast-overflow,undefined";
+
+/// What the float-cast pre-run of a seed came to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PreRun {
+    /// The sanitizer reported an out-of-range float-to-integer conversion: its
+    /// line, the source's directory taken off.
+    Fired(String),
+    /// The program ran to its end without that report.
+    Clean,
+    /// The pre-run did not build, or did not end in time: the seed is
+    /// built and compared as any other (why, for the log).
+    Inconclusive(String),
+}
+
+/// gcc's arguments for a sanitizer build of `source` into `out` at `-O0`:
+/// `checks`, aborting at the first report or recovering from every one.
+pub fn ubsan_args(
+    source: &Path,
+    include: Option<&Path>,
+    out: &Path,
+    checks: &str,
+    recover: bool,
+) -> Vec<OsString> {
+    let mut args: Vec<OsString> = ["-O0", "-w"].iter().map(OsString::from).collect();
+    // As clang's arguments: csmith writes C that gcc 14 rejects by default.
+    args.extend(
+        ["-Wno-error=incompatible-pointer-types", "-Wno-error=int-conversion"]
+            .iter()
+            .map(OsString::from),
+    );
+    args.push(format!("-fsanitize={checks}").into());
+    if !recover {
+        args.push(format!("-fno-sanitize-recover={checks}").into());
+    }
+    if let Some(include) = include {
+        args.push(tools::prefixed("-I", include));
+    }
+    args.push("-o".into());
+    args.push(out.into());
+    args.push(source.into());
+    args
+}
+
+/// The sanitizer's report lines in `stderr`, the directory `dir` taken off.
+fn ubsan_lines(stderr: &[u8], dir: &Path) -> Vec<String> {
+    let prefix = format!("{}/", dir.display());
+    String::from_utf8_lossy(stderr)
+        .lines()
+        .filter(|line| line.contains("runtime error:"))
+        .map(|line| line.replace(&prefix, ""))
+        .collect()
+}
+
+/// Builds `source` with `cc` under the float-cast check and runs it in
+/// `dir`, natively, with no argument (as the fuzzed programs run).
+pub fn float_cast_prerun(
+    log: &mut Vec<String>,
+    cc: &Path,
+    include: Option<&Path>,
+    source: &Path,
+    dir: &Path,
+    limits: (Limits, Limits),
+) -> PreRun {
+    let program = dir.join("ubsan-prerun");
+    let args = ubsan_args(source, include, &program, PRERUN_CHECKS, false);
+    match timed_step(log, cc, &args, None, limits.0) {
+        Ok((built, _)) if built.end == End::Exit(0) && program.is_file() => {}
+        Ok((built, _)) => {
+            return PreRun::Inconclusive(format!(
+                "the pre-run's build {}: {}",
+                ended(built.end),
+                built.first_error_line()
+            ));
+        }
+        Err(e) => return PreRun::Inconclusive(format!("the pre-run's build: {e}")),
+    }
+    let ran = match timed_step(log, &program, &[], Some(dir), limits.1) {
+        Ok((ran, _)) => ran,
+        Err(e) => return PreRun::Inconclusive(format!("the pre-run: {e}")),
+    };
+    let _ = fs::remove_file(&program);
+    if let Some(line) =
+        ubsan_lines(&ran.stderr, dir).into_iter().find(|line| line.contains(FLOAT_CAST_REPORT))
+    {
+        return PreRun::Fired(line);
+    }
+    match ran.end {
+        End::TimedOut => PreRun::Inconclusive("the pre-run timed out".to_owned()),
+        _ => PreRun::Clean,
+    }
+}
+
+/// Whether `cc` builds and runs a program under the pre-run's check (gcc
+/// is there, and so is libubsan): an empty program in `dir`.
+pub fn ubsan_works(cc: &Path, dir: &Path, limits: Limits) -> Result<(), String> {
+    let (source, program) = (dir.join("ubsan-probe.c"), dir.join("ubsan-probe"));
+    fs::write(&source, "int main(void) { return 0; }\n")
+        .map_err(|e| format!("cannot write '{}': {e}", source.display()))?;
+    let mut log = Vec::new();
+    let args = ubsan_args(&source, None, &program, PRERUN_CHECKS, false);
+    let built = timed_step(&mut log, cc, &args, None, limits)?.0;
+    let result = if built.end == End::Exit(0) && program.is_file() {
+        match timed_step(&mut log, &program, &[], Some(dir), limits)?.0.end {
+            End::Exit(0) => Ok(()),
+            end => Err(format!(
+                "'{}' -fsanitize={PRERUN_CHECKS}: the probe {}",
+                cc.display(),
+                ended(end)
+            )),
+        }
+    } else {
+        Err(format!(
+            "'{}' -fsanitize={PRERUN_CHECKS} does not build (libubsan?): {}",
+            cc.display(),
+            built.first_error_line()
+        ))
+    };
+    let _ = fs::remove_file(&source);
+    let _ = fs::remove_file(&program);
+    result
+}
+
+/// A finding's `ubsan.txt`: every report of a recovering build of
+/// `source` under [`TRIAGE_CHECKS`], run in `dir`. A label for the
+/// triage; it decides nothing.
+pub fn ubsan_triage(
+    cc: &Path,
+    include: Option<&Path>,
+    source: &Path,
+    dir: &Path,
+    limits: (Limits, Limits),
+) -> String {
+    let mut log = Vec::new();
+    let program = dir.join("ubsan-triage");
+    let args = ubsan_args(source, include, &program, TRIAGE_CHECKS, true);
+    let mut text = String::from("# A label for the triage (spec/harness.md \"Float casts\").\n");
+    let built = timed_step(&mut log, cc, &args, None, limits.0);
+    let ran = match built {
+        Ok((built, _)) if built.end == End::Exit(0) && program.is_file() => {
+            timed_step(&mut log, &program, &[], Some(dir), limits.1)
+        }
+        Ok((built, _)) => Err(format!("did not build: {}", built.first_error_line())),
+        Err(e) => Err(e),
+    };
+    for line in &log {
+        let _ = writeln!(text, "# {line}");
+    }
+    match ran {
+        Ok((ran, _)) => {
+            let lines = ubsan_lines(&ran.stderr, dir);
+            let _ = writeln!(text, "# {}; {} report(s)", ended(ran.end), lines.len());
+            for line in lines {
+                text.push_str(&line);
+                text.push('\n');
+            }
+        }
+        Err(e) => {
+            let _ = writeln!(text, "# no verdict: {e}");
+        }
+    }
+    let _ = fs::remove_file(&program);
+    text
 }
 
 /// Everything that is the same for every seed of a run.
@@ -240,6 +422,8 @@ pub struct Outcome {
     /// `--debug`: llc's pairs at a constant branch ([`constant_branch`]),
     /// taken out of the report and counted apart.
     pub constant_branches: Vec<lines::Pair>,
+    /// [`UB_FLOAT_CAST`]: the sanitizer's report line.
+    pub ub_report: Option<String>,
 }
 
 impl Outcome {
@@ -257,6 +441,7 @@ impl Outcome {
             lines: None,
             self_assigned: Vec::new(),
             constant_branches: Vec::new(),
+            ub_report: None,
         }
     }
 }
@@ -545,6 +730,21 @@ impl Bench {
         let harness = |e: String| Verdict::Error(format!("harness: {e}"));
         self.generate(seed, flavour, files, &mut outcome.commands)?;
         let (source, ir) = (files.source(), files.ir());
+        if flavour.extra.contains(&"--float")
+            && let Some(cc) = &self.tools.ubsan_cc
+        {
+            let include = self.tools.csmith_include.as_deref();
+            let limits = (self.tool_limits, self.run_limits);
+            match float_cast_prerun(&mut outcome.commands, cc, include, &source, &files.dir, limits)
+            {
+                PreRun::Fired(line) => {
+                    outcome.ub_report = Some(line);
+                    return Err(Verdict::Skipped(UB_FLOAT_CAST));
+                }
+                PreRun::Clean => {}
+                PreRun::Inconclusive(why) => outcome.commands.push(format!("# {why}")),
+            }
+        }
         let compiled = self
             .step(
                 &mut outcome.commands,

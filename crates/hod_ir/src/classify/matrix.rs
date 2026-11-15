@@ -791,7 +791,8 @@ const ATTR_FLAG: [SupportRow; FnAttrs::FLAG_NAMES.len()] = [
         "attr:alwaysinline",
         ON,
         "an ordinary call; a body whose meaning depends on being inlined is declined \
-         (`spec/cli.md` \"Always-inline\", WP-021)",
+         (`spec/cli.md` \"Always-inline\", WP-021); a variable-length array's own \
+         `stacksave`/`stackrestore` pair is not (WP-237)",
     ),
     both(
         "attr:ssp",

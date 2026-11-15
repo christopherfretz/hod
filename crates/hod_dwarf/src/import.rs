@@ -188,6 +188,20 @@ impl UnitPlan<'_> {
             {
                 self.declaration_die(ie, entity)?;
             }
+            // WP-236 (§6.36): a definition with neither code nor an
+            // abstract instance: `llc` 22's `getOrCreateSubprogramDIE`
+            // finds no function for it and makes its abstract instance
+            // (`getOrCreateAbstractSubprogramDIE`), without children: its
+            // retained variables are not written. Its retained imports
+            // would be, which hod does not model.
+            (DiKind::Subprogram, DiNode::Subprogram(sp))
+                if !sp
+                    .retained_nodes
+                    .iter()
+                    .any(|&n| self.debug.find_kind(n) == Some(DiKind::ImportedEntity)) =>
+            {
+                self.create_abstract(entity)?;
+            }
             (DiKind::GlobalVariable, DiNode::GlobalVariable(v)) => {
                 if let Some(s) = v.scope
                     && matches!(

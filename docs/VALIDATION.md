@@ -343,7 +343,14 @@ and still fails when the linker regresses on anything else. A failure
 with one linker is triaged as (a) hod writing something the others
 accept by leniency and the ABI forbids: fixed in hod; (b) the linker's
 bug or an allowed difference, kept with a reproduction from objects hod
-did not write; (c) a feature the linker says it does not support.
+did not write; (c) a feature the linker says it does not support. In
+the debugger layer, a listed case that breaks the ORACLE's session (the
+`llc` program linked by that linker misses a check it meets with the
+other three) is reported as XLINK, counted and listed, without failing
+the run; only for the (linker, case, target, test, debugger) measured, and only
+when the linked programs show the case (`spec/harness.md` "debug",
+"Linker exceptions"). The exceptions are listed in
+`docs/status/linkers.md` "Exceptions".
 
 ### Debug information (L7)
 

@@ -133,7 +133,7 @@ pub struct LineTools {
 
 const LIMITS: Limits = Limits { time: Duration::from_mins(2), memory_kib: 4 << 20 };
 
-fn tool_output(tool: &Path, args: &[&str], program: &Path) -> Result<String, String> {
+pub(crate) fn tool_output(tool: &Path, args: &[&str], program: &Path) -> Result<String, String> {
     let configure = |c: &mut Command| {
         c.args(args).arg(program).env("LC_ALL", "C");
     };

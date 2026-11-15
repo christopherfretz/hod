@@ -278,7 +278,14 @@ The lowering is `spec/codegen.md` §5.5.3 "WP-103". In short:
   directive, section shape, reference kind, and module-symbol meeting)
   emitted by hod and by `llc` 19 and 22: sections with their bytes,
   symbols, relocations and code-section mapping symbols equal; the
-  refusal table; x86-64 stays `module:asm`.
+  refusal table; the same on x86-64 (§14); the sections of the text's
+  own name of §9.1 on both targets.
+- `crates/hod_cg/tests/emit_module_asm_link.rs` (§9.1): the reduced
+  gdb-script module (`tests/data/gdb-scripts-*.ll`) on both targets:
+  its `.debug_gdb_scripts` header and bytes equal `llc` 19's and 22's,
+  linked with a C `main` under each linker present the program runs
+  and carries `llc`'s program's section; on an AArch64 host gdb runs an
+  inlined script of hod's program.
 
 ## 8. Refusals
 
@@ -310,21 +317,25 @@ operation that is no name of §16 is `asm:operand/option`; `prfm` and
 ## 9. Module-level assembly (`module.rs`, WP-112)
 
 `assemble_module(text, features, &mut ModuleCode)` reads the module's
-text (AArch64 ELF only; on x86-64 such text stays `module:asm`, it never
-reaches this assembler) into sections, symbols and relocations, as
+text (AArch64 ELF; x86-64 reads it through `assemble_module_x64` since
+WP-204, §14) into sections, symbols and relocations, as
 `llc` (which emits module assembly before anything else) writes them.
 Text that is only symbol directives stays WP-075's (`spec/ir.md` §2.3).
 The emitter's side is `spec/codegen.md` §9.7.3.
 
-- **Sections.** `.text`, `.data`, `.bss`, `.section name{,"flags"{,@type}}`,
-  `.pushsection`/`.popsection`, `.previous`. A name is `.text`, `.rodata`,
-  `.data` or `.bss`, alone or followed by `.` and more; its kind (type and
-  flags) is LLVM's default for the name, and the flags written may only
-  be ones the kind has (`a`, `w` for data and bss, `x` for text) and are
-  OR'd with the defaults; `@progbits`/`@nobits` must agree with the kind.
-  Anything else (a mergeable `.rodata.str*`/`.rodata.cst*`, a group,
-  `.tbss`, a custom name, `.popsection` of an empty stack) is
-  `asm:section`. Text before any section directive is in `.text`.
+- **Sections.** `.text`, `.data`, `.bss`,
+  `.section name{,"flags"{,@type{,entsize}}}`, `.pushsection` (same
+  operands)/`.popsection`, `.previous`. A name is a string `"..."`
+  (without `"` or `\`) or bare (letters, digits, `_ . $ -`, not first a
+  digit or `-`). A standard name is `.text`, `.rodata`, `.data` or
+  `.bss`, alone or followed by `.` and more; its kind (type and flags)
+  is LLVM's default for the name, and the flags written may only be ones
+  the kind has (`a`, `w` for data and bss, `x` for text) and are OR'd
+  with the defaults; `@progbits`/`@nobits` must agree with the kind. Any
+  other name is §9.1's. A mergeable `.rodata.str*`/`.rodata.cst*`, a
+  subsection number, `.popsection` of an empty stack are `asm:section`;
+  the flags and types §9.1 refuses by name are refused by the same names
+  on standard names. Text before any section directive is in `.text`.
   Alignment starts at 4 for code (LLVM 22; LLVM 19 gives a code section
   the text creates alignment 1, `.text` 4: the one difference, and hod
   follows 22) and at 1 otherwise, raised by each alignment directive.
@@ -372,6 +383,61 @@ What the emitter adds (`spec/codegen.md` §9.7.3): a label named as a
 module symbol must be the definition of a module declaration (external
 linkage, not thread-local), else `asm:symbol`; directives on module
 symbols follow WP-075's rules.
+
+### 9.1 Sections of the text's own name (WP-255)
+
+Both targets (`assemble_module` and `assemble_module_x64` share the
+code). A name that is not standard (§9 "Sections") opens a section
+`SectionKind::Custom { sh_type, flags, entsize }`, as LLVM's
+`ELFAsmParser::parseSectionArguments` does for a name without defaults
+(llc 19 and 22 agree on every shape):
+
+- **Flags.** `a` (`SHF_ALLOC`), `w` (`SHF_WRITE`), `M` (`SHF_MERGE`), `S`
+  (`SHF_STRINGS`), `R` (`SHF_GNU_RETAIN`); none written, or `""`, is 0.
+  Refused by name, on any section: `x` here (`asm:section-flags/exec`;
+  a code section of the text's own name is not read), `G`
+  (`asm:section-flags/group`), `T` (`/tls`), `o` (`/link-order`), `e`
+  (`/exclude`), any other character (`/other`: `l`, `y`, `?`, digits).
+- **Type.** `@progbits`/`%progbits` (the default), `@nobits`, `@note`;
+  any other type is `asm:section-type`, a type without `@`/`%`
+  `asm:section`.
+- **Entry size.** With `M`, the operand after the type: a constant
+  above 0 (`M` without it is LLVM's "expected the entry size",
+  `asm:section`); without `M` no fourth operand (`,unique,N`, a group
+  name: `asm:section`). Alignment is 1 until an alignment directive
+  raises it; the entry size does not raise it.
+- **Again.** A later directive for the name switches back to the
+  section. If it writes a flag, a type or an entry size, the flags and
+  entry size must equal the first's, and a written type the first's
+  (LLVM's "changed section flags/entsize/type" errors): else
+  `asm:section`. A directive that writes none (`.section m`,
+  `.section m,""`) keeps the first's.
+- **Contents.** The data directives of §9 (strings with their escapes:
+  `\b \f \n \r \t \" \\`, one to three octal digits, `\x` and hex
+  digits truncated to a byte; any other escape is an error to LLVM and
+  `asm:operand/syntax` here), alignment, labels and symbols, and
+  relocations from 2-, 4- and 8-byte fields, in allocated and
+  non-allocated sections alike. No instruction (`asm:section`). A
+  `@nobits` section takes only zeros (§9's `.bss` rules).
+- **Reserved names** (`asm:section-name`): those LLVM gives defaults or
+  hod writes itself: `.tdata`, `.tbss`, `.init_array`, `.fini_array`,
+  `.preinit_array` (alone or followed by `.`), every `.note*`, `.rela*`,
+  `.rel.*`; `.init`, `.fini`, `.data1`, `.rodata1`, `.eh_frame`,
+  `.eh_frame_hdr`, `.gcc_except_table`, `.comment`, `.group`, `.symtab`,
+  `.symtab_shndx`, `.strtab`, `.shstrtab`, `.llvm_addrsig`,
+  `.llvm.call-graph-profile`; and the DWARF sections `.debug_<d>` (alone,
+  followed by `.`, or with `.dwo`) for `d` in `info abbrev line line_str
+  str str_offsets addr rnglists loclists frame aranges ranges loc names
+  pubnames pubtypes gnu_pubnames gnu_pubtypes types macinfo macro
+  cu_index tu_index`. Other `.debug_*` names (`.debug_gdb_scripts`) are
+  taken.
+
+The case that asked for it: a library's gdb pretty printers embedded as
+`.pushsection ".debug_gdb_scripts", "MS",%progbits,1`, `.ascii` lines of
+an inlined script (kind byte `\4`), `.byte 0`, `.popsection`: a section
+`SHT_PROGBITS`, `SHF_MERGE | SHF_STRINGS`, entries of 1, alignment 1,
+not allocated. Globals of an explicit section of the same name are
+`spec/codegen.md` §9.7.3's.
 
 ## 10. x86-64 instructions (`x64/`, WP-187)
 

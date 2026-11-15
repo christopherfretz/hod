@@ -171,14 +171,70 @@ const CASES: &[(&str, &str, &str)] = &[
     ),
 ];
 
+/// Sections of the text's own name (`spec/asm.md` §9.1, WP-255), the
+/// same text on both targets: the gdb-script embedding of a kiln-built
+/// translation unit (the reduced module is `tests/data/gdb-scripts-*.ll`),
+/// each flag, type and entry size hod reads, the section stack, symbols
+/// and relocations in such sections, and globals of an explicit section
+/// of the same name (one section when the flags agree, two when not).
+const CUSTOM: &[(&str, &str, &str)] = &[
+    (
+        "gdb-scripts",
+        ".pushsection \".debug_gdb_scripts\", \"MS\",%progbits,1\n\
+         .ascii \"\\4gdb.inlined-script.HOD_TEST\\n\"\n.ascii \"import gdb\\n\"\n\
+         .ascii \"\\x41\\101\\t\\\\\\\"\\004\"\n.byte 0\n.popsection\n",
+        "",
+    ),
+    (
+        "custom-shapes",
+        ".section mine\n.byte 1\n.section mine,\"\"\n.byte 2\n.section \"my sec\",\"a\"\n.p2align 3\n\
+         .quad 5\n.pushsection wr,\"awR\",@progbits\n.long 1\n.pushsection nb,\"aw\",@nobits\n\
+         .zero 16\n.balign 32\n.popsection\n.byte 9\n.popsection\n.section nt,\"a\",@note\n\
+         .long 4, 0, 1\n.ascii \"abc\\0\"\n.section m4,\"aM\",@progbits,4\n.long 1, 2\n\
+         .section ms2,\"aMS\",@progbits,2\n.2byte 65, 0\n.section ms,\"S\"\n.asciz \"q\"\n\
+         .text\n.section mine\n.byte 3\n.previous\n.previous\n.byte 4\n.section .debug_x,\"\",@progbits\n\
+         .string \"d\"\n",
+        "",
+    ),
+    (
+        "custom-symbols",
+        ".section tab,\"aw\"\n.globl tab_start\n.type tab_start, @object\ntab_start:\n.quad f\n\
+         .quad tab_start\nlocal_l: .long 3\n.p2align 3\n.quad local_l + 4\n.quad .Lhere\n.Lhere:\n\
+         .size tab_start, .-tab_start\n.section notalloc\n.quad f\n.long tab_start\n.quad .Lhere\n",
+        "define void @f() {\n  ret void\n}\n",
+    ),
+    (
+        "custom-global-same-flags",
+        ".section mine,\"aw\"\n.byte 1\n.section ro,\"a\"\n.byte 2\n\
+         .section \".debug_gdb_scripts\",\"MS\",@progbits,1\n.asciz \"\\4x\"\n",
+        "@h = global i32 1, section \"mine\"\n@c = constant i32 2, section \"ro\"\n\
+         @g = internal constant [3 x i8] c\"\\01y\\00\", section \".debug_gdb_scripts\", align 1\n\
+         @g2 = linkonce_odr constant [3 x i8] c\"\\01z\\00\", section \".debug_gdb_scripts\", align 1\n\
+         @k = global [2 x ptr] [ptr @g, ptr @g2]\n",
+    ),
+    (
+        "custom-global-other-flags",
+        ".section mine,\"a\"\n.byte 1\n.section none\n.byte 2\n",
+        "@h = global i32 1, section \"mine\"\n@c = constant i32 2, section \"none\"\n",
+    ),
+];
+
 /// `(module assembly, IR after it, the name hod refuses it by)`.
 const REFUSED: &[(&str, &str, &str)] = &[
     (".quad .", "", "asm:operand/expression"),
     (".text\n.byte 1\nnop", "", "asm:unaligned"),
     (".data\nnop", "", "asm:section"),
     (".section .rodata.str1.1,\"aMS\",@progbits,1", "", "asm:section"),
-    (".section mine,\"aw\"", "", "asm:section"),
     (".section .data,\"ax\"", "", "asm:section"),
+    // spec/asm.md §9.1: what a section of the text's own name may not be.
+    (".section mine,\"ax\"\nret", "", "asm:section-flags/exec"),
+    (".section mine,\"aG\",@progbits,g,comdat", "", "asm:section-flags/group"),
+    (".section mine,\"a\",@init_array", "", "asm:section-type"),
+    (".section .tdata.x,\"awT\"", "", "asm:section-name"),
+    (".section .debug_info", "", "asm:section-name"),
+    (".section mine,\"a\"\n.section mine,\"aw\"", "", "asm:section"),
+    // A global in a `@nobits` section of the text's own: llc joins it.
+    (".section nb,\"aw\",@nobits\n.zero 4", "@z = global i32 0, section \"nb\"\n", "asm:section"),
     (".cfi_startproc", "", "asm:directive/cfi_startproc"),
     (".symver u, u@@V1\n.text\nbl u", "", "asm:symbol"),
     (".internal U", "", "asm:directive/internal"),
@@ -283,7 +339,7 @@ fn module_assembly_agrees_with_llc() {
     let scratch = Scratch::new("emit-module-asm");
     let mut failures = Vec::new();
     for major in &majors {
-        for &(name, assembly, ir) in CASES {
+        for &(name, assembly, ir) in CASES.iter().chain(CUSTOM) {
             let text = module_text(*major, assembly, ir);
             let theirs = Elf::parse(llc(&scratch, *major, name, &text));
             let parsed = hod_ll::parse_module(text.as_bytes(), &hod_ll::ParseOptions::default())
@@ -459,6 +515,10 @@ const X64_REFUSED: &[(&str, &str, &str)] = &[
     (".text\nfoo %rax", "", "asm:mnemonic/foo"),
     (".text\nD:\nret", "define void @D() {\n  ret void\n}\n", "asm:symbol"),
     (".text\njmp *%rax", "", "asm:operand/form"),
+    (".section mine,\"ax\"\nret", "", "asm:section-flags/exec"),
+    (".section mine,\"awT\"", "", "asm:section-flags/tls"),
+    (".section .note.x,\"a\"", "", "asm:section-name"),
+    (".section m,\"aM\",@progbits,1\n.section m,\"aM\",@progbits,2", "", "asm:section"),
 ];
 
 fn x64_text(assembly: &str, ir: &str) -> String {
@@ -482,7 +542,7 @@ fn x86_64_module_assembly_agrees_with_llc() {
     let scratch = Scratch::new("emit-module-asm-x64");
     let mut failures = Vec::new();
     for major in &majors {
-        for &(name, assembly, ir) in X64_CASES {
+        for &(name, assembly, ir) in X64_CASES.iter().chain(CUSTOM) {
             let text = x64_text(assembly, ir);
             let theirs = Elf::parse(llc(&scratch, *major, &format!("x64-{name}"), &text));
             let parsed = hod_ll::parse_module(text.as_bytes(), &hod_ll::ParseOptions::default())

@@ -433,6 +433,26 @@ impl Sections {
         Found::New(new, Pending { own: false, id, flags, entry_size, group })
     }
 
+    /// The section module assembly opens under a name of its own
+    /// (`spec/codegen.md` §9.7.3, WP-255): `ELFAsmParser`'s
+    /// `getELFSection` with the generic id, so that a global of an
+    /// explicit section of that name later joins it when its flags and
+    /// entry size are the same and gets a section of its own otherwise,
+    /// as with `llc`.
+    pub(crate) fn assembly(
+        &mut self,
+        name: &[u8],
+        sh_type: u32,
+        flags: u64,
+        entry_size: u64,
+    ) -> Found {
+        if let Some(section) = self.find(name, NO_GROUP, GENERIC) {
+            return Found::Old(section);
+        }
+        let new = NewSection { kind: obj_kind(sh_type, flags, entry_size), group: NO_GROUP };
+        Found::New(new, Pending { own: false, id: GENERIC, flags, entry_size, group: NO_GROUP })
+    }
+
     fn unique(&mut self) -> u32 {
         let id = self.next_unique;
         self.next_unique += 1;

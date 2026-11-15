@@ -8,11 +8,10 @@ Every module of the captured corpus (`docs/status/corpus.md`), given to hod in s
 
 | reason | LLVM 22 | LLVM 19 |
 |---|---:|---:|
-| `(compiled)` | 3480 | 3438 |
+| `(compiled)` | 3485 | 3443 |
 | `cc:win64cc` | 1 | 1 |
-| `debug:dbg-value-arglist` | 1 | 1 |
 | `intrinsic:llvm.aarch64.ldxr.p0` | 1 | 1 |
-| all | 3483 | 3441 |
+| all | 3487 | 3445 |
 
 ## Every reason (census)
 
@@ -21,7 +20,6 @@ Every module of the captured corpus (`docs/status/corpus.md`), given to hod in s
 | `attr:elementtype` | 1 | 1 |
 | `cc:aarch64_vector_pcs` | 1 | 1 |
 | `cc:win64cc` | 1 | 1 |
-| `debug:dbg-value-arglist` | 1 | 1 |
 | `intrinsic:llvm.aarch64.clrex` | 1 | 1 |
 | `intrinsic:llvm.aarch64.ldaxp` | 1 | 1 |
 | `intrinsic:llvm.aarch64.ldaxr.p0` | 1 | 1 |
@@ -36,13 +34,15 @@ Modules whose outcome and first reason are the same by two routes, and whose cen
 
 | LLVM | modules | text = native | native = `llvm-dis` | census: text = native | census: native = `llvm-dis` | census in the same order |
 |---|---:|---:|---:|---:|---:|---:|
-| 22 | 3483 | 3483 | 3482 | 3483 | 3482 | 3482 |
-| 19 | 3441 | 3441 | 3440 | 3441 | 3440 | 3440 |
+| 22 | 3487 | 3487 | 3485 | 3487 | 3485 | 3485 |
+| 19 | 3445 | 3445 | 3443 | 3445 | 3443 | 3443 |
 
 The modules that differ (at most 20):
 
 - `kiln/llvm22/conformance/temp.arg.nontype/class-type-argument-debuginfo-run.cpp.ll`: text `-` (-), native `-` (-), `llvm-dis` `malformed-input` (malformed-input)
+- `kiln/llvm22/conformance/temp.arg.nontype/class-type-argument-local-debuginfo-run.cpp.ll`: text `-` (-), native `-` (-), `llvm-dis` `malformed-input` (malformed-input)
 - `kiln/llvm19/conformance/temp.arg.nontype/class-type-argument-debuginfo-run.cpp.ll`: text `-` (-), native `-` (-), `llvm-dis` `malformed-input` (malformed-input)
+- `kiln/llvm19/conformance/temp.arg.nontype/class-type-argument-local-debuginfo-run.cpp.ll`: text `-` (-), native `-` (-), `llvm-dis` `malformed-input` (malformed-input)
 
 ## What a decline costs
 
@@ -50,13 +50,13 @@ Coverage-log field 7 (from the process's start to the decline) of the first-refu
 
 | LLVM | route | median | p99 | worst | share of `llc`: median | p99 | worst |
 |---|---|---:|---:|---:|---:|---:|---:|
-| 22 | text | 17692 | 45772 | 242367 | 25.3% | 64.7% | 118.7% |
-| 22 | bitcode, native | 16837 | 38261 | 150879 | 24.5% | 50.0% | 80.5% |
-| 22 | bitcode, `llvm-dis` | 73446 | 144320 | 650146 | 107.5% | 195.9% | 330.8% |
-| 22 | `llc -O0` | 70500 | 149157 | 3869456 | | | |
-| 22 | the `convert` of the `llvm-dis` route | 57589 | 122905 | 408557 | | | |
-| 19 | text | 17163 | 51676 | 254967 | 25.6% | 66.2% | 201.1% |
-| 19 | bitcode, native | 16485 | 50471 | 165719 | 24.9% | 56.2% | 120.4% |
-| 19 | bitcode, `llvm-dis` | 72957 | 165408 | 746018 | 109.1% | 201.8% | 443.3% |
-| 19 | `llc -O0` | 63473 | 148419 | 3654009 | | | |
-| 19 | the `convert` of the `llvm-dis` route | 55799 | 129826 | 509312 | | | |
+| 22 | text | 10323 | 38029 | 238818 | 25.4% | 78.2% | 601.7% |
+| 22 | bitcode, native | 9433 | 37703 | 140172 | 23.6% | 83.7% | 256.3% |
+| 22 | bitcode, `llvm-dis` | 37867 | 101361 | 576527 | 98.3% | 191.9% | 464.9% |
+| 22 | `llc -O0` | 39185 | 99050 | 3286423 | | | |
+| 22 | the `convert` of the `llvm-dis` route | 28792 | 80641 | 374739 | | | |
+| 19 | text | 11535 | 45223 | 341445 | 26.0% | 89.2% | 269.7% |
+| 19 | bitcode, native | 10981 | 35415 | 162608 | 24.1% | 72.2% | 184.4% |
+| 19 | bitcode, `llvm-dis` | 45709 | 125538 | 754046 | 102.8% | 241.0% | 684.2% |
+| 19 | `llc -O0` | 40634 | 85462 | 3365207 | | | |
+| 19 | the `convert` of the `llvm-dis` route | 34783 | 80004 | 500949 | | | |

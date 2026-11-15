@@ -662,9 +662,10 @@ fn what_has_no_row_is_named_after_itself() {
 }
 
 /// §8.4, WP-141: `x86_64_sysvcc` is `ccc` on x86-64 and an x86
-/// convention on AArch64; the Windows and 32-bit x86 conventions are
-/// refused by design on both, by keyword. A call names the callee's
-/// convention as well.
+/// convention on AArch64; `win64cc` is supported on x86-64 and not yet
+/// implemented on AArch64 (WP-246); the other Windows and the 32-bit x86
+/// conventions are refused by design on both, by keyword. A call names
+/// the callee's convention as well.
 #[test]
 fn x86_conventions_are_named_by_keyword() {
     let convention = |arch: Arch, cc: CallConv| {
@@ -685,8 +686,13 @@ fn x86_conventions_are_named_by_keyword() {
         })
     };
     accepted(&call(Arch::X86_64, CallConv::X86_64_SYSV));
+    // WP-246: `win64cc` on x86-64 (`spec/abi-x64.md` §13); not yet on AArch64.
+    accepted(&convention(Arch::X86_64, CallConv::WIN64));
+    accepted(&call(Arch::X86_64, CallConv::WIN64));
+    assert_eq!(Support::shipped(Arch::X86_64).supports("cc:win64cc"), Some(true));
+    assert_eq!(Support::shipped(Arch::Aarch64).supports("cc:win64cc"), Some(false));
+    accepted(&convention(Arch::Aarch64, CallConv::WIN64));
     for (cc, name) in [
-        (CallConv::WIN64, "cc:win64cc"),
         (CallConv::X86_VECTORCALL, "cc:x86_vectorcallcc"),
         (CallConv::X86_REGCALL, "cc:x86_regcallcc"),
         (CallConv::X86_INTR, "cc:x86_intrcc"),

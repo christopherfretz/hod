@@ -124,6 +124,9 @@ fn preserve_plan(cx: &FnCx<'_, X64>) -> CgResult<Preserve> {
     let SymbolKind::Function { cc, .. } = cx.module.symbol(cx.body.symbol()).kind() else {
         return Ok(Preserve::default());
     };
+    if cc == CallConv::WIN64 {
+        return win64_plan(cx);
+    }
     if cc != CallConv::PRESERVE_MOST && cc != CallConv::PRESERVE_ALL {
         return Ok(Preserve::default());
     }
@@ -147,6 +150,35 @@ fn preserve_plan(cx: &FnCx<'_, X64>) -> CgResult<Preserve> {
         }
     }
     Ok(Preserve { gprs, xmms, area: None, rows_at: 0 })
+}
+
+/// WP-246 (`spec/abi-x64.md` §13.6): a `win64cc` function keeps `rsi`,
+/// `rdi` and `xmm6`..`xmm15` for its caller (LLVM's `CSR_Win64`), which
+/// the System V set does not: it pushes the two and stores the ten,
+/// whatever its body uses (every call it makes may clobber them; `llc`
+/// saves those its allocator or a call touched, all of them in a
+/// function that calls). Its result is never in one of them.
+fn win64_plan(cx: &FnCx<'_, X64>) -> CgResult<Preserve> {
+    if cx.has_coro_frame() {
+        return unsupported(crate::win64::COROUTINE);
+    }
+    if crate::call::is_variadic(cx) {
+        return unsupported(crate::win64::VARIADIC_DEFINITION);
+    }
+    let gprs = PRESERVED
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| matches!(r, Reg::Rsi | Reg::Rdi))
+        .fold(0u8, |mask, (i, _)| mask | 1 << i);
+    Ok(Preserve { gprs, xmms: crate::win64::KEPT_XMMS, area: None, rows_at: 0 })
+}
+
+/// Whether the function being compiled is `win64cc` (WP-246).
+pub fn is_win64(cx: &FnCx<'_, X64>) -> bool {
+    matches!(
+        cx.module.symbol(cx.body.symbol()).kind(),
+        SymbolKind::Function { cc: CallConv::WIN64, .. }
+    )
 }
 
 /// The members of [`PRESERVED`] the function pushes, in push order.
@@ -281,6 +313,9 @@ pub fn final_size(size: u32, saves: u32) -> CgResult<u32> {
 pub fn end(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
     if cx.tail_exit_count() != 0 && is_preserving(cx) {
         return unsupported(PRESERVE_TAIL_CALL);
+    }
+    if cx.tail_exit_count() != 0 && is_win64(cx) {
+        return unsupported(crate::win64::MUSTTAIL);
     }
     crate::guard::place(cx)?; // WP-183: the guarded block, last in the local area
     let mask = saved_set(cx);

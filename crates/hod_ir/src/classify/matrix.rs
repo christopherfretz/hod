@@ -687,7 +687,13 @@ const CC: [SupportRow; 26] = [
         ON,
         "assigned as `ccc`: the System V convention is x86-64 Linux's C convention (`llc` 19 and 22 emit the same code)",
     ),
-    both("cc:win64cc", never(WINDOWS), ""),
+    // WP-246: `ms_abi` on Linux.
+    row(
+        "cc:win64cc",
+        todo("T-A64 (WP-246's AArch64 part)"),
+        ON,
+        "x86-64: four positions in `rcx`/`xmm0`..`r9`/`xmm3`, a 32-byte shadow area; the callee also keeps `rsi`, `rdi`, `xmm6`..`xmm15` (`spec/abi-x64.md` §13)",
+    ),
     row("cc:x86_vectorcallcc", never(X86_CC), never(WINDOWS), "`__vectorcall`"),
     row("cc:hhvmcc", never(X86_CC), todo(LATER), ""),
     row("cc:hhvm_ccc", never(X86_CC), todo(LATER), ""),

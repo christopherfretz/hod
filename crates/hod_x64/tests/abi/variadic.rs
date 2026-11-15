@@ -193,6 +193,7 @@ fn variadic_against_c() {
             variadic: true,
             avx: false,
             avx512: false,
+            cc: hod_ir::CallConv::C,
         };
         emit::caller(&mut asm, func);
         let callee =

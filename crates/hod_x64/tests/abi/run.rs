@@ -278,7 +278,10 @@ fn runs(plan: &Plan, config: Config, hod_calls: bool, bf16: bool) -> bool {
     // LLVM 19 keeps an integer wider than 64 bits (and a vector of `i64`
     // split into general pieces) all in registers or all on the stack,
     // and then gives up the registers left (§4.2).
+    // WP-246: not under `win64cc`, whose pieces each take a position
+    // (§13.2).
     if config.major < 22
+        && plan.case.cc != hod_ir::CallConv::WIN64
         && plan.case.has_wide_general()
         && (plan.asg.stack_size > 0 || plan.case.fixed.is_some())
     {
@@ -546,10 +549,17 @@ impl Batch {
                 variadic: plan.case.fixed.is_some(),
                 avx: tools.features().avx,
                 avx512: tools.features().avx512,
+                cc: hod_ir::CallConv::C,
             };
             emit::caller(&mut asm, func);
-            let callee =
-                Func { name: &names[2], peer: "", out: ir::OUT_B, variadic: false, ..func };
+            let callee = Func {
+                name: &names[2],
+                peer: "",
+                out: ir::OUT_B,
+                variadic: false,
+                cc: plan.case.cc,
+                ..func
+            };
             emit::callee(&mut asm, callee);
         }
         emit::epilogue(&mut asm);

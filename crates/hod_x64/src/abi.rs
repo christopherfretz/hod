@@ -108,7 +108,7 @@ pub const UNSUPPORTED: [&str; 19] = [
 ];
 
 const CC: &str = "abi:cc";
-const INVALID_SIGNATURE: &str = "abi:invalid-signature";
+pub(crate) const INVALID_SIGNATURE: &str = "abi:invalid-signature";
 const SCALABLE_VECTOR: &str = "abi:scalable-vector";
 const TARGET_EXT_TYPE: &str = "abi:target-ext-type";
 const ADDRSPACE: &str = "abi:addrspace";
@@ -518,13 +518,13 @@ fn xmm_reg(n: u8) -> PReg {
     xmm(reg)
 }
 
-fn is_plain_pointer(types: &TypeTable, ty: TypeId) -> bool {
+pub(crate) fn is_plain_pointer(types: &TypeTable, ty: TypeId) -> bool {
     matches!(types.kind(ty), TypeKind::Ptr { addr_space: 0 })
 }
 
 /// The attributes §6.6 leaves unsupported or that no valid signature
 /// has. `inreg` is ignored (§6.5).
-fn check_flags(types: &TypeTable, ty: TypeId, attrs: ParamAttrs) -> Abi<()> {
+pub(crate) fn check_flags(types: &TypeTable, ty: TypeId, attrs: ParamAttrs) -> Abi<()> {
     if attrs.is_none() {
         return Ok(());
     }
@@ -545,6 +545,17 @@ fn check_flags(types: &TypeTable, ty: TypeId, attrs: ParamAttrs) -> Abi<()> {
         return no(INVALID_SIGNATURE);
     }
     Ok(())
+}
+
+/// WP-246: the name §6 refuses a parameter with `mem` under when it is
+/// not an ordinary pointer, `sret` or `byval` (`crate::win64`).
+pub(crate) fn mem_refusal(mem: ParamMem) -> &'static str {
+    match mem {
+        ParamMem::InAlloca => INALLOCA,
+        ParamMem::Preallocated => PREALLOCATED,
+        ParamMem::ElementType => ELEMENTTYPE,
+        _ => INVALID_SIGNATURE,
+    }
 }
 
 fn is_aggregate(types: &TypeTable, ty: TypeId) -> bool {
@@ -612,7 +623,7 @@ pub fn x87_float_part(part: &Part) -> bool {
 }
 
 /// §5: the return value. `Ok(true)` when it travels in memory.
-fn assign_return(
+pub(crate) fn assign_return(
     types: &TypeTable,
     sig: &Sig<'_>,
     features: Features,
@@ -847,6 +858,10 @@ fn assign_signature(
     } else {
         sig
     };
+    // WP-246 (§13): `win64cc` places its arguments by position.
+    if sig.cc == CallConv::WIN64 {
+        return crate::win64::assign(types, sig, features, out);
+    }
     if !cc_is_c(sig.cc) {
         return no(CC);
     }

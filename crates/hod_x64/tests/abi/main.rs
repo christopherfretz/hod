@@ -19,4 +19,5 @@ mod table;
 mod ty;
 mod variadic;
 mod wide;
+mod win64;
 mod zmm;

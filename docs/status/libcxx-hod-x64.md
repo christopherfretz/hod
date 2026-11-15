@@ -1,5 +1,36 @@
 # libc++ test suite on x86-64 through hod (hybrid)
 
+## At the candidate 02fe2d02 (WP-233, 2026-11-15, strict, no `-g`)
+
+The 1.0 release candidate, hod `main` at `02fe2d02` (release binary,
+sha256 `5c1e181de7f62e3a644a11b536495429674c76bb0be6203c5bf85a8c19c3633d`),
+with kiln 1.2.0 at `8f93304ee`, strict (no fallback) under `qemu-x86_64`
+in 20 shards, 2026-11-15 08:32 to 11:11 EST. Each shard was compared with
+the recorded control of the WP-233 measurement below (the same kiln, the
+same shards, command and settings: `-j 4` off the shared pool,
+`--timeout 160 --run-timeout-long 1920`, `HOD_DEBUG_FLAGS=`).
+
+| | recorded control (kiln + `llc`) | **strict at `02fe2d02`** |
+|---|---|---|
+| total | 9,247 | 9,247 |
+| pass | 8,607 | **8,608** |
+| fail | 5 | 5 |
+| xfail | 45 | 45 |
+| xpass | 3 | 3 |
+| unsupported | 585 | 585 |
+| timeout | 2 | 1 |
+| wall time, `-j 4` (sum of 20 shards) | 8,328 s | 9,276 s |
+| `oom_kill` | 1 before and after every shard | the same |
+| modules by hod | - | 7,226 of 7,226, 0 fallback (hod 291.6 s summed over modules) |
+
+**Result: strict equals the control.** The one changed outcome is the
+control's compile timeout on
+`std/containers/unord/unord.multimap/local_iterators.pass.cpp` (PASS in
+strict; alone it passes in both modes, see below). The failures (the four
+filesystem tests and `copy_file_procfs.pass.cpp`), the timeout
+`offset_range.pass.cpp` and the three XPASSes are the same tests as in the
+control.
+
 ## WP-233 measurement (2026-11-14/15, strict and control, no `-g`)
 
 The whole suite for `x86_64-unknown-linux-gnu`, re-measured after about

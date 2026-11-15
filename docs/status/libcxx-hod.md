@@ -1,5 +1,40 @@
 # libc++ test suite through hod (hybrid and strict)
 
+## At the candidate 02fe2d02 (WP-233, 2026-11-15, strict, no `-g`)
+
+The 1.0 release candidate, hod `main` at `02fe2d02` (release binary,
+sha256 `5c1e181de7f62e3a644a11b536495429674c76bb0be6203c5bf85a8c19c3633d`),
+with kiln 1.2.0 at `8f93304ee`. Strict ran against the control recorded
+on that kiln the same morning (below), with the same command and settings:
+`scripts/libcxx-hod-debug.sh control|strict <dir>`, `HOD_DEBUG_FLAGS=`
+(no `-g`), `HOD_JOBS=3` on the lanes' jobserver pool, `--timeout 20
+--mem-limit 3072 --no-fail`.
+
+| | recorded control (kiln + `llc`) | **strict at `02fe2d02`** |
+|---|---|---|
+| date (EST) | 2026-11-15 04:25 to 05:35 | 2026-11-15 06:08 to 08:24 |
+| total | 9,247 | 9,247 |
+| pass | 8,608 | **8,608** |
+| fail | 4 | 4 |
+| xfail | 46 | 46 |
+| xpass | 2 | 2 |
+| unsupported | 585 | 585 |
+| timeout | 2 | 2 |
+| wall time, `-j 3` | 4,241 s | 8,164 s (a heavier host load) |
+| `oom_kill` | 1 before, 1 after | 1 before, 1 after |
+| modules by hod | - | 7,226 of 7,226, 0 fallback (hod 287.5 s summed over modules) |
+
+**Result: strict equals the control.** Two tests swapped outcomes, both
+at the 20 s limit: `ifstream.members/buffered_reads.pass.cpp` (PASS in
+the control, TIMEOUT in strict) and
+`atomics.types.operations.wait/lost_wakeup.pass.cpp` (TIMEOUT in the
+control, PASS in strict). Alone at `-j 1` with the candidate, each timed
+out twice in each mode at 20 s (26 to 32 s) and passed once in each mode
+at 120 s (`buffered_reads` 42.9 s with `llc`, 45.8 s with hod;
+`lost_wakeup` 31.9 s and 29.1 s). The failures (the four filesystem
+tests), the timeout `offset_range.pass.cpp` and the XPASSes are the same
+in both modes.
+
 ## Fourth measurement (WP-233, 2026-11-14, strict and control, no `-g`)
 
 The whole suite natively on the AArch64 host, re-measured after about

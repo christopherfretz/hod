@@ -11,6 +11,7 @@ pub mod capture;
 pub mod census;
 pub mod compare;
 pub mod entry;
+pub mod expected;
 pub mod kiln;
 pub mod manifest;
 pub mod reasons;
@@ -62,7 +63,10 @@ through irdiff in hybrid mode, with each LLVM the corpus was captured for.
   -j <N>, --jobs <N>   tests run at once (default 3, at most 16)
   --hod <binary>       the hod to test (default: build this workspace's)
   --strict             run irdiff in strict mode instead
-  --manifest-only      check the manifest, run nothing
+  --expected <file>    the list of expected refusals and undefined entries
+                       (default: docs/status/corpus-expected.tsv of this
+                       workspace); its rows of the corpus's target apply
+  --manifest-only      check the manifest and the list's tests, run nothing
   --keep, -v           as for irdiff
 
 census: counts the constructs of the corpus's modules and writes the report
@@ -251,6 +255,9 @@ pub fn parse_verify(args: &[String], options: &mut verify::Options) -> Result<()
             "-j" | "--jobs" => options.config.jobs = jobs(value(args, &mut index, arg)?)?,
             "--hod" => options.config.hod = Some(PathBuf::from(value(args, &mut index, arg)?)),
             "--strict" => options.config.mode = Mode::Strict,
+            "--expected" => {
+                options.expected = Some(absolute(Path::new(value(args, &mut index, arg)?)));
+            }
             "--manifest-only" => options.manifest_only = true,
             "--keep" => options.config.keep = true,
             "-v" | "--verbose" => options.config.verbose = true,
@@ -318,7 +325,12 @@ pub fn verify_defaults(build_dir: &Path, target: Option<Arch>) -> verify::Option
     config.mode = Mode::Hybrid;
     config.jobs = config.jobs.min(capture::DEFAULT_JOBS);
     config.target = target;
-    verify::Options { dir: default_dir_for(build_dir, target), config, manifest_only: false }
+    verify::Options {
+        dir: default_dir_for(build_dir, target),
+        config,
+        manifest_only: false,
+        expected: Some(expected::default_path()),
+    }
 }
 
 /// The steps of `fetch`: git's arguments, in order, for a sparse clone of
@@ -626,6 +638,9 @@ mod tests {
         assert_eq!(options.dir, Path::new("/w/.build/corpus"));
         assert_eq!(options.config.mode, Mode::Hybrid);
         assert!(options.config.jobs <= capture::DEFAULT_JOBS && !options.manifest_only);
+        assert_eq!(options.expected, Some(expected::default_path()));
+        let other = parse(&["--expected", "/l.tsv"]).unwrap();
+        assert_eq!(other.expected.as_deref(), Some(Path::new("/l.tsv")));
         let options =
             parse(&["/c", "--strict", "-j", "5", "--hod", "/h", "--manifest-only", "--keep", "-v"])
                 .unwrap();

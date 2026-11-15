@@ -13,7 +13,9 @@
 use std::process::ExitCode;
 
 const USAGE: &str = "\
-usage: cargo xtask ci [--quick] [--step fmt|clippy|test|irdiff|roundtrip|debug]... [--part a64|x64|harness|front|rest]
+usage: cargo xtask ci [--quick] [--step <step>]... [--part a64|x64|harness|front|rest]
+         steps: fmt clippy test irdiff roundtrip; the full gate's only:
+         debug-x86_64 debug-aarch64 corpus-aarch64 corpus-x86_64
        cargo xtask jobserver <status|refill> [--fifo <path>] [--jobs <n>]
        cargo xtask shim --llvm <dir> --hod <hod binary> --out <dir> [--kiln <kiln++>]
        cargo xtask irdiff [options] [<file.ll or directory>...]   (--help for the options)
@@ -56,120 +58,9 @@ fn main() -> ExitCode {
     }
 }
 
-/// Runs each selected step in order and stops at the first failure
-/// (`spec/harness.md` "ci").
+/// Runs the selected steps (`xtask::ci::run`, `spec/harness.md` "ci").
 fn ci(args: &xtask::ci::Args) -> ExitCode {
-    let quick = args.quick;
-    let steps: &[(&str, &[&str])] = &[
-        ("fmt", &["fmt", "--all", "--check"]),
-        ("clippy", &["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]),
-        // spec/cli.md "Embedding": the facade without its readers, as a
-        // program that builds `hod_ir` itself takes it. Part of the
-        // `clippy` step, so every lane that lints runs it.
-        ("clippy", &["clippy", "-p", "hod", "--no-default-features", "--", "-D", "warnings"]),
-    ];
-    let test: Vec<String> = xtask::ci::test_args(args.part);
-    let test: Vec<&str> = test.iter().map(String::as_str).collect();
-    for (name, cargo_args) in steps.iter().copied().chain([("test", test.as_slice())]) {
-        if !args.runs(name) {
-            continue;
-        }
-        match args.part {
-            Some(part) if name == "test" => eprintln!("ci: {name} (part {part})"),
-            _ => eprintln!("ci: {name}"),
-        }
-        // A cargo step is a jobserver client of its own (spec/harness.md
-        // "Jobserver"), and is run once more if an artifact vanished under
-        // it ("ci").
-        let ok = xtask::ci::cargo_step(cargo_args);
-        if !ok {
-            eprintln!("ci: {name} FAILED");
-            return ExitCode::FAILURE;
-        }
-    }
-    if args.runs("irdiff") {
-        eprintln!("ci: irdiff");
-        if !irdiff_gate(quick) {
-            eprintln!("ci: irdiff FAILED");
-            return ExitCode::FAILURE;
-        }
-    }
-    if args.runs("roundtrip") {
-        eprintln!("ci: roundtrip");
-        if !roundtrip_gate(quick) {
-            eprintln!("ci: roundtrip FAILED");
-            return ExitCode::FAILURE;
-        }
-    }
-    // L7: the full gate runs every debugger test (the quick tests ran in
-    // `cargo test`).
-    #[cfg(unix)]
-    if !quick && args.runs("debug") && !xtask::debug::gate() {
-        eprintln!("ci: debug FAILED");
-        return ExitCode::FAILURE;
-    }
-    // The full gate adds the cross-linking layer and the later ones as they
-    // land (docs/VALIDATION.md "Gates").
-    eprintln!("ci: ok");
-    ExitCode::SUCCESS
-}
-
-/// The L4 step of the gate (spec/harness.md "irdiff", "In the gate"): the
-/// runs `xtask::ci::irdiff_runs` plans for the tier, the other
-/// architecture's under its emulator among them.
-#[cfg(unix)]
-fn irdiff_gate(quick: bool) -> bool {
-    use xtask::irdiff::{Arch, Config, run, workspace_root};
-    let mut ok = true;
-    for planned in xtask::ci::irdiff_runs(quick, Arch::host()) {
-        eprintln!("ci: {}", xtask::ci::irdiff_command(&planned));
-        let mut config = Config::for_workspace();
-        config.llvm = planned.llvm.map(|major| major.to_string());
-        (config.target, config.tier, config.mode) = (planned.target, planned.tier, planned.mode);
-        config.witness = planned.witness;
-        config.paths = planned.paths.iter().map(|path| workspace_root().join(path)).collect();
-        match run(&config) {
-            Ok(report) => {
-                eprint!("{}", report.summary(false));
-                ok &= report.exit_status() == 0;
-            }
-            Err(message) => {
-                eprintln!("xtask irdiff: {message}");
-                ok = false;
-            }
-        }
-    }
-    ok
-}
-
-#[cfg(not(unix))]
-fn irdiff_gate(_: bool) -> bool {
-    eprintln!("ci: irdiff is only available on Unix hosts; skipped");
-    true
-}
-
-/// The L2 step of the gate (spec/harness.md "roundtrip", "In the gate"):
-/// the quick tier of the corpus, or all of it.
-#[cfg(unix)]
-fn roundtrip_gate(quick: bool) -> bool {
-    let mut options = xtask::roundtrip::Options::for_workspace();
-    options.quick = quick;
-    match xtask::roundtrip::gate(&options) {
-        Ok(text) => {
-            eprint!("{text}");
-            true
-        }
-        Err(text) => {
-            eprint!("{text}");
-            false
-        }
-    }
-}
-
-#[cfg(not(unix))]
-fn roundtrip_gate(_: bool) -> bool {
-    eprintln!("ci: roundtrip is only available on Unix hosts; skipped");
-    true
+    if xtask::ci::run(args) { ExitCode::SUCCESS } else { ExitCode::FAILURE }
 }
 
 /// `cargo xtask irdiff` (spec/harness.md "irdiff").

@@ -51,16 +51,19 @@ pub struct Report {
     pub modules: Vec<(String, Verdict)>,
     pub notes: Vec<String>,
     pub missing_required: bool,
+    /// WP-251: the paths were there, but no module of them was built and
+    /// verified (none, or every one declined or for another target).
+    pub verified_nothing: bool,
 }
 
 impl Report {
     /// 1 a module hod built does not verify or hod failed; 3 a missing
-    /// required tool; else 0.
+    /// required tool, or nothing verified; else 0.
     pub fn exit_status(&self) -> u8 {
         let bad = |v: &Verdict| matches!(v, Verdict::Dirty(_) | Verdict::Failed(_));
         if self.modules.iter().any(|(_, v)| bad(v)) {
             1
-        } else if self.missing_required {
+        } else if self.missing_required || self.verified_nothing {
             3
         } else {
             0
@@ -227,7 +230,9 @@ pub fn run(options: &Options) -> Result<Report, String> {
         return Ok(report);
     }
     let paths = if options.paths.is_empty() {
-        let corpus = crate::corpus::default_dir(&options.build_dir);
+        // WP-251: the corpus of the target verified, as `corpus verify
+        // --target` takes it.
+        let corpus = crate::corpus::default_dir_for(&options.build_dir, options.target);
         if !corpus.is_dir() {
             report.notes.push(format!("no corpus at '{}'", corpus.display()));
             report.missing_required = options.require_tools;
@@ -277,6 +282,17 @@ pub fn run(options: &Options) -> Result<Report, String> {
         let verdict = verdict.unwrap_or_else(|| Verdict::Failed("not run".to_owned()));
         report.modules.push((module.display().to_string(), verdict));
     }
+    let verified =
+        |v: &Verdict| matches!(v, Verdict::Clean | Verdict::Dirty(_) | Verdict::Failed(_));
+    if !report.modules.iter().any(|(_, v)| verified(v)) {
+        let shown: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+        report.notes.push(format!(
+            "nothing verified: {} -g modules under {}, none built for this target",
+            report.modules.len(),
+            shown.join(" ")
+        ));
+        report.verified_nothing = true;
+    }
     Ok(report)
 }
 
@@ -313,7 +329,52 @@ mod tests {
             text.contains("3 -g modules: 1 built (1 clean, 0 not clean), 2 declined"),
             "{text}"
         );
-        let dirty = Report { modules: vec![("a.ll".into(), Verdict::Dirty("x".into()))], ..report };
+        let dirty =
+            Report { modules: vec![("a.ll".into(), Verdict::Dirty("x".into()))], ..report.clone() };
         assert_eq!(dirty.exit_status(), 1);
+        // WP-251: a run that verified nothing is an error, not a pass.
+        let nothing = Report { verified_nothing: true, ..Report::default() };
+        assert_eq!(nothing.exit_status(), 3);
+    }
+
+    // WP-251: without paths, a target's run takes that target's corpus,
+    // and a run that verifies nothing fails.
+    #[test]
+    fn verifies_the_targets_corpus_and_not_nothing() {
+        // A build directory not named `target-*`: its corpus is beneath it.
+        let build = crate::irdiff::default_build_dir()
+            .join("tmp")
+            .join(format!("verify-nothing-{}", std::process::id()));
+        let other = crate::irdiff::directives::Arch::host().map(|host| {
+            if host == crate::irdiff::directives::Arch::Aarch64 {
+                crate::irdiff::directives::Arch::X86_64
+            } else {
+                crate::irdiff::directives::Arch::Aarch64
+            }
+        });
+        let corpus = crate::corpus::default_dir_for(&build, other);
+        fs::create_dir_all(corpus.join("kiln")).unwrap();
+        fs::write(corpus.join("kiln").join("plain.ll"), "define void @f() {\n  ret void\n}\n")
+            .unwrap();
+        let options = Options {
+            paths: Vec::new(),
+            jobs: 1,
+            hod: Some(PathBuf::from("/nonexistent/hod")),
+            build_dir: build.clone(),
+            require_tools: false,
+            limits: LIMITS,
+            target: other,
+        };
+        let report = run(&options).unwrap();
+        let _ = fs::remove_dir_all(&build);
+        if report.notes.iter().any(|n| n.contains("no llvm-dwarfdump")) {
+            return;
+        }
+        assert!(
+            report.notes.iter().any(|n| n.contains(&corpus.display().to_string())),
+            "{report:?}"
+        );
+        assert!(report.verified_nothing, "{report:?}");
+        assert_eq!(report.exit_status(), 3);
     }
 }

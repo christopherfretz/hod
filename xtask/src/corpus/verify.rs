@@ -2,15 +2,16 @@
 //! every entry passes `irdiff --hybrid`. Contract: `spec/harness.md`
 //! "corpus", "verify".
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::capture::entry_path;
+use super::expected::{self, Applied, Expected};
 use super::manifest::Manifest;
 use super::sha256;
-use crate::irdiff::{self, Config, Mode, Report, directives};
+use crate::irdiff::{self, Arch, Config, Mode, Report, directives};
 
 /// A verification.
 #[derive(Clone, Debug)]
@@ -22,6 +23,9 @@ pub struct Options {
     pub config: Config,
     /// Only check the manifest; run nothing.
     pub manifest_only: bool,
+    /// The list of expected results ("Expected results",
+    /// [`expected::default_path`]); `None` expects nothing but PASS.
+    pub expected: Option<PathBuf>,
 }
 
 /// What a verification found.
@@ -33,15 +37,19 @@ pub struct VerifyReport {
     pub problems: Vec<String>,
     /// One `irdiff` report per LLVM major of the corpus.
     pub runs: Vec<(u32, Report)>,
+    /// What the list of expected results did, for the corpus's target.
+    pub applied: Option<(Arch, Applied)>,
 }
 
 impl VerifyReport {
     /// The command's exit status, `irdiff`'s convention: 1 a FAIL or
-    /// XPASS; 3 none, but an ERROR, a missing required tool, or a corpus
-    /// that differs from its manifest; else 0.
+    /// XPASS, or a problem of the list of expected results; 3 none, but
+    /// an ERROR, a missing required tool, or a corpus that differs from
+    /// its manifest; else 0.
     pub fn exit_status(&self) -> u8 {
         let statuses: Vec<u8> = self.runs.iter().map(|(_, report)| report.exit_status()).collect();
-        if statuses.contains(&1) {
+        let listed = self.applied.as_ref().is_some_and(|(_, applied)| !applied.problems.is_empty());
+        if statuses.contains(&1) || listed {
             1
         } else if !self.problems.is_empty() || statuses.iter().any(|status| *status != 0) {
             3
@@ -66,8 +74,46 @@ impl VerifyReport {
             let _ = writeln!(text, "corpus: irdiff with LLVM {major}:");
             text.push_str(&report.summary(verbose));
         }
+        if let Some((target, applied)) = &self.applied {
+            text.push_str(&applied.summary(*target));
+        }
         text
     }
+}
+
+/// `<source> <test>` of each entry of the manifest, by entry path.
+fn tests_by_entry(manifest: &Manifest) -> BTreeMap<String, String> {
+    manifest
+        .rows
+        .iter()
+        .map(|(entry, row)| (entry.clone(), format!("{} {}", row.source, row.test)))
+        .collect()
+}
+
+/// Applies the list in `path` to `report`'s runs, for the corpus in
+/// `dir` of `target` (`spec/harness.md` "corpus", "Expected results").
+fn apply_list(
+    path: &Path,
+    dir: &Path,
+    target: Arch,
+    manifest: &Manifest,
+    strict: bool,
+    report: &mut VerifyReport,
+) -> Result<(), String> {
+    let list = Expected::read(path)?;
+    let by_entry = tests_by_entry(manifest);
+    let corpus: BTreeSet<String> = by_entry.values().cloned().collect();
+    let test_of = |name: &str| -> Option<String> {
+        let path = irdiff::workspace_root().join(name);
+        let entry = path.strip_prefix(dir).ok()?.to_string_lossy().into_owned();
+        by_entry.get(&entry).cloned()
+    };
+    let (majors, mut reports): (Vec<u32>, Vec<Report>) = report.runs.drain(..).unzip();
+    let applied =
+        expected::apply(&list.for_target(target), &mut reports, &test_of, &corpus, strict);
+    report.runs = majors.into_iter().zip(reports).collect();
+    report.applied = Some((target, applied));
+    Ok(())
 }
 
 /// Every `*.ll` file under `dir`, as paths relative to it with `/`.
@@ -146,8 +192,17 @@ pub fn verify(options: &Options) -> Result<VerifyReport, String> {
         entries: manifest.rows.len(),
         problems: check_manifest(dir, &manifest)?,
         runs: Vec::new(),
+        applied: None,
     };
+    // The list's rows name tests of this corpus's target ("Expected
+    // results"); the target is the corpus's, this machine's by default.
+    let target = options.config.target.or_else(Arch::host);
+    let list = options.expected.as_deref().zip(target);
+    let strict = options.config.mode == Mode::Strict;
     if options.manifest_only {
+        if let Some((path, target)) = list {
+            apply_list(path, dir, target, &manifest, strict, &mut report)?;
+        }
         return Ok(report);
     }
     let majors: BTreeSet<u32> = manifest.rows.values().map(|row| row.llvm).collect();
@@ -172,6 +227,9 @@ pub fn verify(options: &Options) -> Result<VerifyReport, String> {
             config.build_dir.join("corpus").join(format!("verify-{arch}llvm{major}-{mode}.tsv")),
         );
         report.runs.push((major, irdiff::run(&config)?));
+    }
+    if let Some((path, target)) = list {
+        apply_list(path, dir, target, &manifest, strict, &mut report)?;
     }
     Ok(report)
 }

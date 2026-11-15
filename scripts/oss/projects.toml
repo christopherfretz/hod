@@ -1,6 +1,6 @@
-# The open-source projects hod's real-project lane (L11) builds through
+# The open-source projects hod's real-project lane (L9) builds through
 # their own build systems with kiln as the compiler (docs/VALIDATION.md
-# "Real projects (L11)", spec/harness.md "Real projects").
+# "Real projects (L9)", spec/harness.md "Real projects").
 #
 # A port of kiln's scripts/oss/projects.toml (kiln:spec/landed/harness/
 # WP-666.md): the format is kiln's, so a row can be copied from kiln's file

@@ -39,8 +39,19 @@ From `cargo xtask corpus verify --target x86_64` (hybrid: a module hod declines 
 
 | LLVM | tests | built by hod | results | PASS | FAIL | ERROR | other | PASS of hod's |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 22 | no `verify-x86_64-llvm22-hybrid.tsv` | | | | | | | |
-| 19 | no `verify-x86_64-llvm19-hybrid.tsv` | | | | | | | |
+| 22 | 3251 | 3249 | 13004 | 13000 | 4 | 0 | 0 | 12992 of 12996 |
+| 19 | 3213 | 3211 | 12852 | 12848 | 4 | 0 | 0 | 12840 of 12844 |
+
+Every result that is not a PASS (at most 40):
+
+- LLVM 22 FAIL `gcc-torture/llvm22/builtins/strncmp.c.ll` [bfd], built by hod: the program of hod's object ended with signal 6, llc's with exit status 0
+- LLVM 22 FAIL `gcc-torture/llvm22/builtins/strncmp.c.ll` [lld], built by hod: the program of hod's object ended with signal 6, llc's with exit status 0
+- LLVM 22 FAIL `gcc-torture/llvm22/builtins/strncmp.c.ll` [mold], built by hod: the program of hod's object ended with signal 6, llc's with exit status 0
+- LLVM 22 FAIL `gcc-torture/llvm22/builtins/strncmp.c.ll` [wild], built by hod: the program of hod's object ended with signal 6, llc's with exit status 0
+- LLVM 19 FAIL `gcc-torture/llvm19/builtins/strncmp.c.ll` [bfd], built by hod: the program of hod's object ended with signal 6, llc's with exit status 0
+- LLVM 19 FAIL `gcc-torture/llvm19/builtins/strncmp.c.ll` [lld], built by hod: the program of hod's object ended with signal 6, llc's with exit status 0
+- LLVM 19 FAIL `gcc-torture/llvm19/builtins/strncmp.c.ll` [mold], built by hod: the program of hod's object ended with signal 6, llc's with exit status 0
+- LLVM 19 FAIL `gcc-torture/llvm19/builtins/strncmp.c.ll` [wild], built by hod: the program of hod's object ended with signal 6, llc's with exit status 0
 
 ## The routes agree
 
@@ -64,13 +75,13 @@ Coverage-log field 7 (from the process's start to the decline) of the first-refu
 
 | LLVM | route | median | p99 | worst | share of `llc`: median | p99 | worst |
 |---|---|---:|---:|---:|---:|---:|---:|
-| 22 | text | 15745 | 72365 | 238642 | 25.7% | 73.6% | 201.9% |
-| 22 | bitcode, native | 15039 | 62205 | 267555 | 24.8% | 70.1% | 349.3% |
-| 22 | bitcode, `llvm-dis` | 61472 | 296352 | 658023 | 106.3% | 228.7% | 944.3% |
-| 22 | `llc -O0` | 60013 | 310309 | 3212878 | | | |
-| 22 | the `convert` of the `llvm-dis` route | 45999 | 250818 | 446995 | | | |
-| 19 | text | 14894 | 63992 | 358075 | 23.5% | 90.9% | 277.4% |
-| 19 | bitcode, native | 15396 | 64005 | 1091554 | 23.9% | 75.1% | 935.3% |
-| 19 | bitcode, `llvm-dis` | 69510 | 240785 | 762786 | 108.8% | 235.1% | 738.4% |
-| 19 | `llc -O0` | 61702 | 216768 | 3017692 | | | |
-| 19 | the `convert` of the `llvm-dis` route | 52461 | 197252 | 502577 | | | |
+| 22 | text | 16006 | 40708 | 274184 | 86.7% | 222.9% | 613.2% |
+| 22 | bitcode, native | 15708 | 43270 | 168065 | 85.8% | 214.0% | 465.8% |
+| 22 | bitcode, `llvm-dis` | 20819 | 51144 | 622522 | 113.8% | 272.5% | 427.8% |
+| 22 | `llc -O0` | 17746 | 40069 | 3080561 | | | |
+| 22 | the `convert` of the `llvm-dis` route | 11028 | 24221 | 369422 | | | |
+| 19 | text | 17079 | 51575 | 364151 | 90.9% | 246.7% | 862.2% |
+| 19 | bitcode, native | 16634 | 49616 | 198470 | 87.3% | 250.6% | 574.6% |
+| 19 | bitcode, `llvm-dis` | 23474 | 64041 | 838313 | 122.3% | 283.7% | 768.9% |
+| 19 | `llc -O0` | 17913 | 40408 | 3155818 | | | |
+| 19 | the `convert` of the `llvm-dis` route | 11866 | 26633 | 460253 | | | |

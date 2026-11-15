@@ -1,0 +1,18 @@
+# Provenance of the AArch64 real-project reports (oss-report.py status
+# --provenance; the format is in oss-report.py). Hand-kept from the lanes'
+# state notes; it says what a report.json does not: the hod commit of a
+# frozen copy named by its sha256, and the kiln of a report written before
+# reports carried a `kiln` field. Update it with the lane when a lane
+# re-freezes hod or kiln.
+#
+# kiln, gRPC (WP-211): the -O0 control on kiln 1.1.0; the -O0 hybrid build
+# spans the switch to kiln 1.2.0 (kiln++ rebuilt in place at 01:19Z on
+# 2026-11-15); the -O0 strict build and -O0 -g on kiln 1.2.0
+kiln	grpc	O0	llc	21b9110a4
+kiln	grpc	O0	hod	21b9110a4 then 8f93304ee
+kiln	grpc	*	*	8f93304ee
+#
+note	zlib: one of 37 objects is not offered to hod by kiln (`coverage`); the strict build is marked `failed (0 TUs)`, its tests equal the control's.
+note	duckdb -O0 at hod 3b14f8ff: the strict build stopped at two jemalloc translation units refused as `alwaysinline:stacksave-escapes` (built since WP-237); the row is to be measured again.
+note	duckdb -O0 -g: `test/sql/index/art/scan/test_random_uuid.test` failed in the hybrid build's test run with an allocation failure under the 16 GB address-space cap, twice (in the -O0 hybrid run as well); run alone under the same cap it passes (reruns in the -O0 tree), and the strict build's tests equal the control's. Under investigation; not counted as same.
+note	mold: the kiln commit of these builds is not in their reports (kiln 21caaf874 or 21b9110a4).

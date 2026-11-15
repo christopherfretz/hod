@@ -74,6 +74,10 @@ Host: aarch64; target: x86_64 (cross-built, tests under qemu-x86_64). Rows from 
 | reflect_cpp | O0g | 327 | 323 | 323 | 0 | 0 | ok | ok | 484/484 | 484/484 | 484/484 | same | `hod-02fe2d02` | `8f93304ee` |
 | libunifex | O0 | 114 | 114 | 97 | 17 | 0 | failed (17 TUs) | - | 91/94 | 76/94 | - | hod: 15 worse (programs not built) | `hod-02fe2d02` | `8f93304ee` |
 | libunifex | O0g | 114 | 114 | 97 | 17 | 0 | failed (17 TUs) | - | 91/94 | 76/94 | - | hod: 15 worse (programs not built) | `hod-02fe2d02` | `8f93304ee` |
+| daw_json_link (re-run, strict) | O0 | 159 | 159 | 159 | 0 | 0 | - | ok | 147/147 | - | 147/147 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| daw_json_link (re-run, strict) | O0g | 159 | 159 | 159 | 0 | 0 | - | ok | 147/147 | - | 147/147 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| libunifex (re-run) | O0 | 114 | 114 | 114 | 0 | 0 | ok | ok | 91/94 | 91/94 | 91/94 | same | `hod-e98267c0` | `8f93304ee` |
+| libunifex (re-run) | O0g | 114 | 114 | 114 | 0 | 0 | ok | ok | 91/94 | 91/94 | 91/94 | same | `hod-e98267c0` | `8f93304ee` |
 | glaze | O0 | 89 | 114 | 86 | 0 | 0 | failed (3 TUs) | failed (3 TUs) | 100/102 | 100/102 | 99/102 | strict: 1 worse (lib_test) | `hod-02fe2d02` | `8f93304ee` |
 | glaze | O0g | 89 | 112 | 84 | 0 | 0 | failed (5 TUs) | failed (5 TUs) | 98/102 | 98/102 | 98/102 | same | `hod-02fe2d02` | `8f93304ee` |
 | stdexec | O0 | 231 | 235 | 231 | 0 | 0 | ok | ok | 907/907 | 907/907 | 907/907 | same | `hod-02fe2d02` | `8f93304ee` |
@@ -86,6 +90,7 @@ Host: aarch64; target: x86_64 (cross-built, tests under qemu-x86_64). Rows from 
 5. glaze: the TUs that fail, fail in kiln in every mode, the control included. `cbor_test`, `msgpack_test` and `cli_menu_test` have front-end errors. At `-O0 -g`, the two `json_test` TUs also fail: kiln runs out of memory under the lane's 3 GB address-space cap. The other objects are link rows. O0 strict `lib_test` aborted (`std::bad_function_call`: no library loaded): the test loads `libtest_lib_d.so` from the source tree's `bin/`, which the project's configure step deletes, and the `*_rejects_*` tests run `cmake --build` on the same tree, which reconfigured it during the test run. It passed 5 of 5 reruns, and passed again in a full re-run of the suite. This is a race in the project's tests, not a difference in hod.
 6. stdexec: the 4 objects not by hod are link rows.
 7. taskflow `-O0 -g` was not run in WP-253.
+8. Re-runs at later candidates. At `hod-e98267c0`, daw_json_link strict declined 21 TUs: the dead-arm fold refused an `invoke` in the dead arm (`intrinsic:const-fold-nounwind-invoke`). At `hod-cd6ef6bc` it is equal to the control. libunifex at `hod-e98267c0`: the 17 internal errors are gone.
 
 ## Refusal census (hybrid builds)
 

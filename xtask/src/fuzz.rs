@@ -606,7 +606,8 @@ impl Summary {
             let _ = writeln!(
                 text,
                 "  not counted above: hod's pairs at a self-assignment (x = x, which llc \
-                 deletes) {}, llc's at a constant branch (which hod folds) {}",
+                 deletes) {}, llc's at a line of only unused values and an unconditional \
+                 branch (where hod emits nothing) {}",
                 self.self_assigned, self.constant_branches
             );
             let _ = writeln!(

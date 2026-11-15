@@ -4052,16 +4052,18 @@ fold and `debug::permitted` has no class yet:
   `llvm.memmove` whose source and destination number the same counts as
   such a store (a struct's `s = s;`);
 - llc-only, a **constant branch** (`case::constant_branch`): the line's
-  instructions are `br label` or `br i1 true|false`, and loads (neither
-  volatile nor atomic), `getelementptr`s, `icmp`s and casts that nothing
-  uses except another such unused value of the line (no call, no store).
-  That is csmith's `if ((x, -6L))` and `if (((&x == (void*)0), 7L))`
-  (seed 110478 of the 1.0 budget: an unused `icmp eq ptr` and its `zext`):
-  hod folds the branch (and omits one to the block it emits next) and
-  emits nothing for the unused values, `llc` keeps a test and a jump.
-  This is a debug-quality difference, not a wrong program: all three of
-  LLVM's `-O0` selectors keep one row at such a line, hod has none, and
-  the programs agree;
+  instructions are `br label`, and loads (neither volatile nor atomic),
+  `getelementptr`s, `icmp`s and casts that nothing uses except another
+  such unused value of the line (no call, no store): hod omits the
+  branch to the block it emits next and emits nothing for the unused
+  values, `llc` keeps a jump (P1 of `spec/dwarf.md` §5.7 with unused
+  values beside it). Narrowed by WP-252: a line with `br i1 true|false`
+  is not set apart any more. That was csmith's `if ((x, -6L))` and `if
+  (((&x == (void*)0), 7L))` (seed 110478 of the 1.0 budget: an unused
+  `icmp eq ptr` and its `zext`), where all three of LLVM's `-O0`
+  selectors keep code and a row; hod now writes a `nop` with the row
+  where the folded branch would leave the line without one
+  (`spec/dwarf.md` §5.10), so an `llc`-only pair there is a finding;
 - hod-only, a **selector split** (`selector-split`,
   `case::selector_split`): a pair (function F, line L) left unclassified
   where hod has rows and the oracle (`SelectionDAG`) has none. The same

@@ -68,8 +68,8 @@ pub const FUSED_FCMP: &str = "x64:todo:condbr-fcmp";
 /// operands are placed, `cmp`/`test` sets the flags, and `jcc` branches
 /// on the predicate's condition, inverted to the false block when the
 /// true block is emitted next. Otherwise `test r8, 1` and `jne`/`je`; a
-/// constant condition (`undef` and `poison` are false, §4.7) or two
-/// equal targets are a `br`.
+/// constant condition (`undef` and `poison` are false, §4.7) is a
+/// [`folded_br`], two equal targets a `br`.
 ///
 /// # Errors
 /// What `float::cond_br` reports for a deferred `fcmp`; what emitting a
@@ -101,15 +101,33 @@ pub fn cond_br<'a>(
         }
     }
     deferred_first(cx, inst, None)?;
+    if let Some(value) = const_int(cx, cond) {
+        return folded_br(cx, if value & 1 != 0 { if_true } else { if_false });
+    }
     if if_true == if_false {
         return term::br(cx, if_true);
-    }
-    if let Some(value) = const_int(cx, cond) {
-        return term::br(cx, if value & 1 != 0 { if_true } else { if_false });
     }
     let r = gp(cx.use_reg(cond)?);
     put(cx, mc::test_ri(Size::B, r, 1));
     branch_on(cx, Cond::Ne, if_true, if_false)
+}
+
+/// A branch on a constant (`condbr`, `switch`) folded to `target`: a
+/// `br`, which writes nothing when `target` comes next; then, when that
+/// would leave the branch's line without a row, one `nop` at its
+/// location (WP-252, `FnCx::folded_branch_row`, `spec/dwarf.md` §5.10).
+/// `llc -O0` keeps code there with each selector (a test and a `jcc`, or
+/// the constant materialised); one byte is the least code a row can
+/// name, and it needs no fixup.
+///
+/// # Errors
+/// What the branch's fixup reports.
+pub fn folded_br(cx: &mut FnCx<'_, X64>, target: BlockId) -> CgResult<()> {
+    if cx.folded_branch_row(target) {
+        put(cx, mc::nop(1));
+        return Ok(());
+    }
+    term::br(cx, target)
 }
 
 /// Runs `emit`, the code of the fused compare `compare` inside its
@@ -313,7 +331,7 @@ pub fn switch<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, switch: &Switch<'a>) -
     };
     if let Some(value) = const_int(cx, switch.cond) {
         let cases = switch.cases().map(|(case, block)| (case_value(cx, case), block));
-        return term::br(cx, constant_target(cases, value & mask, switch.default));
+        return folded_br(cx, constant_target(cases, value & mask, switch.default));
     }
     let mut cases = CASES.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
     canonical_cases(
@@ -427,7 +445,7 @@ fn switch_wide<'a>(cx: &mut FnCx<'a, X64>, switch: &Switch<'a>) -> CgResult<()> 
         let same = |cx: &FnCx<'a, X64>, case| (0..n).all(|k| limb(cx, case, k) == limb(cx, id, k));
         let target =
             switch.cases().find(|&(case, _)| same(cx, case)).map_or(switch.default, |(_, b)| b);
-        return term::br(cx, target);
+        return folded_br(cx, target);
     }
     let c = cx.use_mem(switch.cond)?;
     for (case, block) in switch.cases() {

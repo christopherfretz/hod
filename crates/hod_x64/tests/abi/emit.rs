@@ -68,6 +68,10 @@ pub struct Func<'a> {
     /// bytes is a `zmm` (§4.3), the `zmm`s are poisoned whole, and the
     /// stack-argument area is aligned to 64 (§3.2).
     pub avx512: bool,
+    /// The function's own convention. WP-246: a `win64cc` callee keeps
+    /// `rsi`, `rdi` and `xmm6`..`xmm15` for its caller, so `poison` leaves
+    /// them be (`spec/abi-x64.md` §13.6).
+    pub cc: hod_ir::CallConv,
 }
 
 /// The bits a producer leaves in every byte it does not owe.
@@ -246,11 +250,16 @@ impl Asm<'_> {
     /// consumer reading the wrong one cannot find the right value there
     /// by chance.
     fn poison(&mut self) {
+        let win64 = self.func.cc == hod_ir::CallConv::WIN64;
         for reg in ["rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9"] {
+            if win64 && matches!(reg, "rsi" | "rdi") {
+                continue;
+            }
             ins!(self, "movq %r13, %{reg}");
         }
         self.junk(SCRATCH_SIZE);
-        for number in 0..8 {
+        let vectors = if win64 { 6 } else { 8 };
+        for number in 0..vectors {
             if self.func.avx512 {
                 // WP-238: the whole `zmm`.
                 ins!(self, "vmovdqu64 {SCRATCH}(%rbp), %zmm{number}");

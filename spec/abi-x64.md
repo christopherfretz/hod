@@ -58,6 +58,7 @@ this document follows `spec/abi-a64.md`, section for section.
 | `fastcc` (8) | as `ccc`, except one more return register for `float` and `double` (§5.1) |
 | `x86_64_sysvcc` (78) | as `ccc`: it is the System V convention, which is this target's `ccc` (WP-141) |
 | `preserve_mostcc` (14), `preserve_allcc` (15) | as `ccc`; the callee keeps more registers, which is the frame's (`spec/codegen.md` §5.6.23, WP-181) |
+| `win64cc` (79) | the Microsoft x64 convention, `hod_x64::win64` (§13, WP-246) |
 | every other number, including `swiftcc` (16) and `cxx_fast_tlscc` (17) | `abi:cc` |
 
 `hod_x64::abi::cc_is_c` is the predicate for the first three rows. "As
@@ -1101,7 +1102,7 @@ functions); `08-varargs.ll`.
 
 | name | what |
 |---|---|
-| `abi:cc` | a convention other than `ccc`, `fastcc` and `x86_64_sysvcc` (§1.2) |
+| `abi:cc` | a convention other than `ccc`, `fastcc`, `x86_64_sysvcc`, `preserve_*` and `win64cc` (§1.2) |
 | `abi:invalid-signature` | what LLVM's verifier refuses (§1.2, §5.1, §6) |
 | `abi:scalable-vector` | a scalable vector anywhere in a type |
 | `abi:target-ext-type` | a target extension type |
@@ -1115,6 +1116,10 @@ functions); `08-varargs.ll`.
 | `abi:byval-align` | a `byval` alignment above 2^30, or not a power of two (§6.2) |
 | `abi:too-many-pieces` | more than 2^16 argument pieces in one signature |
 | `abi:size-limit` | an offset or size beyond `u32` |
+
+A `win64cc` signature is refused with these names where both
+conventions refuse, and with §13.7's (`hod_x64::win64::UNSUPPORTED`,
+`cc:win64cc-*`) for what is that convention's own.
 
 `x64:ret-x87-part` (a `float`/`double` return piece in `st0`/`st1`,
 §5.1) is no longer `assign`'s: `X64::assign` reports it.
@@ -1224,3 +1229,169 @@ measurement, not a gate).
   not 1, 2, 4, 8 or 16 is scalarized (§4.3); `<1 x half>` is widened,
   not scalarized (§4.3); the variadic `musttail` thunk does not forward
   `r10` (§8.5).
+
+## 13. `win64cc` (WP-246)
+
+`win64cc` (79) is the Microsoft x64 convention, which clang emits for
+`__attribute__((ms_abi))` on x86-64 Linux. Every rule below is LLVM
+19.1.7's (`X86CallingConv.td`: `CC_X86_Win64_C`, `RetCC_X86_Win64_C`,
+`CSR_Win64`; `X86ISelLowering*.cpp`), confirmed with `llc` 19 and 22 in
+the six configurations of §1.1; both versions agree on every rule
+except 13.3.4's. `hod_x64::win64` implements them; `abi::assign` hands
+it every `win64cc` signature.
+
+### 13.1 Scope
+
+1. hod defines, calls directly, calls through a pointer and `invoke`s
+   `win64cc` functions on x86-64, from and to functions of the other
+   conventions of §1.2, under the same `Assignment` engine as `ccc`
+   (§8): only where pieces go and what the callee keeps differ. On
+   AArch64 `cc:win64cc` is still refused (`todo`).
+
+### 13.2 Positions and the shadow area
+
+1. The arguments take **positions** 0 to 3 in order, one per piece,
+   shared by number between the two files: position *n* is `rcx`,
+   `rdx`, `r8`, `r9` for a general piece and `xmm0` to `xmm3` for any
+   other. A `double` first and an `i64` second go to `xmm0` and `rdx`;
+   no register of a taken position is used again.
+2. A piece without a position goes to the next 8-byte stack slot; the
+   first stack argument is at offset **32** from `rsp` at the call. The
+   caller allocates those 32 bytes (the *shadow* or home area) even when
+   no argument is on the stack; the callee may write them. The
+   `Assignment`'s `stack_size` is at least 32.
+3. Each half of an `i128` is a piece and takes a position; the halves
+   may part between `r9` and the first stack slot. Each member of an
+   aggregate argument is a piece of its own, as §4.4's leaves.
+
+*Evidence:* `win64::positions_are_shared`, `win64::pieces_take_positions`
+(`table` style, by hand), and the grid: `win64::win64_grid`, 81
+signatures (scalars at positions 0, 1, 3, 4, 6, `i128` and aggregates
+across the boundary, `sret`, `byref`, `inreg`, `half`, the returns of
+13.4), hod against `llc` in both directions in all six configurations,
+executed. Setting the shadow to 40 fails 552 of its checks.
+
+### 13.3 Argument types
+
+1. Integers of 1 to 64 bits, pointers, `half`, `float` and `double` are
+   one piece each, of §4's class; `i128` two (13.2.3). `inreg` is
+   ignored. A `nest` argument is refused as under `ccc` (`x64:nest`,
+   §6.3; LLVM puts it in `r10` without taking a position).
+2. Extension: `llc`'s caller extends `zeroext`/`signext` only an `i1`
+   (to 8 bits); an `i8` or `i16` argument's upper bits are unspecified,
+   and `llc`'s callee extends again itself. hod's callee never assumes
+   extension (§7); its caller extends as under `ccc`, which covers more
+   than is required.
+3. A vector (`cc:win64cc-vector`), an `x86_fp80`
+   (`cc:win64cc-x86-fp80`) and a `byval` (`cc:win64cc-byval`) are
+   passed by LLVM as the address of a copy the caller makes in its own
+   frame (`CCPassIndirect`), which no `PartKind` expresses: refused.
+4. `fp128`: `llc` 22 passes it by reference, `llc` 19 in an `xmm`
+   position: refused (`cc:win64cc-fp128`).
+5. `bfloat`: `llc` converts it through `__truncsfbf2` at the call, with
+   no rule in the convention: refused (`cc:win64cc-bfloat`). An integer
+   wider than 64 bits other than `i128`: refused
+   (`cc:win64cc-wide-int`).
+6. `byref`, `sret` (13.4) and the other attributes are as under `ccc`
+   (§6); `inalloca`, `preallocated` and `elementtype` are refused with
+   §6.6's names.
+
+### 13.4 Return values
+
+1. `RetCC_X86_Win64_C` hands every return to `RetCC_X86_64_C`: a value
+   is returned exactly as under `ccc` (§5): `i128` in `rax`:`rdx`, `{
+   i64, i64, i64 }` in `rax`, `rdx`, `rcx`, `<4 x float>` in `xmm0`,
+   `x86_fp80` in `st0`.
+2. A value returned in memory: its address is the first argument and
+   takes position 0 (`rcx`); the callee returns it in `rax`. The other
+   arguments start at position 1.
+3. An `sret` parameter (first or second, of a `void` function) is an
+   ordinary pointer piece in its position, and is returned in `rax`.
+
+*Evidence:* `win64::returns_and_attributes`, the grid, and
+`win64cc::win64_callees_keep_what_llc_keeps` (13.6).
+
+### 13.5 Variadic functions
+
+1. A call: the fixed and the variadic arguments are placed as in 13.2;
+   every `double` in a register position is also copied to the
+   position's general register (`movq %xmmN, %gpr`), for every
+   argument. `al` is not read: hod sets it as under `ccc` (§9.1), which
+   the callee ignores. A `float` or `half` in a register position of a
+   variadic call is refused (`cc:win64cc-variadic-float`): the copy
+   would carry the `xmm`'s other bytes (LLVM promotes such a value to
+   `double` only in the front end).
+2. A definition is refused (`cc:win64cc-variadic-definition`): its
+   `va_list` is a pointer walking the home area and the stack, not §9's
+   structure.
+
+*Evidence:* `win64::variadic_doubles_are_copied`; `win64cc::
+win64_calls_in_both_directions` calls `llc`'s variadic `v_sum`
+(`va_arg` of `i64` and `double` pairs, some in positions, some on the
+stack) from hod.
+
+### 13.6 What the callee keeps, the frame and unwinding
+
+1. A `win64cc` function keeps `rbx`, `rbp`, `rdi`, `rsi`, `r12` to `r15`
+   and the low 16 bytes of `xmm6` to `xmm15` (`CSR_Win64`). hod's frame
+   saves `rsi` and `rdi` with `push` after `rbp`, and `xmm6`..`xmm15`
+   with `movups` below them, in every `win64cc` function, with a CFI row
+   for each (`DW_CFA_offset` of DWARF registers 23 to 32), as
+   `preserve_*` functions do (`spec/codegen.md` §5.6.23).
+2. Incoming stack arguments are at CFA + 32 (after the return address
+   and the shadow area).
+3. A `musttail` call in a `win64cc` function is refused
+   (`cc:win64cc-musttail`): the thunk would have to keep the caller's
+   shadow area and the saved registers. A `win64cc` coroutine body is
+   refused (`cc:win64cc-coroutine`); `llvm.eh.return` in one is refused
+   as `x64:eh-return-convention`.
+4. Exceptions: an exception passes through a `win64cc` frame with its
+   rows, and a `win64cc` function catches in its own landing pads.
+   libgcc's unwinder installs in a landing pad only the registers its
+   own frame saves (the System V callee-saved ones and `rbp`), so a
+   landing pad reached through a `win64cc` frame finds `rsi` and `rdi`
+   as `_Unwind_RaiseException` left them, with `llc`'s frames as with
+   hod's: measured, not a rule hod can change. The rows are still right
+   for every unwinder that reads them (`_Unwind_GetGR` below).
+
+*Evidence:* `win64cc::win64_callees_keep_what_llc_keeps`: 14 callees
+(each result kind of 13.4, `sret` and memory, and a `ccc` control),
+built by hod (plain and stressed) and by `llc` 22 and 19, each called by
+an assembly routine that loads a distinct value into every register,
+calls as a `win64cc` caller does and stores them; the callee calls a
+System V function that writes every register it may. The kept registers
+are checked after the call, and during it the driver walks the stack:
+each caller register recovered by `_Unwind_GetGR` through the callee's
+rows and each kept `xmm` where its row says. A System V caller by hod
+and one by `llc` 22 call every callee. Every linker, executed.
+`win64cc::exceptions_through_win64_frames`: thrown through hod's
+`win64cc` frame to an `llc`-built catcher whose `rbx` the frame gives
+back, caught in a landing pad of hod's `win64cc` function, called from
+GCC `ms_abi` code that keeps values in `rsi`, `rdi`, `xmm6`, `xmm15`.
+`win64cc::win64_functions_refuse_by_name`.
+
+### 13.7 Refused, by name
+
+`hod_x64::win64::UNSUPPORTED`, in order: `cc:win64cc-vector`,
+`cc:win64cc-x86-fp80`, `cc:win64cc-fp128`, `cc:win64cc-bfloat`,
+`cc:win64cc-wide-int`, `cc:win64cc-byval` (13.3),
+`cc:win64cc-variadic-float`, `cc:win64cc-variadic-definition` (13.5),
+`cc:win64cc-musttail`, `cc:win64cc-coroutine` (13.6). What both
+conventions refuse keeps §10's names.
+
+*Evidence:* `win64::refusals_by_name` (each name, and that the list is
+exactly these), `win64cc::win64_functions_refuse_by_name`.
+
+### 13.8 Validation
+
+- `tests/abi/win64.rs`: the tables and the grid (13.2).
+- `tests/win64cc.rs`: the kept registers and rows (13.6); calls in both
+  directions (`data/win64cc/calls.ll`: hod's System V functions call
+  `llc` 22's `win64cc` ones directly, through a pointer and a variadic
+  one, and the reverse; eight scalars with stack arguments, `i128`
+  halves across `r9` and the stack, aggregates, `sret`, a return in
+  memory, extensions; GCC's own `ms_abi` code calls each build; equal to
+  `llc` 19's build calling itself); exceptions (13.6); the corpus module
+  `dcl.attr.cconv/cc-run.cpp` as kiln emits it, less `x86_regcallcc`
+  and `x86_vectorcallcc` (refused by design, §1.2), built by hod and by
+  `llc`, linked by every linker, run, its output the corpus's.

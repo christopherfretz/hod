@@ -1922,7 +1922,8 @@ that refused it before (WP-084's "stays refused" list is settled here).
     module (`-O2`) now stops at `debug:dbg-value-arglist`.
   - `cc:preserve_allcc`, `cc:win64cc` (`cc:79` before WP-141) and `cc:aarch64_vector_pcs`
     (WP-082), which the one `preserve_mostcc` corpus module also uses.
-    (`preserve_allcc` since WP-101, below.)
+    (`preserve_allcc` since WP-101, below; `win64cc` on x86-64 since
+    WP-246, `spec/abi-x64.md` §13.)
 
 #### The short tail, third part (WP-101)
 

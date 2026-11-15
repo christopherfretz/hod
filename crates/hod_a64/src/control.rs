@@ -56,7 +56,8 @@ pub use hod_cg::switch::LINEAR_CASES;
 
 /// `br i1 %cond, label %if_true, label %if_false`: `tbnz` of bit 0 (§2.2:
 /// only bit 0 of an `i1` is defined), the branch omitted for a target
-/// emitted next; a constant condition or two equal targets are a `br`.
+/// emitted next; a constant condition is a [`folded_br`], two equal
+/// targets a `br`.
 ///
 /// A condition that is a deferred compare (§4.6: an `icmp` or `fcmp`
 /// whose only use is this branch, right after it) is fused (WP-066): the
@@ -92,16 +93,16 @@ pub fn cond_br<'a>(
         }
     }
     deferred_first(cx, inst, None)?;
-    if if_true == if_false {
-        return term::br(cx, if_true);
-    }
     if let ValueKind::Const(id) = cond.kind() {
         // `undef` and `poison` are zero (§4.7).
         let taken = match cx.module.consts.get(id) {
             Const::Int { value, .. } => value & 1 != 0,
             _ => false,
         };
-        return term::br(cx, if taken { if_true } else { if_false });
+        return folded_br(cx, if taken { if_true } else { if_false });
+    }
+    if if_true == if_false {
+        return term::br(cx, if_true);
     }
     let rt = xr(cx.use_reg(cond)?);
     if cx.falls_through(if_true) {
@@ -109,6 +110,24 @@ pub fn cond_br<'a>(
     }
     branch_bit(cx, rt, 0, true, cx.block_label(if_true))?;
     term::br(cx, if_false)
+}
+
+/// A branch on a constant (`condbr`, `switch`) folded to `target`: a
+/// `br`, which writes nothing when `target` comes next; then, when that
+/// would leave the branch's line without a row, one `nop` at its
+/// location (WP-252, `FnCx::folded_branch_row`, `spec/dwarf.md` §5.10).
+/// `llc -O0` keeps code there with each selector (`FastISel` a `b` to
+/// the next instruction, the others a materialised constant and
+/// `cbnz`/`tbz`); a `nop` is as long as that `b` and needs no fixup.
+///
+/// # Errors
+/// What the branch's fixup reports.
+pub fn folded_br(cx: &mut FnCx<'_, A64>, target: BlockId) -> CgResult<()> {
+    if cx.folded_branch_row(target) {
+        put(cx, mc::nop());
+        return Ok(());
+    }
+    term::br(cx, target)
 }
 
 /// The branches of a fused `condbr` (NZCV set): to `if_true` when
@@ -156,7 +175,7 @@ pub fn switch<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, switch: &Switch<'a>) -
     if let ValueKind::Const(id) = switch.cond.kind() {
         let value = case_value(cx, id);
         let cases = switch.cases().map(|(case, block)| (case_value(cx, case), block));
-        return term::br(cx, constant_target(cases, value, switch.default));
+        return folded_br(cx, constant_target(cases, value, switch.default));
     }
     let mut cases = CASES.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
     canonical_cases(

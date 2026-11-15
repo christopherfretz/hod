@@ -230,7 +230,7 @@ pub fn switch_wide<'a>(cx: &mut FnCx<'a, A64>, switch: &Switch<'a>) -> CgResult<
         };
         let target =
             switch.cases().find(|&(case, _)| same(cx, case)).map_or(switch.default, |(_, b)| b);
-        return term::br(cx, target);
+        return crate::control::folded_br(cx, target);
     }
     let c = cx.use_mem(switch.cond)?;
     let (x, y) = (X16.zr(), X17.zr());

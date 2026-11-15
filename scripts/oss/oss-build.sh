@@ -318,6 +318,14 @@ if [ "$CONF_RC" = 0 ]; then
     (cd "$BUILD" && ulimit -v "$TEST_VMEM_KB" && export CTEST_PARALLEL_LEVEL="${CTEST_PARALLEL_LEVEL:-4}" \
       TMPDIR="$TTMP" TEST_TMPDIR="$TTMP" MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-4}" && timeout "$P_TEST_TIMEOUT" nice -n 10 bash -c "$P_TEST") > "$BUILD/test.log" 2>&1
     TEST_RC=$?
+    # A test's forked child can outlive the suite (DuckDB's unittest leaves
+    # one blocked in accept() on a listening socket): kill whatever still
+    # runs an executable of this tree, so no later run meets it.
+    for e in /proc/[0-9]*/exe; do
+      case "$(readlink "$e" 2>/dev/null)" in
+        "$BUILD"/*) e="${e#/proc/}"; kill -9 "${e%/exe}" 2> /dev/null && echo "oss-build: killed leftover test process ${e%/exe}" ;;
+      esac
+    done
     echo "oss-build: test rc=$TEST_RC ($BUILD/test.log)"
   fi
 fi

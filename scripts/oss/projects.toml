@@ -383,7 +383,11 @@ url = "https://github.com/google/flatbuffers"
 tag = "v25.12.19"
 build = "cmake"
 cxx_std = 17
-configure = ["-DFLATBUFFERS_BUILD_TESTS=ON", "-DFLATBUFFERS_BUILD_CPP17=ON", "-DFLATBUFFERS_BUILD_FLATC=ON", "-DFLATBUFFERS_BUILD_FLATLIB=ON", "-DFLATBUFFERS_BUILD_GRPCTEST=OFF", "-DFLATBUFFERS_STRICT_MODE=OFF"]
+configure = ["-DFLATBUFFERS_BUILD_TESTS=ON", "-DFLATBUFFERS_BUILD_CPP17=ON", "-DFLATBUFFERS_BUILD_FLATC=ON", "-DFLATBUFFERS_BUILD_FLATLIB=ON", "-DFLATBUFFERS_BUILD_GRPCTEST=OFF", "-DFLATBUFFERS_STRICT_MODE=OFF", "-DFLATBUFFERS_FLATC_EXECUTABLE=flatc"]
+# FLATBUFFERS_FLATC_EXECUTABLE names the flatc TARGET (the default is the
+# path $<TARGET_FILE:flatc>): CMake puts the crosscompiling emulator before a
+# custom command only when it names a target, so the x86-64 cross build runs
+# its flatc under qemu instead of handing it to the kernel; natively the same.
 # flattests and flattests_cpp17 as the project registers them (build dir),
 # and the three sample programs, which read schemas and data relative to
 # the source dir; one ctest run, under the cross build's emulator if any.

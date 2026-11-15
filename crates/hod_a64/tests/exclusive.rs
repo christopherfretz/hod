@@ -11,7 +11,12 @@
 //!   host), against expectations computed here: retry loops at each
 //!   size, the zero-extension of what is loaded, the low bits a store
 //!   writes, pairs in order, and `clrex` followed by a store-exclusive,
-//!   whose status must be 1.
+//!   whose status must be 1. Every target is a global that fills a
+//!   2048-byte granule, away from the stack.
+//! - Retry loops whose target is in their own frame, bounded, stop and
+//!   leave memory as their status says; that they ever succeed is not
+//!   asserted (on hardware a frame store between the pair may hit the
+//!   target's reservation granule, §5.6.39).
 //! - Four threads count through an `ldxr`/`stxr` retry loop of one block
 //!   at each size and through `ldaxp`/`stlxp`; every total is exact.
 //! - What hod cannot read is refused by name.
@@ -223,8 +228,17 @@ fn instructions_match_llc() {
 
 /// The functions of the native table, and the calls with their expected
 /// lines.
+/// Where the table's functions keep their targets: a global that fills
+/// a granule of the largest size the architecture allows (2048 bytes),
+/// so that no store of the function's own frame, which is on the stack,
+/// can clear the exclusive monitor (§5.6.39, "The reservation granule").
+const CELL: &str = "@cell = internal global [256 x i64] zeroinitializer, align 2048\n";
+
+/// The first instruction of each table function: `%p` is the cell.
+const AT_CELL: &str = "%p = getelementptr i8, ptr @cell, i64 0";
+
 fn table() -> (String, Vec<native::Call>, String) {
-    let mut s = String::from(DECLARE);
+    let mut s = format!("{DECLARE}{CELL}");
     let mut calls: Vec<native::Call> = Vec::new();
     let mut want = String::new();
     let xs = [0u64, 0x80, 0xfedc_ba98_7654_3210, u64::MAX, 0x8000_0000_8000_8080];
@@ -234,7 +248,7 @@ fn table() -> (String, Vec<native::Call>, String) {
             // What is loaded is zero-extended.
             writeln!(
                 s,
-                "define i64 @{load}{bits}(i64 %x) {{\n  %p = alloca i64, align 16\n  \
+                "define i64 @{load}{bits}(i64 %x) {{\n  {AT_CELL}\n  \
                  store i64 %x, ptr %p\n  %v = call i64 @llvm.aarch64.{load}.p0(ptr \
                  elementtype(i{bits}) %p)\n  call void @llvm.aarch64.clrex()\n  ret i64 %v\n}}"
             )
@@ -242,7 +256,7 @@ fn table() -> (String, Vec<native::Call>, String) {
             // A store writes the low bits of its operand, nothing else.
             writeln!(
                 s,
-                "define i64 @{store}{bits}(i64 %x, i64 %v) {{\n  %p = alloca i64, align 16\n  \
+                "define i64 @{store}{bits}(i64 %x, i64 %v) {{\n  {AT_CELL}\n  \
                  store i64 %x, ptr %p\n  br label %again\nagain:\n  %o = call i64 \
                  @llvm.aarch64.{load}.p0(ptr elementtype(i{bits}) %p)\n  %s = call i32 \
                  @llvm.aarch64.{store}.p0(i64 %v, ptr elementtype(i{bits}) %p)\n  \
@@ -261,7 +275,7 @@ fn table() -> (String, Vec<native::Call>, String) {
         // A retry loop that increments `k` times, the loop in one block.
         writeln!(
             s,
-            "define i64 @inc{bits}(i64 %x, i64 %k) {{\nentry:\n  %p = alloca i64, align 16\n  \
+            "define i64 @inc{bits}(i64 %x, i64 %k) {{\nentry:\n  {AT_CELL}\n  \
              store i64 %x, ptr %p\n  br label %outer\nouter:\n  %i = phi i64 [ 0, %entry ], \
              [ %i1, %next ]\n  %end = icmp eq i64 %i, %k\n  br i1 %end, label %done, label \
              %again\nagain:\n  %o = call i64 @llvm.aarch64.ldxr.p0(ptr elementtype(i{bits}) \
@@ -279,7 +293,7 @@ fn table() -> (String, Vec<native::Call>, String) {
     // Pairs: written by `stxp`, read back by `ldaxp` in order, swapped by
     // `stlxp`.
     s.push_str(
-        "define i64 @pair(i64 %a, i64 %b) {\nentry:\n  %p = alloca [2 x i64], align 16\n  \
+        "define i64 @pair(i64 %a, i64 %b) {\nentry:\n  %p = getelementptr i8, ptr @cell, i64 0\n  \
          %hp = getelementptr i8, ptr %p, i64 8\n  store i64 0, ptr %p\n  store i64 0, ptr %hp\n  \
          br label %w\nw:\n  %o = call { i64, i64 } @llvm.aarch64.ldxp(ptr %p)\n  \
          %s = call i32 @llvm.aarch64.stxp(i64 %a, i64 %b, ptr %p)\n  %ok = icmp eq i32 %s, 0\n  \
@@ -298,13 +312,13 @@ fn table() -> (String, Vec<native::Call>, String) {
     // `clrex` between a load-exclusive and a store-exclusive: the store
     // fails (status 1) and memory keeps its value.
     s.push_str(
-        "define i64 @cleared(i64 %x) {\n  %p = alloca i64, align 16\n  store i64 %x, ptr %p\n  \
+        "define i64 @cleared(i64 %x) {\n  %p = getelementptr i8, ptr @cell, i64 0\n  store i64 %x, ptr %p\n  \
          %v = call i64 @llvm.aarch64.ldxr.p0(ptr elementtype(i64) %p)\n  \
          call void @llvm.aarch64.clrex()\n  %n = add i64 %v, 1\n  \
          %s = call i32 @llvm.aarch64.stxr.p0(i64 %n, ptr elementtype(i64) %p)\n  \
          %l = load i64, ptr %p\n  %se = zext i32 %s to i64\n  %sh = shl i64 %se, 32\n  \
          %eq = icmp eq i64 %l, %x\n  %e = zext i1 %eq to i64\n  %r = or i64 %sh, %e\n  ret i64 %r\n}\n\
-         define i64 @cleared_pair(i64 %a) {\n  %p = alloca [2 x i64], align 16\n  \
+         define i64 @cleared_pair(i64 %a) {\n  %p = getelementptr i8, ptr @cell, i64 0\n  \
          %hp = getelementptr i8, ptr %p, i64 8\n  store i64 %a, ptr %p\n  store i64 %a, ptr %hp\n  \
          %o = call { i64, i64 } @llvm.aarch64.ldaxp(ptr %p)\n  call void @llvm.aarch64.clrex()\n  \
          %s = call i32 @llvm.aarch64.stlxp(i64 1, i64 2, ptr %p)\n  %lo = load i64, ptr %p\n  \
@@ -324,11 +338,75 @@ fn table() -> (String, Vec<native::Call>, String) {
 // §5.6.39: the intrinsics run as their definitions say, built by hod in
 // every mode and by `llc`, under every linker.
 #[test]
-#[ignore = "WP-245 open: one build of the table never finishes natively under bfd (a retry \
-            loop whose target is in the frame; which build is not yet known)"]
 fn intrinsics_run_as_specified() {
     let (body, calls, want) = table();
     let count = native::run_table("a64-exclusive", &body, &calls, &MODES, Some(&want));
+    eprintln!("{count} calls agree");
+}
+
+/// The attempts each `framed` call may make.
+const ATTEMPTS: u64 = 1000;
+
+/// Retry loops whose target is in the function's own frame, bounded to
+/// `ATTEMPTS` attempts. Each returns 1 when it stopped within the bound
+/// and memory holds what the last status says (the new value after a
+/// success, the old one after failures), else 0. Whether a store-exclusive
+/// ever succeeds is NOT asserted: at -O0 the function's own stores to its
+/// frame between the pair (hod's, and `llc`'s for what it spills) may hit
+/// the reservation granule of the target, and then every attempt fails on
+/// hardware (§5.6.39, "The reservation granule"). Whether they hit it
+/// depends on the stack address, so on the run.
+fn framed_table() -> (String, Vec<native::Call>, String) {
+    let mut s = String::from(DECLARE);
+    let check = "done:\n  %m = load i64, ptr %p\n  %x1 = add i64 %x, 1\n  \
+                 %w = select i1 %ok, i64 %x1, i64 %x\n  %good = icmp eq i64 %m, %w\n  \
+                 %bounded = icmp ule i64 %i1, %n\n  %r1 = and i1 %good, %bounded\n";
+    // The single form, one block per attempt.
+    writeln!(
+        s,
+        "define i64 @framed(i64 %x, i64 %n) {{\nentry:\n  %p = alloca i64, align 16\n  \
+         store i64 %x, ptr %p\n  br label %again\nagain:\n  %i = phi i64 [ 0, %entry ], \
+         [ %i1, %again ]\n  %o = call i64 @llvm.aarch64.ldaxr.p0(ptr elementtype(i64) %p)\n  \
+         %o1 = add i64 %o, 1\n  %s = call i32 @llvm.aarch64.stlxr.p0(i64 %o1, ptr \
+         elementtype(i64) %p)\n  %i1 = add i64 %i, 1\n  %ok = icmp eq i32 %s, 0\n  \
+         %more = icmp ult i64 %i1, %n\n  %fail = xor i1 %ok, true\n  %go = and i1 %fail, \
+         %more\n  br i1 %go, label %again, label %done\n{check}  %e = zext i1 %r1 to i64\n  \
+         ret i64 %e\n}}"
+    )
+    .unwrap();
+    // The pair form; the high half must never change.
+    writeln!(
+        s,
+        "define i64 @framed_pair(i64 %x, i64 %n) {{\nentry:\n  %p = alloca [2 x i64], align \
+         16\n  %hp = getelementptr i8, ptr %p, i64 8\n  store i64 %x, ptr %p\n  store i64 %x, \
+         ptr %hp\n  br label %again\nagain:\n  %i = phi i64 [ 0, %entry ], [ %i1, %again ]\n  \
+         %q = call {{ i64, i64 }} @llvm.aarch64.ldaxp(ptr %p)\n  %lo = extractvalue {{ i64, \
+         i64 }} %q, 0\n  %hi = extractvalue {{ i64, i64 }} %q, 1\n  %lo1 = add i64 %lo, 1\n  \
+         %s = call i32 @llvm.aarch64.stlxp(i64 %lo1, i64 %hi, ptr %p)\n  %i1 = add i64 %i, 1\n  \
+         %ok = icmp eq i32 %s, 0\n  %more = icmp ult i64 %i1, %n\n  %fail = xor i1 %ok, true\n  \
+         %go = and i1 %fail, %more\n  br i1 %go, label %again, label %done\n{check}  \
+         %h = load i64, ptr %hp\n  %hk = icmp eq i64 %h, %x\n  %r2 = and i1 %r1, %hk\n  \
+         %e = zext i1 %r2 to i64\n  ret i64 %e\n}}"
+    )
+    .unwrap();
+    let mut calls: Vec<native::Call> = Vec::new();
+    let mut want = String::new();
+    for name in ["framed", "framed_pair"] {
+        for x in [0u64, 41, u64::MAX] {
+            calls.push((name.to_owned(), [x, ATTEMPTS, 0, 0, 0, 0]));
+            want.push_str("1\n");
+        }
+    }
+    (s, calls, want)
+}
+
+// §5.6.39: a retry loop whose target is in its own frame stops within its
+// bound and leaves memory as its status says, built by hod in every mode
+// and by `llc`, under every linker; success is not asserted.
+#[test]
+fn frame_target_is_bounded() {
+    let (body, calls, want) = framed_table();
+    let count = native::run_table("a64-exclusive-framed", &body, &calls, &MODES, Some(&want));
     eprintln!("{count} calls agree");
 }
 
@@ -452,22 +530,39 @@ fn under_qemu(qemu: &Path, program: &Path) -> String {
 // §5.6.39: the table again under `qemu-aarch64 -cpu cortex-a53` on an
 // AArch64 host, hod's plain build and `llc`'s, so that what the hosted
 // x86-64 lane runs under the emulator is checked here too.
+// The bounded loops with their target in the frame run there too.
 #[test]
 fn intrinsics_run_under_qemu() {
     let Some(qemu) = qemu_on_aarch64() else { return };
-    let dir = Scratch::new("a64-exclusive-qemu");
-    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
     let (body, calls, want) = table();
+    let n = table_under_qemu(&qemu, "a64-exclusive-qemu", &body, &calls, &want);
+    let (body, calls, want) = framed_table();
+    let m = table_under_qemu(&qemu, "a64-exclusive-qemu-framed", &body, &calls, &want);
+    eprintln!("{n} and {m} calls (times builds) agree under qemu");
+}
+
+/// Builds `body` with hod plain and with `llc`, links it with a driver
+/// that prints each call's result and runs it under qemu against `want`.
+/// Returns the number of builds checked (0 without the tools).
+fn table_under_qemu(
+    qemu: &Path,
+    label: &str,
+    body: &str,
+    calls: &[native::Call],
+    want: &str,
+) -> usize {
+    let dir = Scratch::new(label);
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return 0 };
     let mut c = String::from("#include <stdio.h>\n#include <stdint.h>\n");
     let mut declared: Vec<&str> = Vec::new();
-    for (name, _) in &calls {
+    for (name, _) in calls {
         if !declared.contains(&name.as_str()) {
             writeln!(c, "uint64_t {name}(uint64_t, uint64_t);").unwrap();
             declared.push(name);
         }
     }
     c.push_str("int main(void) {\n");
-    for (name, args) in &calls {
+    for (name, args) in calls {
         writeln!(
             c,
             "  printf(\"%llu\\n\", (unsigned long long){name}({}ULL, {}ULL));",
@@ -484,13 +579,13 @@ fn intrinsics_run_under_qemu() {
     if let Some(object) = llc(&dir, "llc", &text, &[]) {
         objects.push(("llc", object));
     }
-    let Some(linker) = toolchain.linkers.first() else { return };
+    let Some(linker) = toolchain.linkers.first() else { return 0 };
     for (name, object) in &objects {
         let program = dir.join(format!("{name}-{}", linker.name));
         toolchain.link_ok(linker, &[], &[&driver, object], &program);
-        assert_eq!(under_qemu(&qemu, &program), want, "{name} under qemu");
+        assert_eq!(under_qemu(qemu, &program), want, "{label} {name} under qemu");
     }
-    eprintln!("{} calls agree under qemu for {} builds", calls.len(), objects.len());
+    calls.len() * objects.len()
 }
 
 // §5.6.39: what hod cannot read is refused by name: a missing

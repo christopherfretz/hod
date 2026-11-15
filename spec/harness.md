@@ -192,11 +192,16 @@ kiln's lanes). Its rules:
    GitHub's `ubuntu-24.04` runners are a mixed fleet, some with AVX-512
    and some without: what the processor runs runs natively, the rest
    under SDE, and the summary says how many of each and names the
-   runner's processor. A last step, `scripts/avx512-summary.sh --check`,
-   fails the job unless every program executed but the skipped `knl`
-   machine. `avx512.yml` (a push to an `avx512/**` branch, or
-   `workflow_dispatch`; never a gate) runs only these tests the same way,
-   for iterating on them. The lane does not set `HOD_REQUIRE_AVX512`
+   runner's processor. In the `test x64` job SDE is set up only when
+   the repository variable `HOD_CI_SDE` is `1` (not yet: the operator's
+   agreement to the download in that lane is pending, and SDE adds about
+   20 minutes there on a runner without AVX-512); without it what the
+   processor lacks is skipped, as before WP-238. With it, a last step,
+   `scripts/avx512-summary.sh --check`, fails the job unless every
+   program executed but the skipped `knl` machine. `avx512.yml` (a push
+   to an `avx512/**` branch, or `workflow_dispatch`; never a gate)
+   always sets up SDE and runs only these tests, with `--check`, for
+   iterating on them and for the verdict on any processor. The lane does not set `HOD_REQUIRE_AVX512`
    (the `knl` skip would fail it). `HOD_REQUIRE_AVX512=1`
    (for a host known to have AVX-512) makes a skip a failure.
    `HOD_AVX512_CPUINFO=<file>` exists only to test this plumbing: the

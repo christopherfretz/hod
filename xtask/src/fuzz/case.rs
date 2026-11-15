@@ -967,8 +967,9 @@ impl Bench {
             let report = self.compare_lines(&ir, &hod_x, &oracle_x).map_err(harness)?;
             // As `cargo xtask debug`: an unclassified pair fails, the
             // columns are counted. hod's pairs at a statement `x = x`,
-            // which llc deletes, and llc's at a line that is only a
-            // constant branch, which hod folds, are counted apart
+            // which llc deletes, and llc's at a line of only unused
+            // values and a `br label`, where hod emits nothing (WP-252
+            // narrowed it: not `br i1 true|false`), are counted apart
             // ([`self_assignment`], [`constant_branch`]).
             let text = fs::read_to_string(&ir).unwrap_or_default();
             let mut report = report;

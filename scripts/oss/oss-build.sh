@@ -26,6 +26,11 @@
 #   not change what is built); the modes differ from the build on;
 # - the tests run under the row's address-space cap too, ctest at most 4
 #   at a time;
+# - configure, build and test each run in a session of their own
+#   (projects.py run-phase, WP-268) with a core size limit of 1 byte (no
+#   dump, and no pipe dump handler started for a death test's crash):
+#   what a phase leaves running is killed and named in its log and in
+#   report.json's `leftovers`;
 # - dependencies are built and installed with the same flavour and mode
 #   (`hod` for a strict build), into <root>/install/<dep>-<flavour>-<mode>/
 #   (their trees pruned);
@@ -220,7 +225,7 @@ if [ "$TARGET" != aarch64 ]; then
 fi
 : > "$KILN_OSS_LOG"
 rm -f "$BUILD/report.json" "$BUILD/configure.log" "$BUILD/build.log" "$BUILD/test.log" \
-  "$BUILD/kiln-stats.jsonl" "$BUILD/coverage.log" "$BUILD/hod-shim.jsonl"
+  "$BUILD/kiln-stats.jsonl" "$BUILD/coverage.log" "$BUILD/hod-shim.jsonl" "$BUILD/leftovers.jsonl"
 [ ! -d "$BUILD/declined" ] || find "$BUILD/declined" -mindepth 1 -delete
 
 if [ -d "$SRC/.git" ]; then
@@ -260,25 +265,40 @@ backend_env() {
   [ "$1" = configure ] || export KILN_STATS_LOG="$BUILD/kiln-stats.jsonl"
 }
 
+# A phase that runs the project's programs (configure's checks, the build's
+# generators, the tests) runs in a session of its own; what it leaves
+# running when it returns or reaches its limit is killed, logged by name in
+# the phase's log and recorded in leftovers.jsonl (report.json's
+# `leftovers`; spec/harness.md "Real projects", "A phase's leftovers"):
+# a test's child that outlives ctest must not starve the next build.
+# phase <name> <limit in s, 0 none> <command>...
+phase() {
+  python3 "$HERE/projects.py" run-phase --phase "$1" --timeout "$2" --record "$BUILD/leftovers.jsonl" -- "${@:3}"
+}
+leftovers() {
+  local l; l="$(python3 "$HERE/projects.py" leftovers "$BUILD" "$1")"
+  [ -z "$l" ] || echo "; $l"
+}
+
 T0=$(date +%s.%N)
 BUILD_RC="" TEST_RC=""
 export KILN_OSS_PHASE=configure
 backend_env configure
-nice -n 10 cmake --fresh -S "$SRCDIR" -B "$BUILD" -G "Unix Makefiles" \
+phase configure 0 nice -n 10 cmake --fresh -S "$SRCDIR" -B "$BUILD" -G "Unix Makefiles" \
   -DCMAKE_CXX_COMPILER="$HERE/kiln-cxx" -DCMAKE_C_COMPILER="$P_C_COMPILER" \
   -DCMAKE_CXX_STANDARD="$P_CXX_STD" -DCMAKE_BUILD_TYPE=Debug \
   "-DCMAKE_CXX_FLAGS_DEBUG=$FLAGS" "-DCMAKE_C_FLAGS_DEBUG=$FLAGS" \
   "${XCONF[@]}" "${P_CONFIGURE[@]}" > "$BUILD/configure.log" 2>&1
 CONF_RC=$?
-echo "oss-build: configure rc=$CONF_RC ($BUILD/configure.log)"
+echo "oss-build: configure rc=$CONF_RC ($BUILD/configure.log)$(leftovers configure)"
 
 if [ "$CONF_RC" = 0 ]; then
   export KILN_OSS_PHASE=build
   backend_env build
   nice -n 10 make -C "$BUILD" clean > /dev/null 2>&1
-  nice -n 10 make -k "${JFLAG[@]}" -C "$BUILD" "${P_BUILD_TARGETS[@]}" > "$BUILD/build.log" 2>&1
+  phase build 0 nice -n 10 make -k "${JFLAG[@]}" -C "$BUILD" "${P_BUILD_TARGETS[@]}" > "$BUILD/build.log" 2>&1
   BUILD_RC=$?
-  echo "oss-build: build rc=$BUILD_RC ($BUILD/build.log)"
+  echo "oss-build: build rc=$BUILD_RC ($BUILD/build.log)$(leftovers build)"
   if [ -n "$INSTALL" ]; then
     [ "$BUILD_RC" = 0 ] && nice -n 10 cmake --install "$BUILD" >> "$BUILD/build.log" 2>&1 && date -u > "$INSTALL/.oss-installed" || BUILD_RC=1
     echo "oss-build: install into $INSTALL rc=$BUILD_RC"
@@ -294,9 +314,9 @@ if [ "$CONF_RC" = 0 ]; then
     # slower its code. MALLOC_ARENA_MAX bounds the reservation, the same
     # for every mode.
     (cd "$BUILD" && ulimit -v "$TEST_VMEM_KB" && export CTEST_PARALLEL_LEVEL="${CTEST_PARALLEL_LEVEL:-4}" \
-      TMPDIR="$TTMP" TEST_TMPDIR="$TTMP" MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-4}" && timeout "$P_TEST_TIMEOUT" nice -n 10 bash -c "$P_TEST") > "$BUILD/test.log" 2>&1
+      TMPDIR="$TTMP" TEST_TMPDIR="$TTMP" MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-4}" && phase test "$P_TEST_TIMEOUT" nice -n 10 bash -c "$P_TEST") > "$BUILD/test.log" 2>&1
     TEST_RC=$?
-    echo "oss-build: test rc=$TEST_RC ($BUILD/test.log)"
+    echo "oss-build: test rc=$TEST_RC ($BUILD/test.log)$(leftovers test)"
   fi
 fi
 WALL=$(python3 -c "print($(date +%s.%N) - $T0)")

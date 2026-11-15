@@ -11,7 +11,12 @@ name: oss
 #   build K      per runner: hod_cli in release, uploaded; kiln++ at the
 #                revision in .github/kiln-revision (or the `kiln` input)
 #   oss A P      the project P on runner A (the reports, logs and the
-#                refused modules are uploaded; build trees are pruned)
+#                refused modules are uploaded; build trees are pruned;
+#                every phase runs with a core limit of 1 byte, so no
+#                crash of a death test reaches the runner's dump
+#                handler, and what a phase leaves running is killed and
+#                named in its report: spec/harness.md "No core dumps",
+#                "A phase's leftovers")
 #   summary      scripts/oss/oss-report.py status and census over every
 #                report; it fails when a test passes under llc and not
 #                under hod

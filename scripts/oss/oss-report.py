@@ -206,9 +206,15 @@ def build_cell(r):
 
 def test_cell(r):
     if r is None or r.get("tests") is None:
-        return "-" if r is None or r.get("test_rc") is None else f"rc {r['test_rc']}"
-    t = r["tests"]
-    return f"{t['passed']}/{t['total']}"
+        cell = "-" if r is None or r.get("test_rc") is None else f"rc {r['test_rc']}"
+    else:
+        cell = f"{r['tests']['passed']}/{r['tests']['total']}"
+    # What the build's phases left running, killed by the lane (WP-268):
+    # shown, never a verdict (the control's leftovers are the project's).
+    left = (r or {}).get("leftovers") or {}
+    if left.get("count"):
+        cell += f" ({left['count']} left running: {', '.join(left.get('names') or [])})"
+    return cell
 
 
 def diff_tests(ctl, r):
@@ -721,8 +727,11 @@ def cmd_rerun(a):
     def limit():
         resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
 
+    # In a session of its own, what the run leaves running killed and
+    # named in its log (WP-268; spec/harness.md "A phase's leftovers").
+    phase = [sys.executable, os.path.join(HERE, "projects.py"), "run-phase", "--phase", "rerun", "--"]
     for i in range(a.times):
-        p = subprocess.run(["ctest", "-R", f"^{a.test}$", "--output-on-failure"], cwd=tree, env=env,
+        p = subprocess.run([*phase, "ctest", "-R", f"^{a.test}$", "--output-on-failure"], cwd=tree, env=env,
                            preexec_fn=limit, capture_output=True, text=True)
         log = os.path.join(tree, f"rerun-{a.test}-{int(time.time())}-{i}.log")
         with open(log, "w", encoding="utf-8") as f:

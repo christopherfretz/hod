@@ -59,6 +59,9 @@ mkdir "$SNAP" && cp -p "$HERE"/oss-build.sh "$HERE"/oss-report.py "$HERE"/projec
 cp -p "$HERE/../../docs/status/oss-expected.tsv" "$SNAP/oss-expected.tsv" || exit 2
 trap 'find "$SNAP" -mindepth 1 -delete; rmdir "$SNAP"' EXIT
 HERE="$SNAP"
+# Where a crash's dump would go and the core limit the lane inherited
+# (WP-268; every phase sets its own to 1 byte): read only.
+echo "oss-run: core_pattern $(cat /proc/sys/kernel/core_pattern 2>/dev/null || echo '?'); core limit soft/hard (bytes) $(python3 -c 'import resource; s, h = resource.getrlimit(resource.RLIMIT_CORE); f = lambda v: "unlimited" if v == resource.RLIM_INFINITY else str(v); print(f(s) + "/" + f(h))' 2>/dev/null || echo '?')"
 
 fell_back() {  # the hybrid report's fallbacks: declined + failed (not offered is kiln's choice)
   python3 -c "import json,sys; c=json.load(open(sys.argv[1]))['hod'] or {}; b=c.get('backends',{}); print(b.get('hod-declined',0)+b.get('hod-failed',0))" "$1" 2>/dev/null || echo 1
@@ -71,7 +74,12 @@ fell_back() {  # the hybrid report's fallbacks: declined + failed (not offered i
 # every report by `oss-report.py check` after each project and flavour.
 one() {
   local p="$1" fl="$2" m="$3"
-  echo "oss-run: $p $fl $m ($(date -u +%H:%M:%S))"
+  # The machine's state as each build starts (WP-268): a runner that slows
+  # from one build to the next shows it here.
+  local mem disk
+  mem="$(awk '/^MemAvailable:/ {printf "%d", $2 / 1024}' /proc/meminfo 2>/dev/null)"
+  disk="$(df -Pk "$OSS" 2>/dev/null | awk 'NR == 2 {printf "%d", $4 / 1048576}')"
+  echo "oss-run: $p $fl $m ($(date -u +%H:%M:%S); load $(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null), ${mem:-?} MB available, ${disk:-?} GB free)"
   if [ "$m" = llc ]; then
     local prune=(--prune); [ -z "$KEEP" ] || prune=()
     "$HERE/oss-build.sh" "$p" --mode llc --flavour "$fl" --target "$TARGET" "${prune[@]}"

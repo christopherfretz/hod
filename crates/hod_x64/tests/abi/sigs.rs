@@ -283,6 +283,12 @@ impl Case {
         self.params.iter().any(|param| has(&param.ty))
     }
 
+    /// Whether the case passes or returns a `<32 x bfloat>`, which LLVM
+    /// 19's FastISel mishandles where `bf16` is legal (§12).
+    pub fn has_bf16_zmm(&self) -> bool {
+        self.text().contains("<32 x bfloat>")
+    }
+
     pub fn has_sret(&self) -> bool {
         self.params.iter().any(|param| param.attr == Attr::Sret)
     }

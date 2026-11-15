@@ -175,7 +175,10 @@ kiln's lanes). Its rules:
    that stays skipped. **Executed** means the program
    ran on that processor and hod's results equaled `llc` 22's for every
    function or call it ran; an executed program that disagrees fails its
-   test with the whole output. With `HOD_AVX512_REPORT=<file>` each test
+   test with the whole output. `abi::zmm_grid` executes each machine
+   against two of the six `llc` configurations (`llc` 22 at `-O0` and one
+   other, in turn by machine; `zmm::executed_configs`), which its line
+   names: all six under an emulator took about 35 minutes. With `HOD_AVX512_REPORT=<file>` each test
    appends one line per program: `program`, `executed`, `skipped`,
    `dry-run` or `failed`, and a detail (how it ran and the processor's
    model, or the missing features), separated by tabs. On the x86-64

@@ -264,8 +264,17 @@ impl Report {
 }
 
 /// Whether a case runs against a configuration, with hod calling or with
-/// LLVM calling.
-fn runs(plan: &Plan, config: Config, hod_calls: bool) -> bool {
+/// LLVM calling, on a machine where `bfloat` vectors are legal (`bf16`)
+/// or not.
+fn runs(plan: &Plan, config: Config, hod_calls: bool, bf16: bool) -> bool {
+    // LLVM 19's FastISel drops a `<32 x bfloat>` argument where `bf16`
+    // makes it legal (the next vector argument takes its register; on
+    // `sapphirerapids` it runs out of memory), as `same_as_llc` found
+    // (WP-208), at `-O2` too (`-fast-isel=1`); its SelectionDAG and LLVM
+    // 22 pass it in `zmm0`, as hod does (spec/abi-x64.md §12, WP-238).
+    if config.major < 22 && !config.dag && bf16 && plan.case.has_bf16_zmm() {
+        return false;
+    }
     // LLVM 19 keeps an integer wider than 64 bits (and a vector of `i64`
     // split into general pieces) all in registers or all on the stack,
     // and then gives up the registers left (§4.2).
@@ -583,8 +592,13 @@ impl Batch {
         // A function `llc` crashes on says nothing about the convention:
         // it is left out, reported, and the rest of the batch runs.
         let mut left_out: HashSet<(usize, bool)> = HashSet::new();
+        let bf16 = tools
+            .machine
+            .as_ref()
+            .is_some_and(|m| m.features.split(',').any(|f| f == "+avx512bf16"));
         let runs = |left_out: &HashSet<(usize, bool)>, index: usize, hod_calls: bool| {
-            runs(&self.plans[index], config, hod_calls) && !left_out.contains(&(index, hod_calls))
+            runs(&self.plans[index], config, hod_calls, bf16)
+                && !left_out.contains(&(index, hod_calls))
         };
         loop {
             let attrs = tools.machine.as_ref().map(Machine::attributes);

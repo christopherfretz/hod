@@ -327,6 +327,54 @@ fn llc_cannot_pass_a_mask_of_one_under_avx512() {
     }
 }
 
+/// WP-238, §12: on `znver4` (`bf16`), `llc` 19's FastISel (`-O0` and
+/// `-O2` with `-fast-isel=1`, as the grid runs them) passes the
+/// `float` after a `<32 x bfloat>` in `xmm0`, over the vector, where its
+/// `SelectionDAG` and `llc` 22 pass it in `xmm1` (the vector in `zmm0`, as
+/// hod does). The grid runs no such case under that configuration
+/// (`run::runs`); this fails when LLVM 19 passes it as the others do.
+#[test]
+fn llc_19_fastisel_drops_a_bfloat_vector_under_bf16() {
+    let Some(base) = Tools::find() else { return };
+    let scratch = Scratch::new("abi-zmm-bf16");
+    let source = scratch.write(
+        "bf16.ll",
+        "declare void @callee(i64, <32 x bfloat>, i32, float)\n\
+         define void @caller(ptr %p) {\n\
+         \x20 %v = load <32 x bfloat>, ptr %p\n\
+         \x20 call void @callee(i64 1, <32 x bfloat> %v, i32 2, float 3.0)\n\
+         \x20 ret void\n\
+         }\n",
+    );
+    for (config, llc) in &base.llc {
+        let outcome = run(
+            llc,
+            [
+                config.opt.as_ref(),
+                if config.dag { "-fast-isel=0" } else { "-fast-isel=1" }.as_ref(),
+                "-mtriple=x86_64-linux-gnu".as_ref(),
+                "-mcpu=znver4".as_ref(),
+                "-o".as_ref(),
+                "-".as_ref(),
+                source.as_os_str(),
+            ],
+        );
+        assert!(outcome.success(), "llc {}: {}", config.tag(), outcome.stderr_text());
+        let asm = outcome.stdout_text();
+        let float = asm
+            .lines()
+            .find(|line| line.contains("vmovss") && line.contains(".LCPI"))
+            .and_then(|line| line.split('#').next()?.rsplit('%').next())
+            .map(|reg| reg.trim().to_owned());
+        // `-fast-isel=1` selects FastISel at `-O2` as well.
+        let fast19 = config.major < 22 && !config.dag;
+        let want = if fast19 { "xmm0" } else { "xmm1" };
+        assert_eq!(float.as_deref(), Some(want), "llc {}:\n{asm}", config.tag());
+        // FastISel 19 at `-O2` drops the vector's load altogether.
+        assert!(fast19 || asm.contains("(%rdi), %zmm0"), "llc {}:\n{asm}", config.tag());
+    }
+}
+
 /// The features a program compiled for `machine` may use that an x86-64
 /// processor with AVX-512 may lack, in LLVM's names: the vector ones the
 /// machine's feature string enables (`avx*` but AVX10, `fma`, `f16c`,
@@ -453,7 +501,7 @@ fn differences(
     // next `xmm` argument takes `xmm0`) or runs out of memory
     // (`sapphirerapids`). Its SelectionDAG and LLVM 22 pass it in `zmm0`,
     // as hod does. Those cases are left out of the module it compiles.
-    let bf16 = |index: usize| plans[index].case.text().contains("<32 x bfloat>");
+    let bf16 = |index: usize| plans[index].case.has_bf16_zmm();
     let runs19 = |index: usize, hod_calls: bool| runs(index, hod_calls) && !bf16(index);
     let scratch = Scratch::new(label);
     let attributes = machine.attributes();

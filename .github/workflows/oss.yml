@@ -11,7 +11,12 @@ name: oss
 #   build K      per runner: hod_cli in release, uploaded; kiln++ at the
 #                revision in .github/kiln-revision (or the `kiln` input)
 #   oss A P      the project P on runner A (the reports, logs and the
-#                refused modules are uploaded; build trees are pruned)
+#                refused modules are uploaded; build trees are pruned;
+#                every phase runs with a core limit of 1 byte, so no
+#                crash of a death test reaches the runner's dump
+#                handler, and what a phase leaves running is killed and
+#                named in its report: spec/harness.md "No core dumps",
+#                "A phase's leftovers")
 #   summary      scripts/oss/oss-report.py status and census over every
 #                report; it fails when a test passes under llc and not
 #                under hod
@@ -123,14 +128,26 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with: { pattern: "oss-${{ matrix.arch }}-*", path: oss-out, merge-multiple: true }
-      - name: the status and census (fails when a test passes under llc and not under hod)
+      - name: the status and census (fails when a test passes under llc and not under hod unexpectedly, or an expected entry is stale)
         run: |
           set -o pipefail
           export HOD_OSS_ROOT="$PWD/oss-out" HOD_OSS_FINDINGS="$PWD/oss-out/findings"
+          # The three files again from every project's reports (the merged
+          # artifacts each carried their own) and the list of expected results.
+          # (1: a regression or a stale entry, reported below; else a usage error.)
+          python3 -I scripts/oss/oss-report.py check || [ $? = 1 ]
           python3 -I scripts/oss/oss-report.py census | tee oss-summary-${{ matrix.arch }}.md >> "$GITHUB_STEP_SUMMARY"
-          if [ -s oss-out/findings/TEST-REGRESSIONS.txt ]; then
-            echo "tests that pass under llc and not under hod:"; cat oss-out/findings/TEST-REGRESSIONS.txt; exit 1
+          if [ -s oss-out/findings/TEST-EXPECTED.txt ]; then
+            echo "expected differences (docs/status/oss-expected.tsv):"; cat oss-out/findings/TEST-EXPECTED.txt
           fi
+          fail=0
+          if [ -s oss-out/findings/TEST-REGRESSIONS.txt ]; then
+            echo "tests that pass under llc and not under hod:"; cat oss-out/findings/TEST-REGRESSIONS.txt; fail=1
+          fi
+          if [ -s oss-out/findings/TEST-STALE.txt ]; then
+            echo "stale entries of docs/status/oss-expected.tsv:"; cat oss-out/findings/TEST-STALE.txt; fail=1
+          fi
+          exit "$fail"
       - if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with: { name: "oss-summary-${{ matrix.arch }}", path: "oss-summary-${{ matrix.arch }}.md" }

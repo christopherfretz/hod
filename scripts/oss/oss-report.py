@@ -25,6 +25,22 @@
                                     another hod than the candidate's
   oss-report.py census [--out F]    the census page (the status rows and
                                     the refusals with their findings)
+  oss-report.py check [--root DIR]...
+                                    the tests that pass under llc and not
+                                    under hod, judged against the list of
+                                    expected results (WP-263): rewrites
+                                    <findings>/TEST-REGRESSIONS.txt (the
+                                    unexpected ones), TEST-EXPECTED.txt and
+                                    TEST-STALE.txt; exit status 1 when a
+                                    regression or a stale entry is left
+  oss-report.py unexpected <project> <flavour> <mode>
+                                    the unexpected worse tests of one build
+                                    (space-separated; oss-run.sh keeps the
+                                    tree when it prints any)
+
+`--expected F` (before the command) names the list of expected results;
+the default is oss-expected.tsv beside this script (oss-run.sh's copy),
+else docs/status/oss-expected.tsv of the checkout.
 
 Reads <root>/build/<project>/<flavour>-<mode>/report.json (written by
 oss-build.sh through projects.py). The root is $HOD_OSS_ROOT, else
@@ -107,6 +123,7 @@ def load_reports(oss):
                     a["env"].add(e.get("arena") or "unset")
                     a["runs"] += 1
                     a["passed"] += 1 if e["passed"] else 0
+        r["_dir"] = os.path.dirname(path)  # the tree (its LastTest.log, for an expected entry's text)
         reps[(r["project"], r["flavour"], r["mode"])] = r
     return reps
 
@@ -189,9 +206,15 @@ def build_cell(r):
 
 def test_cell(r):
     if r is None or r.get("tests") is None:
-        return "-" if r is None or r.get("test_rc") is None else f"rc {r['test_rc']}"
-    t = r["tests"]
-    return f"{t['passed']}/{t['total']}"
+        cell = "-" if r is None or r.get("test_rc") is None else f"rc {r['test_rc']}"
+    else:
+        cell = f"{r['tests']['passed']}/{r['tests']['total']}"
+    # What the build's phases left running, killed by the lane (WP-268):
+    # shown, never a verdict (the control's leftovers are the project's).
+    left = (r or {}).get("leftovers") or {}
+    if left.get("count"):
+        cell += f" ({left['count']} left running: {', '.join(left.get('names') or [])})"
+    return cell
 
 
 def diff_tests(ctl, r):
@@ -202,6 +225,143 @@ def diff_tests(ctl, r):
     worse = sorted(t for t, s in a.items() if s == "Passed" and b.get(t, "missing") != "Passed")
     better = sorted(t for t, s in b.items() if s == "Passed" and a.get(t) != "Passed")
     return worse, better
+
+
+# The list of expected results (WP-263; spec/harness.md "Real projects",
+# "Expected results"): docs/status/oss-expected.tsv, tab-separated, '#'
+# lines and blank lines ignored, one entry per line:
+#   <project> <target> <flavour> <mode> <test> fails <text> <reason> <spec>
+# <target> aarch64|x86_64|*, <flavour> O0|O0g|*, <mode> hod|strict|*; the
+# outcome is `fails` (the one a difference can have); <text> is `-` or a
+# string the test's output in the hod tree's LastTest.log must contain for
+# the failure to be the one the entry describes; <reason> and <spec> (the
+# spec section) are never empty.
+TARGETS = ("aarch64", "x86_64")
+EXPECTED = None  # the parsed list, for status and census (None: not judged)
+
+
+def expected_path(arg=None):
+    if arg:
+        return arg
+    snap = os.path.join(HERE, "oss-expected.tsv")  # oss-run.sh's copy
+    return snap if os.path.exists(snap) else os.path.join(HERE, "..", "..", "docs", "status", "oss-expected.tsv")
+
+
+def load_expected(path):
+    """The entries, as dicts; a malformed list is a usage error (exit 2)."""
+    out, seen = [], set()
+    if not os.path.exists(path):
+        return out
+    with open(path, encoding="utf-8") as f:
+        for n, line in enumerate(f, 1):
+            line = line.rstrip("\n")
+            if not line.strip() or line.startswith("#"):
+                continue
+            c = line.split("\t")
+            bad = None
+            if len(c) != 9 or any(not x.strip() for x in c):
+                bad = "nine non-empty tab-separated columns"
+            elif c[1] not in TARGETS + ("*",):
+                bad = "a target aarch64, x86_64 or *"
+            elif c[2] not in FLAVOURS + ("*",):
+                bad = "a flavour O0, O0g or *"
+            elif c[3] not in ("hod", "strict", "*"):
+                bad = "a mode hod, strict or *"
+            elif c[5] != "fails":
+                bad = "the outcome `fails`"
+            elif tuple(c[:5]) in seen:
+                bad = "one entry per project, target, flavour, mode and test"
+            if bad:
+                print(f"oss-report: {path}:{n}: an entry needs {bad}", file=sys.stderr)
+                sys.exit(2)
+            seen.add(tuple(c[:5]))
+            out.append(dict(zip(("project", "target", "flavour", "mode", "test", "outcome", "text", "reason", "spec"), c)))
+    return out
+
+
+def real_target(r):
+    """What a report's programs were built for: `--target x86_64` is the
+    cross lane; the default (`aarch64`) is a native build, for the host."""
+    t = r.get("target") or TARGET
+    return "x86_64" if t == "x86_64" else (r.get("host") or t)
+
+
+def emulated(r):
+    return real_target(r) != (r.get("host") or real_target(r))
+
+
+def test_output(r, test):
+    """The test's section of the tree's LastTest.log ('' without one)."""
+    log = os.path.join(r.get("_dir") or "", "Testing", "Temporary", "LastTest.log")
+    try:
+        with open(log, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return ""
+    start = text.find(f" Testing: {test}\n")
+    if start < 0:
+        return ""
+    end = text.find(f'"{test}" end time', start)
+    return text[start:] if end < 0 else text[start:end]
+
+
+def entries_for(expected, r, test=None):
+    p, fl, m = r["project"], r["flavour"], r["mode"]
+    t = real_target(r)
+    return [e for e in expected
+            if e["project"] == p and e["target"] in (t, "*") and e["flavour"] in (fl, "*")
+            and e["mode"] in (m, "*") and (test is None or e["test"] == test)]
+
+
+def judge(reps, expected):
+    """Every hod and strict build against its control and the list:
+    {"regressions": [(p, fl, m, [tests])], "expected": [(p, fl, m, test, entry)],
+    "stale": [(p, fl, m, test, why)], "moot": [(p, fl, m, test, entry)]}.
+    The stale rule (spec/harness.md "Expected results"), per entry and
+    per build it matches whose control and build both have test results:
+    the test passes in the build (the entry says it fails), or neither the
+    control nor the build has the test. A worse test (passing in the
+    control, present and not passing in the build) is expected when an
+    entry matches it and the entry's text is `-` or in the test's output,
+    else a regression. Control and build both not passing: no difference,
+    the entry is moot there (neither expected nor stale)."""
+    out = {"regressions": [], "expected": [], "stale": [], "moot": []}
+    for (p, fl, m), r in sorted(reps.items()):
+        if m == "llc":
+            continue
+        ctl = reps.get((p, fl, "llc"))
+        if ctl is None:
+            continue
+        worse, _ = diff_tests(ctl, r)
+        a, b = ctl.get("test_status") or {}, r.get("test_status") or {}
+        unexpected = []
+        for t in worse or []:
+            es = entries_for(expected, r, t)
+            if es and t in b and any(e["text"] == "-" or e["text"] in test_output(r, t) for e in es):
+                out["expected"].append((p, fl, m, t, es[0]))
+            else:
+                unexpected.append(t + (" (an expected entry's text is not in its output)" if es and t in b else ""))
+        if unexpected:
+            out["regressions"].append((p, fl, m, unexpected))
+        if not a or not b:
+            continue  # a build or a test run that did not happen proves nothing
+        for e in entries_for(expected, r):
+            t = e["test"]
+            if b.get(t) == "Passed":
+                out["stale"].append((p, fl, m, t, "passes under hod (the entry says it fails)"))
+            elif t not in a and t not in b:
+                out["stale"].append((p, fl, m, t, "no such test in the control or the build"))
+            elif a.get(t) != "Passed":
+                out["moot"].append((p, fl, m, t, e))
+    return out
+
+
+def judged_lines(j):
+    """The three files' lines (TEST-REGRESSIONS, TEST-EXPECTED, TEST-STALE)."""
+    regs = [f"{p} {fl} {m}: {' '.join(ts)}" for p, fl, m, ts in j["regressions"]]
+    exp = [f"{p} {fl} {m}: {t}: expected ({e['reason']}; {e['spec']})" for p, fl, m, t, e in j["expected"]]
+    stale = [f"{p} {fl} {m}: {t}: stale entry: {why}" for p, fl, m, t, why in j["stale"]]
+    return regs, exp, stale
 
 
 def hod_commits(*rs):
@@ -240,7 +400,8 @@ def status_rows(reps, notes=None):
     recorded rerun (and at least two) is not counted worse: the cell says
     `same (rerun)` with a numbered note, appended to `notes`."""
     notes = [] if notes is None else notes
-    cand = " at the candidate |" if CANDIDATE else ""
+    exp = {(p, fl, m, t): e for p, fl, m, t, e in judge(reps, EXPECTED)["expected"]} if EXPECTED else {}
+    cand =" at the candidate |" if CANDIDATE else ""
     out = [
         "| project | revision | flavour | TUs | objects | built by hod | fell back | not offered | hybrid build | strict build | tests llc | tests hod | tests strict | against the control | hod | kiln |" + cand,
         "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|" + ("---|" if CANDIDATE else ""),
@@ -274,6 +435,14 @@ def status_rows(reps, notes=None):
                     else:
                         notes.append(f"{p} {fl} {name}: `{t}` passed {e['passed']} of {e['runs']} reruns.")
                         worse[worse.index(t)] = f"{t} (note {len(notes)})"
+                known = []  # on the list of expected results, with its reason in a note
+                for t in [t for t in worse if (p, fl, name, t) in exp]:
+                    e = exp[(p, fl, name, t)]
+                    worse.remove(t)
+                    notes.append(f"{p} {fl} {name}: `{t}` fails where the control passes, as expected: {e['reason']} ({e['spec']}).")
+                    known.append(f"{t} (note {len(notes)})")
+                if known:
+                    diffs.append(f"{name}: {len(known)} expected ({', '.join(known)})")
                 if worse:
                     diffs.append(f"{name}: {len(worse)} worse ({', '.join(worse[:3])}{', ...' if len(worse) > 3 else ''})")
                 if better:
@@ -468,6 +637,48 @@ def cmd_collect(a):
     print(f"oss-report: {kept} modules kept under {os.path.join(findings, a.project)}")
 
 
+def expected_rows(reps):
+    """The census's section on the list of expected results."""
+    j = judge(reps, EXPECTED)
+    out = ["", "## Expected results", "",
+           "From the list of expected results (`docs/status/oss-expected.tsv`, spec/harness.md "
+           "\"Real projects\", \"Expected results\"): a test passing under llc and not under hod "
+           "that an entry names is expected, not a regression; an entry the reports contradict is stale "
+           "and fails the summary like a regression."]
+    if not (j["expected"] or j["moot"] or j["stale"]):
+        return out + ["", f"No entry applies to these reports ({len(EXPECTED)} entries in the list)."]
+    out += ["", "| project | flavour | mode | test | result | reason | spec |", "|---|---|---|---|---|---|---|"]
+    for p, fl, m, t, e in j["expected"]:
+        out.append(f"| {p} | {fl} | {m} | `{t}` | expected: fails, the control passes | {e['reason']} | {e['spec']} |")
+    for p, fl, m, t, e in j["moot"]:
+        why = "the control fails too" + (" (under emulation)" if emulated(reps[(p, fl, m)]) else "")
+        out.append(f"| {p} | {fl} | {m} | `{t}` | no difference: {why} | {e['reason']} | {e['spec']} |")
+    for p, fl, m, t, why in j["stale"]:
+        out.append(f"| {p} | {fl} | {m} | `{t}` | **stale entry**: {why} | - | - |")
+    return out
+
+
+def cmd_check(a, reps, findings):
+    """Rewrite the three files from the reports; 1 on a regression or a stale entry."""
+    j = judge(reps, EXPECTED)
+    regs, exp, stale = judged_lines(j)
+    d = target_findings(findings)
+    os.makedirs(d, exist_ok=True)
+    for name, lines in (("TEST-REGRESSIONS.txt", regs), ("TEST-EXPECTED.txt", exp), ("TEST-STALE.txt", stale)):
+        with open(os.path.join(d, name), "w", encoding="utf-8") as f:
+            f.write("".join(x + "\n" for x in lines))
+    print(f"oss-report: against the control: {len(regs)} builds with unexpected regressions, "
+          f"{len(exp)} expected differences, {len(stale)} stale entries, {len(j['moot'])} entries moot "
+          f"(the control fails too) ({d})")
+    for x in regs:
+        print(f"REGRESSION {x}")
+    for x in exp:
+        print(f"EXPECTED {x}")
+    for x in stale:
+        print(f"STALE {x}")
+    return 1 if regs or stale else 0
+
+
 def page(reps, title, intro, findings=None):
     lines = [f"# {title}", "", *intro, ""]
     notes = []
@@ -475,6 +686,8 @@ def page(reps, title, intro, findings=None):
     notes += PROV["note"]
     if notes:
         lines += ["", "Notes:", ""] + [f"{i}. {n}" for i, n in enumerate(notes, 1)]
+    if findings is not None and EXPECTED is not None:
+        lines += expected_rows(reps)
     lines += ["", "## Refusal census (hybrid builds)", ""]
     lines += census_rows(reps, findings)
     lines += not_offered_rows(reps)
@@ -514,8 +727,11 @@ def cmd_rerun(a):
     def limit():
         resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
 
+    # In a session of its own, what the run leaves running killed and
+    # named in its log (WP-268; spec/harness.md "A phase's leftovers").
+    phase = [sys.executable, os.path.join(HERE, "projects.py"), "run-phase", "--phase", "rerun", "--"]
     for i in range(a.times):
-        p = subprocess.run(["ctest", "-R", f"^{a.test}$", "--output-on-failure"], cwd=tree, env=env,
+        p = subprocess.run([*phase, "ctest", "-R", f"^{a.test}$", "--output-on-failure"], cwd=tree, env=env,
                            preexec_fn=limit, capture_output=True, text=True)
         log = os.path.join(tree, f"rerun-{a.test}-{int(time.time())}-{i}.log")
         with open(log, "w", encoding="utf-8") as f:
@@ -532,7 +748,15 @@ def cmd_rerun(a):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--target", choices=sorted(PREFIX), default="aarch64")
+    ap.add_argument("--expected", help="the list of expected results (default: oss-expected.tsv beside this "
+                    "script, else docs/status/oss-expected.tsv)")
     sub = ap.add_subparsers(dest="cmd", required=True)
+    u = sub.add_parser("unexpected")
+    for n in ("project", "flavour", "mode"):
+        u.add_argument(n)
+    k = sub.add_parser("check")
+    k.add_argument("--root", action="append", default=[],
+                   help="a lane root to read (repeatable); default $HOD_OSS_ROOT or <build root>/oss")
     c = sub.add_parser("collect")
     c.add_argument("project")
     r = sub.add_parser("rerun")
@@ -548,12 +772,28 @@ def main():
         s.add_argument("--candidate", help="the release candidate's hod commit: rows at another hod are marked"
                        " (`-`: not chosen yet, every row is marked)")
     a = ap.parse_args()
-    global TARGET, CANDIDATE
+    global TARGET, CANDIDATE, EXPECTED
     TARGET = a.target
     if a.cmd == "collect":
         return cmd_collect(a)
     if a.cmd == "rerun":
         return cmd_rerun(a)
+    EXPECTED = load_expected(expected_path(a.expected))
+    if a.cmd == "unexpected":
+        oss, _ = roots()
+        reps = load_reports(oss)
+        regs = judge({k: v for k, v in reps.items() if k[0] == a.project and k[1] == a.flavour and k[2] in ("llc", a.mode)},
+                     EXPECTED)["regressions"]
+        print(" ".join(t.split(" ")[0] for _, _, _, ts in regs for t in ts))
+        return 0
+    if a.cmd == "check":
+        if a.root:
+            findings = os.environ.get("HOD_OSS_FINDINGS") or roots()[1]
+            reps = load_roots(a.root)
+        else:
+            oss, findings = roots()
+            reps = load_reports(oss)
+        return cmd_check(a, reps, findings)
     CANDIDATE = a.candidate
     if a.provenance:
         load_provenance(a.provenance)
@@ -597,4 +837,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

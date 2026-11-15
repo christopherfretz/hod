@@ -368,6 +368,145 @@ fn llc19_int128_findings_are_set_apart() {
     }
 }
 
+// "Set apart (seeds)", at `--mix`'s self-check (WP-266): seed 226098 of
+// the 1.0 candidate's budget (x86-64, LLVM 19, abi): llc 19's halves and
+// its whole module print different garbage (`va_arg` reads the r9 its
+// caller left unset); gcc and llc 22 print the same and llc 19's whole
+// module does not, so the seed is set apart, not an error of the harness.
+#[test]
+fn llc19_int128_self_check_is_set_apart() {
+    if !int128_tools_found() {
+        return;
+    }
+    let scratch = Scratch::new("fuzz-int128-self-check");
+    let seed = 226_098;
+    let summary = run(&int128_options(&scratch, seed, 19, Mode::Mix)).expect("the run");
+    let text = summary.text();
+    assert!(summary.findings.is_empty() && summary.errors.is_empty(), "{text}");
+    let [(s, class, line)] = &summary.set_apart[..] else { panic!("one set apart: {text}") };
+    assert_eq!((*s, *class), (seed, "llc19-int128-last-register"), "{text}");
+    assert!(line.contains("seed 226098: i128 at call @callee_0 argument 7 with one"), "{text}");
+    assert!(line.contains("print the same (1377 bytes, exited with status 0)"), "{text}");
+    assert!(line.contains("llc-19: llc's two halves disagree with the whole module"), "{text}");
+}
+
+// "Set apart" (`dead-store`, WP-266): seeds 220612 (func_1, prog.c:713,
+// `l_2459 |= (&g_1494[0] == &g_1494[2]);`) and 220916 (func_23,
+// prog.c:718, `(*l_161) = (g_168 = 0x8.564011p+55);`, stores of poison)
+// of the 1.0 candidate's budget (x86-64, LLVM 22, debug): SelectionDAG
+// deletes the statement, FastISel keeps code and a row as hod does, and
+// GlobalISel falls back on the function (for other instructions of it).
+// The pair is set apart with its evidence, and the seed is no finding.
+#[test]
+fn dead_stores_are_set_apart() {
+    if !found(&["csmith", "clang-22", "llc-22", "x86_64-linux-gnu-gcc", "llvm-dwarfdump-22"])
+        || !found(&["llvm-nm-22", "llvm-objdump-22"])
+    {
+        return;
+    }
+    let scratch = Scratch::new("fuzz-dead-store");
+    for (seed, function, line, store) in [
+        (220_612, "func_1", 713, "a store to the pointer a load of the line reads"),
+        (220_916, "func_23", 718, "a store of poison"),
+    ] {
+        let mut options = options(&scratch, seed, 1);
+        options.mode = Mode::Debug;
+        options.target = Some(Arch::X86_64);
+        let summary = run(&options).expect("the run");
+        let text = summary.text();
+        assert!(summary.findings.is_empty() && summary.errors.is_empty(), "{text}");
+        let evidence = format!(
+            "dead-store: seed {seed} {function} at prog.c:{line}: rows hod 1 selection-dag 0 \
+             fast-isel 1 global-isel fell back (\"warning: Instruction selection used fallback \
+             path for {function}\"); the IR: loads, stores, compares, casts, {store}"
+        );
+        assert!(text.contains(&evidence), "{text}");
+    }
+}
+
+/// The two statements of [`dead_stores_are_set_apart`] alone.
+const DEAD_STORES_C: &str = "\
+int g; float *p; unsigned char x; int *a[4];
+void f(void) {
+  x |= (&a[0] == &a[2]);
+  *p = (g = 0x8.564011p+55);
+  g = 1;
+}
+int main(void) { float y; p = &y; f(); return 0; }
+";
+
+// "Set apart", `dead-store` (WP-266): what the fallback hides. The two
+// statements of seeds 220612 and 220916 in a function GlobalISel selects
+// itself (clang 22 -g, x86-64): SelectionDAG has no row at either line,
+// FastISel and GlobalISel have one, as hod does. So it is a selector
+// split (rows 1/0/1/1), and `dead-store`'s IR condition stands in for
+// GlobalISel's row only where GlobalISel gave no answer of its own.
+#[test]
+fn dead_stores_without_fallback_are_a_selector_split() {
+    use std::process::Command;
+    use xtask::debug::lines::{LineTools, stmt_row_counts};
+    use xtask::fuzz::case::{SELECTOR_SPLIT, SelectorRows, dead_store, fallbacks, selector_split};
+    let gcc = if Arch::host() == Some(Arch::X86_64) { "gcc" } else { "x86_64-linux-gnu-gcc" };
+    if !found(&["clang-22", "llc-22", "llvm-dwarfdump-22", "llvm-nm-22", "llvm-objdump-22", gcc]) {
+        return;
+    }
+    let search = Search::from_env();
+    let tool = |name: &str| search.versioned(name, 22).expect("found above");
+    let line_tools = LineTools {
+        dwarfdump: tool("llvm-dwarfdump"),
+        nm: tool("llvm-nm"),
+        objdump: tool("llvm-objdump"),
+    };
+    let scratch = Scratch::new("fuzz-dead-store-alone");
+    let source = scratch.write("t.c", DEAD_STORES_C);
+    let ir = scratch.join("t.ll");
+    let step = |command: &mut Command| {
+        let out = hod_testutil::run_with(command, b"", Duration::from_mins(2));
+        assert!(out.success(), "{command:?}: {}", String::from_utf8_lossy(&out.stderr));
+        out.stderr
+    };
+    step(
+        Command::new(tool("clang"))
+            .args(["-O0", "-g", "-w", "-S", "-emit-llvm"])
+            .args(["--target=x86_64-unknown-linux-gnu", "-o"])
+            .arg(&ir)
+            .arg(&source),
+    );
+    let tail = ["-filetype=obj", "-mtriple=x86_64-unknown-linux-gnu", "-relocation-model=pic"];
+    let mut built = Vec::new();
+    for (name, args) in [
+        ("hod", &[][..]),
+        ("selection-dag", &["-global-isel=0", "-fast-isel=0"][..]),
+        ("fast-isel", &["-global-isel=0", "-fast-isel=1"][..]),
+        ("global-isel", &["-global-isel=1", "-global-isel-abort=2"][..]),
+    ] {
+        let object = scratch.join(format!("{name}.o"));
+        let compiler = if name == "hod" { workspace_hod() } else { tool("llc") };
+        let stderr = step(
+            Command::new(compiler).arg("-O0").args(args).args(tail).arg("-o").arg(&object).arg(&ir),
+        );
+        let program = scratch.join(name);
+        step(Command::new(gcc).arg("-pie").arg("-o").arg(&program).arg(&object));
+        let rows = stmt_row_counts(&program, &line_tools).expect("the rows");
+        built.push(SelectorRows { rows, no_evidence: fallbacks(&stderr), failed: false });
+    }
+    let [hod, dag, fast, global] = &built[..] else { unreachable!() };
+    assert!(global.no_evidence.is_empty(), "GlobalISel selects f itself");
+    for line in [3, 4] {
+        let pair = hod.rows.keys().find(|(f, _, l)| f == "f" && *l == line).expect("hod's row");
+        assert_eq!(dag.rows.get(pair), None, "SelectionDAG deletes line {line}");
+        let rows = hod.rows[pair];
+        let split = selector_split(pair, rows, fast, global).expect("a selector split");
+        assert_eq!(split.class(), SELECTOR_SPLIT);
+        assert!(split.fast_isel >= 1 && split.global_isel >= 1, "{split:?}");
+        let facts = xtask::debug::permitted::IrFacts::of_modules([std::fs::read_to_string(&ir)
+            .unwrap()
+            .as_str()]);
+        assert!(facts.dead_store("f", &pair.1, line).is_some(), "line {line}");
+        assert_eq!(dead_store(pair, rows, fast, global, &facts), None);
+    }
+}
+
 // "Set apart (seeds)": the planted ABI bug (hod swaps two parameters) in
 // a program with the shape (abi seed 2 at x86-64 LLVM 19 has one):
 // llc 22's other half disagrees with hod's half as llc 19's does, so the

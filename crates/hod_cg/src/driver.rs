@@ -355,6 +355,14 @@ impl<'a, T: Target> FnCx<'a, T> {
                 }
             }
         }
+        // §5.6.8 (WP-261): the blocks `llc` deletes once `is.constant`
+        // and `objectsize` are constants are not emitted either.
+        self.s.fold.plan(self.module, body)?;
+        if self.s.fold.active() {
+            for (index, seen) in self.s.reachable.iter_mut().enumerate() {
+                *seen &= self.s.fold.reached(BlockId::new(index as u32));
+            }
+        }
         // WP-095: an `indirectbr` only in unreachable blocks still takes
         // the function's block addresses (`llc` keeps their labels).
         if !self.block_addrs {
@@ -672,6 +680,12 @@ impl<'a, T: Target> FnCx<'a, T> {
     /// written by the call sequence.) Those of a `callbr` that take its
     /// result are left to its lowering, once the result exists (WP-181).
     fn terminator_phi_stores(&mut self, inst: Inst<'a>) -> CgResult<()> {
+        // §5.6.8 (WP-261): a folded terminator keeps one edge, or none.
+        match self.s.fold.action(inst.id()) {
+            crate::const_fold::Action::Jump(target) => return self.phi_stores(target),
+            crate::const_fold::Action::Unreachable => return Ok(()),
+            crate::const_fold::Action::Emit | crate::const_fold::Action::Drop => {}
+        }
         let own = callbr_result(inst);
         for succ in inst.successors() {
             if let Some(result) = own

@@ -50,8 +50,8 @@ skipped (`docs/design/0007-avx512.md` §4.4).
 | `landingpad` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 1029 | 373 | 11 | 645 | 779 | 10 | 240 |
-| total | 1355 | 596 | 58 | 701 | 1004 | 61 | 290 |
+| `intrinsic` | 1032 | 373 | 11 | 648 | 782 | 10 | 240 |
+| total | 1358 | 596 | 58 | 704 | 1007 | 61 | 290 |
 
 ## `module`
 
@@ -1097,6 +1097,9 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.x86.incsspq` | rejected | supported (int, ptr, aggregate) | an x86 property. SHSTK (WP-190) |
 | `intrinsic:llvm.x86.rdsspd` | rejected | supported (int, ptr, aggregate) | an x86 property. SHSTK (WP-190) |
 | `intrinsic:llvm.x86.rdsspq` | rejected | supported (int, ptr, aggregate) | an x86 property. SHSTK (WP-190) |
+| `intrinsic:llvm.x86.tpause` | rejected | supported (int, ptr, aggregate) | an x86 property. WAITPKG (WP-267) |
+| `intrinsic:llvm.x86.umwait` | rejected | supported (int, ptr, aggregate) | an x86 property. WAITPKG (WP-267) |
+| `intrinsic:llvm.x86.umonitor` | rejected | supported (int, ptr, aggregate) | an x86 property. WAITPKG (WP-267) |
 | `intrinsic:llvm.x86.sse41.round.ps` | rejected | supported (int, ptr, vector) | an x86 property. SSE4.1 (WP-202) |
 | `intrinsic:llvm.x86.sse41.round.pd` | rejected | supported (int, ptr, vector) | an x86 property. SSE4.1 (WP-202) |
 | `intrinsic:llvm.x86.sse41.round.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE4.1 (WP-202) |

@@ -863,6 +863,8 @@ which). Each is checked against `llvm-mc` 19 and 22 like the rest
 | `rdssp_r(size, r)` | `RDSSPD`/`RDSSPQ` `F3 [REX.W] 0F 1E /1`, register operand (a `nop` without shadow stacks) | `size` `D` or `Q` |
 | `incssp_r(size, r)` | `INCSSPD`/`INCSSPQ` `F3 [REX.W] 0F AE /5`, register operand | `size` `D` or `Q` |
 | `rdpid_r(r)` | `RDPID r64` `F3 0F C7 /7` | |
+| `tpause_r(r)`, `umwait_r(r)` | `TPAUSE r32` `66 0F AE /6`, `UMWAIT r32` `F2 0F AE /6`, register operand (deadline in `edx:eax`, CF out; WP-267) | |
+| `umonitor_r(r)` | `UMONITOR r64` `F3 0F AE /6`, register operand (WP-267) | |
 | `rdpmc()`, `xgetbv()`, `xsetbv()` | `0F 33`, `0F 01 D0`, `0F 01 D1` (`ecx` selects; `edx:eax`) | |
 | `xend()`, `xtest()`, `rdpkru()`, `wrpkru()`, `serialize()` | `0F 01 D5`, `D6`, `EE`, `EF`, `E8` | |
 | `xabort(imm: u8)` | `C6 F8 ib` | |

@@ -45,8 +45,11 @@ pub struct Node {
     pub children: Vec<Node>,
 }
 
-/// The attributes whose values are masked (`spec/dwarf.md` §6.7).
-const MASKED: [&str; 9] = [
+/// The attributes whose values are masked (`spec/dwarf.md` §6.7; the
+/// call-site addresses since WP-260, §6.19: each writer's own code).
+const MASKED: [&str; 11] = [
+    "DW_AT_call_return_pc",
+    "DW_AT_call_pc",
     "DW_AT_low_pc",
     "DW_AT_high_pc",
     "DW_AT_ranges",
@@ -360,7 +363,130 @@ pub fn permitted(
     llc19: bool,
     protected: bool,
 ) -> Option<Vec<&'static str>> {
-    permitted_with(h, l, &Facts { is_constant, llc19, protected, declared: Vec::new() })
+    permitted_with(h, l, &Facts { is_constant, llc19, protected, ..Facts::default() })
+}
+
+/// The class of `spec/dwarf.md` §6.37 (WP-260): a variable the module
+/// describes by value records ([`described_by_values`]) that hod
+/// describes by a location list or by none, where `llc` writes a single
+/// expression, `DW_AT_const_value`, a list or nothing; or a concrete DIE
+/// of such a variable with no location that `llc` drops.
+pub const VALUE_RECORDS: &str = "value records";
+
+/// §6.37 (WP-260): on x86-64, a function whose IR asks for no frame
+/// pointer ([`without_frame_pointer`]): `llc`'s frame base is `rsp`
+/// (`DW_OP_reg7`), hod's `rbp` (`DW_OP_reg6`, hod always keeps the frame
+/// pointer).
+pub const NO_FRAME_POINTER: &str = "no frame pointer";
+
+/// §6.37 (WP-260): hod's unit has `DW_AT_rnglists_base` where `llc`'s has
+/// none, because hod writes more `DW_AT_ranges` (a scope of several
+/// ranges in hod's code, of one in `llc`'s; §6.7).
+pub const UNIT_RANGE_LISTS: &str = "unit range lists";
+
+/// Whether DIE `n` is a variable of value records: a variable or
+/// parameter named in `values`, by its name or its abstract origin; one
+/// with neither when `values` has an unnamed variable ("").
+fn is_value(n: &Node, values: &[String]) -> bool {
+    let named =
+        |a: &String| a.starts_with("DW_AT_name ") || a.starts_with("DW_AT_abstract_origin ");
+    (n.tag == "DW_TAG_variable" || n.tag == "DW_TAG_formal_parameter")
+        && values.iter().any(|v| {
+            if v.is_empty() {
+                return !n.attrs.iter().any(named);
+            }
+            n.attrs.iter().any(|a| {
+                *a == format!("DW_AT_name (\"{v}\")")
+                    || *a == format!("DW_AT_abstract_origin (\"{v}\")")
+            })
+        })
+}
+
+/// A location or a constant value.
+fn is_place(a: &str) -> bool {
+    a.starts_with("DW_AT_location") || a.starts_with("DW_AT_const_value")
+}
+
+/// [`VALUE_RECORDS`]: hod's value variable `h` without a place or with
+/// a location list, `llc`'s `l` with any place or none, otherwise equal.
+fn value_placed(h: &Node, l: &Node, values: &[String]) -> bool {
+    if !is_value(h, values) || h.attrs.iter().any(|a| is_place(a) && a != "DW_AT_location list") {
+        return false;
+    }
+    let bare = |n: &Node| {
+        let mut b = n.clone();
+        b.attrs.retain(|a| !is_place(a));
+        b
+    };
+    same_attrs(&bare(h), &bare(l))
+}
+
+/// [`VALUE_RECORDS`]: a DIE of hod's `llc` does not have: a concrete
+/// value variable (only `DW_AT_abstract_origin`) with no place.
+fn value_extra(n: &Node, values: &[String]) -> bool {
+    is_value(n, values)
+        && n.children.is_empty()
+        && n.attrs.iter().all(|a| a.starts_with("DW_AT_abstract_origin "))
+}
+
+/// [`NO_FRAME_POINTER`]: hod's subprogram `h` with `rbp` as its frame
+/// base where `llc`'s `l` has `rsp`, of a function in `frameless`,
+/// otherwise equal.
+fn frame_without_pointer(h: &Node, l: &Node, frameless: &[String]) -> bool {
+    const RBP: &str = "DW_AT_frame_base DW_OP_reg6";
+    const RSP: &str = "DW_AT_frame_base DW_OP_reg7";
+    let named = frameless.iter().any(|f| {
+        ["DW_AT_linkage_name", "DW_AT_name", "DW_AT_abstract_origin"]
+            .iter()
+            .any(|k| h.attrs.contains(&format!("{k} (\"{f}\")")))
+    });
+    if h.tag != "DW_TAG_subprogram" || !named || !l.attrs.iter().any(|a| a == RSP) {
+        return false;
+    }
+    let mut placed = h.clone();
+    for a in &mut placed.attrs {
+        if a == RBP {
+            RSP.clone_into(a);
+        }
+    }
+    same_attrs(&placed, l)
+}
+
+/// The identities of sibling DIEs for [`VALUE_RECORDS`]'s comparison by
+/// name: a DIE's tag and its name (or linkage name, abstract origin,
+/// specification, call origin), or for one without, its tag and its rank
+/// among the siblings of that tag without one (the order is kept there).
+fn identities(ns: &[Node]) -> Vec<String> {
+    let key = [
+        "DW_AT_name ",
+        "DW_AT_linkage_name ",
+        "DW_AT_abstract_origin ",
+        "DW_AT_specification ",
+        "DW_AT_call_origin ",
+    ];
+    let mut unnamed: HashMap<&str, usize> = HashMap::new();
+    ns.iter()
+        .map(|n| {
+            if let Some(a) = key.iter().find_map(|k| n.attrs.iter().find(|a| a.starts_with(k))) {
+                format!("{} {a}", n.tag)
+            } else {
+                let rank = unnamed.entry(n.tag.as_str()).or_default();
+                *rank += 1;
+                format!("{} #{rank}", n.tag)
+            }
+        })
+        .collect()
+}
+
+fn count_attr(n: &Node, attr: &str) -> usize {
+    n.attrs.iter().filter(|a| *a == attr).count()
+        + n.children.iter().map(|c| count_attr(c, attr)).sum::<usize>()
+}
+
+/// The number of hod's location lists of value variables in `n`.
+fn value_lists(n: &Node, values: &[String]) -> usize {
+    usize::from(is_value(n, values) && n.attrs.iter().any(|a| a == "DW_AT_location list"))
+        + n.children.iter().map(|c| value_lists(c, values)).sum::<usize>()
 }
 
 /// The class of `spec/dwarf.md` §6.30 (WP-221): a variable declared on a
@@ -441,8 +567,19 @@ pub fn permitted_with(h: &Node, l: &Node, facts: &Facts) -> Option<Vec<&'static 
         !l.attrs.iter().any(|a| a == "DW_AT_str_offsets_base")
             && has_attr(&l, "DW_AT_location list")
     };
+    // WP-260 (§6.37): hod's `rnglists_base` for range lists `llc` does
+    // not write (the scopes are equal by §6.7).
+    let mut h = h.clone();
+    let rnglists = "DW_AT_rnglists_base";
+    if h.attrs.iter().any(|a| a == rnglists)
+        && !l.attrs.iter().any(|a| a == rnglists)
+        && count_attr(&h, "DW_AT_ranges") > count_attr(&l, "DW_AT_ranges")
+    {
+        h.attrs.retain(|a| a != rnglists);
+        classes.push(UNIT_RANGE_LISTS);
+    }
     let extras_ok =
-        count_tag(&l, "DW_TAG_inlined_subroutine") > count_tag(h, "DW_TAG_inlined_subroutine");
+        count_tag(&l, "DW_TAG_inlined_subroutine") > count_tag(&h, "DW_TAG_inlined_subroutine");
     let mut p = Permit {
         classes,
         is_constant,
@@ -451,8 +588,10 @@ pub fn permitted_with(h: &Node, l: &Node, facts: &Facts) -> Option<Vec<&'static 
         sret,
         protected,
         declared: &facts.declared,
+        values: &facts.values,
+        frameless: &facts.frameless,
     };
-    p.eq(h, &l).then_some(p.classes)
+    p.eq(&h, &l).then_some(p.classes)
 }
 
 #[expect(clippy::struct_excessive_bools, reason = "one flag per class of §6.7")]
@@ -465,6 +604,10 @@ struct Permit<'f> {
     protected: bool,
     /// WP-221: [`declared_on_phi`].
     declared: &'f [String],
+    /// WP-260: [`described_by_values`].
+    values: &'f [String],
+    /// WP-260: [`without_frame_pointer`].
+    frameless: &'f [String],
 }
 
 fn is_extra(n: &Node) -> bool {
@@ -516,6 +659,10 @@ impl Permit<'_> {
                 for class in found {
                     self.note(class);
                 }
+            } else if value_placed(h, l, self.values) {
+                self.note(VALUE_RECORDS);
+            } else if frame_without_pointer(h, l, self.frameless) {
+                self.note(NO_FRAME_POINTER);
             } else {
                 return false;
             }
@@ -528,8 +675,51 @@ impl Permit<'_> {
         if self.extras_ok && self.multiset(&h.children, &l.children) {
             return true;
         }
+        self.classes.clone_from(&saved);
+        if !self.values.is_empty() && self.by_identity(&h.children, &l.children) {
+            return true;
+        }
         self.classes = saved;
         false
+    }
+
+    /// WP-260 (§6.37), in a module with value records: the children
+    /// compared as a multiset (§6.7, "sibling order"), equal renderings
+    /// first, then the rest of each side paired by identity
+    /// ([`identities`]); hod's left over must be [`value_extra`], `llc`'s
+    /// none.
+    fn by_identity(&mut self, hs: &[Node], ls: &[Node]) -> bool {
+        let mut pool: HashMap<String, Vec<usize>> = HashMap::new();
+        for (i, c) in hs.iter().enumerate().rev() {
+            pool.entry(rendering(c)).or_default().push(i);
+        }
+        let mut used = vec![false; hs.len()];
+        let mut left_l = Vec::new();
+        for c in ls {
+            match pool.get_mut(&rendering(c)).and_then(Vec::pop) {
+                Some(i) => used[i] = true,
+                None => left_l.push(c.clone()),
+            }
+        }
+        let left_h: Vec<Node> =
+            hs.iter().zip(&used).filter(|(_, u)| !**u).map(|(c, _)| c.clone()).collect();
+        let (ids_h, ids_l) = (identities(&left_h), identities(&left_l));
+        let mut taken = vec![false; left_h.len()];
+        for (l, id) in left_l.iter().zip(&ids_l) {
+            match (0..left_h.len()).find(|&i| !taken[i] && ids_h[i] == *id) {
+                Some(i) if self.eq(&left_h[i], l) => taken[i] = true,
+                _ => return false,
+            }
+        }
+        for (c, t) in left_h.iter().zip(&taken) {
+            if !*t {
+                if !value_extra(c, self.values) {
+                    return false;
+                }
+                self.note(VALUE_RECORDS);
+            }
+        }
+        true
     }
 
     fn aligned(&mut self, hs: &[Node], ls: &[Node]) -> bool {
@@ -543,6 +733,9 @@ impl Permit<'_> {
                 i += 1;
             } else if i < hs.len() && declared_extra(&hs[i], self.declared) {
                 self.note(DECLARED_VALUE);
+                i += 1;
+            } else if i < hs.len() && value_extra(&hs[i], self.values) {
+                self.note(VALUE_RECORDS);
                 i += 1;
             } else if j < ls.len()
                 && (ls[j].tag == "DW_TAG_inlined_subroutine" || self.extras_ok && is_extra(&ls[j]))
@@ -747,6 +940,8 @@ fn one(module: &Path, tools: &Tools, major: u32, dir: &Path) -> Outcome {
         llc19: major == 19,
         protected: protects(&text),
         declared: declared_on_phi(&text),
+        values: described_by_values(&text),
+        frameless: without_frame_pointer(&text),
     };
     compare_with(&ours, &theirs, &ours_r, &theirs_r, &facts)
 }
@@ -821,6 +1016,109 @@ pub struct Facts {
     pub protected: bool,
     /// [`declared_on_phi`].
     pub declared: Vec<String>,
+    /// WP-260: [`described_by_values`].
+    pub values: Vec<String>,
+    /// WP-260: [`without_frame_pointer`].
+    pub frameless: Vec<String>,
+}
+
+/// WP-260 (`spec/dwarf.md` §6.37), the condition of the class `value
+/// records`: the names of the variables a `#dbg_value` record (or a call
+/// of `llvm.dbg.value`) of module text `text` describes.
+pub fn described_by_values(text: &str) -> Vec<String> {
+    let mut nodes: Vec<&str> = Vec::new();
+    for line in text.lines() {
+        let t = line.trim_start();
+        let args = t
+            .strip_prefix("#dbg_value(")
+            .or_else(|| t.split_once("@llvm.dbg.value(").map(|(_, a)| a));
+        let Some(args) = args else { continue };
+        // The second operand at the outer level (the first may be a
+        // `!DIArgList(...)` with commas of its own).
+        let mut depth = 0usize;
+        let mut start = None;
+        for (i, c) in args.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => depth = depth.saturating_sub(1),
+                ',' if depth == 0 => {
+                    if start.is_some() {
+                        break;
+                    }
+                    start = Some(i + 1);
+                }
+                _ => {}
+            }
+        }
+        let Some(start) = start else { continue };
+        let var = args[start..].trim_start().trim_start_matches("metadata ");
+        let end = var.find(|c: char| c != '!' && !c.is_ascii_digit()).unwrap_or(var.len());
+        let var = &var[..end];
+        if var.len() > 1 && !nodes.contains(&var) {
+            nodes.push(var);
+        }
+    }
+    local_variable_names(text, &nodes)
+}
+
+/// The names of the `!DILocalVariable` nodes `nodes` of module text `text`.
+fn local_variable_names(text: &str, nodes: &[&str]) -> Vec<String> {
+    let mut names = Vec::new();
+    for line in text.lines() {
+        let Some((node, rest)) = line.split_once(" = ") else { continue };
+        if !nodes.contains(&node) {
+            continue;
+        }
+        let Some(rest) = rest.trim_start_matches("distinct ").strip_prefix("!DILocalVariable(")
+        else {
+            continue;
+        };
+        // A variable without a name (an unnamed parameter) is "".
+        let name = match rest.find("name: \"") {
+            Some(at) => rest[at + 7..].split('"').next().unwrap_or_default().to_owned(),
+            None => String::new(),
+        };
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
+/// WP-260 (§6.37), the condition of the class `no frame pointer`: the
+/// functions module text `text` defines without asking for a frame
+/// pointer (no `"frame-pointer"` of `all`, `non-leaf...` or `reserved`
+/// on the definition or in one of its attribute groups).
+pub fn without_frame_pointer(text: &str) -> Vec<String> {
+    let keeps = |s: &str| {
+        [
+            "\"frame-pointer\"=\"all\"",
+            "\"frame-pointer\"=\"non-leaf",
+            "\"frame-pointer\"=\"reserved\"",
+        ]
+        .iter()
+        .any(|k| s.contains(k))
+    };
+    let groups: Vec<&str> = text
+        .lines()
+        .filter_map(|l| {
+            let (name, rest) = l.strip_prefix("attributes ")?.split_once(" = ")?;
+            keeps(rest).then_some(name)
+        })
+        .collect();
+    let mut names = Vec::new();
+    for line in text.lines() {
+        let Some(rest) = line.strip_prefix("define ") else { continue };
+        let Some(at) = rest.find('@') else { continue };
+        let name = &rest[at + 1..];
+        let Some(end) = name.find('(') else { continue };
+        let name = name[..end].trim_matches('"');
+        let kept = keeps(rest) || rest.split_whitespace().any(|w| groups.contains(&w));
+        if !kept && !names.iter().any(|n| n == name) {
+            names.push(name.to_owned());
+        }
+    }
+    names
 }
 
 /// The outcome of a module from its trees and relocations.
@@ -833,7 +1131,7 @@ pub fn compare(
     llc19: bool,
     protected: bool,
 ) -> Outcome {
-    let facts = Facts { is_constant, llc19, protected, declared: Vec::new() };
+    let facts = Facts { is_constant, llc19, protected, ..Facts::default() };
     compare_with(ours, theirs, ours_r, theirs_r, &facts)
 }
 
@@ -887,6 +1185,27 @@ pub fn compare_with(
         drop_surplus(&mut ours_r, theirs_r, lists_of, lists);
         drop_surplus(&mut ours_r, theirs_r, |s| s == ".debug_str", dies);
     }
+    // WP-260 (§6.37): each of hod's lists of a value variable is
+    // `DW_FORM_sec_offset`, a relocation against `.debug_loclists` beyond
+    // `llc`'s (its `loclists_base` and `loclistx` lists); hod's
+    // `DW_AT_rnglists_base` of `unit range lists` one against
+    // `.debug_rnglists`.
+    let mut theirs_r = theirs_r.to_vec();
+    if classes.contains(&VALUE_RECORDS) {
+        let base = |u: &Node| u.attrs.iter().any(|a| a == "DW_AT_loclists_base");
+        let mut bases = theirs.iter().zip(ours).filter(|(l, h)| base(l) && !base(h)).count();
+        theirs_r.retain(|(_, s)| {
+            let drop = bases > 0 && lists_of(s);
+            bases -= usize::from(drop);
+            !drop
+        });
+        let lists = ours.iter().map(|u| value_lists(u, &facts.values)).sum();
+        drop_surplus(&mut ours_r, &theirs_r, lists_of, lists);
+    }
+    if classes.contains(&UNIT_RANGE_LISTS) {
+        drop_surplus(&mut ours_r, &theirs_r, |s| s == ".debug_rnglists", ours.len());
+    }
+    let theirs_r = theirs_r.as_slice();
     let ours_r = ours_r.as_slice();
     if ours_r != theirs_r {
         let only = |a: &[(String, String)], b: &[(String, String)]| {
@@ -1342,5 +1661,202 @@ RELOCATION RECORDS FOR [.debug_line]:\n0000000000000000 R_X86_64_64 .text\n";
             compare_with(&[ours], &[placed], &lists, &[], &facts),
             Outcome::Differs(_)
         ));
+    }
+}
+
+/// WP-260 (`spec/dwarf.md` §6.37): the classes `value records`, `no
+/// frame pointer` and `unit range lists`, and what they do not cover.
+#[cfg(test)]
+mod optimized_units {
+    use super::*;
+
+    fn node(tag: &str, attrs: &[&str], children: Vec<Node>) -> Node {
+        Node { tag: tag.into(), attrs: attrs.iter().map(|a| (*a).to_owned()).collect(), children }
+    }
+
+    fn var(location: Option<&str>, name: &str) -> Node {
+        let name = format!("DW_AT_name (\"{name}\")");
+        let mut attrs: Vec<&str> = location.into_iter().collect();
+        attrs.extend([name.as_str(), "DW_AT_type (\"int\")"]);
+        node("DW_TAG_variable", &attrs, vec![])
+    }
+
+    fn this() -> Node {
+        node("DW_TAG_formal_parameter", &["DW_AT_abstract_origin (\"this\")"], vec![])
+    }
+
+    const LIST: Option<&str> = Some("DW_AT_location list");
+
+    /// hod's unit and `llc`'s of the shapes of the corpus's `-O2` unit
+    /// (`lifetime-markers-O2-g-fpic-run.cpp`, reduced).
+    fn units(hod_vars: Vec<Node>, llc_vars: Vec<Node>) -> (Node, Node) {
+        let f = |frame: &str, vars: Vec<Node>, inlined: Vec<Node>| {
+            let mut children = vars;
+            children.push(node(
+                "DW_TAG_inlined_subroutine",
+                &["DW_AT_abstract_origin (\"_ZN5GuardD2Ev\")", "DW_AT_low_pc", "DW_AT_high_pc"],
+                inlined,
+            ));
+            children.push(node(
+                "DW_TAG_call_site",
+                &["DW_AT_call_origin (\"_Z4makei\")", "DW_AT_call_return_pc"],
+                vec![],
+            ));
+            node(
+                "DW_TAG_subprogram",
+                &["DW_AT_low_pc", "DW_AT_high_pc", frame, "DW_AT_linkage_name (\"_Z7guardedi\")"],
+                children,
+            )
+        };
+        let block = |ranges: bool| {
+            let at: &[&str] =
+                if ranges { &["DW_AT_ranges"] } else { &["DW_AT_low_pc", "DW_AT_high_pc"] };
+            node("DW_TAG_lexical_block", at, vec![])
+        };
+        let mut hod_vars = hod_vars;
+        hod_vars.push(block(true));
+        let mut llc_vars = llc_vars;
+        llc_vars.push(block(false));
+        let int = node("DW_TAG_base_type", &["DW_AT_name (\"int\")"], vec![]);
+        let ptr = node("DW_TAG_pointer_type", &["DW_AT_type (\"int\")"], vec![]);
+        let hod = node(
+            "DW_TAG_compile_unit",
+            &["DW_AT_str_offsets_base", "DW_AT_rnglists_base"],
+            vec![
+                int.clone(),
+                f("DW_AT_frame_base DW_OP_reg6", hod_vars, vec![this()]),
+                ptr.clone(),
+            ],
+        );
+        let llc = node(
+            "DW_TAG_compile_unit",
+            &["DW_AT_str_offsets_base", "DW_AT_loclists_base"],
+            vec![ptr, int, f("DW_AT_frame_base DW_OP_reg7", llc_vars, vec![])],
+        );
+        (hod, llc)
+    }
+
+    fn facts() -> Facts {
+        Facts {
+            values: ["n", "g1", "g2", "s", "this"].map(str::to_owned).to_vec(),
+            frameless: vec!["_Z7guardedi".to_owned()],
+            ..Facts::default()
+        }
+    }
+
+    fn relocations(lists: usize, rnglists: bool) -> Vec<(String, String)> {
+        let r = |s: &str| ("R_X86_64_32".to_owned(), s.to_owned());
+        let mut out = vec![r(".debug_loclists"); lists];
+        if rnglists {
+            out.push(r(".debug_rnglists"));
+        }
+        out
+    }
+
+    fn outcome(h: &Node, l: &Node, ours: &[(String, String)], facts: &Facts) -> Outcome {
+        let theirs = relocations(1, false);
+        compare_with(std::slice::from_ref(h), std::slice::from_ref(l), ours, &theirs, facts)
+    }
+
+    fn hod_vars() -> Vec<Node> {
+        vec![var(LIST, "g1"), var(LIST, "g2"), var(None, "n"), var(LIST, "s")]
+    }
+
+    /// `llc`'s single expression, `DW_AT_const_value`, list and nothing
+    /// against hod's lists and nothing, in another sibling order; hod's
+    /// placeless `this` of an inlined instance `llc` drops; `rbp` against
+    /// `rsp`; hod's `rnglists_base` for its range list.
+    fn llc_vars() -> Vec<Node> {
+        vec![
+            var(Some("DW_AT_const_value (0)"), "s"),
+            var(Some("DW_AT_location DW_OP_lit2, DW_OP_stack_value, DW_OP_piece"), "g2"),
+            var(LIST, "g1"),
+            var(LIST, "n"),
+        ]
+    }
+
+    #[test]
+    fn the_shapes_of_an_optimized_unit_are_permitted() {
+        let (h, l) = units(hod_vars(), llc_vars());
+        assert_eq!(
+            outcome(&h, &l, &relocations(3, true), &facts()),
+            Outcome::Permitted(vec![UNIT_RANGE_LISTS, NO_FRAME_POINTER, VALUE_RECORDS])
+        );
+    }
+
+    #[test]
+    fn what_the_classes_do_not_cover_differs() {
+        let differs = |h: &Node, l: &Node, ours: &[(String, String)], facts: &Facts| {
+            matches!(outcome(h, l, ours, facts), Outcome::Differs(_))
+        };
+        let (h, l) = units(hod_vars(), llc_vars());
+        let ours = relocations(3, true);
+        // Not a variable of value records (a `#dbg_declare`d one, say).
+        let mut f = facts();
+        f.values.retain(|v| v != "g2");
+        assert!(differs(&h, &l, &ours, &f));
+        // A module without value records: no comparison by name either.
+        let f = Facts { values: vec![], ..facts() };
+        assert!(differs(&h, &l, &ours, &f));
+        // A function that keeps its frame pointer: `rbp` against `rsp`.
+        let f = Facts { frameless: vec![], ..facts() };
+        assert!(differs(&h, &l, &ours, &f));
+        // hod writing a single expression of its own (not a list).
+        let mut hv = hod_vars();
+        hv[0] = var(Some("DW_AT_location DW_OP_fbreg"), "g1");
+        let (h2, l2) = units(hv, llc_vars());
+        assert!(differs(&h2, &l2, &ours, &facts()));
+        // Another attribute differing as well (the type).
+        let mut lv = llc_vars();
+        lv[3].attrs[2] = "DW_AT_type (\"long\")".into();
+        let (h2, l2) = units(hod_vars(), lv);
+        assert!(differs(&h2, &l2, &ours, &facts()));
+        // A DIE of hod's `llc` lacks that has a location, or a name.
+        let mut hv = hod_vars();
+        hv.push(var(LIST, "g1"));
+        let (h2, l2) = units(hv, llc_vars());
+        assert!(differs(&h2, &l2, &relocations(4, true), &facts()));
+        // A DIE of `llc`'s hod lacks.
+        let mut lv = llc_vars();
+        lv.push(var(None, "g1"));
+        let (h2, l2) = units(hod_vars(), lv);
+        assert!(differs(&h2, &l2, &ours, &facts()));
+        // A relocation against `.debug_loclists` beyond hod's lists.
+        assert!(differs(&h, &l, &relocations(4, true), &facts()));
+        // `rnglists_base` with no range list beyond `llc`'s.
+        let mut l2 = l.clone();
+        l2.children[2].children[4].attrs = vec!["DW_AT_ranges".into()];
+        assert!(differs(&h, &l2, &ours, &facts()));
+    }
+
+    #[test]
+    fn value_variables_and_frameless_functions_of_a_module() {
+        let text = "define void @f(i32 %0, ptr %1) #0 {\n\
+                    \x20   #dbg_value(i32 %0, !5, !DIExpression(), !9)\n\
+                    \x20   #dbg_value(!DIArgList(ptr %1, i64 4), !6, !DIExpression(DW_OP_LLVM_arg, 0), !9)\n\
+                    \x20   #dbg_value(ptr %1, !7, !DIExpression(), !9)\n\
+                    \x20   #dbg_declare(ptr %1, !8, !DIExpression(), !9)\n\
+                    \x20 call void @llvm.dbg.value(metadata i32 0, metadata !10, metadata !DIExpression())\n}\n\
+                    define void @g() #1 {\n  ret void\n}\n\
+                    define void @h() \"frame-pointer\"=\"all\" {\n  ret void\n}\n\
+                    define void @\"q r\"() {\n  ret void\n}\n\
+                    attributes #0 = { \"frame-pointer\"=\"none\" }\n\
+                    attributes #1 = { \"frame-pointer\"=\"non-leaf\" }\n\
+                    !5 = !DILocalVariable(name: \"n\", arg: 1, scope: !1)\n\
+                    !6 = !DILocalVariable(name: \"__begin1\", scope: !1)\n\
+                    !7 = !DILocalVariable(arg: 2, scope: !1)\n\
+                    !8 = !DILocalVariable(name: \"declared\", scope: !1)\n\
+                    !10 = distinct !DILocalVariable(name: \"old\", scope: !1)\n";
+        assert_eq!(described_by_values(text), ["n", "__begin1", "", "old"].map(str::to_owned));
+        assert_eq!(without_frame_pointer(text), ["f", "q r"].map(str::to_owned));
+    }
+
+    #[test]
+    fn call_site_addresses_are_masked() {
+        assert_eq!(
+            normalize("DW_AT_call_return_pc\t(0x0000000000000140)", "x86_64"),
+            "DW_AT_call_return_pc"
+        );
+        assert_eq!(normalize("DW_AT_call_pc\t(0x000000000000013c)", "aarch64"), "DW_AT_call_pc");
     }
 }

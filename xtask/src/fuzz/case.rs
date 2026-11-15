@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use super::profile::{Generator, Profile};
 use crate::debug::lines::{self, LineTools, LinesReport};
-use crate::debug::permitted::IrFacts;
+use crate::debug::permitted::{DeadStore, IrFacts};
 use crate::irdiff::process::{self, End, Limits, Output};
 use crate::irdiff::tools::{self, Emulator};
 use crate::irdiff::{Arch, engine::REFERENCE_SELECTOR};
@@ -140,19 +140,73 @@ pub struct SelectorSplit {
     pub hod: usize,
     pub fast_isel: usize,
     pub global_isel: usize,
+    /// Set apart as [`DEAD_STORE`] (`GlobalISel` fell back on the
+    /// function: `global_isel` is 0 and no evidence), with the store of the
+    /// IR that makes the statement one without effect.
+    pub dead_store: Option<DeadStore>,
 }
 
 impl SelectorSplit {
+    /// The class: [`SELECTOR_SPLIT`] or [`DEAD_STORE`].
+    pub fn class(&self) -> &'static str {
+        if self.dead_store.is_some() { DEAD_STORE } else { SELECTOR_SPLIT }
+    }
+
     /// The evidence as a line of the run's output.
     pub fn line(&self, seed: u64) -> String {
         let (function, file, line) = &self.pair;
         let file = Path::new(file).file_name().map_or(file.clone(), |f| f.to_string_lossy().into());
-        format!(
-            "{SELECTOR_SPLIT}: seed {seed} {function} at {file}:{line}: rows hod {} \
-             selection-dag 0 fast-isel {} global-isel {}",
-            self.hod, self.fast_isel, self.global_isel
-        )
+        let head = format!(
+            "{}: seed {seed} {function} at {file}:{line}: rows hod {} selection-dag 0 fast-isel {}",
+            self.class(),
+            self.hod,
+            self.fast_isel,
+        );
+        match self.dead_store {
+            None => format!("{head} global-isel {}", self.global_isel),
+            Some(store) => format!(
+                "{head} global-isel fell back (\"warning: {FALLBACK_WARNING}{function}\"); the \
+                 IR: loads, stores, compares, casts, {}",
+                store.describe()
+            ),
+        }
     }
+}
+
+/// `--debug`: the set-apart class of hod's pair at a line where the
+/// oracle (`SelectionDAG`) has no row, `FastISel` has one, `GlobalISel`
+/// fell back on the function, and the IR's instructions at the line are
+/// a statement without effect ("Set apart", [`dead_store`], WP-266).
+pub const DEAD_STORE: &str = "dead-store";
+
+/// Whether hod's unclassified pair `pair` (`hod_rows` rows; the oracle
+/// has none) is set apart as [`DEAD_STORE`]: `FastISel` gives evidence
+/// and has a row at it; `GlobalISel` was built and printed its fallback
+/// warning for the pair's function (it gave no answer of its own); and
+/// the IR's instructions at the line are a statement without effect
+/// ([`IrFacts::dead_store`]), which stands in for `GlobalISel`'s row: a
+/// `GlobalISel` that does select such a statement keeps a row, as
+/// `FastISel` does. `None`: it stays unclassified. A `GlobalISel` without
+/// fallback is [`selector_split`]'s alone, rows or none.
+pub fn dead_store(
+    pair: &lines::Pair,
+    hod_rows: usize,
+    fast: &SelectorRows,
+    global: &SelectorRows,
+    facts: &IrFacts,
+) -> Option<SelectorSplit> {
+    let fast_isel = fast.at(pair)?;
+    if hod_rows == 0 || fast_isel == 0 || global.failed || !global.no_evidence.contains(&pair.0) {
+        return None;
+    }
+    let store = facts.dead_store(&pair.0, &pair.1, pair.2)?;
+    Some(SelectorSplit {
+        pair: pair.clone(),
+        hod: hod_rows,
+        fast_isel,
+        global_isel: 0,
+        dead_store: Some(store),
+    })
 }
 
 /// Whether hod's unclassified pair `pair` (`hod_rows` rows; the oracle
@@ -171,11 +225,12 @@ pub fn selector_split(
         hod: hod_rows,
         fast_isel,
         global_isel,
+        dead_store: None,
     })
 }
 
 /// The functions `llc`'s `stderr` says `GlobalISel` fell back on.
-pub(crate) fn fallbacks(stderr: &[u8]) -> std::collections::BTreeSet<String> {
+pub fn fallbacks(stderr: &[u8]) -> std::collections::BTreeSet<String> {
     String::from_utf8_lossy(stderr)
         .lines()
         .filter_map(|l| l.split_once(FALLBACK_WARNING).map(|(_, f)| f.trim().to_owned()))
@@ -846,9 +901,10 @@ impl Bench {
     }
 
     /// `--debug`: hod's pairs left unclassified where the oracle has no
-    /// row, decided by LLVM's other `-O0` selectors ([`selector_split`]);
-    /// those are built only for such a pair (so per finding, not per
-    /// seed). The pairs set apart go to `outcome.selector_splits`.
+    /// row, decided by LLVM's other `-O0` selectors ([`selector_split`],
+    /// and [`dead_store`] with the IR); those are built only for such a
+    /// pair (so per finding, not per seed). The pairs set apart go to
+    /// `outcome.selector_splits`.
     fn set_apart_selector_splits(
         &self,
         report: &mut LinesReport,
@@ -866,10 +922,15 @@ impl Bench {
         for selector in OTHER_SELECTORS {
             other.push(self.selector_rows(&mut outcome.commands, ir, files, selector, tools)?);
         }
+        // WP-266: the IR's facts for `dead-store`; none read, none set apart.
+        let facts = fs::read_to_string(ir).map(|text| IrFacts::of_modules([text.as_str()])).ok();
         report.hod_only.retain(|(pair, class)| {
             let rows = hod_rows.get(pair).copied().unwrap_or(0);
             let split = (*class == lines::Class::Unclassified)
-                .then(|| selector_split(pair, rows, &other[0], &other[1]))
+                .then(|| {
+                    selector_split(pair, rows, &other[0], &other[1])
+                        .or_else(|| dead_store(pair, rows, &other[0], &other[1], facts.as_ref()?))
+                })
                 .flatten();
             let apart = split.is_some();
             outcome.selector_splits.extend(split);
@@ -1785,6 +1846,73 @@ define i32 @f(ptr %0) {
         // Another function's fallback is no matter.
         fell_back.no_evidence.remove("func_1");
         assert!(selector_split(&pair, 4, &both, &fell_back).is_some());
+    }
+
+    // "Set apart", `dead-store` (WP-266): seeds 220612 (func_1, prog.c:713)
+    // and 220916 (prog.c:718) of the 1.0 candidate's budget, x86-64 LLVM
+    // 22 debug: rows hod / SelectionDAG / FastISel 1/0/1, GlobalISel fell
+    // back on the function, at a statement without effect.
+    #[test]
+    fn dead_stores() {
+        let facts = IrFacts::of_modules([crate::debug::permitted::tests::DEAD_STORES]);
+        let pair = |line| ("func_1".to_owned(), "/w/prog.c".to_owned(), line);
+        let fast = rows(&[("func_1", 713, 1), ("func_1", 718, 1), ("func_1", 720, 1)]);
+        let fast = SelectorRows {
+            rows: fast
+                .rows
+                .into_iter()
+                .map(|((f, _, l), n)| ((f, "/w/prog.c".into(), l), n))
+                .collect(),
+            ..fast
+        };
+        let fell_back = SelectorRows {
+            no_evidence: fallbacks(
+                b"warning: Instruction selection used fallback path for func_1\n",
+            ),
+            ..SelectorRows::default()
+        };
+        for (line, store) in [(713, DeadStore::Reloaded), (718, DeadStore::Poison)] {
+            let split = dead_store(&pair(line), 1, &fast, &fell_back, &facts).unwrap();
+            assert_eq!((split.class(), split.dead_store), (DEAD_STORE, Some(store)));
+            assert_eq!((split.hod, split.fast_isel, split.global_isel), (1, 1, 0));
+            // Never `selector-split` without GlobalISel's evidence.
+            assert_eq!(selector_split(&pair(line), 1, &fast, &fell_back), None);
+        }
+        assert_eq!(
+            dead_store(&pair(713), 1, &fast, &fell_back, &facts).unwrap().line(220_612),
+            "dead-store: seed 220612 func_1 at prog.c:713: rows hod 1 selection-dag 0 fast-isel \
+             1 global-isel fell back (\"warning: Instruction selection used fallback path for \
+             func_1\"); the IR: loads, stores, compares, casts, a store to the pointer a load of \
+             the line reads"
+        );
+        // A call at the line (720) is no statement without effect.
+        assert_eq!(dead_store(&pair(720), 1, &fast, &fell_back, &facts), None);
+        // FastISel without a row.
+        let empty = SelectorRows::default();
+        assert_eq!(dead_store(&pair(718), 1, &empty, &fell_back, &facts), None);
+        // GlobalISel without fallback: with a row it is `selector-split`,
+        // without one a finding; never `dead-store`.
+        assert_eq!(dead_store(&pair(718), 1, &fast, &fast, &facts), None);
+        assert_eq!(
+            selector_split(&pair(718), 1, &fast, &fast).map(|s| s.class()),
+            Some(SELECTOR_SPLIT)
+        );
+        assert_eq!(dead_store(&pair(718), 1, &fast, &empty, &facts), None);
+        // A fallback on another function does not count; a failed build
+        // gives no evidence.
+        let elsewhere = SelectorRows {
+            no_evidence: fallbacks(
+                b"warning: Instruction selection used fallback path for func_2\n",
+            ),
+            ..SelectorRows::default()
+        };
+        assert_eq!(dead_store(&pair(718), 1, &fast, &elsewhere, &facts), None);
+        let failed = SelectorRows { failed: true, ..fell_back.clone() };
+        assert_eq!(dead_store(&pair(718), 1, &fast, &failed, &facts), None);
+        // hod without a row, or a function the IR does not have.
+        assert_eq!(dead_store(&pair(718), 0, &fast, &fell_back, &facts), None);
+        let other = ("func_9".to_owned(), "/w/prog.c".to_owned(), 718);
+        assert_eq!(dead_store(&other, 1, &fast, &fell_back, &IrFacts::default()), None);
     }
 
     #[test]

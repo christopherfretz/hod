@@ -613,7 +613,8 @@ impl Summary {
             let _ = writeln!(
                 text,
                 "  not counted above: hod's pairs where LLVM's -O0 selectors split (FastISel and \
-                 GlobalISel have rows, SelectionDAG has none) {}",
+                 GlobalISel have rows, SelectionDAG has none; dead-store: FastISel alone, at a \
+                 statement without effect) {}",
                 self.selector_splits.len()
             );
             for (seed, split) in &self.selector_splits {

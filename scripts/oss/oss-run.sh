@@ -54,35 +54,41 @@ mkdir -p "$FINDINGS" "$(dirname "$REGS")" "$OSS"
 SNAP="$OSS/lane-$$"
 mkdir "$SNAP" && cp -p "$HERE"/oss-build.sh "$HERE"/oss-report.py "$HERE"/projects.py "$HERE"/projects.toml \
   "$HERE"/kiln-cxx "$HERE"/kiln-cc "$HERE"/hod-shim "$HERE"/oss-reduce.py "$SNAP"/ || exit 2
+# The list of expected results (spec/harness.md "Expected results"), read
+# by oss-report.py from beside itself.
+cp -p "$HERE/../../docs/status/oss-expected.tsv" "$SNAP/oss-expected.tsv" || exit 2
 trap 'find "$SNAP" -mindepth 1 -delete; rmdir "$SNAP"' EXIT
 HERE="$SNAP"
+# Where a crash's dump would go and the core limit the lane inherited
+# (WP-268; every phase sets its own to 1 byte): read only.
+echo "oss-run: core_pattern $(cat /proc/sys/kernel/core_pattern 2>/dev/null || echo '?'); core limit soft/hard (bytes) $(python3 -c 'import resource; s, h = resource.getrlimit(resource.RLIMIT_CORE); f = lambda v: "unlimited" if v == resource.RLIM_INFINITY else str(v); print(f(s) + "/" + f(h))' 2>/dev/null || echo '?')"
 
 fell_back() {  # the hybrid report's fallbacks: declined + failed (not offered is kiln's choice)
   python3 -c "import json,sys; c=json.load(open(sys.argv[1]))['hod'] or {}; b=c.get('backends',{}); print(b.get('hod-declined',0)+b.get('hod-failed',0))" "$1" 2>/dev/null || echo 1
 }
 
-worse() {  # tests passing in the control ($1) and not in $2
-  python3 -c "
-import json,sys
-a=json.load(open(sys.argv[1])).get('test_status') or {}; b=json.load(open(sys.argv[2])).get('test_status') or {}
-print(' '.join(sorted(t for t,s in a.items() if s=='Passed' and b.get(t)!='Passed')))" "$1" "$2" 2>/dev/null
-}
-
 # Build one mode; a hod or strict tree whose tests do worse than the
-# control's keeps its objects (the finding), any other is pruned.
+# control's, by a test the list of expected results does not name, keeps
+# its objects (the finding), any other is pruned. The regressions file
+# (and TEST-EXPECTED.txt, TEST-STALE.txt beside it) are rewritten from
+# every report by `oss-report.py check` after each project and flavour.
 one() {
   local p="$1" fl="$2" m="$3"
-  echo "oss-run: $p $fl $m ($(date -u +%H:%M:%S))"
+  # The machine's state as each build starts (WP-268): a runner that slows
+  # from one build to the next shows it here.
+  local mem disk
+  mem="$(awk '/^MemAvailable:/ {printf "%d", $2 / 1024}' /proc/meminfo 2>/dev/null)"
+  disk="$(df -Pk "$OSS" 2>/dev/null | awk 'NR == 2 {printf "%d", $4 / 1048576}')"
+  echo "oss-run: $p $fl $m ($(date -u +%H:%M:%S); load $(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null), ${mem:-?} MB available, ${disk:-?} GB free)"
   if [ "$m" = llc ]; then
     local prune=(--prune); [ -z "$KEEP" ] || prune=()
     "$HERE/oss-build.sh" "$p" --mode llc --flavour "$fl" --target "$TARGET" "${prune[@]}"
     return
   fi
   "$HERE/oss-build.sh" "$p" --mode "$m" --flavour "$fl" --target "$TARGET"
-  local w; w="$(worse "$OSS/${TP}build/$p/$fl-llc/report.json" "$OSS/${TP}build/$p/$fl-$m/report.json")"
+  local w; w="$(python3 "$HERE/oss-report.py" --target "$TARGET" unexpected "$p" "$fl" "$m")"
   if [ -n "$w" ]; then
-    echo "oss-run: $p $fl $m: tests passing under llc and not here: $w (tree kept)"
-    echo "$p $fl $m: $w" >> "$REGS"
+    echo "oss-run: $p $fl $m: tests passing under llc and not here (not expected): $w (tree kept)"
   elif [ -z "$KEEP" ]; then
     "$HERE/oss-build.sh" "$p" --mode "$m" --flavour "$fl" --target "$TARGET" --prune-only
   fi
@@ -101,6 +107,7 @@ for p in "${PROJECTS[@]}"; do
           echo "oss-run: $p $fl: $n objects hod declined or failed in the hybrid build: no strict build"
         fi ;;
     esac
+    python3 "$HERE/oss-report.py" --target "$TARGET" check > /dev/null  # rewrites $REGS; its status is the summary's
     python3 "$HERE/oss-report.py" --target "$TARGET" collect "$p"
     python3 "$HERE/oss-reduce.py" "$(dirname "$REGS")" --project "$p" --hod "${HOD_OSS_HOD:-$CARGO_TARGET_DIR/release/hod}"
     python3 "$HERE/oss-report.py" --target "$TARGET" census --out "$CENSUS" > /dev/null

@@ -322,8 +322,9 @@ fn leading_major(text: &str) -> Option<u32> {
 
 /// A `%{name}` of a test's arguments: `test_dir` and `repo_root` are
 /// written relative to the repository's root, where kiln runs; a name that
-/// needs a toolchain this capture does not have is `Err(name)`.
-fn substitute(arg: &str, test_dir: &str) -> Result<String, String> {
+/// needs a toolchain this capture does not have is `Err(name)`. Also
+/// `debug kiln`'s (`spec/harness.md` "kiln").
+pub(crate) fn substitute(arg: &str, test_dir: &str) -> Result<String, String> {
     let mut out = String::with_capacity(arg.len());
     let mut rest = arg;
     while let Some(at) = rest.find("%{") {

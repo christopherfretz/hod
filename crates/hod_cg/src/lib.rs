@@ -43,6 +43,7 @@ pub mod abi;
 mod access;
 pub mod asm_constraints;
 mod call;
+pub mod const_fold;
 mod coro;
 mod coro_body;
 mod coro_debug;

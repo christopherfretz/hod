@@ -12,6 +12,8 @@ and the project's per-test results.
   projects.py report-json <args...>      write report.json for one build tree
   projects.py emulate-tests <build dir> <emulator>...
                                          run ctest's x86-64 test programs under the emulator
+  projects.py run-phase --phase P --timeout S --record F -- <command>...
+                                         run one phase in its own session, kill what it leaves
 """
 
 import argparse
@@ -20,6 +22,8 @@ import os
 import platform
 import re
 import shlex
+import signal
+import subprocess
 import sys
 import time
 import tomllib
@@ -322,6 +326,204 @@ SCRIPT_COMMAND_RE = re.compile(r'("-D(\w+)=)([^" ;]+)')
 CUSTOM_TEST_RE = re.compile(r'(set\(\s*CTEST_CUSTOM_(?:PRE|POST)_TEST\s+)"([^" ]+)"')
 
 
+# A phase's leftovers (WP-268; spec/harness.md "Real projects", "A phase's
+# leftovers"). A phase (configure, build, test) runs as the leader of a
+# session of its own; when the leader has exited (or was stopped at the
+# phase's time limit), every process still in that session, or carrying the
+# phase's tag in its environment (a program that left the session with
+# setsid but kept its environment), is a leftover: it is logged by name,
+# sent SIGTERM, and SIGKILL after a grace period, and recorded in the build
+# tree's leftovers.jsonl. The leader stays unreaped (waitid WNOWAIT) until
+# the sweep is over, so the session's number cannot be given to another
+# process meanwhile: the sweep can never reach a process outside the phase.
+PHASE_TAG = "HOD_OSS_PHASE_TAG"
+GRACE_S = 10
+
+
+def proc_info(pid):
+    """(state, session, name, args, cpu seconds) of a live process, or None."""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            st = f.read().decode("utf-8", "replace")
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            args = f.read().replace(b"\0", b" ").decode("utf-8", "replace").strip()
+    except OSError:
+        return None
+    r = st.rfind(")")
+    comm, fields = st[st.find("(") + 1:r], st[r + 2:].split()
+    try:
+        exe = os.path.basename(os.readlink(f"/proc/{pid}/exe")).removesuffix(" (deleted)")
+    except OSError:
+        exe = ""
+    # The program's own name: the executable's, but for an interpreter or a
+    # wrapper (bash, python, qemu, nice, timeout) the first argument that
+    # is not an option names it better.
+    name = exe or comm
+    if args:
+        argv = args.split()
+        if "-c" in argv[1:2]:
+            pass  # a shell's script: the shell's own name
+        elif name in ("bash", "sh", "dash") or name.startswith(("python", "qemu-", "nice", "timeout", "env")):
+            rest = [x for x in argv[1:] if not x.startswith("-")]
+            if rest:
+                name = f"{name} {os.path.basename(rest[0])}"
+    cpu = (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")
+    return fields[0], int(fields[3]), name, args, cpu
+
+
+def tagged(pid, needle):
+    try:
+        with open(f"/proc/{pid}/environ", "rb") as f:
+            return needle in b"\0" + f.read()
+    except OSError:
+        return False
+
+
+def phase_members(sid, tag):
+    """{pid: info} of the live (not zombie) processes of the phase: in its
+    session, or carrying its tag."""
+    needle = b"\0" + f"{PHASE_TAG}={tag}".encode() + b"\0"
+    me, out = os.getpid(), {}
+    for d in os.listdir("/proc"):
+        if not d.isdigit() or int(d) in (me, sid):
+            continue
+        pid = int(d)
+        info = proc_info(pid)
+        if info is None or info[0] in ("Z", "X"):
+            continue
+        if info[1] == sid or tagged(pid, needle):
+            out[pid] = info
+    return out
+
+
+def signal_member(pid, sid, tag, sig):
+    """Signals pid if it is still a member of the phase. The pidfd pins the
+    process: a pid reused between the scan and the signal fails the check."""
+    try:
+        fd = os.pidfd_open(pid)
+    except OSError:
+        return False
+    try:
+        info = proc_info(pid)
+        needle = b"\0" + f"{PHASE_TAG}={tag}".encode() + b"\0"
+        if info is None or not (info[1] == sid or tagged(pid, needle)):
+            return False
+        signal.pidfd_send_signal(fd, sig)
+        return True
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+
+
+def sweep(sid, tag):
+    """Kills what the phase left running; [(pid, name, args, cpu, signal)]."""
+    left = {}
+    for _ in range(3):  # a leftover may start another before it dies
+        found = {p: i for p, i in phase_members(sid, tag).items() if p not in left}
+        if not found:
+            break
+        for pid, info in found.items():
+            if signal_member(pid, sid, tag, signal.SIGTERM):
+                left[pid] = [info, "TERM"]
+        end = time.monotonic() + GRACE_S
+        while time.monotonic() < end and any(p in left for p in phase_members(sid, tag)):
+            time.sleep(0.25)
+        for pid in phase_members(sid, tag):
+            if pid in left and signal_member(pid, sid, tag, signal.SIGKILL):
+                left[pid][1] = "KILL"
+    return [(pid, i[2], i[3], i[4], s) for pid, (i, s) in sorted(left.items())]
+
+
+def no_core_dumps():
+    """A core size limit of exactly 1 byte, soft and hard, for the phase
+    (WP-268). A death test's child crashes on purpose. When core_pattern
+    names a file, 1 is below an ELF dump's minimum size and no file is
+    written, as with 0. When core_pattern is a pipe the kernel ignores
+    the limit except for 1: fs/coredump.c, `if (cprm.limit == 1) { ...
+    coredump_report_failure("RLIMIT_CORE is set to 1, aborting core");
+    goto fail_unlock; }`. So the host's handler is never started; with 0
+    it would still be started for every crash."""
+    import resource
+    resource.setrlimit(resource.RLIMIT_CORE, (1, 1))
+
+
+def cmd_run_phase(a):
+    cmd = a.command[1:] if a.command[:1] == ["--"] else a.command
+    if not cmd:
+        sys.exit("projects.py run-phase: no command")
+    tag = f"{a.phase}-{os.getpid()}-{time.time_ns()}-{os.urandom(4).hex()}"
+    sys.stdout.flush()
+    child = subprocess.Popen(cmd, env=dict(os.environ, **{PHASE_TAG: tag}), start_new_session=True,
+                             preexec_fn=no_core_dumps)
+    sid = child.pid  # the leader of its own session and process group
+    stopped, reaped = [], []
+
+    def killpg(sig):
+        if reaped or sid <= 1:  # once reaped, the number may belong to another process
+            return
+        try:
+            os.killpg(sid, sig)
+        except ProcessLookupError:
+            pass
+
+    def forward(signum, _frame):  # an interrupt of the lane stops the phase too
+        stopped.append(signum)
+        killpg(signum)
+
+    for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(s, forward)
+    deadline = time.monotonic() + a.timeout if a.timeout > 0 else None
+    timed_out, kill_at = False, None
+    while os.waitid(os.P_PID, sid, os.WEXITED | os.WNOWAIT | os.WNOHANG) is None:
+        now = time.monotonic()
+        if deadline is not None and not timed_out and now >= deadline:
+            timed_out, kill_at = True, now + GRACE_S
+            print(f"oss-build: the {a.phase} phase reached its limit of {a.timeout} s: stopped", flush=True)
+            killpg(signal.SIGTERM)
+        elif kill_at is not None and now >= kill_at:
+            killpg(signal.SIGKILL)
+            kill_at = None
+        time.sleep(0.25)
+    left = sweep(sid, tag)  # the leader is a zombie still: its session number is held
+    reaped.append(True)
+    rc = child.wait()
+    rc = 124 if timed_out else (128 - rc if rc < 0 else rc)  # as timeout(1) and bash report it
+    for pid, name, args, cpu, sig in left:
+        print(f"oss-build: left running after the {a.phase} phase: {name} (pid {pid}, {cpu:.1f} s CPU, killed with SIG{sig}): {args[:300]}")
+    if left:
+        print(f"oss-build: the {a.phase} phase left {len(left)} processes running: "
+              + ", ".join(sorted({n for _, n, _, _, _ in left})))
+    sys.stdout.flush()
+    if a.record:
+        with open(a.record, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"phase": a.phase, "rc": rc, "timed_out": timed_out, "count": len(left),
+                                "names": sorted({n for _, n, _, _, _ in left}),
+                                "processes": [{"pid": p, "name": n, "args": g[:300], "cpu_s": round(c, 1), "signal": s}
+                                              for p, n, g, c, s in left]}) + "\n")
+    if stopped:
+        rc = 128 + stopped[0]
+    sys.exit(rc)
+
+
+def read_leftovers(build_dir):
+    """The leftovers of a build's phases (leftovers.jsonl): None when no
+    phase recorded any (an older tree), else {count, names, phases}."""
+    recs = read_jsonl(os.path.join(build_dir, "leftovers.jsonl"))
+    if not recs:
+        return None
+    phases = {r["phase"]: {"count": r["count"], "names": r["names"]} for r in recs if "phase" in r}
+    return {"count": sum(p["count"] for p in phases.values()),
+            "names": sorted({n for p in phases.values() for n in p["names"]}), "phases": phases}
+
+
+def cmd_leftovers(a):
+    """One line for the lane's log: `N (name, ...)` for a phase, or nothing."""
+    for r in read_jsonl(os.path.join(a.build_dir, "leftovers.jsonl")):
+        if r.get("phase") == a.phase and r.get("count"):
+            print(f"{r['count']} left running, killed: {', '.join(r['names'])}")
+
+
 def cmd_report_json(a):
     recs = read_jsonl(os.path.join(a.build_dir, "compile.jsonl"))
     s = summarize(recs)
@@ -351,6 +553,10 @@ def cmd_report_json(a):
         "test_summary": summary,
         "tests": counts,
         "test_status": per,
+        # What the phases left running and the lane killed (WP-268): a
+        # project's own behaviour, the control's as much as hod's; never
+        # a verdict.
+        "leftovers": read_leftovers(a.build_dir),
         "wall_s": round(a.wall, 1),
         **s,
         "hod": census(a.build_dir) if a.mode != "llc" else None,
@@ -385,6 +591,14 @@ def main():
     r.add_argument("--build-rc", type=int)
     r.add_argument("--test-rc", type=int)
     r.add_argument("--wall", type=float, required=True)
+    ph = sub.add_parser("run-phase")
+    ph.add_argument("--phase", required=True)
+    ph.add_argument("--timeout", type=int, default=0, help="seconds, 0 for none")
+    ph.add_argument("--record", default="", help="append the phase's leftovers to this JSONL file")
+    ph.add_argument("command", nargs=argparse.REMAINDER)
+    lo = sub.add_parser("leftovers")
+    lo.add_argument("build_dir")
+    lo.add_argument("phase")
     a = ap.parse_args()
 
     if a.cmd == "list":
@@ -408,6 +622,10 @@ def main():
         cmd_emulate_tests(a)
     elif a.cmd == "report-json":
         cmd_report_json(a)
+    elif a.cmd == "run-phase":
+        cmd_run_phase(a)
+    elif a.cmd == "leftovers":
+        cmd_leftovers(a)
 
 
 if __name__ == "__main__":

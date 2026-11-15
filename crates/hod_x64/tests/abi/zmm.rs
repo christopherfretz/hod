@@ -209,8 +209,17 @@ fn zmm_grid() {
         if let Some((tools, how)) = avx512_runner(&base, &machine, &name) {
             // Every accepted signature runs (WP-238).
             let how = format!("{how}; {} signatures", cases.len());
+            eprintln!("zmm grid run {n}, {}: starting ({how})", machine.label());
+            // The time is printed, for the cost of a run under an
+            // emulator; nothing depends on it.
+            let start = std::time::Instant::now();
             let report = run_cases(&format!("abi-zmm-run{n}"), &cases, 0x208, &tools);
-            eprintln!("zmm grid run, {} ({how}): {}", machine.label(), report.summary());
+            eprintln!(
+                "zmm grid run {n}, {} ({how}; {:.0?}): {}",
+                machine.label(),
+                start.elapsed(),
+                report.summary()
+            );
             if !report.failures.is_empty() {
                 let first = report.failures.first().map_or("", String::as_str);
                 let detail = format!("{how}; {} failure(s); {first}", report.failures.len());

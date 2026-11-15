@@ -414,6 +414,16 @@ Every job sets `HOD_REQUIRE_TOOLS=1`. On the x86-64 runner an x86-64
 program is not held to the baseline CPU: the emulated AArch64 lane is
 where a use of an instruction beyond the baseline faults.
 
+**AVX-512 execution** (WP-229, WP-238; `spec/harness.md` "CI" item 8).
+No `qemu` executes AVX-512, so its execution tests (`hod_x64`'s
+`x86_avx512::*_on_hardware` and `abi::zmm_grid`) run on the x86-64 lane
+only: natively when the runner's processor has a program's features
+(the fleet is mixed: some runners have AVX-512, some none), else under
+Intel SDE emulating a Sapphire Rapids (`.github/actions/sde`); only the
+grid's Knights Landing machine (ER, PF) stays skipped. The `test x64`
+job's summary says what ran where, and the job fails when anything else
+did not execute. `avx512.yml` (an `avx512/**` branch) runs them alone.
+
 The libc++ suite with kiln runs natively on both runners in the `sweep`
 workflow (a `sweep/**` branch or by hand; never a required check), once
 with hod and once with `llc`; a test that passes with `llc` and not with

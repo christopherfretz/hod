@@ -441,6 +441,11 @@ impl Harness {
                 .clamp(from, to - 1);
             crashed[step] = true;
             crashes += 1;
+            let status = outcome.status.map_or_else(|| "timed out".to_owned(), |s| s.to_string());
+            eprintln!(
+                "{tag}: steps {from}..{to}: {status}, step {step} crashed; {}",
+                tail(&stderr).lines().last().unwrap_or("")
+            );
             if crashes > 16 {
                 return Err(("more than 16 steps crash".to_string(), crashed));
             }

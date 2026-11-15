@@ -31,7 +31,7 @@ jobs:
       image: buildpack-deps:trixie
       # SDE (Pin) traces the program it runs.
       options: --cap-add=SYS_PTRACE --ulimit core=0
-    timeout-minutes: 45
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/hod-ci
@@ -41,10 +41,19 @@ jobs:
         run: |
           rm -f "$RUNNER_TEMP/avx512-report.tsv"
           echo "HOD_AVX512_REPORT=$RUNNER_TEMP/avx512-report.tsv" >> "$GITHUB_ENV"
+          grep -m1 '^model name' /proc/cpuinfo
+          nproc
+      # Step limits under the job's, so that a slow step still leaves the
+      # job its log and its summary.
+      - name: build
+        timeout-minutes: 20
+        run: cargo test -q -p hod_x64 --test x86_avx512 --test abi --no-run
       - name: x86_avx512 on hardware
+        timeout-minutes: 15
         run: cargo test -q -p hod_x64 --test x86_avx512 -- on_hardware --nocapture
       - name: abi zmm
         if: always()
+        timeout-minutes: 35
         run: cargo test -q -p hod_x64 --test abi -- zmm --nocapture
       - name: avx512 execution summary
         if: always()

@@ -68,7 +68,7 @@ runs:
         cpuinfo="$RUNNER_TEMP/sde-cpuinfo"
         cc -O1 -Wall -Werror "$GITHUB_ACTION_PATH/cpu-flags.c" -o "$flags"
         /opt/sde/sde64 -version | head -3
-        /opt/sde/sde64 "-$CHIP" -- "$flags" "Intel SDE -$CHIP" > "$cpuinfo"
+        time /opt/sde/sde64 "-$CHIP" -- "$flags" "Intel SDE -$CHIP" > "$cpuinfo"
         cat "$cpuinfo"
         grep -q ' avx512f' "$cpuinfo" || { echo "SDE -$CHIP has no avx512f" >&2; exit 1; }
         echo "HOD_X64_AVX512_RUNNER=/opt/sde/sde64 -$CHIP --" >> "$GITHUB_ENV"

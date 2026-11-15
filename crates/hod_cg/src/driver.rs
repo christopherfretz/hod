@@ -357,7 +357,7 @@ impl<'a, T: Target> FnCx<'a, T> {
         }
         // §5.6.8 (WP-261): the blocks `llc` deletes once `is.constant`
         // and `objectsize` are constants are not emitted either.
-        self.s.fold.plan(self.module, body)?;
+        self.s.fold.plan(self.module, body);
         if self.s.fold.active() {
             for (index, seen) in self.s.reachable.iter_mut().enumerate() {
                 *seen &= self.s.fold.reached(BlockId::new(index as u32));

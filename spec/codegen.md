@@ -3046,17 +3046,32 @@ instructions not emitted, by a rewritten terminator's condition and by
 emitted uses left out too. A function in which no branch folds keeps
 §5.5.1's rule exactly.
 
-Refused by name, in a function where step 4 runs (each makes `llc`
-rewrite something hod does not model): `intrinsic:const-fold-null-access`
-(a store to, or a call or `invoke` through, `null`: `llc` ends the block
-unless the function has `null_pointer_is_valid`, which hod's IR does not
-keep; an `invoke` through `undef` too),
-`intrinsic:const-fold-nounwind-invoke` (`llc` turns an `invoke` of a
-`nounwind` callee into a call and drops the unwind edge),
-`intrinsic:const-fold-noreturn-invoke` (an `invoke` of a `noreturn`
-callee whose normal destination does not start with `unreachable` gets
-a new one), `intrinsic:const-fold-indirectbr` (an `indirectbr` on a
-constant `blockaddress`).
+The folding never refuses a function (WP-269). Four rewrites of
+`markAliveBlocks` in step 4 are not modelled; hod keeps the instruction
+as written, with all its edges, and walks on:
+- a non-volatile store to, or a call or `invoke` through, `null` (and an
+  `invoke` through `undef`): emitted as written (`llc` ends the block
+  there unless the function has `null_pointer_is_valid`, which hod's IR
+  does not keep). The store to and the call through `undef` stay
+  modelled as above;
+- an `invoke` of a `nounwind` callee stays an `invoke`, its unwind edge
+  and landing pad alive (`llc` turns it into a call and drops the edge);
+- an `invoke` of a `noreturn` callee keeps its normal destination (`llc`
+  gives it a new one that starts with `unreachable`);
+- an `indirectbr` on a constant `blockaddress` stays an `indirectbr`
+  with all its listed successors alive (`llc` turns it into a `br`).
+
+Why this is correct: each kept instruction is exactly what hod emits
+for it outside the folding; a kept edge only keeps more blocks
+reachable in hod's walk, so hod emits a superset of `llc`'s live
+blocks, and the `phi` entries of kept edges are kept (no edge is
+removed for them); nothing hod emits depends on `llc`'s rewrite. The
+difference from `llc`'s object is documented, not a defect: hod's object
+can hold a landing pad (and its personality reference and exception
+table entry), a normal destination, an `indirectbr` target or the code
+after a `null` access that `llc`'s does not, and so undefined symbols
+that only those blocks reference (`__gxx_personality_v0` for a kept
+landing pad). Modelling the four rewrites exactly is a follow-up.
 
 Decisions, by experiment with `llc` 19 and 22 (x86-64 `-O0`, AArch64
 `-O0 -global-isel=0 -fast-isel=0`; `spec/landed/codegen/WP-261.md`):

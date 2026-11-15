@@ -85,9 +85,6 @@ pub const SHF_GNU_RETAIN: u64 = 0x20_0000;
 /// unwind tables, `.comment`, `.group`, and the DWARF sections hod
 /// writes (`.debug_info`, ... and their `.dwo` forms).
 fn is_reserved_name(name: &str) -> bool {
-    let has = |prefix: &str| {
-        name.strip_prefix(prefix).is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
-    };
     const PREFIXED: &[&str] = &[".tdata", ".tbss", ".init_array", ".fini_array", ".preinit_array"];
     const EXACT: &[&str] = &[
         ".init",
@@ -131,6 +128,9 @@ fn is_reserved_name(name: &str) -> bool {
         "cu_index",
         "tu_index",
     ];
+    let has = |prefix: &str| {
+        name.strip_prefix(prefix).is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+    };
     if PREFIXED.iter().any(|p| has(p)) || EXACT.contains(&name) {
         return true;
     }

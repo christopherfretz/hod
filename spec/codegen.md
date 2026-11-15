@@ -6640,6 +6640,20 @@ the `asm:*` name. Then:
   appended, and a code section's mapping symbols written; the
   emitter's mapping state is the text's last, so the next function in
   `.text` writes `$x` only if the text ended in data.
+- **Sections of the text's own name** (`spec/asm.md` §9.1, WP-255, both
+  targets; x86-64's text goes through `assemble_module_x64`, §14) are
+  created with the type, flags and entry size the text wrote
+  (`Sections::assembly`: `MCContext::getELFSection` with the generic
+  id, recorded as `recordELFMergeableSectionInfo` does), their alignment
+  and bytes (or `@nobits` size); no mapping symbols. A global of an
+  explicit section of that name then goes through §9.7's explicit-section
+  rule unchanged: it joins the text's section when its flags and entry
+  size equal the text's, and gets a section of the same name of its own
+  otherwise, as with `llc` (`"aw"` and a writable global: one section;
+  `"a"` or no flags and a writable global, or `"MS",...,1` and an
+  `[N x i8]` constant: two). A global of an explicit section that names
+  a `@nobits` section of the text is `asm:section` (`llc` joins a zero
+  one to it and rejects an initialized one).
 - **Symbols.** A label or `.set` of a name the module does not have is
   a new object symbol (local unless `.globl`/`.weak`; visibility and
   type from the directives; `.set` absolute; `.size` as written; kept in
@@ -6663,7 +6677,8 @@ The oracle is `crates/hod_cg/tests/emit_module_asm.rs` (sections with
 bytes, symbols, relocations, code-section mapping symbols equal to
 `llc` 19's and 22's, LLVM 19's alignment of a created code section
 normalised from 1 to 4); the three corpus modules with code and data in
-their text link (bfd, lld, mold) and behave as `llc`'s.
+their text link (bfd, lld, mold) and behave as `llc`'s. For §9.1's
+sections also `crates/hod_cg/tests/emit_module_asm_link.rs`.
 
 ## 10. Errors and limits
 

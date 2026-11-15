@@ -383,7 +383,31 @@ fn returns_only() -> Vec<Case> {
 fn conventions() -> Vec<Case> {
     let d = Ty::Double;
     let mut cases = Vec::new();
-    for cc in [CallConv::FAST, CallConv::SWIFT, CallConv::CXX_FAST_TLS] {
+    // WP-247 (§13): `win64cc` passes a variadic call's floating point in
+    // general registers, fixed arguments included; vectors and `fp128`
+    // stay in vector registers.
+    let f = Ty::Float;
+    let win64_variadic = [
+        Case::of(&[I64, d.clone(), f.clone(), I128, vec(I32, 4), Ty::Fp128, arr(d.clone(), 2)])
+            .variadic(1),
+        Case::of(&[d.clone(), f.clone(), arr(f.clone(), 3), st(&[I64, d.clone()]), I64])
+            .variadic(1),
+        Case::of(&seq(&[(&d, 7), (&arr(d.clone(), 2), 1), (&f, 3), (&I8, 1)])).variadic(2),
+        Case::of(&seq(&[(&I64, 6), (&arr(d.clone(), 3), 1), (&d, 2), (&arr(f.clone(), 2), 1)]))
+            .variadic(6)
+            .ret(d.clone()),
+        Case::of(&[f.clone(), vec(Ty::Float, 2), d.clone(), Ty::Fp128, arr(d.clone(), 4)])
+            .variadic(0)
+            .ret(arr(d.clone(), 2)),
+    ];
+    cases.extend(win64_variadic.map(|case| case.cc(CallConv::WIN64)));
+    for cc in [
+        CallConv::FAST,
+        CallConv::SWIFT,
+        CallConv::CXX_FAST_TLS,
+        CallConv::WIN64,
+        CallConv::AARCH64_VECTOR_PCS,
+    ] {
         cases.extend(
             [
                 Case::of(&[I64, d.clone(), I128, arr(I64, 2)]).ret(I64),

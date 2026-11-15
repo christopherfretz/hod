@@ -490,7 +490,9 @@ fn variadic() {
 }
 
 /// `spec/abi-a64.md` §1.2: `fastcc`, `swiftcc` and `cxx_fast_tlscc` are
-/// assigned as `ccc`; every other convention is `abi:cc`.
+/// assigned as `ccc`, and so are fixed-argument `win64cc` and
+/// `aarch64_vector_pcs` signatures (§13); every other convention is
+/// `abi:cc`.
 #[test]
 fn conventions() {
     let mut types = table();
@@ -500,9 +502,15 @@ fn conventions() {
         assert!(cc_is_c(cc));
         assert_eq!(case.clone().cc(cc).assign(&mut types).as_ref(), Ok(&c), "{cc:?}");
     }
+    // WP-247 (§13): a fixed-argument `win64cc` or `aarch64_vector_pcs`
+    // signature is assigned as `ccc`, though the callee keeps more.
+    for cc in [CallConv::WIN64, CallConv::AARCH64_VECTOR_PCS] {
+        assert!(!cc_is_c(cc));
+        assert_eq!(case.clone().cc(cc).assign(&mut types).as_ref(), Ok(&c), "{cc:?}");
+    }
     for id in 0..=1023 {
         let cc = CallConv::from_llvm(id).expect("a convention number");
-        if ![0, 8, 16, 17].contains(&id) {
+        if ![0, 8, 16, 17, 79, 97].contains(&id) {
             assert!(!cc_is_c(cc));
             assert_eq!(case.clone().cc(cc).assign(&mut types), Err("abi:cc"), "cc {id}");
         }

@@ -91,11 +91,7 @@ pub fn save(cx: &mut FnCx<'_, A64>) -> CgResult<()> {
     if !cx.body.calls().any(|site| site.intrinsic() == Some(Intrinsic::EhUnwindInit)) {
         return Ok(());
     }
-    let preserving = crate::tail2::is_preserve_most(cx)
-        || matches!(
-            cx.module.symbol(cx.body.symbol()).kind(),
-            hod_ir::SymbolKind::Function { cc: hod_ir::CallConv::PRESERVE_ALL, .. }
-        );
+    let preserving = crate::tail2::is_preserve_most(cx) || crate::cconv::kept(cx).is_some();
     if preserving || cx.has_coro_frame() {
         return unsupported(UNWIND_INIT_CONVENTION);
     }

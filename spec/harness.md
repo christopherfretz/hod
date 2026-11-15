@@ -1285,7 +1285,8 @@ report order; `present(target)` is the ones found for a target;
   that one assertion (to the excepted behaviour where it is known, so a
   linker that changes makes the test fail and the row is revisited);
   `tolerated_warning` is the diagnostic a silent link may print for one.
-  Unit tests: `signatures`, `exceptions_name_linkers_of_the_matrix_once`,
+  The debugger layer consults it for the cases that break the oracle's
+  session ("debug", "Linker exceptions"). Unit tests: `signatures`, `exceptions_name_linkers_of_the_matrix_once`,
   `the_pinned_wild_is_found_above_the_start`,
   `wild_is_selected_as_ld_and_the_others_by_fuse_ld`.
 
@@ -3463,6 +3464,7 @@ One record per session of a hod variant (and per failure before one):
 | XPASS | a PASS that an `xfail` covers: the directive is stale | fails |
 | CRASH | the debugger crashed: on hod's program it fails the run, on `llc`'s it is an error of the tools | fails / error |
 | ERROR | the front end or `llc` failed, `llc`'s program did not link, `llc`'s session timed out or does not meet the checks (hod's sessions still run; the detail says what hod's would have been), the directives do not parse | error |
+| XLINK | an ERROR because `llc`'s session does not meet the checks that a linker exception explains ("Linker exceptions" below); the detail names the exception, the missing check and what hod's would have been | |
 | SKIP | a front end or `llc` this unit needs is missing | |
 
 ### Lines
@@ -3599,6 +3601,40 @@ line (`^`) after such a line
 (`spec/dwarf.md` §5.7 `return-column`). A `pre-opt: checks` test's
 sessions are judged by its checks (above). Nothing else is permitted.
 
+### Linker exceptions
+
+A case of `hod_testutil::linkers::EXCEPTIONS` ("Linkers") can break the
+ORACLE's session: `llc`'s object, linked by that linker, does not meet a
+check that it meets linked by every other linker (WP-248). The table
+`debug::xlink::EXPECTED` lists each (linker, case, target, test file)
+measured to do so. A hod variant's record is XLINK, and neither fails
+the run nor errs, when all of these hold:
+
+1. `EXPECTED` lists the linker, the target and the test's file name, and
+   `linkers::exception(linker, case)` lists the case;
+2. `llc`'s session ended and does not meet a check;
+3. the case's witness (`xlink::witness`, a reading of the linked program
+   with LLVM's tools) holds for `llc`'s program and for that variant's:
+   `tls-dtpoff-debug`, a TLS location (`DW_OP_const8u <offset>,
+   DW_OP_GNU_push_tls_address` or `DW_OP_form_tls_address` in
+   `llvm-dwarfdump --debug-info`) whose offset is negative (an offset
+   from the thread pointer where the module's TLS block offset belongs);
+   `plt-got-gdb`, a `.plt.got` section with neither `.plt` nor
+   `.rela.plt` (`llvm-objdump --section-headers`).
+
+Otherwise the record is what it was: an ERROR whenever `llc`'s session is
+broken in any other way, under any other linker, target or test, or
+without the witness on both programs; and hod's session is compared with
+`llc`'s as usual whenever `llc`'s meets the checks. A listed case whose
+`llc` session meets every check is stale: hod's PASS becomes an XPASS
+(fails the run) whose detail names the entry to remove; any other
+outcome of hod's stands, with the same note appended. Unit tests:
+`xlink::tests::{the_tls_witness_is_a_negative_tls_offset,
+the_plt_witness_is_a_plt_got_alone,
+only_listed_cases_of_the_exceptions_are_expected,
+an_excepted_error_is_an_xlink_and_nothing_else_is,
+a_listed_case_that_passes_is_reported_stale}`.
+
 ### Results file
 
 One line per record, tab-separated: test, front end, variant, linker
@@ -3669,8 +3705,8 @@ reads_instructions, summary_counts_classes, compares_columns}`;
 
 `xtask/tests/debug_real.rs` (real tools; skips without them, fails under
 `HOD_REQUIRE_TOOLS=1`): `quick_tier_matches_llc` (the quick tier: no
-FAIL, ERROR, XPASS or crash; no unclassified pair, at least 95% of pairs
-the same) and `catches_differences_and_broken_tests` (a hod whose line 2
+FAIL, ERROR, XPASS or crash; every XLINK a listed case of `EXPECTED`; no
+unclassified pair, at least 95% of pairs the same) and `catches_differences_and_broken_tests` (a hod whose line 2
 is line 3 FAILs; the same test PASSes with hod; a check `llc`'s session
 does not meet is an ERROR; an `xfail` on a passing test is an XPASS).
 

@@ -3504,7 +3504,22 @@ const INTRINSIC_A64: &[SupportRow] = &[
     row("intrinsic:llvm.aarch64.frint64x", on(NEON), never(A64_ONLY), "WP-205"),
     row("intrinsic:llvm.aarch64.frint64z", on(NEON), never(A64_ONLY), "WP-205"),
     row("intrinsic:llvm.aarch64.fjcvtzs", on(NEON), never(A64_ONLY), "WP-205"),
+    // WP-245: the exclusive accesses; the size is the `elementtype`
+    // (`spec/codegen.md` §5.6.39).
+    row("intrinsic:llvm.aarch64.ldxr", on(EXCLUSIVE), never(A64_ONLY), "WP-245"),
+    row("intrinsic:llvm.aarch64.ldaxr", on(EXCLUSIVE), never(A64_ONLY), "WP-245"),
+    row("intrinsic:llvm.aarch64.stxr", on(EXCLUSIVE), never(A64_ONLY), "WP-245"),
+    row("intrinsic:llvm.aarch64.stlxr", on(EXCLUSIVE), never(A64_ONLY), "WP-245"),
+    row("intrinsic:llvm.aarch64.ldxp", on(EXCLUSIVE), never(A64_ONLY), "WP-245"),
+    row("intrinsic:llvm.aarch64.ldaxp", on(EXCLUSIVE), never(A64_ONLY), "WP-245"),
+    row("intrinsic:llvm.aarch64.stxp", on(EXCLUSIVE), never(A64_ONLY), "WP-245"),
+    row("intrinsic:llvm.aarch64.stlxp", on(EXCLUSIVE), never(A64_ONLY), "WP-245"),
+    row("intrinsic:llvm.aarch64.clrex", ON, never(A64_ONLY), "WP-245"),
 ];
+
+/// The classes of WP-245's exclusive accesses: the `i64` value, the
+/// `i32` status, the pointer, the `{i64, i64}` pair.
+const EXCLUSIVE: &[TypeClass] = &[TypeClass::Int, TypeClass::Ptr, TypeClass::Aggregate];
 
 /// The x86 target intrinsics of WP-173, which follow [`INTRINSIC_A64`] on
 /// the list, then WP-190's system and state ones. Above SSE2 (and for

@@ -267,6 +267,10 @@ pub fn intrinsic<'a>(
             _,
         ) => crate::tail3::bf16_intrinsic(cx, inst, which, args),
         (I::Aarch64NeonSaddlv, _) => crate::tail3::saddlv(cx, inst, which, args),
+        // WP-245.
+        _ if crate::exclusive::handles(which) => {
+            crate::exclusive::intrinsic(cx, inst, which, args)
+        }
         _ => crate::neon::intrinsic(cx, inst, which, args),
     }
 }

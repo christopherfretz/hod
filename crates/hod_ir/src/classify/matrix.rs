@@ -3725,6 +3725,9 @@ const INTRINSIC_X86: &[SupportRow] = &[
     row("intrinsic:llvm.x86.incsspq", never(X64_ONLY), on(X86_SYS), "SHSTK (WP-190)"),
     row("intrinsic:llvm.x86.rdsspd", never(X64_ONLY), on(X86_SYS), "SHSTK (WP-190)"),
     row("intrinsic:llvm.x86.rdsspq", never(X64_ONLY), on(X86_SYS), "SHSTK (WP-190)"),
+    row("intrinsic:llvm.x86.tpause", never(X64_ONLY), on(X86_SYS), "WAITPKG (WP-267)"),
+    row("intrinsic:llvm.x86.umwait", never(X64_ONLY), on(X86_SYS), "WAITPKG (WP-267)"),
+    row("intrinsic:llvm.x86.umonitor", never(X64_ONLY), on(X86_SYS), "WAITPKG (WP-267)"),
     // WP-202: the vector intrinsics past SSSE3.
     row("intrinsic:llvm.x86.sse41.round.ps", never(X64_ONLY), on(X86_SSE), "SSE4.1 (WP-202)"),
     row("intrinsic:llvm.x86.sse41.round.pd", never(X64_ONLY), on(X86_SSE), "SSE4.1 (WP-202)"),

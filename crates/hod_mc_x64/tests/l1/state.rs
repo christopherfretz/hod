@@ -33,6 +33,9 @@ pub fn build(b: &mut Batch) {
             emit!(b, try_incssp_r(size, r(n)), "incssp{q} {name}");
         }
         emit!(b, rdpid_r(r(n)), "rdpid {}", reg(Size::Q, n));
+        emit!(b, tpause_r(r(n)), "tpause {}", reg(Size::D, n));
+        emit!(b, umwait_r(r(n)), "umwait {}", reg(Size::D, n));
+        emit!(b, umonitor_r(r(n)), "umonitor {}", reg(Size::Q, n));
         for (size, src) in [(Size::B, n), (Size::W, n), (Size::D, n), (Size::Q, n)] {
             for dst in [0, 3, 7, 8, 15] {
                 let d = reg(if size == Size::Q { Size::Q } else { Size::D }, dst);

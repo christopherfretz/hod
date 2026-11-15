@@ -8,19 +8,16 @@ Every module of the captured corpus (`docs/status/corpus-x64-census.md`, capture
 
 | reason | LLVM 22 | LLVM 19 |
 |---|---:|---:|
-| `(compiled)` | 3515 | 3473 |
-| `cc:win64cc` | 1 | 1 |
-| `x64:inline-asm` | 1 | 1 |
+| `(compiled)` | 3516 | 3474 |
+| `cc:x86_regcallcc` | 1 | 1 |
 | all | 3517 | 3475 |
 
 ## Every reason (census)
 
 | reason | LLVM 22 | LLVM 19 |
 |---|---:|---:|
-| `cc:win64cc` | 1 | 1 |
 | `cc:x86_regcallcc` | 1 | 1 |
 | `cc:x86_vectorcallcc` | 1 | 1 |
-| `x64:inline-asm` | 1 | 1 |
 
 ## The ten most frequent refusals
 
@@ -28,10 +25,8 @@ By the census (modules with the reason anywhere, all LLVM majors), with the modu
 
 | reason | census | first refusal | owner |
 |---|---:|---:|---|
-| `cc:win64cc` | 2 | 2 | - |
-| `cc:x86_regcallcc` | 2 | 0 | - |
+| `cc:x86_regcallcc` | 2 | 2 | - |
 | `cc:x86_vectorcallcc` | 2 | 0 | - |
-| `x64:inline-asm` | 2 | 2 | - |
 
 ## What the built modules do
 
@@ -39,8 +34,8 @@ From `cargo xtask corpus verify --target x86_64` (hybrid: a module hod declines 
 
 | LLVM | tests | built by hod | results | PASS | FAIL | ERROR | other | PASS of hod's |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 22 | 3251 | 3249 | 13004 | 13000 | 4 | 0 | 0 | 12992 of 12996 |
-| 19 | 3213 | 3211 | 12852 | 12848 | 4 | 0 | 0 | 12840 of 12844 |
+| 22 | 3251 | 3250 | 13004 | 13000 | 4 | 0 | 0 | 12996 of 13000 |
+| 19 | 3213 | 3212 | 12852 | 12848 | 4 | 0 | 0 | 12844 of 12848 |
 
 Every result that is not a PASS (at most 40):
 
@@ -75,13 +70,13 @@ Coverage-log field 7 (from the process's start to the decline) of the first-refu
 
 | LLVM | route | median | p99 | worst | share of `llc`: median | p99 | worst |
 |---|---|---:|---:|---:|---:|---:|---:|
-| 22 | text | 16006 | 40708 | 274184 | 86.7% | 222.9% | 613.2% |
-| 22 | bitcode, native | 15708 | 43270 | 168065 | 85.8% | 214.0% | 465.8% |
-| 22 | bitcode, `llvm-dis` | 20819 | 51144 | 622522 | 113.8% | 272.5% | 427.8% |
-| 22 | `llc -O0` | 17746 | 40069 | 3080561 | | | |
-| 22 | the `convert` of the `llvm-dis` route | 11028 | 24221 | 369422 | | | |
-| 19 | text | 17079 | 51575 | 364151 | 90.9% | 246.7% | 862.2% |
-| 19 | bitcode, native | 16634 | 49616 | 198470 | 87.3% | 250.6% | 574.6% |
-| 19 | bitcode, `llvm-dis` | 23474 | 64041 | 838313 | 122.3% | 283.7% | 768.9% |
-| 19 | `llc -O0` | 17913 | 40408 | 3155818 | | | |
-| 19 | the `convert` of the `llvm-dis` route | 11866 | 26633 | 460253 | | | |
+| 22 | text | 22039 | 63502 | 228839 | 28.9% | 90.6% | 264.5% |
+| 22 | bitcode, native | 21423 | 57906 | 239200 | 28.0% | 72.5% | 235.7% |
+| 22 | bitcode, `llvm-dis` | 83362 | 191528 | 591624 | 108.3% | 227.7% | 491.0% |
+| 22 | `llc -O0` | 74435 | 149500 | 2915848 | | | |
+| 22 | the `convert` of the `llvm-dis` route | 64006 | 124084 | 384082 | | | |
+| 19 | text | 23067 | 76849 | 312349 | 27.9% | 76.0% | 156.6% |
+| 19 | bitcode, native | 22243 | 53474 | 196033 | 26.8% | 56.8% | 108.7% |
+| 19 | bitcode, `llvm-dis` | 89839 | 183738 | 734304 | 108.7% | 201.9% | 675.7% |
+| 19 | `llc -O0` | 83682 | 165265 | 3537452 | | | |
+| 19 | the `convert` of the `llvm-dis` route | 70464 | 143961 | 703720 | | | |

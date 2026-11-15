@@ -8,25 +8,13 @@ Every module of the captured corpus (`docs/status/corpus.md`), given to hod in s
 
 | reason | LLVM 22 | LLVM 19 |
 |---|---:|---:|
-| `(compiled)` | 3485 | 3443 |
-| `cc:win64cc` | 1 | 1 |
-| `intrinsic:llvm.aarch64.ldxr.p0` | 1 | 1 |
+| `(compiled)` | 3487 | 3445 |
 | all | 3487 | 3445 |
 
 ## Every reason (census)
 
 | reason | LLVM 22 | LLVM 19 |
 |---|---:|---:|
-| `attr:elementtype` | 1 | 1 |
-| `cc:aarch64_vector_pcs` | 1 | 1 |
-| `cc:win64cc` | 1 | 1 |
-| `intrinsic:llvm.aarch64.clrex` | 1 | 1 |
-| `intrinsic:llvm.aarch64.ldaxp` | 1 | 1 |
-| `intrinsic:llvm.aarch64.ldaxr.p0` | 1 | 1 |
-| `intrinsic:llvm.aarch64.ldxr.p0` | 1 | 1 |
-| `intrinsic:llvm.aarch64.stlxp` | 1 | 1 |
-| `intrinsic:llvm.aarch64.stlxr.p0` | 1 | 1 |
-| `intrinsic:llvm.aarch64.stxr.p0` | 1 | 1 |
 
 ## The routes agree
 
@@ -50,13 +38,13 @@ Coverage-log field 7 (from the process's start to the decline) of the first-refu
 
 | LLVM | route | median | p99 | worst | share of `llc`: median | p99 | worst |
 |---|---|---:|---:|---:|---:|---:|---:|
-| 22 | text | 14430 | 35980 | 229003 | 77.9% | 212.9% | 602.4% |
-| 22 | bitcode, native | 14261 | 39803 | 180029 | 78.1% | 221.8% | 848.8% |
-| 22 | bitcode, `llvm-dis` | 18326 | 52742 | 6986905 | 99.9% | 266.9% | 14247.3% |
-| 22 | `llc -O0` | 17715 | 39529 | 129392368 | | | |
-| 22 | the `convert` of the `llvm-dis` route | 10639 | 25559 | 1149742 | | | |
-| 19 | text | 17286 | 56697 | 233180 | 90.2% | 275.8% | 586.3% |
-| 19 | bitcode, native | 16538 | 53503 | 184791 | 86.9% | 266.3% | 995.6% |
-| 19 | bitcode, `llvm-dis` | 22229 | 67775 | 622070 | 115.3% | 327.2% | 819.4% |
-| 19 | `llc -O0` | 17986 | 41692 | 3366823 | | | |
-| 19 | the `convert` of the `llvm-dis` route | 11721 | 26252 | 417130 | | | |
+| 22 | text | 19591 | 57069 | 287991 | 25.1% | 70.4% | 127.2% |
+| 22 | bitcode, native | 19299 | 51289 | 701695 | 25.2% | 63.4% | 1175.8% |
+| 22 | bitcode, `llvm-dis` | 81038 | 157357 | 611787 | 105.8% | 206.7% | 388.2% |
+| 22 | `llc -O0` | 75080 | 137505 | 4131410 | | | |
+| 22 | the `convert` of the `llvm-dis` route | 63968 | 121615 | 399830 | | | |
+| 19 | text | 19369 | 53650 | 264171 | 26.4% | 68.2% | 147.1% |
+| 19 | bitcode, native | 18742 | 50779 | 229761 | 25.9% | 62.4% | 334.1% |
+| 19 | bitcode, `llvm-dis` | 77429 | 152197 | 801527 | 106.0% | 188.8% | 767.2% |
+| 19 | `llc -O0` | 72917 | 138618 | 3545695 | | | |
+| 19 | the `convert` of the `llvm-dis` route | 60845 | 113568 | 616892 | | | |

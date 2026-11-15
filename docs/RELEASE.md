@@ -237,7 +237,7 @@ does not depend on them) and its numbers are of runs at `C`.
 | `support.md` | `HOD_BLESS=1 cargo test -q -p hod_ir --test classify_support_doc`; the test fails while the page differs from `crates/hod_ir/src/classify/matrix.rs`, so a gated commit has it current |
 | `corpus.md`, `corpus-x64-census.md` | `cargo xtask corpus census` and `cargo xtask corpus census --target x86_64` (generated; they change only when the corpus is captured again, that is, with `K`) |
 | `corpus-x64.md`, `corpus-x64-differences.tsv` | hand-written record of the x86-64 capture (WP-139) and its later recaptures; rewrite when the corpus is recaptured |
-| `reasons.md`, `reasons-x64.md` | `cargo xtask corpus reasons --hod <frozen hod> -j 3 --report docs/status/reasons.md`, and with `--target x86_64 --report docs/status/reasons-x64.md` after 3.2; stale until then (measured at `9f410277`: they still name refusals built since, such as `cc:win64cc`, `intrinsic:llvm.aarch64.ldxr.p0` and `x64:inline-asm`) |
+| `reasons.md`, `reasons-x64.md` | `cargo xtask corpus reasons --hod <frozen hod> -j 3 --report docs/status/reasons.md`, and with `--target x86_64 --report docs/status/reasons-x64.md` after 3.2 (the x86-64 page reads the hybrid `corpus verify --target x86_64` results); the generated pages name no commit, so `release.md` records their hod, kiln and date (regenerated for `02fe2d02` by WP-257) |
 | `debug.md`, `debug-x64.md` | section 3 |
 | `libcxx-baseline.md`, `libcxx-baseline-x64.md` | 4.1, 4.2 (only when `K` or the suite moved) |
 | `libcxx-hod.md`, `libcxx-hod-x64.md`, `libcxx-hod-debug.md`, `libcxx-hod-debug-x64.md` | 4.3 to 4.7 |

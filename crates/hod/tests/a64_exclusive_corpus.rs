@@ -15,7 +15,7 @@ use std::time::Duration;
 #[allow(dead_code)]
 mod linking;
 
-use hod::{Options, OptLevel, OutputKind, RelocModel};
+use hod::{OptLevel, Options, OutputKind, RelocModel};
 use hod_testutil::{Scratch, run_with, tools_required};
 
 const MODULES: [(u32, &str); 2] = [
@@ -60,7 +60,8 @@ fn the_corpus_module_builds_and_runs_as_llc_s() {
     for (major, text) in MODULES {
         let object =
             hod::compile(text.as_bytes(), &options).unwrap_or_else(|e| panic!("llvm{major}: {e}"));
-        let mut objects = vec![(format!("hod-{major}"), scratch.write(&format!("hod-{major}.o"), object))];
+        let mut objects =
+            vec![(format!("hod-{major}"), scratch.write(&format!("hod-{major}.o"), object))];
         if let Some(theirs) = llc(&scratch, major, text) {
             objects.push((format!("llc-{major}"), theirs));
         }
@@ -88,8 +89,16 @@ fn x86_64_refuses_each_by_name() {
         ..Options::default()
     };
     let cases = [
-        ("ldxr", "i64 @llvm.aarch64.ldxr.p0(ptr)", "i64 @llvm.aarch64.ldxr.p0(ptr elementtype(i32) %p)"),
-        ("ldaxr", "i64 @llvm.aarch64.ldaxr.p0(ptr)", "i64 @llvm.aarch64.ldaxr.p0(ptr elementtype(i8) %p)"),
+        (
+            "ldxr",
+            "i64 @llvm.aarch64.ldxr.p0(ptr)",
+            "i64 @llvm.aarch64.ldxr.p0(ptr elementtype(i32) %p)",
+        ),
+        (
+            "ldaxr",
+            "i64 @llvm.aarch64.ldaxr.p0(ptr)",
+            "i64 @llvm.aarch64.ldaxr.p0(ptr elementtype(i8) %p)",
+        ),
         (
             "stxr",
             "i32 @llvm.aarch64.stxr.p0(i64, ptr)",
@@ -101,8 +110,16 @@ fn x86_64_refuses_each_by_name() {
             "i32 @llvm.aarch64.stlxr.p0(i64 1, ptr elementtype(i16) %p)",
         ),
         ("ldxp", "{ i64, i64 } @llvm.aarch64.ldxp(ptr)", "{ i64, i64 } @llvm.aarch64.ldxp(ptr %p)"),
-        ("ldaxp", "{ i64, i64 } @llvm.aarch64.ldaxp(ptr)", "{ i64, i64 } @llvm.aarch64.ldaxp(ptr %p)"),
-        ("stxp", "i32 @llvm.aarch64.stxp(i64, i64, ptr)", "i32 @llvm.aarch64.stxp(i64 1, i64 2, ptr %p)"),
+        (
+            "ldaxp",
+            "{ i64, i64 } @llvm.aarch64.ldaxp(ptr)",
+            "{ i64, i64 } @llvm.aarch64.ldaxp(ptr %p)",
+        ),
+        (
+            "stxp",
+            "i32 @llvm.aarch64.stxp(i64, i64, ptr)",
+            "i32 @llvm.aarch64.stxp(i64 1, i64 2, ptr %p)",
+        ),
         (
             "stlxp",
             "i32 @llvm.aarch64.stlxp(i64, i64, ptr)",
@@ -118,7 +135,11 @@ fn x86_64_refuses_each_by_name() {
         );
         match hod::compile(text.as_bytes(), &options) {
             Err(hod::CompileError::Unsupported(u)) => {
-                assert_eq!(u.construct.to_string(), format!("intrinsic:llvm.aarch64.{name}"), "{text}");
+                assert_eq!(
+                    u.construct.to_string(),
+                    format!("intrinsic:llvm.aarch64.{name}"),
+                    "{text}"
+                );
             }
             other => panic!("{name} not refused by name: {:?}", other.map(|o| o.len())),
         }

@@ -99,11 +99,11 @@ pub fn intrinsic<'a>(
             let pv = cx.use_reg(v)?;
             let pp = operand(cx, p, &[(v, pv)])?;
             let rs = cx.def_reg(inst)?;
-            let (s, t, n) = (xr(rs).zr(), xr(pv).zr(), xr(pp).sp());
+            let (status, data, base) = (xr(rs).zr(), xr(pv).zr(), xr(pp).sp());
             let word = if which == I::Aarch64Stlxr {
-                mc::try_stlxr(ms, s, t, n)
+                mc::try_stlxr(ms, status, data, base)
             } else {
-                mc::try_stxr(ms, s, t, n)
+                mc::try_stxr(ms, status, data, base)
             };
             let Some(word) = word else {
                 return cx.bug("the status register of a store exclusive is an operand's");
@@ -145,11 +145,12 @@ pub fn intrinsic<'a>(
             let ph = operand(cx, hi, &[(lo, pl)])?;
             let pp = operand(cx, p, &[(lo, pl), (hi, ph)])?;
             let rs = cx.def_reg(inst)?;
-            let (s, t, t2, n) = (xr(rs).zr(), xr(pl).zr(), xr(ph).zr(), xr(pp).sp());
+            let status = xr(rs).zr();
+            let (low, high, base) = (xr(pl).zr(), xr(ph).zr(), xr(pp).sp());
             let word = if which == I::Aarch64Stlxp {
-                mc::try_stlxp(Size::X, s, t, t2, n)
+                mc::try_stlxp(Size::X, status, low, high, base)
             } else {
-                mc::try_stxp(Size::X, s, t, t2, n)
+                mc::try_stxp(Size::X, status, low, high, base)
             };
             let Some(word) = word else {
                 return cx.bug("the status register of a store exclusive is an operand's");

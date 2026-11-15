@@ -455,14 +455,14 @@ fn driver() -> String {
          static _Alignas(64) uint32_t c32; static _Alignas(64) uint64_t c64;\n\
          static _Alignas(64) uint64_t cp[2];\n\
          static void *work(void *arg) {{\n  (void)arg;\n  for (int r = 0; r < 4; r++) {{\n    \
-         count8(&c8, {n} / 4); count16(&c16, {n} / 4); count32(&c32, {n} / 4);\n    \
-         count64(&c64, {n} / 4); count_pair(cp, {n} / 4);\n  }}\n  return 0;\n}}\n\
+         count8(&c8, {PER_THREAD} / 4); count16(&c16, {PER_THREAD} / 4);\n    \
+         count32(&c32, {PER_THREAD} / 4); count64(&c64, {PER_THREAD} / 4);\n    \
+         count_pair(cp, {PER_THREAD} / 4);\n  }}\n  return 0;\n}}\n\
          int main(void) {{\n  pthread_t t[{THREADS}];\n  \
          for (int i = 0; i < {THREADS}; i++) pthread_create(&t[i], 0, work, 0);\n  \
          for (int i = 0; i < {THREADS}; i++) pthread_join(t[i], 0);\n  \
          printf(\"%u %u %u %llu %llu %llu\\n\", c8, c16, c32, (unsigned long long)c64,\n         \
-         (unsigned long long)cp[0], (unsigned long long)cp[1]);\n  return 0;\n}}\n",
-        n = PER_THREAD
+         (unsigned long long)cp[0], (unsigned long long)cp[1]);\n  return 0;\n}}\n"
     )
 }
 
@@ -485,13 +485,8 @@ fn threads_count_exactly() {
         objects.push(("llc".to_owned(), object));
     }
     let total = u64::from(THREADS) * PER_THREAD;
-    let want = format!(
-        "{} {} {} {total} {total} {}\n",
-        total % 256,
-        total % 65_536,
-        total,
-        2 * total
-    );
+    let want =
+        format!("{} {} {} {total} {total} {}\n", total % 256, total % 65_536, total, 2 * total);
     let qemu = qemu_on_aarch64();
     let mut runs = 0;
     for (name, object) in &objects {

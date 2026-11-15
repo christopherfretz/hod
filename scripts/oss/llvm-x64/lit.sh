@@ -18,6 +18,12 @@ which="${1:?usage: lit.sh hod|llc|both <slice>...}"
 shift
 case "$which" in both) trees="hod llc" ;; hod | llc) trees=$which ;; *) exit 2 ;; esac
 for slice in "$@"; do
+  # WP-222: no slice starts below $HOD_OSS_MIN_FREE_GB (default 45) free.
+  free=$(df -BG --output=avail "$HOD_OSS_ROOT" | tail -1 | tr -dc 0-9)
+  if [ "$free" -lt "${HOD_OSS_MIN_FREE_GB:-45}" ]; then
+    echo "lit.sh: STOP before $slice: ${free}G free" >&2
+    exit 3
+  fi
   case "$slice" in
     *=@*) key="${slice%%=@*}"; mapfile -t paths < <(sed "s#^#$HOD_OSS_SRC/llvm/test/#" "${slice#*=@}") ;;
     *) key=$(echo "$slice" | tr / _); paths=() ;;

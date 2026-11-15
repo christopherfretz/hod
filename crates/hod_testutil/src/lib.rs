@@ -302,13 +302,15 @@ fn run_on(
         );
     }
     // A child a signal ended (the kernel's OOM killer sends SIGKILL) says
-    // so too: its standard error is often empty.
+    // so too: its standard error is often empty. The note does not name
+    // the program: two programs that are expected to die the same way (an
+    // uncaught exception built two ways) must still have equal standard
+    // errors.
     #[cfg(unix)]
     if let Some(signal) = status.as_ref().and_then(std::os::unix::process::ExitStatusExt::signal) {
         let _ = write!(
             stderr,
-            "\n[hod_testutil: {} killed by signal {signal}{}]\n",
-            command.get_program().display(),
+            "\n[hod_testutil: killed by signal {signal}{}]\n",
             if signal == 9 { " (SIGKILL: the OOM killer, if no one else)" } else { "" }
         );
     }
@@ -459,16 +461,19 @@ mod tests {
         let outcome = run("sh", ["-c", "kill -KILL $$"]);
         assert!(!outcome.timed_out() && !outcome.success());
         assert!(
-            outcome.stderr_text().contains("sh killed by signal 9 (SIGKILL"),
+            outcome.stderr_text().contains("[hod_testutil: killed by signal 9 (SIGKILL"),
             "{}",
             outcome.stderr_text()
         );
         let outcome = run("sh", ["-c", "kill -TERM $$"]);
         assert!(
-            outcome.stderr_text().contains("sh killed by signal 15]"),
+            outcome.stderr_text().contains("[hod_testutil: killed by signal 15]"),
             "{}",
             outcome.stderr_text()
         );
+        // The note is the same for any program a given signal ended.
+        let other = run("bash", ["-c", "kill -TERM $$"]);
+        assert_eq!(other.stderr_text(), outcome.stderr_text());
     }
 
     /// WP-238: at the time limit the child's descendants die with it. One

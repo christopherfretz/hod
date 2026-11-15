@@ -77,3 +77,50 @@ fn the_corpus_module_builds_and_runs_as_llc_s() {
     let linkers: Vec<&str> = toolchain.linkers.iter().map(|l| l.name).collect();
     eprintln!("a64 exclusive corpus: {runs} runs ({linkers:?}) print the corpus entry's output");
 }
+
+// §5.6.39: on x86-64 each of the nine intrinsics is refused by its own
+// name (`llc` for x86-64 aborts on them).
+#[test]
+fn x86_64_refuses_each_by_name() {
+    let options = Options {
+        output_kind: OutputKind::Object,
+        relocation_model: Some(RelocModel::Pic),
+        ..Options::default()
+    };
+    let cases = [
+        ("ldxr", "i64 @llvm.aarch64.ldxr.p0(ptr)", "i64 @llvm.aarch64.ldxr.p0(ptr elementtype(i32) %p)"),
+        ("ldaxr", "i64 @llvm.aarch64.ldaxr.p0(ptr)", "i64 @llvm.aarch64.ldaxr.p0(ptr elementtype(i8) %p)"),
+        (
+            "stxr",
+            "i32 @llvm.aarch64.stxr.p0(i64, ptr)",
+            "i32 @llvm.aarch64.stxr.p0(i64 1, ptr elementtype(i64) %p)",
+        ),
+        (
+            "stlxr",
+            "i32 @llvm.aarch64.stlxr.p0(i64, ptr)",
+            "i32 @llvm.aarch64.stlxr.p0(i64 1, ptr elementtype(i16) %p)",
+        ),
+        ("ldxp", "{ i64, i64 } @llvm.aarch64.ldxp(ptr)", "{ i64, i64 } @llvm.aarch64.ldxp(ptr %p)"),
+        ("ldaxp", "{ i64, i64 } @llvm.aarch64.ldaxp(ptr)", "{ i64, i64 } @llvm.aarch64.ldaxp(ptr %p)"),
+        ("stxp", "i32 @llvm.aarch64.stxp(i64, i64, ptr)", "i32 @llvm.aarch64.stxp(i64 1, i64 2, ptr %p)"),
+        (
+            "stlxp",
+            "i32 @llvm.aarch64.stlxp(i64, i64, ptr)",
+            "i32 @llvm.aarch64.stlxp(i64 1, i64 2, ptr %p)",
+        ),
+        ("clrex", "void @llvm.aarch64.clrex()", "void @llvm.aarch64.clrex()"),
+    ];
+    for (name, declaration, call) in cases {
+        let text = format!(
+            "target datalayout = \"{}\"\ntarget triple = \"x86_64-unknown-linux-gnu\"\n\
+             declare {declaration}\ndefine void @f(ptr %p) {{\n  call {call}\n  ret void\n}}\n",
+            hod_ir::X86_64_LINUX_DATA_LAYOUT
+        );
+        match hod::compile(text.as_bytes(), &options) {
+            Err(hod::CompileError::Unsupported(u)) => {
+                assert_eq!(u.construct.to_string(), format!("intrinsic:llvm.aarch64.{name}"), "{text}");
+            }
+            other => panic!("{name} not refused by name: {:?}", other.map(|o| o.len())),
+        }
+    }
+}

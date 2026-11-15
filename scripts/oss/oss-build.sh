@@ -2,7 +2,7 @@
 # oss-build.sh <project> --mode llc|hod|strict [--flavour O0|O0g] [--target aarch64|x86_64]
 #        [--no-test] [--jobs N] [--install PREFIX] [--prune | --prune-only]
 #
-# hod's real-project lane (docs/VALIDATION.md "Real projects (L11)",
+# hod's real-project lane (docs/VALIDATION.md "Real projects (L9)",
 # spec/harness.md "Real projects"). A port of kiln's scripts/oss/oss-build.sh
 # (kiln:spec/landed/harness/WP-666.md): builds one row of
 # scripts/oss/projects.toml through its own build system (cmake) with kiln

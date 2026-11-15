@@ -54,7 +54,7 @@ uses at most `-j 4`; real-project builds take the lanes' job pool
 | | command | where | time | result | pass means |
 |---|---|---|---|---|---|
 | 1.1 quick gate | `source scripts/env.sh && HOD_REQUIRE_TOOLS=1 cargo xtask ci --quick` | AArch64 development host (x86-64 seeds under `qemu-x86_64`) | 90 to 125 min under load (mostly compiling the test binaries) | the log; no page | the log ends `ci: ok` and the exit status is 0 |
-| 1.2 full gate | `source scripts/env.sh && HOD_REQUIRE_TOOLS=1 cargo xtask ci` | the same host; it adds `irdiff --witness` with LLVM 22 and 19, `irdiff --hybrid`, `irdiff --target x86_64` with LLVM 22 and 19, the whole-corpus `roundtrip` (10 to 20 min alone), and `debug` (every debugger test of the host's target, then `debug verify`) | not yet timed (`docs/status/release.md`: no full gate is recorded); at least the quick gate plus an hour | the log; no page | `ci: ok`, exit status 0 |
+| 1.2 full gate | `source scripts/env.sh && HOD_REQUIRE_TOOLS=1 cargo xtask ci` | the same host; it adds `irdiff --witness` with LLVM 22 and 19, `irdiff --hybrid`, `irdiff --target x86_64` with LLVM 22 and 19, the whole-corpus `roundtrip` (10 to 20 min alone), then `debug-x86_64`, `debug-aarch64` (every debugger test of that target, then `debug verify` of its corpus: 3.3, 3.4 without `debug kiln` and `debug trees`) and `corpus-aarch64`, `corpus-x86_64` (3.1, 3.2 with the workspace's hod) | not yet timed (`docs/status/release.md`: no full gate is recorded); at least the quick gate plus two hours (the corpus steps about 30 and 40 min at `-j 4`, `spec/landed/harness/WP-251.md`) | the log; no page | `ci: ok`, exit status 0 |
 | 1.3 hosted lanes | push `C` (it is on `main`) or open a pull request: `.github/workflows/ci.yml` calls `ci-lane.yml` on `ubuntu-24.04-arm` and `ubuntu-24.04` | GitHub Actions, both architectures natively, the other one under qemu | jobs in parallel, each `test` part about 15 min (`spec/harness.md` "CI" rule 5); a job is cut at 45 min | the run's page; `test x64`'s job summary has the AVX-512 block (`scripts/avx512-summary.sh`) | the fan-in jobs `check` and `check-x86_64` both succeed, on one run of `C` without a re-run; record the run id and whether the x86-64 runner had AVX-512 (the summary says what executed) |
 
 The hosted lanes run the quick gate's steps (`xtask::ci::HOSTED_STEPS`)
@@ -79,13 +79,15 @@ for a missing linker.
 
 | | command | target | time | page | pass means |
 |---|---|---|---|---|---|
-| 3.1 L6 strict | `cargo xtask corpus verify --strict -j 3 --hod <frozen hod>` | AArch64, native | about the hybrid verify's (1291 to 1366 s per LLVM major on x86-64 under qemu, `docs/status/corpus-x64.md`) | `<build>/corpus/verify-llvm<N>-strict.tsv`; summary into `docs/status/release.md` | exit status 0: no FAIL, no XPASS, no ERROR, every entry's expectation met with every linker |
+| 3.1 L6 strict | `cargo xtask corpus verify --strict -j 3 --hod <frozen hod>` | AArch64, native | about the hybrid verify's (1291 to 1366 s per LLVM major on x86-64 under qemu, `docs/status/corpus-x64.md`) | `<build>/corpus/verify-llvm<N>-strict.tsv`; summary into `docs/status/release.md` | exit status 0: no FAIL, no XPASS, no ERROR, every entry's expectation met with every linker; the only results that are not PASS are the rows of `docs/status/corpus-expected.tsv` for the target, listed as EXPECTED or UNDEFINED in the summary, and no row of it is stale |
 | 3.2 L6 strict, x86-64 | `cargo xtask corpus verify --target x86_64 --strict -j 3 --hod <frozen hod>` | x86-64 under `qemu-x86_64` (baseline CPU) | about 1300 s per LLVM major | `<build>/corpus/verify-x86_64-llvm<N>-strict.tsv`; then 4.3 fills `docs/status/reasons-x64.md` "What the built modules do" | as 3.1 |
 | 3.3 L7 AArch64 | `cargo xtask debug` (sessions), `cargo xtask debug kiln`, `cargo xtask debug verify` | AArch64, native | minutes each | `docs/status/debug.md` (rewritten for `C`, `K`) | no FAIL, no XPASS, no crash, no stale `xfail`; kiln's debugger tests all pass; `--verify` clean for every object hod builds and nothing declined; line tables equal up to `spec/dwarf.md` §5.7; the `-g` corpus modules pass strict under every linker |
 | 3.4 L7 x86-64 | `cargo xtask debug --target x86_64`, `cargo xtask debug trees` over the `-g` modules, `cargo xtask debug verify --target x86_64` | x86-64 under qemu's gdb stub | 1:18 for the sessions at `-j 4` (`docs/status/debug-x64.md`) | `docs/status/debug-x64.md` | as 3.3; SKIPs only for what the stub cannot do (`debug-x64.md` "What qemu's gdb stub cannot do") |
 
-The full gate's `debug` step runs the host's target only, so 3.4 is a
-separate run.
+The full gate runs 3.1 to 3.4 as its `corpus-<arch>` and `debug-<arch>`
+steps (with the workspace's development hod; `debug kiln` and `debug
+trees` are not gate steps); run them separately with the frozen hod for
+the pages.
 
 ## 4. libc++ (L8)
 

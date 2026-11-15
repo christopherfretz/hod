@@ -46,11 +46,11 @@ on a schedule.
 | L1 | **encoding** | every instruction form `hod_mc_*` can produce, across operand sweeps: hod's bytes disassemble to the intended instruction, and equal `llvm-mc`'s bytes for the same assembly | `llvm-mc`, `llvm-objdump` | every change |
 | L2 | **IR ingestion** | `hod_ll` parses everything in the IR corpus; what `hod_ir` prints is accepted by `llvm-as` and the verifier, and compiled by `llc` it behaves as the original does (`hod_ir` is a normal form, not a copy of the text: `spec/ir.md` §9) | `llvm-as`, `llc` | every change |
 | L3 | **object structure** | hod's objects pass `llvm-readelf`/`llvm-dwarfdump --verify`, and link with every linker in the matrix | binutils, LLVM tools | every change |
-| L4 | **IR differential** (`xtask irdiff`) | each program in the IR corpus built by `llc` and by hod behaves identically | `llc` | every change (small set), merge gate (all) |
-| L5 | **ABI cross-linking** | generated caller/callee pairs over a grid of argument types, one side hod and one side clang, both directions | clang | merge gate |
-| L6 | **kiln's corpus through hod** | kiln's executing tests (about 1500 `run` tests plus the GCC torture suite) with hod as the code generator | clang (kiln's harness) | merge gate |
-| L7 | **debug info** (`xtask debug`) | scripted gdb and lldb sessions on hod's and `llc`'s programs under every linker; kiln's debugger tests through hod; `--verify` of the corpus's `-g` modules; `(function, line)` comparison with `llc` | gdb, lldb, `llc`, `llvm-dwarfdump` | every change (quick tier, in `cargo test`), merge gate (all) |
-| L8 | **libc++ test suite** with kiln + hod | the long-term acceptance gate | the suite | nightly / release |
+| L4 | **IR differential** (`xtask irdiff`) | each program in the IR corpus built by `llc` and by hod behaves identically | `llc` | every change (small set), full gate (all) |
+| L5 | **ABI cross-linking** | generated caller/callee pairs over a grid of argument types, one side hod and one side clang, both directions | clang | every change (the ABI grids, in `cargo test`) |
+| L6 | **kiln's corpus through hod** | kiln's executing tests (about 1500 `run` tests plus the GCC torture suite) with hod as the code generator | clang (kiln's harness) | full gate (`corpus-<arch>`: strict, both targets, with `docs/status/corpus-expected.tsv`) |
+| L7 | **debug info** (`xtask debug`) | scripted gdb and lldb sessions on hod's and `llc`'s programs under every linker; kiln's debugger tests through hod; `--verify` of the corpus's `-g` modules; `(function, line)` comparison with `llc` | gdb, lldb, `llc`, `llvm-dwarfdump` | every change (quick tier, in `cargo test`), full gate (all: `debug-<arch>`, both targets) |
+| L8 | **libc++ test suite** with kiln + hod | the long-term acceptance gate | the suite | release; run by hand (`cargo xtask libcxx`, `docs/status/libcxx-hod.md`) or by the hosted sweep (`.github/workflows/sweep.yml`, started by a `sweep/<name>` branch or by hand); no nightly lane exists |
 | L9 | **open-source projects** built with kiln + hod, running their own tests ("Real projects (L9)") | kiln with `llc` | release |
 | L10 | **fuzzing** (`xtask fuzz`) | random C programs (csmith in option sets, and hod's own ABI generator; YARPGen once installed) through clang `-O0 -emit-llvm` for each target, built by hod `--strict` and by the reference `llc`, linked and run, exit status and output compared; the module split so each compiler builds half (`--mix`); with `-g`, DWARF verified and lines compared (`--debug`); random IR functions against an interpreter (not yet) | `llc` (`-O2` as the witness of a finding) | the reduced seeds of findings in every change (as L4 seeds); long runs in the sweep, budgeted |
 
@@ -464,18 +464,33 @@ with warnings denied, L0 to L3, and the small L4 set. L2 is the round trip's
 quick tier: one corpus entry in 32, a fixed selection by path (about 200
 entries, some 20 s; `spec/harness.md` "roundtrip").
 
-**Merge to main (CI):** `cargo xtask ci`: everything above plus the whole
-corpus for L2, full L4, L5,
-and, from the milestones that enable them, L6 and L7 in strict mode for the
-constructs claimed as supported.
+**Merge to main (CI):** the quick gate above, `cargo xtask ci --quick`
+with `HOD_REQUIRE_TOOLS=1`, run by the supervisor on the merged branch
+and by the hosted lane ("Hosted CI", without `roundtrip`). L5 is part of
+it, in `cargo test` (the ABI grids of `hod_a64` and `hod_x64`).
+
+**Full gate:** `cargo xtask ci` without `--quick`: the quick gate's
+steps with the whole corpus for L2 and every L4 seed with both oracles
+and in hybrid mode, then, cheapest first, L7 and L6 for each target
+architecture: `debug-x86_64`, `debug-aarch64` (every debugger test,
+then `debug verify` of the target's corpus), `corpus-aarch64`,
+`corpus-x86_64` (`corpus verify --strict` of the target's corpus with
+the list of expected results, `docs/status/corpus-expected.tsv`: a
+refusal or an undefined entry not on the list fails, and so does a row
+the corpus no longer needs; `spec/harness.md` "corpus", "Expected
+results"). It runs on the development machine, where the corpora are;
+each step prints its wall time and the gate ends with a table of the
+steps. "Both targets" means both target architectures, from one host
+(the other's programs under its emulator), unless a step says
+otherwise.
 
 Steps that need tools or build output (the oracle, the linkers, the IR
 corpus) pass with a notice without them, so a fresh checkout passes the
 quick gate; `HOD_REQUIRE_TOOLS=1` makes each missing one a failure
 (`spec/harness.md` "ci").
 
-**Release candidate:** all of the above with `HOD_REQUIRE_TOOLS=1`, on both
-targets, with every linker; L8 strict at the pass rate kiln achieves with
+**Release candidate:** the full gate with `HOD_REQUIRE_TOOLS=1` (both
+targets, every linker, the corpora present); L8 strict at the pass rate kiln achieves with
 `llc`; L9; the fuzzing budget (L10, "The budget": `cargo xtask fuzz
 --budget` on the candidate's frozen hod, fresh seeds) with no open
 findings; and the support matrix

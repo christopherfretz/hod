@@ -11,5 +11,4 @@
 # (a refusal or build failure fails), its run is not compared.
 # AArch64 has no row: every corpus test is built and equal to llc.
 x86_64	refused	kiln tests/conformance/dcl.attr.cconv/cc-run.cpp	cc:x86_regcallcc	refused by design (WP-141); behind it cc:x86_vectorcallcc
-x86_64	refused	kiln tests/conformance/dcl.asm/asm-goto.cpp	x64:inline-asm	asm goto: a callbr with a template stays x64:inline-asm (spec/asm.md section 11)
 x86_64	undefined	gcc-torture builtins/strncmp.c	-	builtins/lib/strncmp.c returns the uninitialised c1 - c2 when n == 0 and the test aborts unless it is 0 (spec/landed/harness/WP-244.md, Findings 1)

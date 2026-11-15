@@ -118,7 +118,7 @@ pub fn begin(cx: &mut FnCx<'_, A64>) -> CgResult<()> {
     put(cx, mc::stp_off(Size::X, Reg::X29.zr(), Reg::X30.zr(), SP, 0));
     put(cx, mc::mov_sp(Size::X, FP, SP));
     crate::tail2::save_preserved(cx)?;
-    crate::tail3::save_all(cx)?;
+    crate::cconv::save(cx)?; // WP-247 (and WP-101's `preserve_allcc`)
     crate::unwind::save(cx)?; // WP-215: `llvm.eh.unwind.init`
     crate::coro_body::save(cx)?;
     if base {
@@ -193,7 +193,7 @@ pub fn end(cx: &mut FnCx<'_, A64>) -> CgResult<()> {
     let at = at + room;
     prologue_rows(cx, at, frame)?;
     crate::tail2::preserved_rows(cx, Some(at + PROLOGUE_BYTES + crate::tail2::SAVE_BYTES), frame)?;
-    crate::tail3::all_rows(cx, Some(at + PROLOGUE_BYTES), frame)?;
+    crate::cconv::rows(cx, Some(at + PROLOGUE_BYTES), frame)?;
     crate::unwind::rows(cx, true, frame)?;
     let saved_at = cx.state.frame.coro.saved_at;
     crate::coro_body::rows(cx, Some(saved_at), frame)?;
@@ -259,7 +259,7 @@ fn body_rows(cx: &mut FnCx<'_, A64>, frame: u32) {
     cx.cfi(CfiOp::Offset { reg: DWARF_LR, cfa_offset: -f + 8 });
     // WP-095: a hook that cannot fail when the prologue's rows did not.
     let _ = crate::tail2::preserved_rows(cx, None, frame);
-    let _ = crate::tail3::all_rows(cx, None, frame);
+    let _ = crate::cconv::rows(cx, None, frame);
     let _ = crate::unwind::rows(cx, false, frame);
     let _ = crate::coro_body::rows(cx, None, frame);
     crate::protect::restate(cx); // WP-185
@@ -275,7 +275,7 @@ fn teardown(cx: &mut FnCx<'_, A64>, frame: u32) -> CgResult<()> {
     }
     cx.cfi(CfiOp::DefCfa { reg: DWARF_SP, offset: frame as i32 });
     crate::tail2::restore_preserved(cx);
-    crate::tail3::restore_all(cx);
+    crate::cconv::restore(cx);
     crate::unwind::restore(cx);
     crate::coro_body::restore(cx);
     put(cx, mc::ldp_off(Size::X, Reg::X29.zr(), Reg::X30.zr(), SP, 0));

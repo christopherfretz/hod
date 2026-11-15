@@ -126,7 +126,10 @@ pub fn assign(types: &TypeTable, sig: &Sig<'_>, out: &mut Assignment) -> Abi<()>
 }
 
 fn assign_signature(types: &TypeTable, sig: &Sig<'_>, out: &mut Assignment) -> Abi<()> {
-    if !cc_is_c(sig.cc) {
+    // WP-247: `win64cc` and `aarch64_vector_pcs` pass and return as
+    // `ccc` but for a variadic `win64cc` call's floating point (§13).
+    let win64 = sig.cc == CallConv::WIN64;
+    if !(cc_is_c(sig.cc) || win64 || sig.cc == CallConv::AARCH64_VECTOR_PCS) {
         return no(CC);
     }
     let fixed = if sig.variadic { sig.fixed as usize } else { sig.params.len() };
@@ -138,7 +141,11 @@ fn assign_signature(types: &TypeTable, sig: &Sig<'_>, out: &mut Assignment) -> A
         return no(INVALID_SIGNATURE);
     }
 
-    let mut state = State { returns_value: sig.ret != TypeId::VOID, ..State::default() };
+    let mut state = State {
+        returns_value: sig.ret != TypeId::VOID,
+        fp_in_gpr: win64 && sig.variadic,
+        ..State::default()
+    };
     if assign_return(types, sig, &mut out.ret)? {
         // §5.2: the hidden pointer is assigned before every argument.
         state.x8 = true;
@@ -153,6 +160,9 @@ fn assign_signature(types: &TypeTable, sig: &Sig<'_>, out: &mut Assignment) -> A
             out.va = state.va_info();
         }
         let attrs = sig.attrs(index);
+        if win64 && attrs.has(ParamAttrs::NEST) {
+            return no(crate::cconv::WIN64_NEST);
+        }
         let before = out.args.len();
         assign_argument(types, ty, attrs, index as u32, &mut state, &mut out.args, &mut budget)?;
         // §6.5: LLVM's GlobalISel reads the attributes of the parameters
@@ -230,6 +240,9 @@ struct State {
     x15: bool,
     /// The signature's return type is not `void`.
     returns_value: bool,
+    /// WP-247: a variadic `win64cc` call, whose `float`s and `double`s
+    /// travel as integers of their bits (`spec/abi-a64.md` §13.3).
+    fp_in_gpr: bool,
 }
 
 impl State {
@@ -338,15 +351,36 @@ impl Class {
 /// the classification hook of `hod_cg`'s leaf walk ([`Leaves`]).
 type Leaf = hod_cg::abi::Leaf<Class>;
 
-/// The classification hook of the leaf walk: §4.
-struct Leaves;
+/// The classification hook of the leaf walk: §4; with `.0` the leaves of
+/// a variadic `win64cc` call (§13.3, [`gpr_fp_leaf`]).
+struct Leaves(bool);
 
 impl Classify for Leaves {
     type Class = Class;
 
     fn leaf(&self, types: &TypeTable, ty: TypeId) -> Abi<Leaf> {
-        leaf_of(types, ty)
+        if self.0 { gpr_fp_leaf(types, ty, false) } else { leaf_of(types, ty) }
     }
+}
+
+/// WP-247 (§13.3): a leaf of an argument of a variadic `win64cc` call.
+/// A `float` or a `double` travels as an `i32` or an `i64` of its bits
+/// (LLVM's `CC_AArch64_Win64_VarArg`); a lone one (`lanes`), whose value
+/// is in a vector register, as a one-lane part the target moves to the
+/// general register (`vcall::lanes_out`). A `half` or a `bfloat` is
+/// [`crate::cconv::WIN64_VARIADIC_HALF`]. Every other leaf is §4's.
+fn gpr_fp_leaf(types: &TypeTable, ty: TypeId, lanes: bool) -> Abi<Leaf> {
+    let (class, size) = match types.kind(ty) {
+        TypeKind::Float => (Class::W, 4u8),
+        TypeKind::Double => (Class::X, 8),
+        TypeKind::Half | TypeKind::BFloat => return no(crate::cconv::WIN64_VARIADIC_HALF),
+        _ => return leaf_of(types, ty),
+    };
+    let mut leaf = Leaf::one(class, u32::from(size));
+    if lanes {
+        leaf.lanes = Some(LaneLeaf { bits: 8 * size, lane: size, len: 1, each: true });
+    }
+    Ok(leaf)
 }
 
 /// One piece of class `class` (`D` or `Q`) whose lanes carry every
@@ -627,7 +661,7 @@ fn assign_return(types: &TypeTable, sig: &Sig<'_>, parts: &mut Vec<Part>) -> Abi
         Ok(Loc::Reg(reg))
     };
     let fits = if is_aggregate(types, sig.ret) {
-        check_type(types, sig.ret, &Leaves)?;
+        check_type(types, sig.ret, &Leaves(false))?;
         walk(types, sig.ret, 0, &mut |leaf_ty, offset| {
             let leaf = leaf_of(types, leaf_ty).map_err(|_| Memory)?;
             place_leaf(&leaf, 0, offset, parts, &mut place)
@@ -722,19 +756,21 @@ fn assign_value(
         TypeKind::Struct { .. } => false,
         _ => {
             // §3.2: a scalar or a vector, piece by piece.
-            let leaf = lone_leaf(types, ty)?;
+            let leaf =
+                if state.fp_in_gpr { gpr_fp_leaf(types, ty, true)? } else { lone_leaf(types, ty)? };
             charge(budget, leaf.count)?;
             return place_leaf(&leaf, arg, 0, parts, &mut |leaf: &Leaf, piece| {
                 Ok::<_, AbiUnsupported>(state.piece(leaf.class, leaf.split_at(piece)))
             });
         }
     };
-    check_type(types, ty, &Leaves)?;
+    let classify = Leaves(state.fp_in_gpr);
+    check_type(types, ty, &classify)?;
 
     // §3.3: an array whose leaves all have one value type is a block.
     let mut block = None;
     if is_array && let Shape::Uniform { ty: leaf_ty, leaves, .. } = shape(types, ty) {
-        let leaf = leaf_of(types, leaf_ty)?;
+        let leaf = classify.leaf(types, leaf_ty)?;
         match leaf.class {
             // LLVM does not treat these as a block.
             Class::W => {}
@@ -775,7 +811,7 @@ fn assign_value(
         }
     }
 
-    place_leaves(types, ty, &Leaves, arg, budget, parts, &mut |leaf, piece| {
+    place_leaves(types, ty, &classify, arg, budget, parts, &mut |leaf, piece| {
         Ok(match &mut block {
             None => state.piece(leaf.class, leaf.split_at(piece)),
             Some(Block::Regs(next)) => {

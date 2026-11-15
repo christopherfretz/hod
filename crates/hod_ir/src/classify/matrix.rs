@@ -690,9 +690,9 @@ const CC: [SupportRow; 26] = [
     // WP-246: `ms_abi` on Linux.
     row(
         "cc:win64cc",
-        todo("T-A64 (WP-246's AArch64 part)"),
         ON,
-        "x86-64: four positions in `rcx`/`xmm0`..`r9`/`xmm3`, a 32-byte shadow area; the callee also keeps `rsi`, `rdi`, `xmm6`..`xmm15` (`spec/abi-x64.md` §13)",
+        ON,
+        "AArch64: assigned as `ccc` but a variadic call's `float`s and `double`s in general registers; the callee also keeps `x18` (`spec/abi-a64.md` §13, WP-247); x86-64: four positions in `rcx`/`xmm0`..`r9`/`xmm3`, a 32-byte shadow area; the callee also keeps `rsi`, `rdi`, `xmm6`..`xmm15` (`spec/abi-x64.md` §13)",
     ),
     row("cc:x86_vectorcallcc", never(X86_CC), never(WINDOWS), "`__vectorcall`"),
     row("cc:hhvmcc", never(X86_CC), todo(LATER), ""),
@@ -704,7 +704,12 @@ const CC: [SupportRow; 26] = [
         "",
     ),
     row("cc:x86_regcallcc", never(X86_CC), never("Intel's `__regcall` is refused by design"), ""),
-    row("cc:aarch64_vector_pcs", todo(LATER), never("an AArch64 convention"), ""),
+    row(
+        "cc:aarch64_vector_pcs",
+        ON,
+        never("an AArch64 convention"),
+        "assigned as `ccc`; the callee also keeps `q8`..`q23` whole (`spec/abi-a64.md` §13, WP-247)",
+    ),
     row("cc:aarch64_sve_vector_pcs", never(SCALABLE), never("an AArch64 convention"), ""),
 ];
 

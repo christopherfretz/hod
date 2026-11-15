@@ -528,6 +528,9 @@ fn what_is_not_compiled_is_refused_by_name() {
     for (text, name) in [
         (coroutine("preserve_mostcc", 4, ""), "a64:coro-preserve-cc"),
         (coroutine("preserve_allcc", 4, ""), "a64:coro-preserve-cc"),
+        // WP-247 (`spec/abi-a64.md` §13.4, §13.5).
+        (coroutine("win64cc", 4, ""), "cc:win64cc-coroutine"),
+        (coroutine("aarch64_vector_pcs", 4, ""), "cc:aarch64_vector_pcs-coroutine"),
         (coroutine("", 32, ""), "coro:overaligned-stack-slot"),
         (
             "declare token @llvm.coro.id(i32, ptr, ptr, ptr)\n\

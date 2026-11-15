@@ -92,7 +92,7 @@ fn every_name() {
     let cases: Vec<(&str, Option<&'static str>)> = vec![
         ("abi:cc", refusal(&t, CallConv::COLD, void, &[], None)),
         ("abi:cc", refusal(&t, CallConv::TAIL, void, &[(i64, NONE)], None)),
-        ("abi:cc", refusal(&t, CallConv::AARCH64_VECTOR_PCS, void, &[], None)),
+        ("abi:cc", refusal(&t, CallConv::GHC, void, &[], None)),
         // What LLVM's verifier refuses.
         ("abi:invalid-signature", refusal(&t, c, void, &[(TypeId::VOID, NONE)], None)),
         ("abi:invalid-signature", refusal(&t, c, void, &[(function, NONE)], None)),
@@ -319,8 +319,16 @@ fn any_signature_is_answered() {
     }
     pool.push(deep);
 
-    let conventions =
-        [CallConv::C, CallConv::C, CallConv::C, CallConv::FAST, CallConv::SWIFT, CallConv::COLD];
+    let conventions = [
+        CallConv::C,
+        CallConv::C,
+        CallConv::C,
+        CallConv::FAST,
+        CallConv::SWIFT,
+        CallConv::COLD,
+        CallConv::WIN64,
+        CallConv::AARCH64_VECTOR_PCS,
+    ];
     let mems = [
         ParamMem::Sret,
         ParamMem::ByVal,
@@ -385,7 +393,10 @@ fn any_signature_is_answered() {
                 assert!(out.ret_memory.is_none() || out.ret.is_empty());
             }
             Err(unsupported) => {
-                assert!(UNSUPPORTED.contains(&unsupported.0), "{}", unsupported.0);
+                // WP-247: `win64cc`'s own names (`spec/abi-a64.md` §13.6).
+                let named = UNSUPPORTED.contains(&unsupported.0)
+                    || hod_a64::cconv::UNSUPPORTED.contains(&unsupported.0);
+                assert!(named, "{}", unsupported.0);
                 assert_eq!(out, Assignment::default());
                 refused.insert(unsupported.0);
             }

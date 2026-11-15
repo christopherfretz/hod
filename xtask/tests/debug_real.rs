@@ -12,6 +12,7 @@ mod common;
 use std::path::{Path, PathBuf};
 
 use common::Scratch;
+use xtask::debug::lines::Class;
 use xtask::debug::sessions::{self, Options, Outcome, Report};
 use xtask::irdiff;
 
@@ -162,4 +163,44 @@ fn catches_differences_and_broken_tests() {
     assert_eq!(outcome(&report, "plain.c"), Outcome::Fail, "{summary}");
     assert!(summary.contains("hod's 'Breakpoint 1 at 0x?: file plain.c, line 3.'"), "{summary}");
     assert_eq!(report.exit_status(), 1, "{summary}");
+}
+
+// "Lines", `selector-split` (WP-250): in tests/debug/declare_fragment.c,
+// `sort`'s `j--` (line 18, an `add nsw i32 %j, -1` of clang 22's -O1 IR)
+// has a row in hod's program, none in the oracle's (SelectionDAG folds
+// it into the `subs` of line 17's loop test), and one under FastISel and
+// under GlobalISel of the same llc. The pair is set apart with that
+// evidence, listed and counted; nothing is unclassified.
+#[test]
+fn selector_split_sets_apart_with_evidence() {
+    let scratch = Scratch::new("debug-selector-split");
+    let mut options = options(&scratch);
+    (options.linkers, options.debuggers) = (vec!["lld".into()], vec!["gdb".into()]);
+    options.frontends = vec!["clang-19".into(), "clang-22".into()];
+    options.paths = vec![irdiff::workspace_root().join("tests/debug/declare_fragment.c")];
+    let report = sessions::run(&options).expect("the run can be made");
+    let summary = report.summary(true);
+    if !usable(&report, &options) {
+        return;
+    }
+    assert_eq!(report.exit_status(), 0, "{summary}");
+    assert_eq!(report.lines_total().unclassified(), 0, "{summary}");
+    for result in &report.lines {
+        let classed = result.report.hod_only.iter().filter(|(_, c)| *c == Class::SelectorSplit);
+        let pairs: Vec<_> = classed.map(|(p, _)| p.clone()).collect();
+        let evidence: Vec<_> = result.selector_splits.iter().map(|s| s.pair.clone()).collect();
+        assert_eq!(pairs, evidence, "{summary}");
+        assert!(result.report.llc_only.iter().all(|(_, c)| *c != Class::SelectorSplit));
+    }
+    let clang22 = report.lines.iter().find(|r| r.frontend == "clang-22").expect("{summary}");
+    let split = clang22.selector_splits.iter().find(|s| s.pair.0 == "sort" && s.pair.2 == 18);
+    let split = split.unwrap_or_else(|| panic!("no selector-split at sort:18\n{summary}"));
+    assert!(split.hod > 0 && split.fast_isel > 0 && split.global_isel > 0, "{summary}");
+    assert!(
+        summary.contains(
+            "selector-split: tests/debug/declare_fragment.c [clang-22] sort at \
+             declare_fragment.c:18: rows hod "
+        ),
+        "{summary}"
+    );
 }

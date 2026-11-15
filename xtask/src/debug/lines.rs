@@ -14,6 +14,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use super::permitted::{IrFacts, PairClass};
+use crate::fuzz::case::{SELECTOR_SPLIT, SelectorRows, SelectorSplit, selector_split};
 use crate::irdiff::process::{self, End, Limits};
 
 /// A function and a source position.
@@ -44,6 +45,11 @@ pub enum Class {
     /// prologue end is a statement on both sides, and hod's is at another
     /// line where the two programs' first code differs.
     PrologueEnd,
+    /// `spec/harness.md` "debug", "Lines", `selector-split` (WP-250): hod's
+    /// pair, otherwise unclassified, at which both of LLVM's other `-O0`
+    /// selectors (`FastISel`, `GlobalISel`) of the oracle's `llc` have a
+    /// row ([`crate::fuzz::case::selector_split`], [`set_apart_selector_splits`]).
+    SelectorSplit,
     /// Not a permitted difference: a finding.
     Unclassified,
 }
@@ -57,20 +63,51 @@ impl Class {
             Self::PostIndexedLoad => "post-indexed-load",
             Self::IsConstant => "is-constant",
             Self::PrologueEnd => "prologue-end",
+            Self::SelectorSplit => SELECTOR_SPLIT,
             Self::Unclassified => "unclassified",
         }
     }
 
     /// The classes, in the summary's order.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::P1,
         Self::P3,
         Self::LoadPlacement,
         Self::PostIndexedLoad,
         Self::IsConstant,
         Self::PrologueEnd,
+        Self::SelectorSplit,
         Self::Unclassified,
     ];
+}
+
+/// Whether `report` has a hod-only pair no class explains: only then are
+/// the other selectors' builds made ([`set_apart_selector_splits`]).
+pub fn has_unclassified_hod_only(report: &LinesReport) -> bool {
+    report.hod_only.iter().any(|(_, class)| *class == Class::Unclassified)
+}
+
+/// `selector-split` (WP-250): each hod-only pair of `report` left
+/// unclassified that [`selector_split`] sets apart, given hod's `is_stmt`
+/// row counts (`hod_rows`, [`stmt_row_counts`]) and those of the programs
+/// `FastISel` (`fast`) and `GlobalISel` (`global`) built, becomes
+/// [`Class::SelectorSplit`]; the evidence of each, in the pairs' order.
+/// An llc-only pair, or a pair another class explains, is never touched.
+pub fn set_apart_selector_splits(
+    report: &mut LinesReport,
+    hod_rows: &BTreeMap<Pair, usize>,
+    fast: &SelectorRows,
+    global: &SelectorRows,
+) -> Vec<SelectorSplit> {
+    let mut evidence = Vec::new();
+    for (pair, class) in report.hod_only.iter_mut().filter(|(_, c)| *c == Class::Unclassified) {
+        let rows = hod_rows.get(pair).copied().unwrap_or(0);
+        if let Some(split) = selector_split(pair, rows, fast, global) {
+            *class = Class::SelectorSplit;
+            evidence.push(split);
+        }
+    }
+    evidence
 }
 
 /// The comparison of one pair of programs.
@@ -690,10 +727,52 @@ Address            Line   Column File   ISA Discriminator OpIndex Flags
         assert_eq!(
             report.summary(),
             "same 3, hod only 1 (P1 0, P3 1, load-placement 0, post-indexed-load 0, \
-             is-constant 0, prologue-end 0, unclassified 0), llc only 2 (P1 1, P3 0, \
-             load-placement 0, post-indexed-load 0, is-constant 0, prologue-end 0, \
-             unclassified 1)"
+             is-constant 0, prologue-end 0, selector-split 0, unclassified 0), llc only 2 \
+             (P1 1, P3 0, load-placement 0, post-indexed-load 0, is-constant 0, \
+             prologue-end 0, selector-split 0, unclassified 1)"
         );
+    }
+
+    // spec/harness.md "debug", "Lines", `selector-split` (WP-250): hod's
+    // unclassified pair is set apart only with both other selectors' rows.
+    #[test]
+    fn selector_splits_set_apart_with_evidence() {
+        let pair = |line| ("sort".to_owned(), "declare_fragment.c".to_owned(), line);
+        let rows = |pairs: &[u32]| SelectorRows {
+            rows: pairs.iter().map(|&l| (pair(l), 1)).collect(),
+            ..SelectorRows::default()
+        };
+        let report = || LinesReport {
+            same: 10,
+            hod_only: vec![(pair(18), Class::Unclassified), (pair(13), Class::P3)],
+            llc_only: vec![(pair(17), Class::Unclassified)],
+            ..LinesReport::default()
+        };
+        let hod_rows: BTreeMap<Pair, usize> = [(pair(18), 1), (pair(13), 1)].into();
+        let both = rows(&[13, 17, 18]);
+
+        let mut split = report();
+        let evidence = set_apart_selector_splits(&mut split, &hod_rows, &both, &both);
+        assert_eq!(split.hod_only[0].1, Class::SelectorSplit);
+        assert_eq!(evidence.len(), 1);
+        assert_eq!((evidence[0].hod, evidence[0].fast_isel, evidence[0].global_isel), (1, 1, 1));
+        // Another class's pair and the llc-only pair are untouched.
+        assert_eq!(split.hod_only[1].1, Class::P3);
+        assert_eq!(split.llc_only[0].1, Class::Unclassified);
+        assert_eq!(split.unclassified(), 1);
+        assert!(split.summary().contains("selector-split 1, unclassified 0), llc only"));
+
+        // One selector without the row, or without evidence: a finding.
+        let without = rows(&[13, 17]);
+        let fell_back = SelectorRows { no_evidence: ["sort".to_owned()].into(), ..both.clone() };
+        let failed = SelectorRows { failed: true, ..both.clone() };
+        for (fast, global) in
+            [(&both, &without), (&without, &both), (&both, &fell_back), (&failed, &both)]
+        {
+            let mut kept = report();
+            assert!(set_apart_selector_splits(&mut kept, &hod_rows, fast, global).is_empty());
+            assert_eq!(kept, report());
+        }
     }
 
     // spec/harness.md "debug", "Columns": positions, sequences, classes.

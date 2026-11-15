@@ -12,8 +12,8 @@ are WP-150's, not measured again). The reference is `llc -O0
 
 | | |
 |---|---|
-| date | 2026-11-15 06:14 to 06:29 EST (WP-257, the candidate: "At the candidate" below); the sections after it 2026-11-15 (WP-244); the `-g` set 2026-11-13 (WP-150) |
-| hod | the candidate `C` = `02fe2d02`, its frozen release binary `hod-02fe2d02` (sha256 `5c1e181de7f62e3a644a11b536495429674c76bb0be6203c5bf85a8c19c3633d`) for "At the candidate"; the sections after it: `e7e473af` (wave 25: `main` at `56a4695f` with kiln's pin at 1.2.0, wild and WP-238 part 1), release build (`cargo build --release -p hod_cli`); the `-g` set: WP-150's branch on `3a98566` |
+| date | 2026-11-15 15:02 to 15:15 EST (WP-257b, the candidate: "At the candidate" below); the sections after it 2026-11-15 (WP-244); the `-g` set 2026-11-13 (WP-150) |
+| hod | the candidate `C` = `e98267c0`, its frozen release binary `hod-e98267c0` (sha256 `e076c68e7c988cdbe504a8f97e2521feabdc94341f1418cf3baf70a485b9cbdc`, `hod version 0.0.0`) for "At the candidate"; the sections after it: `e7e473af` (wave 25: `main` at `56a4695f` with kiln's pin at 1.2.0, wild and WP-238 part 1), release build (`cargo build --release -p hod_cli`); the `-g` set: WP-150's branch on `3a98566` |
 | kiln | 1.2.0 at `8f93304ee` (the submodule's pin), release build; the corpus captured with it; the `-g` set: 1.0.1 at `bd60e1829` |
 | LLVM | 22.1.8 and 19.1.7 (`llc`, `llvm-dwarfdump`, clang), Debian packages |
 | debuggers | gdb 16.3; lldb 19.1.7 (`lldb-22` is not installed) |
@@ -22,16 +22,21 @@ are WP-150's, not measured again). The reference is `llc -O0
 
 ## At the candidate
 
-`C` = `02fe2d02`, kiln `K` = `8f93304ee`, the frozen binary above, every
-command with `HOD_REQUIRE_TOOLS=1 -j 3 --hod hod-02fe2d02` on the AArch64
-host, 2026-11-15 06:14 to 06:29 EST (WP-257). x86-64: `debug-x64.md`.
+`C` = `e98267c0`, kiln `K` = `8f93304ee`, the frozen binary above, every
+command with `HOD_REQUIRE_TOOLS=1 -j 3 --hod hod-e98267c0` on the AArch64
+host, 2026-11-15 15:02 to 15:15 EST (WP-257b). x86-64: `debug-x64.md`.
 
 | command | result | exit | wall |
 |---|---|---|---|
-| `cargo xtask debug run` | 993 results: 973 PASS, 16 XFAIL (`sret_entry.c`, §6.7), 3 XLINK (wild with gdb, WP-248), 1 SKIP, 0 FAIL, 0 XPASS, 0 ERROR; 1888 sessions; lines: same 1801, hod only 11 (P3 9, `selector-split` 2), `llc` only 18 (P1 18), **0 unclassified** | 0 | 7:21 |
-| `cargo xtask debug verify` (the corpus) | 18 `-g` modules: 18 built, 18 clean, 0 declined, 0 hod failures | 0 | 0:30 |
-| `cargo xtask debug kiln` | kiln's `tests/debuginfo`: 17 sessions, `llc` 15 pass, hod 15 pass, 13 with equal transcripts (`step_finish.cpp` and `template_names_anon_union.cpp` under lldb-19 pass with both, transcripts differ); no test passes with `llc` and not with hod. The 2 that fail (`class_decl_two_units.cpp`, gdb and lldb-19) fail identically with `llc`: the harness passes kiln's `%{test_dir}/Inputs/class_decl_defs.cpp` to kiln++ unsubstituted ("no such file or directory"), so that two-unit test is not measured | 0 | 0:25 |
-| `cargo xtask debug trees` (the corpus) | 18 `-g` modules: 8 same (822 DIEs), 8 permitted, 2 differ, 0 declined, 0 failed. The 2 are `lifetime-markers-O2-g-fpic-run.cpp` (LLVM 22, 19), unchanged from WP-244's record (`spec/landed/harness/WP-244.md`: an `-O2` unit; value-record locations, `DW_AT_rnglists_base`, `DW_AT_ranges`) | 1 | 0:21 |
+| `cargo xtask debug run` | 993 results: 973 PASS, 16 XFAIL (`sret_entry.c`, §6.7), 3 XLINK (wild with gdb, WP-248), 1 SKIP, 0 FAIL, 0 XPASS, 0 ERROR; 1888 sessions; lines: same 1801, hod only 11 (P3 9, `selector-split` 2), `llc` only 18 (P1 18), **0 unclassified** | 0 | 6:24 |
+| `cargo xtask debug verify` (the corpus) | 18 `-g` modules: 18 built, 18 clean, 0 declined, 0 hod failures | 0 | 0:14 |
+| `cargo xtask debug kiln` | kiln's `tests/debuginfo`: 17 sessions, `llc` 17 pass, hod 17 pass, 15 with equal transcripts (`step_finish.cpp` and `template_names_anon_union.cpp` under lldb-19 pass with both, transcripts differ); no test passes with `llc` and not with hod. The two-unit test `class_decl_two_units.cpp` (gdb and lldb-19) is measured since WP-259 (the harness expands kiln's `%{test_dir}`) and passes with both writers | 0 | 0:23 |
+| `cargo xtask debug trees` (the corpus) | 18 `-g` modules: 8 same (822 DIEs), 10 permitted (8 `realigned frame`; 2 `unit range lists, value records`: `lifetime-markers-O2-g-fpic-run.cpp`, LLVM 22 and 19, an `-O2` unit, classified by WP-260), 0 differ, 0 declined, 0 failed | 0 | 0:13 |
+
+At the previous candidate `02fe2d02` (WP-257, 06:14 to 06:29 EST) the
+same `debug run` and `debug verify` counts; `debug kiln` 15 of 17 (the
+two-unit test unmeasured before WP-259) and `debug trees` 2 differ, exit
+1 (the `-O2` unit, before WP-260's classes).
 
 L6 strict with `-g`: the corpus's 18 `-g` entries are part of 3.1
 (`docs/status/release.md`).
@@ -41,8 +46,8 @@ L6 strict with `-g`: the corpus's 18 `-g` entries are part of 3.1
 The table below is WP-244's at `e7e473af`; at the candidate (above) the
 `tests/debug` clause has no unclassified pair (the `declare_fragment.c`
 pair is set apart as `selector-split` since WP-250) and the run exits 0,
-and kiln's debugger tests were run again (15 of 17 sessions with both
-writers, the other 2 unmeasured, above).
+kiln's debugger tests were run again (17 of 17 sessions with both
+writers, above), and `debug trees` has no difference left (exit 0).
 
 | clause | verdict | what stands in the way (modules stopped) |
 |---|---|---|

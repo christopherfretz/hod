@@ -29,10 +29,22 @@ pub struct Search {
 }
 
 impl Search {
-    /// This process's `PATH` and `/usr/lib`.
+    /// This process's `PATH` and `/usr/lib`. The directory of the wild
+    /// `hod_testutil` finds (`HOD_WILD`, else the pinned release in
+    /// `.toolchain/wild`: [`hod_testutil::linkers::find_wild`]) is searched
+    /// first, so the matrix's wild is the one the tests link with.
     pub fn from_env() -> Self {
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        if let Some(wild) = hod_testutil::linkers::find_wild()
+            && wild.file_name().is_some_and(|name| name == "wild")
+            && let Some(dir) = wild.parent()
+        {
+            dirs.push(dir.to_path_buf());
+        }
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        dirs.extend(std::env::split_paths(&path));
         Self {
-            path: std::env::var_os("PATH").unwrap_or_default(),
+            path: std::env::join_paths(dirs).unwrap_or(path),
             llvm_root: PathBuf::from("/usr/lib"),
         }
     }
@@ -269,25 +281,31 @@ pub fn find_driver(search: &Search) -> Option<PathBuf> {
 }
 
 /// What the driver passes to a linker besides the test's own needs: one
-/// thread, because the harness is what runs things in parallel.
+/// thread, because the harness is what runs things in parallel; and for
+/// wild, which discards unused sections by default, `--no-gc-sections`
+/// (`hod_testutil::linkers::WILD_FLAGS`), so that the four linkers link
+/// the same sections.
 pub fn linker_flags(name: &str) -> &'static [&'static str] {
     match name {
         "lld" => &["-Wl,--threads=1"],
         "mold" => &["-Wl,--thread-count=1"],
+        "wild" => &["-Wl,--thread-count=1", "-Wl,--no-gc-sections"],
         _ => &[],
     }
 }
 
 /// Which linker's signature a linked program carries in its `.comment`
-/// section: `LLD <digit>` is lld's, `mold <digit>` is mold's. GNU ld leaves
-/// none.
+/// section: `LLD <digit>` is lld's, `mold <digit>` is mold's, `Linker: Wild
+/// <digit>` is wild's. GNU ld leaves none.
 pub fn signature(program: &[u8]) -> Option<&'static str> {
     let has = |marker: &[u8]| {
         program
             .windows(marker.len() + 1)
             .any(|w| w.starts_with(marker) && w[marker.len()].is_ascii_digit())
     };
-    if has(b"mold ") {
+    if has(b"Linker: Wild ") {
+        Some("wild")
+    } else if has(b"mold ") {
         Some("mold")
     } else if has(b"LLD ") {
         Some("lld")
@@ -296,13 +314,13 @@ pub fn signature(program: &[u8]) -> Option<&'static str> {
     }
 }
 
-/// Checks that `program` was linked by the linker named `name`. `wild` is
-/// not checked: its signature is not specified yet.
+/// Checks that `program` was linked by the linker named `name`.
 pub fn check_signature(name: &str, program: &[u8]) -> Result<(), String> {
     let expected = match name {
         "bfd" => None,
         "lld" => Some("lld"),
         "mold" => Some("mold"),
+        "wild" => Some("wild"),
         _ => return Ok(()),
     };
     let found = signature(program);
@@ -461,7 +479,11 @@ mod tests {
         assert_eq!(check_signature("bfd", gnu), Ok(()));
         assert_eq!(check_signature("lld", lld), Ok(()));
         assert_eq!(check_signature("mold", mold), Ok(()));
-        assert_eq!(check_signature("wild", gnu), Ok(()));
+        let wild = b"\0GCC: (Debian 14.2.0-19) 14.2.0\0Linker: Wild 0.11.0 non-git-build \
+                     (compatible with GNU linkers)\0";
+        assert_eq!(signature(wild), Some("wild"));
+        assert_eq!(check_signature("wild", wild), Ok(()));
+        assert!(check_signature("wild", gnu).is_err());
         let wrong = check_signature("lld", gnu).unwrap_err();
         assert!(wrong.contains("did not link with lld") && wrong.contains("no linker's"));
         let wrong = check_signature("bfd", mold).unwrap_err();
@@ -522,6 +544,6 @@ mod tests {
         assert_eq!(linker_flags("bfd"), &[] as &[&str]);
         assert_eq!(linker_flags("lld"), &["-Wl,--threads=1"]);
         assert_eq!(linker_flags("mold"), &["-Wl,--thread-count=1"]);
-        assert_eq!(linker_flags("wild"), &[] as &[&str]);
+        assert_eq!(linker_flags("wild"), &["-Wl,--thread-count=1", "-Wl,--no-gc-sections"]);
     }
 }

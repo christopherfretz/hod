@@ -168,8 +168,7 @@ fn thread_local_objects_run_as_clang_builds_them() {
         for linker in &toolchain.linkers {
             let exe = dir.join(format!("p-{who}-{}", linker.name));
             let mut link = Command::new(&gxx);
-            link.arg(format!("-fuse-ld={}", linker.name))
-                .arg(format!("-B{}", dir.join(format!("use-{}", linker.name)).display()))
+            link.args(linker.driver_flags())
                 .args(["-pthread", "-pie"])
                 .arg(&a_obj)
                 .arg(&b_obj)

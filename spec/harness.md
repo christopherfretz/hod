@@ -498,8 +498,11 @@ The build directory is `$CARGO_TARGET_DIR` when it is set, else
 - **Linkers.** `bfd`: `ld.bfd`, or `<prefix>-ld.bfd` for the other
   architecture (lld, mold and wild link every target as they are). `lld`: `ld.lld-N` on `PATH` or
   `/usr/lib/llvm-N/bin/ld.lld` for 22 then 19, then `ld.lld`. `mold`:
-  `mold`, then `ld.mold`. `wild`: `wild`, then `ld.wild`. The matrix is
-  every one of these that is found, in this order.
+  `mold`, then `ld.mold`. `wild`: the one `hod_testutil` finds ("Linkers"
+  under "Toolchain for tests": `HOD_WILD`, else the pinned release in
+  `.toolchain/wild/<version>/`) when its file is named `wild`, then
+  `wild`, then `ld.wild` on `PATH`. The matrix is every one of these
+  that is found, in this order.
 - **Emulator**, for the architecture that is not the host's ("Cross
   runs"): `qemu-<arch>` on `PATH`, then `qemu-<arch>-static`; and the
   cross system root `/usr/<prefix>` (the target's C library and dynamic
@@ -519,7 +522,7 @@ What is missing:
 | the linker driver | objects are built, nothing is linked or run ("Cross targets"), with a note | failure |
 | the emulator or the system root, for the other architecture | objects are built, nothing is linked or run ("Cross targets"), with a note | failure |
 | `bfd`, `lld` or `mold` | that linker is not in the matrix, with a note | failure |
-| `wild` | not in the matrix, with a note | still a note: it is optional until it is provisioned |
+| `wild` | not in the matrix, with a note | still a note: optional until a hosted run proves the set-up installs it (`hod_testutil::linkers::WILD_REQUIRED`) |
 | a linker named with `--linker` | usage error (exit status 2) | the same |
 
 A failure for a missing tool does not stop the run: the tests still run
@@ -557,13 +560,14 @@ run (else it is SKIP), in its own directory under the work directory:
    -B<dir with that linker as ld> -pie -Wl,--fatal-warnings -o <program>
    <objects>` and then `-lstdc++` and `-lm` as the test's `link` directive
    asks; `-no-pie` instead of `-pie` for `link: no-pie`, and no
-   `-Wl,--fatal-warnings` for `link: allow-warnings`. lld and mold are
-   told to use one thread (`-Wl,--threads=1`, `-Wl,--thread-count=1`): the
-   harness is what runs things in parallel. The harness then checks which
-   linker made the program, by the signature in its `.comment` section
-   (`LLD <digit>`, `mold <digit>`, neither for GNU ld; wild's is not
-   specified yet and is not checked); a program made by another linker is
-   an ERROR. The program runs in its directory with the test's `args` and
+   `-Wl,--fatal-warnings` for `link: allow-warnings`. lld, mold and wild
+   are told to use one thread (`-Wl,--threads=1`, `-Wl,--thread-count=1`):
+   the harness is what runs things in parallel. wild also gets
+   `-Wl,--no-gc-sections`: it discards unused sections by default, the
+   other three do not. The harness then checks which linker made the
+   program, by the signature in its `.comment` section (`LLD <digit>`,
+   `mold <digit>`, `Linker: Wild <digit>`, none for GNU ld); a program
+   made by another linker is an ERROR. The program runs in its directory with the test's `args` and
    `stdin`.
 4. **Compare.** The oracle's program against the directives: how it ended
    (`exit`) and its standard output, byte for byte. hod's program against
@@ -1185,9 +1189,8 @@ Nothing is ever installed by a test.
 `crates/hod_obj/tests/common/linking.rs`'s `Toolchain` holds a target, its
 drivers, its linkers and its runner: `Toolchain::host` is the host's
 (unchanged from before targets: `gcc`, the linkers as they are, the
-program run directly), `Toolchain::for_target` any target's. A linker is
-selected with `-B<dir>` holding it as `ld.<name>` and `-fuse-ld=<name>`
-(`spec/object.md` "Toolchains"); lld is selected per major
+program run directly), `Toolchain::for_target` any target's. Its linkers
+are the matrix's ("Linkers" below); lld is also selected per major
 (`Toolchain::lld(scratch, 19 or 22)`, since only `ld.lld-19` and
 `ld.lld-22` are installed). An emulated program has a five-minute limit.
 
@@ -1204,6 +1207,54 @@ the cross gcc and of `llc` only, no hod code generation):
 `cxx_exceptions_and_thread_locals_run`, `llc_objects_run`,
 `the_emulated_cpu_is_the_baseline` (the emulated x86-64 CPU reports SSE2
 and not SSE3, CMPXCHG16B or POPCNT, and `popcnt` dies with SIGILL).
+
+### Linkers
+
+`hod_testutil::linkers` (`crates/hod_testutil/src/linkers.rs`) is the one
+description of the linker matrix (`docs/VALIDATION.md` "Linker matrix")
+for every test that links: `MATRIX` is `bfd`, `lld`, `mold`, `wild`, in
+report order; `present(target)` is the ones found for a target;
+`driver_flags(dir, name, program)` the `gcc`/`g++` flags that select one.
+
+- **Finding.** `bfd`: `ld.bfd`, or `<prefix>-ld.bfd` for the other
+  architecture. `lld`: as `find_tool` finds `ld.lld` (22, then 19).
+  `mold`: `ld.mold`. lld, mold and wild link both targets from either
+  host: they take the target from the driver's `-m <emulation>`
+  (`elf_x86_64`, `aarch64linux`). `wild`, by `find_wild`, first found of:
+  1. `HOD_WILD`, the path of the executable (set to anything but a file,
+     it panics: a misconfiguration is not a skip);
+  2. `.toolchain/wild/<WILD_VERSION>/wild` in the checkout or any
+     directory above it (where the workspace's provisioning script
+     installs the pinned release, `docs/status/linkers.md`);
+  3. `wild`, then `ld.wild`, on `PATH`.
+- **Missing.** A missing `bfd`, `lld` or `mold` is a note, and a failure
+  under `HOD_REQUIRE_TOOLS=1`. A missing wild is a note even then while
+  `WILD_REQUIRED` is false: it becomes true once a hosted run has shown
+  that the lanes' set-up (`.github/actions/hod-ci`, which exports
+  `HOD_WILD`) installs it.
+- **Selecting.** Each linker gets a directory `<dir>/use-<name>`, passed
+  with `-B`. GNU ld, lld and mold are in it as `ld.<name>` and selected
+  with `-fuse-ld=<name>`. GCC 14's driver refuses `-fuse-ld=wild`, so
+  wild is in it as `ld`, the program the driver runs without
+  `-fuse-ld`, and it also gets `WILD_FLAGS` (`-Wl,--no-gc-sections`:
+  wild discards unused sections unless told not to, the other three keep
+  them unless told to; a test's own `-Wl,--gc-sections`, given later,
+  still wins).
+- **Which linker ran.** `signer(comment)` names the linker that signed
+  a program's `.comment` text: `LLD <version>`, `mold <version>`,
+  `Linker: Wild <version>`; GNU ld signs nothing. `Toolchain::link_ok`
+  requires the selected linker's signature.
+- **Exceptions.** `EXCEPTIONS` is the one table of the cases a linker is
+  excepted from: linker, version, a stable case name, class (`Linker`:
+  the linker's bug or an allowed difference, with a reproduction from
+  objects hod did not write; `Unsupported`: a feature the linker says it
+  lacks) and reason. A test asks `exception(linker, case)` and changes
+  that one assertion (to the excepted behaviour where it is known, so a
+  linker that changes makes the test fail and the row is revisited);
+  `tolerated_warning` is the diagnostic a silent link may print for one.
+  Unit tests: `signatures`, `exceptions_name_linkers_of_the_matrix_once`,
+  `the_pinned_wild_is_found_above_the_start`,
+  `wild_is_selected_as_ld_and_the_others_by_fuse_ld`.
 
 ## Jobserver
 

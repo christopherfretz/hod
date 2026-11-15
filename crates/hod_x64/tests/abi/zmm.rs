@@ -280,6 +280,26 @@ fn generator_makes_every_signature() {
     }
 }
 
+/// WP-238, §12: `llc` 19 and 22 (every configuration) abort on a call
+/// passing a `<1 x i1>` under AVX-512 ("LLVM ERROR: Cannot emit physreg
+/// copy instruction", naming no function), and compile the function that
+/// receives one. The batch pins the error on the caller by halving
+/// (`Batch::bisect`), so the grid leaves that one direction out as an
+/// `llc` crash and runs the rest.
+#[test]
+fn llc_cannot_pass_a_mask_of_one_under_avx512() {
+    let Some(base) = Tools::find() else { return };
+    let tools = base.with_machine(machines()[0].clone()).expect("the tools");
+    let cases = [Case::of(&[I32, vec(I1, 4)]), Case::of(&[vec(I1, 1), I32]), Case::of(&[I8])];
+    let batch = crate::run::Batch::new("abi-zmm-v1i1", &cases, 1, &tools);
+    for (config, llc) in &tools.llc {
+        let all = batch.bisect(*config, llc, &tools, &|_, _| true);
+        assert_eq!(all, Some((1, false)), "llc {}", config.tag());
+        let callee = batch.bisect(*config, llc, &tools, &|index, callee| index == 1 && callee);
+        assert_eq!(callee, None, "llc {}", config.tag());
+    }
+}
+
 /// The features a program compiled for `machine` may use that an x86-64
 /// processor with AVX-512 may lack, in LLVM's names: the vector ones the
 /// machine's feature string enables (`avx*` but AVX10, `fma`, `f16c`,

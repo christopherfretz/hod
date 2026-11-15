@@ -1190,6 +1190,17 @@ measurement, not a gate).
   caller's frame, and the callee relies on it (§6.2).
 - **Vectors.** The psABI's `__m128` and `__m256`; LLVM additionally
   splits, widens and scalarizes vector types C has no name for (§4.3).
+- **A `<1 x i1>` argument under AVX-512 (WP-238).** `llc` 19 and 22, at
+  `-O0` and `-O2`, `FastISel` or not, abort on a call that passes a
+  `<1 x i1>` when `avx512f` is on ("LLVM ERROR: Cannot emit physreg copy
+  instruction", naming no function; the value is in a mask register and
+  the copy to the argument's general register is not made); a function
+  receiving one, and a call returning one, compile. Reduced: `declare
+  void @f(<1 x i1>)` called with a loaded `<1 x i1>` under
+  `"target-features"="+avx512f"`. LLVM's bug, not a convention: hod
+  passes it as §4.3 says (one general piece of 1 byte, as without
+  AVX-512), and the grid leaves only that direction out, as an `llc` crash
+  (`zmm::llc_cannot_pass_a_mask_of_one_under_avx512`).
 - **Design 0006 §3's outline.** Where this document and the outline
   differ, this document follows `llc`: an `i128` on the stack leaves
   `r9` usable (LLVM 22; the outline's "r9 stays unused" is LLVM 19);

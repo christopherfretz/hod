@@ -259,6 +259,12 @@ fn run_on(
     // path, kill or panic by `Drop`); the time limit starts once it is held.
     let _slot = client.acquire();
     command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // The child leads a process group of its own, so that at the time
+    // limit everything it started dies with it (an emulator's program, a
+    // compiler's subprocess): a descendant left running would hold the
+    // pipes open, and the reads below would never end.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(command, 0);
     let mut child = spawn(command)
         .unwrap_or_else(|e| panic!("cannot run {}: {e}", command.get_program().display()));
     let mut input = child.stdin.take().expect("piped stdin");
@@ -283,6 +289,16 @@ fn run_on(
         let status = wait_until(&mut child, Instant::now() + timeout);
         (out_reader.join().unwrap_or_default(), err_reader.join().unwrap_or_default(), status)
     });
+    let mut stderr = stderr;
+    if status.is_none() {
+        // Said where every report of a failure prints standard error.
+        let _ = write!(
+            stderr,
+            "\n[hod_testutil: {} killed: timed out after {} s]\n",
+            command.get_program().display(),
+            timeout.as_secs()
+        );
+    }
     Outcome { status, stdout, stderr }
 }
 
@@ -313,6 +329,25 @@ fn spawn(command: &mut Command) -> std::io::Result<Child> {
     }
 }
 
+/// Kills the process group `child` leads ([`run_with`] makes one per
+/// child), with `kill(1)`: safe Rust has no `kill(2)` of a group. The
+/// group's id is the child's, which is not reaped yet, so it is not
+/// reused.
+fn kill_group(child: &Child) {
+    #[cfg(unix)]
+    {
+        let group = format!("-{}", child.id());
+        let _ = Command::new("kill")
+            .args(["-KILL", "--", &group])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    #[cfg(not(unix))]
+    let _ = child;
+}
+
 fn wait_until(child: &mut Child, deadline: Instant) -> Option<ExitStatus> {
     loop {
         match child.try_wait() {
@@ -321,6 +356,7 @@ fn wait_until(child: &mut Child, deadline: Instant) -> Option<ExitStatus> {
                 std::thread::sleep(Duration::from_millis(2));
             }
             _ => {
+                kill_group(child);
                 let _ = child.kill();
                 let _ = child.wait();
                 return None;
@@ -395,6 +431,30 @@ mod tests {
     fn run_kills_at_the_time_limit() {
         let outcome = run_with(Command::new("sleep").arg("30"), &[], Duration::from_millis(100));
         assert!(outcome.timed_out());
+        // The kill is said, not left as an empty standard error.
+        assert!(
+            outcome.stderr_text().contains("sleep killed: timed out after 0 s"),
+            "{}",
+            outcome.stderr_text()
+        );
+    }
+
+    /// WP-238: at the time limit the child's descendants die with it. One
+    /// left running would keep the pipes open, and `run_with` would wait
+    /// for it (here 600 s) instead of returning.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn run_kills_the_childs_descendants_at_the_time_limit() {
+        let mut shell = Command::new("sh");
+        shell.args(["-c", "sleep 600 & echo $!; sleep 600"]);
+        let outcome = run_with(&mut shell, &[], Duration::from_millis(500));
+        assert!(outcome.timed_out());
+        let pid = outcome.stdout_text().trim().to_owned();
+        assert!(pid.parse::<u32>().is_ok(), "{pid:?}");
+        // Gone, or a zombie its new parent has not reaped yet.
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+        let state = stat.rsplit(") ").next().and_then(|rest| rest.chars().next());
+        assert!(matches!(state, None | Some('Z' | 'X')), "{pid} is still running: {stat}");
     }
 
     // spec/harness.md "Jobserver", "Scope" and "Release": a child of

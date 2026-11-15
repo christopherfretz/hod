@@ -531,6 +531,49 @@ impl Batch {
         Batch { plans, harness }
     }
 
+    /// The one LLVM function (case, and whether it is the callee `lf_`)
+    /// of those `keep` selects that `llc` refuses in a module of its own,
+    /// found by halving the selection; `None` when no half is refused
+    /// alone (two functions that fail only together) or `llc` times out.
+    pub fn bisect(
+        &self,
+        config: Config,
+        llc: &Path,
+        tools: &Tools,
+        keep: &dyn Fn(usize, bool) -> bool,
+    ) -> Option<(usize, bool)> {
+        let scratch = &self.harness.scratch;
+        let tag = config.tag();
+        let attrs = tools.machine.as_ref().map(Machine::attributes);
+        let refused = |set: &[(usize, bool)]| {
+            let set: HashSet<(usize, bool)> = set.iter().copied().collect();
+            let module = ir::module_with(
+                &self.plans,
+                &|index, hod_calls| set.contains(&(index, hod_calls)),
+                attrs.as_deref(),
+            );
+            let source = scratch.write(&format!("llvm{tag}-half.ll"), module);
+            let compiled =
+                compile(llc, config, &source, &scratch.join(format!("llvm{tag}-half.o")));
+            !compiled.success() && !compiled.timed_out()
+        };
+        let mut candidates: Vec<(usize, bool)> = (0..self.plans.len())
+            .flat_map(|index| [(index, true), (index, false)])
+            .filter(|&(index, hod_calls)| keep(index, hod_calls))
+            .collect();
+        while candidates.len() > 1 {
+            let (low, high) = candidates.split_at(candidates.len() / 2);
+            candidates = if refused(low) {
+                low.to_vec()
+            } else if refused(high) {
+                high.to_vec()
+            } else {
+                return None;
+            };
+        }
+        candidates.first().copied().filter(|one| refused(std::slice::from_ref(one)))
+    }
+
     /// Compiles the LLVM side with `llc`, links, runs and compares.
     pub fn run(&self, config: Config, llc: &Path, tools: &Tools) -> Report {
         let mut report = Report::default();
@@ -564,6 +607,12 @@ impl Batch {
                     .take_while(char::is_ascii_digit)
                     .collect();
                 Some((digits.parse::<usize>().ok()?, hod_calls))
+            });
+            // WP-238: an error that names no function ("Cannot emit
+            // physreg copy instruction") is pinned on one by halving.
+            let culprit = culprit.or_else(|| {
+                (!compiled.timed_out())
+                    .then(|| self.bisect(config, llc, tools, &|i, h| runs(&left_out, i, h)))?
             });
             match culprit {
                 Some(culprit) if left_out.len() < 32 && left_out.insert(culprit) => {

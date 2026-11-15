@@ -3756,7 +3756,13 @@ missing required tool; else 0. 2 is a usage error.
 `debug kiln` runs kiln's own debugger tests (`<kiln repo>/tests/debuginfo/
 *.cpp` with `//@ expect: debugger`; kiln's `spec/harness.md`) with kiln's
 directives `std:` (default `c++26`), `args:`, `gdb:`, `lldb:`,
-`gdb-check:`, `lldb-check:`. Each is compiled and linked by `kiln++
+`gdb-check:`, `lldb-check:`. In `args:` the placeholders of kiln's runner
+are expanded (WP-259), relative to the repository's root: `%{test_dir}`
+is the test's directory (`tests/debuginfo`), `%{repo_root}` is `.`,
+`%{resource_dir}` is `resource`; any other (`%{gcc_toolchain}`,
+`%{libcxx_modules}`) fails the test's compile with both writers, naming
+it (test: `debug::kiln::tests::expands_kiln_placeholders`). Each is
+compiled and linked by `kiln++
 --llvm-dir=<dir> -std=<std> -fno-crash-diagnostics <args> -O0 -g`, from
 the kiln repository's root with the test's relative path (the checks name
 `tests/debuginfo/...`), twice: with LLVM 22's installation (`llc`), and

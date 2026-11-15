@@ -1,5 +1,65 @@
 # libc++ test suite through hod (hybrid and strict)
 
+## Fourth measurement (WP-233, 2026-11-14, strict and control, no `-g`)
+
+The whole suite natively on the AArch64 host, re-measured after about
+105 packages had landed since the third measurement, to find any
+regression. Strict hod (no fallback) and a control (kiln + `llc`) ran
+one after the other on the same host, with the same kiln, so the control
+is the reference, test by test. Evidence and commands:
+`spec/landed/harness/WP-233.md`.
+
+| | control (kiln + `llc`) | **strict (hod, no fallback)** |
+|---|---|---|
+| date | 2026-11-14, 16:51 to 18:23 EST | 2026-11-14, 18:23 to 19:49 EST |
+| hod | - | `main` at `46076a33`, release, a frozen copy (sha256 `e96294c9...35d3`) |
+| kiln | 1.1.0 at `21b9110a4`, release | the same |
+| total | 9,247 | 9,247 |
+| pass | 8,607 | **8,608** |
+| fail | 4 | 4 |
+| xfail | 46 | 46 |
+| xpass | 2 | 2 |
+| unsupported | 585 | 585 |
+| timeout | 3 | 2 |
+| wall time, `-j 4` | 5,526 s | 5,146 s |
+| `oom_kill` | 1 before, 1 after | 1 before, 1 after |
+| modules by hod | - | 7,226 of 7,226 (0 refusals, 0 fallback; hod 249 s summed over modules) |
+
+Setup: suite `llvmorg-22.1.8`, LLVM `/usr/lib/llvm-22` behind the shim,
+target `aarch64-unknown-linux-gnu`, host load average 20 to 40, the
+runner's own `-j 4` (`HOD_JOBSERVER_FIFO` set to a path that does not
+exist), `--timeout 20 --mem-limit 3072 --no-fail`. The command is
+`scripts/libcxx-hod-debug.sh control|strict <dir>` with `HOD_DEBUG_FLAGS=`
+set and empty, which leaves `-g` out (WP-233 added that option; the
+chain is otherwise WP-210's).
+
+**Result: strict equals the control.** One test changed outcome:
+`std/input.output/file.streams/fstreams/ifstream.members/buffered_reads.pass.cpp`,
+TIMEOUT in the control and PASS in strict. Alone at `-j 1`, twice in each
+mode, it timed out in both modes at the 20 s limit (26 to 30 s); with
+`--timeout 120` it passes in both (28 s with `llc`, 37 s with hod). It is
+a test that takes about the limit, not a hod difference. Both modes share
+everything else:
+
+- the four filesystem failures (`directory_iterator` and
+  `recursive_directory_iterator` `ctor.pass.cpp`, `remove.pass.cpp`,
+  `remove_all.pass.cpp`): the host's environment, as before;
+- the timeouts `lost_wakeup.pass.cpp` (passes alone at 120 s in both
+  modes, 47 s and 42 s) and `offset_range.pass.cpp` (times out alone at
+  120 s in both modes);
+- XPASS `libcxx/depr/depr.rel_ops/rel_ops.depr_in_cxx20.verify.cpp` and
+  `std/utilities/variant/variant.hash/hash.depr.verify.cpp` (kiln's
+  diagnostics, the same with either back end).
+
+The kiln pin moved to 1.2.0 (`8f93304ee`) and hod `main` to `56a4695f`
+right after this run. The x86-64 legs of WP-233
+(`docs/status/libcxx-hod-x64.md`) ran on that pair. These native numbers
+are therefore kiln 1.1.0 with hod `46076a33` until they are re-measured: a
+native control on kiln 1.2.0 (`-j 3`, the lanes' pool) is recorded for the
+release candidate's strict run to be compared against.
+
+## Earlier measurements (WP-077, WP-088, WP-102)
+
 libc++'s test suite with hod in the build: kiln is the front end, and hod's
 shim stands where kiln runs `llc`. In **hybrid** mode hod builds every module
 its support matrix accepts and hands the rest to the real `llc`. In

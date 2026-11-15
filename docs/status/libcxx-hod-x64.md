@@ -1,5 +1,62 @@
 # libc++ test suite on x86-64 through hod (hybrid)
 
+## WP-233 measurement (2026-11-14/15, strict and control, no `-g`)
+
+The whole suite for `x86_64-unknown-linux-gnu`, re-measured after about
+105 packages had landed since the run below, to find any regression:
+first a compile-and-link census (hybrid, binaries not run), then strict
+hod (no fallback) and a control (kiln + `llc`) under `qemu-x86_64`, shard
+by shard, control and strict of each shard one after the other on the same
+host. The control is the reference, test by test. Evidence and commands:
+`spec/landed/harness/WP-233.md`.
+
+| | census (hybrid, not run) | control (kiln + `llc`) | **strict (hod, no fallback)** |
+|---|---|---|---|
+| date (EST) | 2026-11-14 21:41 to 23:33 | 2026-11-14 23:36 to 2026-11-15 04:24, interleaved with strict | the same |
+| hod | `main` at `56a4695f`, release, a frozen copy (sha256 `f59b4cc6...6574`) | - | the same as the census |
+| kiln | 1.2.0 at `8f93304ee`, release | the same | the same |
+| total | 9,247 | 9,247 | 9,247 |
+| pass | (not run) | 8,607 | **8,608** |
+| fail | (not run) | 5 | 5 |
+| xfail | | 45 | 45 |
+| xpass | | 3 | 3 |
+| unsupported | 585 | 585 | 585 |
+| timeout | | 2 | 1 |
+| wall time, `-j 4` | 6,720 s | 8,328 s (sum of 20 shards) | 8,250 s (sum of 20 shards) |
+| `oom_kill` | 1 before, 1 after | 1 before and after every shard | the same |
+| modules by hod | 7,226 of 7,226, 0 refusals, 0 fallback (hod 266 s summed) | - | 7,226 of 7,226, 0 fallback (hod 252 s summed) |
+
+Setup: suite `llvmorg-22.1.8`, the baseline's amd64 libc++ 22.1.8
+archives, `qemu-x86_64` user mode, host load average 20 to 40, the
+runner's own `-j 4` (`HOD_JOBSERVER_FIFO` set to a path that does not
+exist), `--timeout 160 --run-timeout-long 1920 --mem-limit 3072
+--no-fail`. The command is `scripts/libcxx-hod-debug.sh control|strict
+<dir> --shard K/20` with `HOD_DEBUG_TARGET=x86_64` and `HOD_DEBUG_FLAGS=`
+set and empty (no `-g`); the census is `hybrid <dir>` with
+`HOD_X64_QEMU=/bin/true`. In the census the 13 FAILs are all `.sh.cpp`
+tests that check a program's output (`print.fun`, the narrow and wide
+stream objects), meaningless when nothing runs.
+
+**Result: strict equals the control, and hod refuses nothing.** One test
+changed outcome: `std/containers/unord/unord.multimap/local_iterators.pass.cpp`,
+a compile TIMEOUT (160 s, the `llc` path) in the control and PASS in
+strict. Alone at `-j 1`, twice in each mode, it passes in both modes
+(3.1 to 3.6 s): a timeout under load. Both modes share everything else:
+
+- the four filesystem failures of the native page plus
+  `std/input.output/filesystems/fs.op.funcs/fs.op.copy_file/copy_file_procfs.pass.cpp`,
+  run failures with `llc` as well (the host and qemu, not hod);
+- the timeout `std/input.output/file.streams/fstreams/ifstream.members/offset_range.pass.cpp`;
+- XPASS `libcxx/depr/depr.rel_ops/rel_ops.depr_in_cxx20.verify.cpp`,
+  `std/utilities/variant/variant.hash/hash.depr.verify.cpp` and
+  `std/input.output/iostream.format/std.manip/setfill_wchar_max.pass.cpp`.
+
+The control's per-shard results are kept as the recorded x86-64 control on
+kiln `8f93304ee`, for the release candidate's strict run to be compared
+against.
+
+## Earlier measurement (WP-135)
+
 libc++'s test suite for `x86_64-unknown-linux-gnu`, built by kiln with hod
 standing where kiln runs `llc` (the shim), every test binary run under
 `qemu-x86_64` on the AArch64 host. In **hybrid** mode hod builds every

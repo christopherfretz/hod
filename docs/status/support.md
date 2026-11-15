@@ -266,7 +266,7 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:naked` | rejected | rejected | a naked function is its inline assembly, with no frame (`spec/codegen.md` §1) |
 | `attr:nounwind` | supported | supported | its absence is `function:may-unwind` |
 | `attr:returns_twice` | supported | supported | on a body, a call, or a function called directly |
-| `attr:alwaysinline` | supported | supported | an ordinary call; a body whose meaning depends on being inlined is declined (`spec/cli.md` "Always-inline", WP-021) |
+| `attr:alwaysinline` | supported | supported | an ordinary call; a body whose meaning depends on being inlined is declined (`spec/cli.md` "Always-inline", WP-021); a variable-length array's own `stacksave`/`stackrestore` pair is not (WP-237) |
 | `attr:ssp` | supported | supported | a guard above the escaping slots, checked at every exit (`spec/codegen.md` §5.6.24, WP-183) |
 | `attr:sspreq` | supported | supported | as `attr:ssp`, every function protected |
 | `attr:sspstrong` | supported | supported | as `attr:ssp` |

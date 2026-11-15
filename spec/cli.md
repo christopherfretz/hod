@@ -979,6 +979,23 @@ constructs that look inlining-sensitive and are not:
   `_FORTIFY_SOURCE` checks that only lose precision.
 - Dynamic `alloca`: inlined, LLVM wraps it in `stacksave`/`stackrestore`
   and frees it at the inlined return, which is the out-of-line lifetime.
+- A variable-length array's own pair (WP-237). A C front end writes one
+  at `-O0` as `%s = call ptr @llvm.stacksave.p0()`, `store ptr %s, ptr
+  %saved_stack`, the dynamic `alloca`, and at the end of its scope `%r =
+  load ptr, ptr %saved_stack` and `llvm.stackrestore(%r)`. A
+  `llvm.stacksave` result does not escape when every use is
+  `llvm.stackrestore` or a store into a slot (an `alloca` of the entry
+  block) that keeps saves only: every use of the slot is a store into it
+  of a `llvm.stacksave` result, a load from it whose result only
+  `llvm.stackrestore` uses, or `llvm.lifetime.start`/`.end`. The saved
+  pointer then never leaves one activation of the body: out of line the
+  pair restores the body's own stack pointer before it returns, so the
+  caller's is as it was and the array lives until the restore. Inlined,
+  `opt -passes=always-inline` (19 and 22) keeps the body's pair, which
+  then saves and restores the caller's stack pointer around the array,
+  and wraps the whole inlined body in a pair of its own (`%savedstack`):
+  the stack pointer after the body is the one before it there too, also
+  in a loop.
 - `musttail` in the callee becomes a plain call at a non-`musttail`
   site: the same meaning.
 
@@ -1013,7 +1030,7 @@ that LLVM inlines. Reported in the callee, by these stable names
 |---|---|---|
 | `alwaysinline:frame-address` | `llvm.frameaddress`, `llvm.sponentry`, `llvm.localaddress`, `llvm.eh.dwarf.cfa` | yes: the caller's frame (`llvm.frameaddress` alone: accepted with a frame bias where it has one, WP-197) |
 | `alwaysinline:return-address` | `llvm.returnaddress`, `llvm.addressofreturnaddress` | yes: the caller's return address (`llvm.returnaddress` alone: accepted with a frame bias where it has one, WP-197) |
-| `alwaysinline:stacksave-escapes` | an `llvm.stacksave` result used other than by `llvm.stackrestore` | yes: the caller's stack pointer |
+| `alwaysinline:stacksave-escapes` | an `llvm.stacksave` result used other than by `llvm.stackrestore`, directly or through a slot that keeps saves only (a variable-length array's `saved_stack`, above; WP-237): returned, passed to a call, stored anywhere else, or kept in a slot whose address is taken or that holds anything else | yes: the caller's stack pointer |
 | `alwaysinline:returns-twice` | a call that may return twice (`setjmp`, `vfork`) | only an `invoke` of it, or in a `returns_twice` body (WP-197); a `call` in any other body keeps the call, so hod does (WP-188) |
 | `alwaysinline:returns-local-address` | a return of a stack slot's address (through `getelementptr`, `select`, `phi`) | yes: `llc -O0` keeps the slot live for the whole caller, out of line it is dead |
 | `alwaysinline:frame-register-asm` | inline assembly whose template or constraints name `sp`, `fp`, `lr`, `x29`, `x30` (or the x86-64 frame registers) | yes: the caller's registers |

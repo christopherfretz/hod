@@ -51,6 +51,36 @@ Notes:
 2. abseil O0 strict: `absl_strerror_test` failed in the build's test run and passed 3 of 3 reruns under the same memory cap (`MALLOC_ARENA_MAX` 4).
 3. protobuf O0g hod: `full-test` failed in the build's test run and passed 3 of 3 reruns under the same memory cap (`MALLOC_ARENA_MAX` 4).
 
+## x86-64: the fifth set (WP-253)
+
+Host: aarch64; target: x86_64 (cross-built, tests under qemu-x86_64). Rows from `oss-report.py --target x86_64 status`; kiln 1.2.0 at `8f93304ee`; hod as named per row (`hod-02fe2d02` is the 1.0 candidate).
+
+| project | flavour | TUs | objects | built by hod | fell back | not offered | hybrid build | strict build | tests llc | tests hod | tests strict | against the control | hod | kiln |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| ctre | O0 | 25 | 25 | 25 | 0 | 0 | ok | ok | rc 0 | rc 0 | rc 0 | same | `hod-f59b4cc6` | `8f93304ee` |
+| ctre | O0g | 25 | 25 | 25 | 0 | 0 | ok | ok | rc 0 | rc 0 | rc 0 | same | `hod-f59b4cc6` | `8f93304ee` |
+| entt | O0 | 73 | 73 | 73 | 0 | 0 | ok | ok | 68/68 | 68/68 | 68/68 | same | `hod-f59b4cc6` | `8f93304ee` |
+| entt | O0g | 73 | 73 | 73 | 0 | 0 | ok | ok | 68/68 | 68/68 | 68/68 | same | `hod-f59b4cc6` | `8f93304ee` |
+| cereal | O0 | 39 | 39 | 39 | 0 | 0 | ok | ok | 40/40 | 40/40 | 40/40 | same | `hod-8ec6b21e` | `8f93304ee` |
+| cereal | O0g | 39 | 39 | 39 | 0 | 0 | ok | ok | 40/40 | 40/40 | 40/40 | same | `hod-8ec6b21e` | `8f93304ee` |
+| taskflow | O0 | 27 | 27 | 27 | 0 | 0 | ok | ok | 2462/2462 | 2462/2462 | 2462/2462 | same | `hod-8ec6b21e` | `8f93304ee` |
+| scnlib | O0 | 47 | 69 | 47 | 0 | 0 | ok | ok | 24/25 | 24/25 | 24/25 | same | `hod-02fe2d02` | `8f93304ee` |
+| scnlib | O0g | 47 | 69 | 47 | 0 | 0 | ok | ok | 24/25 | 24/25 | 24/25 | same | `hod-02fe2d02` | `8f93304ee` |
+| daw_json_link | O0 | 159 | 159 | 159 | 0 | 0 | failed (0 TUs) | failed (0 TUs) | 147/147 | 104/147 | 104/147 | hod: 43 worse (programs that did not link); strict: 43 worse (programs that did not link) | `hod-02fe2d02` | `8f93304ee` |
+| daw_json_link | O0g | 159 | 159 | 159 | 0 | 0 | failed (0 TUs) | failed (0 TUs) | 147/147 | 104/147 | 104/147 | hod: 43 worse (programs that did not link); strict: 43 worse (programs that did not link) | `hod-02fe2d02` | `8f93304ee` |
+| mp_units | O0 | 64 | 64 | 64 | 0 | 0 | ok | ok | 25/25 | 25/25 | 25/25 | same | `hod-02fe2d02` | `8f93304ee` |
+| mp_units | O0g | 64 | 64 | 64 | 0 | 0 | ok | ok | 25/25 | 25/25 | 25/25 | same | `hod-02fe2d02` | `8f93304ee` |
+| reflect_cpp | O0 | 327 | 323 | 323 | 0 | 0 | ok | ok | 484/484 | 484/484 | 484/484 | same | `hod-02fe2d02` | `8f93304ee` |
+| reflect_cpp | O0g | 327 | 323 | 323 | 0 | 0 | ok | ok | 484/484 | 484/484 | 484/484 | same | `hod-02fe2d02` | `8f93304ee` |
+| libunifex | O0 | 114 | 114 | 97 | 17 | 0 | failed (17 TUs) | - | 91/94 | 76/94 | - | hod: 15 worse (programs not built) | `hod-02fe2d02` | `8f93304ee` |
+| libunifex | O0g | 114 | 114 | 97 | 17 | 0 | failed (17 TUs) | - | 91/94 | 76/94 | - | hod: 15 worse (programs not built) | `hod-02fe2d02` | `8f93304ee` |
+
+1. scnlib: the 69 objects include 22 link rows of kiln's statistics log; the object jobs are 47, all by hod. `scn_stdin_test` fails in every mode: its Python driver runs the x86-64 program directly, not under qemu.
+2. daw_json_link: every object is built by hod, but 47 of 158 links fail: hod keeps the call to `daw::ensure::ensure_compile_error(bool)` (declared, never defined) in the arm of `if (__builtin_constant_p(b))` (`llvm.is.constant.i1` on a non-constant), which llc folds away. Every program that links passes. Fixed by WP-261; re-run at the next candidate.
+3. libunifex: 17 objects (coroutine `connect_impl` functions with `invoke` of `llvm.coro.await.suspend.*`) stop hod with an internal error ("a label that code refers to was never bound"); kiln's fallback warning becomes an error under the project's `-Werror`, so the hybrid build loses them too, and no strict build ran. The 3 io_uring tests fail in the control (not executable under qemu).
+4. reflect_cpp: 4 of the 327 TUs are precompiled headers (no object).
+5. taskflow `-O0 -g`, glaze and stdexec were not run in WP-253.
+
 ## Refusal census (hybrid builds)
 
 No refusal: every module kiln offered hod in the hybrid builds was built by hod.

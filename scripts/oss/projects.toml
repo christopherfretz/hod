@@ -498,3 +498,146 @@ test = "mkdir -p whole && emu=$(sed -n 's/^CMAKE_CROSSCOMPILING_EMULATOR:[A-Z]*=
 test_timeout = 10800
 test_vmem_kb = 16000000
 notes = "WP-211. gRPC with every dependency bundled (submodules): libgrpc, libgrpc++ and grpc_cpp_plugin (protoc built from the bundled protobuf), plus 24 test programs (core unit tests and the C++ end2end suites end2end_test, async_end2end_test, generic_end2end_test, client_callback_end2end_test); C (BoringSSL without asm, c-ares, zlib, upb, address_sorting) through kiln-cc."
+
+# ---------------------------------------------------------------- fifth set (WP-253)
+# Copies of kiln's rows at kiln 8f93304ee (kiln's `@OSS@` is `@KILN_OSS@`
+# here: kiln's shims are read where they are). The notes are kiln's.
+
+[ctre]
+url = "https://github.com/hanickadot/compile-time-regular-expressions"
+tag = "v3.11.0"
+build = "cmake"
+cxx_std = 20
+configure = ["-DCTRE_BUILD_TESTS=ON", "-DCTRE_BUILD_PACKAGE=OFF"]
+build_targets = ["ctre-test"]
+test = "n=$(ls tests/libctre-test-*.a 2>/dev/null | wc -l); echo \"$n/25 test archives\"; [ \"$n\" -eq 25 ]"
+c_compiler = "clang-19"
+wave = 4
+verified = true
+notes = "WP-792. The test suite is compile-only: 25 static_assert-heavy TUs, each built into a static library by the EXCLUDE_FROM_ALL target ctre-test; the test command checks that all 25 archives exist."
+
+[entt]
+url = "https://github.com/skypjack/entt"
+tag = "v3.15.0"
+build = "cmake"
+cxx_std = 20
+configure = ["-DENTT_BUILD_TESTING=ON", "-DENTT_BUILD_BENCHMARK=OFF", "-DENTT_BUILD_EXAMPLE=OFF"]
+test = "ctest --output-on-failure"
+c_compiler = "clang-19"
+wave = 2
+verified = true
+notes = "googletest is fetched with FetchContent at GIT_TAG main (unpinned)."
+
+[cereal]
+url = "https://github.com/USCiLab/cereal"
+tag = "v1.3.2"
+build = "cmake"
+cxx_std = 17
+configure = ["-DBUILD_TESTS=ON", "-DSKIP_PERFORMANCE_COMPARISON=ON", "-DSKIP_PORTABILITY_TEST=ON", "-DBUILD_SANDBOX=OFF", "-DBUILD_DOC=OFF", "-DWITH_WERROR=OFF", "-DCEREAL_INSTALL=OFF", "-DCMAKE_CXX_FLAGS=-Wno-error=missing-template-arg-list-after-template-kw -Wno-error=c++11-narrowing-const-reference"]
+test = "ctest --output-on-failure"
+c_compiler = "clang-19"
+wave = 2
+verified = true
+notes = "Boost-dependent tests are skipped when Boost is absent. The 32-bit (-m32) portability tests are skipped (no multilib on aarch64); clang 19 default-error warnings in cereal tuple.hpp and the aarch64 unsigned-char narrowing in the unit tests are demoted to warnings."
+
+[taskflow]
+url = "https://github.com/taskflow/taskflow"
+tag = "v3.10.0"
+build = "cmake"
+cxx_std = 20
+configure = ["-DTF_BUILD_TESTS=ON", "-DTF_BUILD_EXAMPLES=OFF", "-DTF_BUILD_BENCHMARKS=OFF"]
+test = "ctest --output-on-failure"
+c_compiler = "clang-19"
+wave = 2
+verified = true
+notes = "Threads, coroutine-free task graphs; tests use the bundled doctest."
+
+[scnlib]
+url = "https://github.com/eliaskosunen/scnlib"
+tag = "v4.0.1"
+build = "cmake"
+cxx_std = 20
+configure = ["-DSCN_TESTS=ON", "-DSCN_BENCHMARKS=OFF", "-DSCN_BENCHMARKS_BUILDTIME=OFF", "-DSCN_BENCHMARKS_BINARYSIZE=OFF", "-DSCN_EXAMPLES=OFF", "-DSCN_DOCS=OFF", "-DSCN_WERROR=OFF"]
+test = "ctest --output-on-failure -j 4"
+c_compiler = "clang-19"
+wave = 4
+verified = true
+notes = "WP-792. googletest and fast_float are fetched at configure time (FetchContent) and built with the same compiler; std regex backend."
+
+[glaze]
+url = "https://github.com/stephenberry/glaze"
+tag = "v9.1.0"
+build = "cmake"
+cxx_std = 23
+configure = ["-Dglaze_DEVELOPER_MODE=ON", "-DBUILD_TESTING=ON", "-Dglaze_ENABLE_SANITIZERS=OFF", "-Dglaze_BUILD_NETWORKING_TESTS=OFF", "-Dglaze_BUILD_PERFORMANCE_TESTS=OFF", "-Dglaze_ENABLE_FUZZING=OFF"]
+test = "ctest --output-on-failure -j 4 --timeout 300"
+c_compiler = "clang-19"
+wave = 4
+verified = true
+notes = "WP-792. C++23 (the library requires it). Sanitizers (on by default for clang), networking tests (OpenSSL) and performance tests are off; standalone Asio is fetched at configure time (FetchContent). Precompiled headers on (WP-1023)."
+
+[daw_json_link]
+url = "https://github.com/beached/daw_json_link"
+tag = "v3.38.1"
+build = "cmake"
+cxx_std = 20
+configure = [
+  "-DDAW_ENABLE_TESTING=ON",
+  "-DDAW_JSON_USE_BOOST=OFF",
+  "-DCMAKE_PROJECT_daw-json-link_INCLUDE=@KILN_OSS@/shims/daw-pin-header-libraries.cmake",
+]
+test = "ctest --output-on-failure -j 4 --timeout 300"
+c_compiler = "clang-19"
+wave = 4
+verified = true
+notes = "WP-792. daw-header-libraries and daw-utf-range are fetched at configure time (FetchContent); a shim (kiln's, read in place) pins header_libraries to v2.135.0 (the tests otherwise take its moving `v2` branch, which no longer builds v3.38.1). The Boost-using tests are off: the system Boost 1.83 has no Boost.Container CMake package."
+
+[mp_units]
+url = "https://github.com/mpusz/mp-units"
+tag = "v2.5.0"
+build = "cmake"
+cxx_std = 20
+configure = ["-DMP_UNITS_API_CONTRACTS=NONE", "-DMP_UNITS_BUILD_CXX_MODULES=OFF"]
+deps = ["catch2"]
+test = "ctest --output-on-failure -j 4"
+c_compiler = "clang-19"
+wave = 4
+verified = true
+notes = "WP-792. kiln's row has control_cxx = g++-16 (clang 19 cannot build mp-units); hod's control is kiln with llc, so the key is left out here. Catch2 (the catch2 row) is a dependency; contracts off (no gsl-lite). test/static is static_assert-only; test/runtime is Catch2."
+
+[reflect_cpp]
+url = "https://github.com/getml/reflect-cpp"
+tag = "v0.27.1"
+build = "cmake"
+cxx_std = 20
+configure = ["-DREFLECTCPP_BUILD_TESTS=ON", "-DREFLECTCPP_USE_VCPKG=OFF", "-DCMAKE_CXX_FLAGS_RELEASE=-O3 -DNDEBUG -g0 -Wno-error"]
+deps = ["googletest"]
+test = "ctest --output-on-failure -j 4 --timeout 300"
+c_compiler = "clang-19"
+wave = 4
+verified = true
+notes = "WP-792. C++20 field reflection by structured bindings and __PRETTY_FUNCTION__ (not P2996). JSON only (bundled yyjson); googletest is a dependency built with the same compiler. Precompiled headers on for both compilers (WP-1023); the test flags' -ggdb and -Werror are overridden by -g0 -Wno-error in CMAKE_CXX_FLAGS_RELEASE."
+
+[libunifex]
+url = "https://github.com/facebookexperimental/libunifex"
+tag = "v0.4.0"
+build = "cmake"
+cxx_std = 20
+configure = []
+test = "ctest --output-on-failure --timeout 300 -j 4"
+c_compiler = "clang-19"
+wave = 4
+verified = true
+notes = "WP-789. C++20, so FindCoroutines picks <coroutine> and the coroutine paths are built (UNIFEX_NO_COROUTINES 0); googletest 1.14 is fetched at configure time; liburing 2.9 found, so the io_uring context is built too."
+
+[stdexec]
+url = "https://github.com/NVIDIA/stdexec"
+tag = "nvhpc-26.05"
+build = "cmake"
+cxx_std = 20
+configure = []
+test = "ctest --output-on-failure --timeout 300 -j 4"
+c_compiler = "clang-19"
+wave = 4
+verified = true
+notes = "WP-789. NVIDIA's P2300 std::execution reference implementation; tests (Catch2 3.14, fetched by rapids-cmake/CPM at configure time) and examples on, its defaults (C++20)."

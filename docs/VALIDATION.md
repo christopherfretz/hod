@@ -295,7 +295,12 @@ scripts/oss/oss-build.sh re2 --mode strict --flavour O0g   # one build
 python3 scripts/oss/oss-report.py status --out docs/status/oss.md
 ```
 
-Results: `docs/status/oss.md` (generated); LLVM and Clang, built by their
+Results: `docs/status/oss.md` and, for x86-64, `docs/status/oss-x64.md`
+(generated; `status --root` reads several lanes' roots, `--provenance
+scripts/oss/provenance-<target>.tsv` adds the hod and kiln commits a
+report does not carry and the lanes' notes, `--candidate` marks the rows
+measured before the candidate: `docs/RELEASE.md` section 7 has each
+page's one command); LLVM and Clang, built by their
 own scripts (`scripts/oss/llvm/`), are in `docs/status/oss-llvm.md`. The
 refused modules are kept
 under `findings/oss/<project>/<reason>/` in the build root, with their
@@ -334,9 +339,13 @@ pass count does not.
 
 ### Linker matrix
 
-Every linking test runs with each of: GNU ld, lld, mold and wild
-(`hod_testutil::linkers`, `spec/harness.md` "Linkers"). The same object
-must link with all of them and the programs must behave identically.
+Every linking test runs with each of: GNU ld, lld and mold, which are
+required, and wild where it is installed (`hod_testutil::linkers`,
+`spec/harness.md` "Linkers"). The same object must link with all of them
+and the programs must behave identically. wild is optional and not a
+condition of a release: hod's code generators and object writer take no
+workaround for it, and what it cannot pass is excepted on the harness
+side as below.
 Linker versions are pinned in the provisioning script and recorded in
 status reports; what links and runs per linker and target, and every
 exception with its reason, is `docs/status/linkers.md`.
@@ -346,9 +355,9 @@ the workspace's provisioning script under `.toolchain/wild/<version>/`
 and by the hosted set-up (`.github/actions/hod-ci`, checksum verified,
 `HOD_WILD`). It is selected as the driver's `ld` with `-B` (GCC 14 has no
 `-fuse-ld=wild`) and given `--no-gc-sections`, since it discards unused
-sections by default where the other three do not. A missing wild stays a
-note under `HOD_REQUIRE_TOOLS=1` until a hosted run proves the set-up
-(`linkers::WILD_REQUIRED`).
+sections by default where the other three do not. A missing wild is a
+note under `HOD_REQUIRE_TOOLS=1`, never a failure
+(`linkers::WILD_REQUIRED` is false and stays so).
 
 A case one linker cannot pass is excepted in ONE table,
 `hod_testutil::linkers::EXCEPTIONS` (linker, version, case, class,
@@ -505,7 +514,15 @@ quick gate; `HOD_REQUIRE_TOOLS=1` makes each missing one a failure
 
 **Release candidate:** the full gate with `HOD_REQUIRE_TOOLS=1` (both
 targets, every linker, the corpora present); L8 strict at the pass rate kiln achieves with
-`llc`; L9; the fuzzing budget (L10, "The budget": `cargo xtask fuzz
+`llc`; L9 on the 1.0 set (`docs/RELEASE.md` section 5: the projects the
+lanes have measured up to the candidate; each page row names the hod and
+kiln commits it was measured at, a row measured at an earlier hod than
+the candidate is marked so and never presented as measured at it; the
+candidate re-runs the strict build and tests of as many rows as fit, in
+the order LLVM and Clang, DuckDB, gRPC, Boost, abseil, then the rest; a
+control is reused when kiln's pin and the project's revision are
+unchanged, since it does not depend on hod); the linkers GNU ld, lld and
+mold (wild is optional and not a condition); the fuzzing budget (L10, "The budget": `cargo xtask fuzz
 --budget` on the candidate's frozen hod, fresh seeds) with no open
 findings; and the support matrix
 in `docs/status/` regenerated. The benchmark gate is not a condition of
@@ -540,8 +557,13 @@ Intel SDE emulating a Sapphire Rapids (`.github/actions/sde`); only the
 grid's Knights Landing machine (ER, PF) stays skipped. `avx512.yml` (an
 `avx512/**` branch) runs them alone under SDE and fails when anything
 else did not execute. The `test x64` job's summary says what ran where;
-it uses SDE, and then fails the same way, only with the repository
-variable `HOD_CI_SDE=1` (not yet set), and skips otherwise.
+it uses SDE, and then fails the same way, with the repository variable
+`HOD_CI_SDE=1`, which is set (since 2026-11-15), and skips otherwise.
+Measured with it: the `test x64` job took 20 min 40 s on an AMD EPYC
+9V74, 17 AVX-512 programs natively, the 2 AVX512-FP16 programs under SDE,
+and Knights Landing's machine built and compared but not executed; on an
+Intel Xeon 6975P-C (no SDE needed) 19 programs ran natively in a 17-min
+job. A runner without AVX-512 (all 19 under SDE) is not measured yet.
 
 The libc++ suite with kiln runs natively on both runners in the `sweep`
 workflow (a `sweep/**` branch or by hand; never a required check), once

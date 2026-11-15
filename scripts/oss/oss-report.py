@@ -13,8 +13,16 @@
                                     times (default 2) under the row's
                                     memory cap, appending the count of
                                     passes to the tree's reruns.jsonl
-  oss-report.py status [--out F]    docs/status/oss.md from every report
-                                    (stdout without --out)
+  oss-report.py status [--out F] [--root DIR]... [--provenance F] [--candidate C]
+                                    docs/status/oss.md from every report
+                                    (stdout without --out); with --root,
+                                    the reports of each lane root named
+                                    (the newest report of a build wins);
+                                    --provenance names the hand-kept file
+                                    of hod commits, kiln commits and notes
+                                    (scripts/oss/provenance-<target>.tsv);
+                                    --candidate marks the rows measured at
+                                    another hod than the candidate's
   oss-report.py census [--out F]    the census page (the status rows and
                                     the refusals with their findings)
 
@@ -82,10 +90,12 @@ def load_reports(oss):
         except (OSError, json.JSONDecodeError):
             continue
         # The per-test results from the log, as this projects.py reads it
-        # (a report written by an older one is read alike).
+        # (a report written by an older one is read alike); a log this
+        # projects.py cannot read (a project's own test runner, not ctest)
+        # leaves the report's own results.
         log = os.path.join(os.path.dirname(path), "test.log")
         if r.get("test_rc") is not None and os.path.exists(log):
-            r["test_status"] = projects.test_results(log)[2]
+            r["test_status"] = projects.test_results(log)[2] or r.get("test_status") or {}
         # Reruns of single tests (`rerun`): {test: {"runs": n, "passed": k}}.
         r["reruns"] = {}
         rr = os.path.join(os.path.dirname(path), "reruns.jsonl")
@@ -99,6 +109,64 @@ def load_reports(oss):
                     a["passed"] += 1 if e["passed"] else 0
         reps[(r["project"], r["flavour"], r["mode"])] = r
     return reps
+
+
+def load_roots(oss_roots):
+    """The reports of several lane roots (`status --root`): for a (project,
+    flavour, mode) found under more than one root, the newest report (its
+    `date`) is the row's."""
+    reps = {}
+    for oss in oss_roots:
+        for k, r in load_reports(oss).items():
+            if k not in reps or (r.get("date") or "") > (reps[k].get("date") or ""):
+                reps[k] = r
+    return reps
+
+
+# The provenance file (`status --provenance`), hand-kept from the lanes'
+# state notes, one tab-separated row per line ('#' starts a comment):
+#   hod<TAB><binary name><TAB><hod commit>        a frozen copy named by its sha256
+#   kiln<TAB><project><TAB><flavour><TAB><mode><TAB><kiln>
+#                                                 for a report without a `kiln` field
+#                                                 (`*` matches any project, flavour or mode)
+#   note<TAB><Markdown>                           a numbered note under the table
+PROV = {"hod": {}, "kiln": [], "note": []}
+
+
+def load_provenance(path):
+    with open(path, encoding="utf-8") as f:
+        for n, line in enumerate(f, 1):
+            line = line.rstrip("\n")
+            if not line.strip() or line.startswith("#"):
+                continue
+            c = line.split("\t")
+            if c[0] == "hod" and len(c) == 3:
+                PROV["hod"][c[1]] = c[2]
+            elif c[0] == "kiln" and len(c) == 5:
+                PROV["kiln"].append(c[1:])
+            elif c[0] == "note" and len(c) == 2:
+                PROV["note"].append(c[1])
+            else:
+                sys.exit(f"oss-report: {path}:{n}: not a provenance row")
+
+
+def hod_commit(r):
+    """The hod commit of a report: the provenance file's for its binary,
+    else the binary's name without `hod-` and `main-` (a frozen copy's name
+    carries its commit)."""
+    name = os.path.basename(r.get("hod_path") or "")
+    if not name:
+        return ""
+    return PROV["hod"].get(name) or name.removeprefix("hod-").removeprefix("main-")
+
+
+def kiln_of(r):
+    if r.get("kiln"):
+        return r["kiln"]
+    for p, fl, m, k in PROV["kiln"]:
+        if p in ("*", r["project"]) and fl in ("*", r["flavour"]) and m in ("*", r["mode"]):
+            return k
+    return ""
 
 
 def order(reps):
@@ -136,17 +204,35 @@ def diff_tests(ctl, r):
     return worse, better
 
 
+def hod_commits(*rs):
+    return sorted({hod_commit(r) for r in rs if r} - {""})
+
+
 def hod_cell(*rs):
-    """The hod binaries of the hod and strict builds (a frozen copy's name
-    carries its commit: `hod-<sha>`)."""
-    names = sorted({os.path.basename(r.get("hod_path") or "") for r in rs if r} - {""})
-    return ", ".join(f"`{n}`" for n in names) or "-"
+    """The hod commits of the hod and strict builds (`hod_commit`)."""
+    return ", ".join(f"`{n}`" for n in hod_commits(*rs)) or "-"
 
 
 def kiln_cell(*rs):
     """The kiln commits of the row's builds (the control's included)."""
-    names = sorted({r.get("kiln") or "" for r in rs if r} - {""})
+    names = sorted({kiln_of(r) for r in rs if r} - {""})
     return ", ".join(f"`{n}`" for n in names) or "-"
+
+
+# `status --candidate <commit>`: the release candidate's hod commit; a row
+# whose hod or strict build used another hod is marked as measured before it.
+CANDIDATE = None
+
+
+def candidate_cell(*rs):
+    names = hod_commits(*rs)
+    if not names:
+        return "-"
+    if CANDIDATE == "-":  # not chosen yet: every row is measured before it
+        return "no: measured before the candidate"
+    c = CANDIDATE.lower()
+    at = all(n.lower().startswith(c) or c.startswith(n.lower()) for n in names)
+    return "yes" if at else "no: measured before the candidate"
 
 
 def status_rows(reps, notes=None):
@@ -154,9 +240,10 @@ def status_rows(reps, notes=None):
     recorded rerun (and at least two) is not counted worse: the cell says
     `same (rerun)` with a numbered note, appended to `notes`."""
     notes = [] if notes is None else notes
+    cand = " at the candidate |" if CANDIDATE else ""
     out = [
-        "| project | flavour | TUs | objects | built by hod | fell back | not offered | hybrid build | strict build | tests llc | tests hod | tests strict | against the control | hod | kiln |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "| project | revision | flavour | TUs | objects | built by hod | fell back | not offered | hybrid build | strict build | tests llc | tests hod | tests strict | against the control | hod | kiln |" + cand,
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|" + ("---|" if CANDIDATE else ""),
     ]
     for p in order(reps):
         for fl in FLAVOURS:
@@ -171,6 +258,9 @@ def status_rows(reps, notes=None):
             diffs = []
             reran = []
             for name, r in (("hod", h), ("strict", s)):
+                if l and l.get("tests") and r and not r.get("tests"):
+                    diffs.append(f"{name}: not tested")  # its build failed or its tests did not run
+                    continue
                 worse, better = diff_tests(l, r)
                 worse, better = worse or [], better or []
                 rr = (r or {}).get("reruns") or {}
@@ -193,9 +283,10 @@ def status_rows(reps, notes=None):
             elif reran:
                 diffs.append(", ".join(f"note {n}" for n in reran))
             out.append(
-                f"| {p} | {fl} | {ref['tus']['total']} | {c.get('objects', '-')} | {be.get('hod', '-') if c else '-'} | "
+                f"| {p} | {ref.get('tag') or '-'} | {fl} | {ref['tus']['total']} | {c.get('objects', '-')} | {be.get('hod', '-') if c else '-'} | "
                 f"{fell if c else '-'} | {no if c else '-'} | {build_cell(h)} | {build_cell(s)} | "
                 f"{test_cell(l)} | {test_cell(h)} | {test_cell(s)} | {'; '.join(diffs) or '-'} | {hod_cell(h, s)} | {kiln_cell(l, h, s)} |"
+                + (f" {candidate_cell(h, s)} |" if CANDIDATE else "")
             )
     return out
 
@@ -381,6 +472,7 @@ def page(reps, title, intro, findings=None):
     lines = [f"# {title}", "", *intro, ""]
     notes = []
     lines += status_rows(reps, notes)
+    notes += PROV["note"]
     if notes:
         lines += ["", "Notes:", ""] + [f"{i}. {n}" for i, n in enumerate(notes, 1)]
     lines += ["", "## Refusal census (hybrid builds)", ""]
@@ -450,16 +542,28 @@ def main():
     for n in ("status", "census"):
         s = sub.add_parser(n)
         s.add_argument("--out")
+        s.add_argument("--root", action="append", default=[],
+                       help="a lane root to read (repeatable); default $HOD_OSS_ROOT or <build root>/oss")
+        s.add_argument("--provenance", help="the provenance file: hod commits of frozen copies, kiln, notes")
+        s.add_argument("--candidate", help="the release candidate's hod commit: rows at another hod are marked"
+                       " (`-`: not chosen yet, every row is marked)")
     a = ap.parse_args()
-    global TARGET
+    global TARGET, CANDIDATE
     TARGET = a.target
     if a.cmd == "collect":
         return cmd_collect(a)
     if a.cmd == "rerun":
         return cmd_rerun(a)
-    oss, findings = roots()
-    nfind = target_findings(findings)
-    reps = load_reports(oss)
+    CANDIDATE = a.candidate
+    if a.provenance:
+        load_provenance(a.provenance)
+    if a.root:
+        findings = os.environ.get("HOD_OSS_FINDINGS")
+        reps = load_roots(a.root)
+    else:
+        oss, findings = roots()
+        reps = load_reports(oss)
+    nfind = target_findings(findings) if findings else None
     kiln = next((r.get("compiler_path") for r in reps.values()), "?")
     intro = [
         "Generated by `scripts/oss/oss-report.py status` from the lane's reports "
@@ -468,19 +572,25 @@ def main():
         "`llc` (kiln's LLVM back end, the control), `hod` (kiln with hod, falling back to llc "
         "where hod declines), `strict` (no fallback). `objects`: the objects kiln made in the "
         "hybrid build; `fell back`: offered to hod and declined or failed; `not offered`: "
-        "kiln took the LLVM route itself (an `opt` trigger). Tests: passed/total (ctest).",
+        "kiln took the LLVM route itself (an `opt` trigger). Tests: passed/total (ctest). "
+        "`revision`: the project's tag or commit; `hod`: the hod commit of the hod and strict builds; "
+        "`kiln`: the kiln commit of the row's builds (the control's included)"
+        + (f"; `at the candidate`: whether the hod and strict builds used the candidate's hod, "
+           + ("which is not chosen yet" if CANDIDATE == "-" else f"`{CANDIDATE}`")
+           + " (a control does not depend on hod)." if CANDIDATE else "."),
     ]
     hosts = sorted({r.get("host", "") for r in reps.values()} - {""})
     if hosts:
         intro += ["", f"Host: {', '.join(hosts)}; target: {TARGET}" + (
             " (cross-built, tests under qemu-x86_64)." if TARGET != "aarch64" else ".")]
     if a.cmd == "status":
-        write(page(reps, "Real projects through kiln and hod", intro), a.out)
+        title = "Real projects through kiln and hod" + ("" if TARGET == "aarch64" else f", {TARGET}")
+        write(page(reps, title, intro), a.out)
     else:
         title = "Real-project census (live)" if TARGET == "aarch64" else f"Real-project census, {TARGET} (live)"
         text = page(reps, title, intro + ["", f"kiln: {kiln}"], nfind)
-        notes = os.path.join(nfind, "NOTES.md")  # the lane's own remarks, by hand
-        if os.path.exists(notes):
+        notes = os.path.join(nfind, "NOTES.md") if nfind else ""  # the lane's own remarks, by hand
+        if notes and os.path.exists(notes):
             with open(notes, encoding="utf-8") as f:
                 text += "\n" + f.read()
         write(text, a.out)

@@ -82,9 +82,9 @@ jobs:
       - uses: ./.github/actions/kiln
       # WP-229, WP-238: on the x86-64 lane the AVX-512 execution tests of
       # the `x64` part run natively when this runner's processor has the
-      # features, else (only when the repository variable HOD_CI_SDE is 1,
-      # until the operator has agreed to Intel SDE in this lane; it adds
-      # about 20 minutes on a runner without AVX-512) under Intel SDE (the
+      # features, else (when the repository variable HOD_CI_SDE is 1, which
+      # it is since 2026-11-15; it adds about 20 minutes on a runner without
+      # AVX-512) under Intel SDE (the
       # sde action; the hosted runners are a mixed fleet, some without
       # AVX-512), else they are skipped; each writes one line per program
       # to the report (hod_testutil::avx512); the summary step writes it to

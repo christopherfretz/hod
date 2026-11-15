@@ -1392,6 +1392,16 @@ const INTRINSICS: &[(&str, &str)] = &[
     ("llvm.aarch64.frint64x.f32", "float (float)"),
     ("llvm.aarch64.frint64z.f64", "double (double)"),
     ("llvm.aarch64.fjcvtzs", "i32 (double)"),
+    // WP-245: the exclusive accesses.
+    ("llvm.aarch64.ldxr.p0", "i64 (ptr)"),
+    ("llvm.aarch64.ldaxr.p0", "i64 (ptr)"),
+    ("llvm.aarch64.stxr.p0", "i32 (i64, ptr)"),
+    ("llvm.aarch64.stlxr.p0", "i32 (i64, ptr)"),
+    ("llvm.aarch64.ldxp", "{ i64, i64 } (ptr)"),
+    ("llvm.aarch64.ldaxp", "{ i64, i64 } (ptr)"),
+    ("llvm.aarch64.stxp", "i32 (i64, i64, ptr)"),
+    ("llvm.aarch64.stlxp", "i32 (i64, i64, ptr)"),
+    ("llvm.aarch64.clrex", "void ()"),
     // WP-208: the AVX-512 names of the census.
     ("llvm.x86.avx512.mask.getexp.ps.512", "<16 x float> (<16 x float>, <16 x float>, i16, i32)"),
     (

@@ -139,6 +139,22 @@ pub struct Options {
     pub require_tools: bool,
 }
 
+/// A test's `args:` with kiln's placeholders expanded as kiln's runner
+/// does, relative to the repository's root where kiln++ runs: `%{test_dir}`
+/// is the directory of `source` (the test's path relative to that root),
+/// `%{repo_root}` is `.`, `%{resource_dir}` is `resource`. Another
+/// placeholder (a toolchain this harness does not have) is an error.
+fn arguments(source: &Path, args: &[String]) -> Result<Vec<String>, String> {
+    let dir = source.parent().map(Path::to_string_lossy).unwrap_or_default();
+    let dir = if dir.is_empty() { ".".into() } else { dir };
+    args.iter()
+        .map(|arg| {
+            crate::corpus::kiln::substitute(arg, &dir)
+                .map_err(|name| format!("args use %{{{name}}}, which debug kiln has no value of"))
+        })
+        .collect()
+}
+
 const COMPILE: Limits = Limits { time: Duration::from_mins(3), memory_kib: 8 << 20 };
 
 /// Compiles and links one test with `compiler` into `out`.
@@ -151,10 +167,11 @@ fn compile(
     hod_log: Option<&Path>,
 ) -> Result<(), String> {
     let source = test.path.strip_prefix(repo).unwrap_or(&test.path).to_path_buf();
+    let args = arguments(&source, &test.args)?;
     let tmp = out.parent().unwrap_or(Path::new("."));
     let configure = |c: &mut Command| {
         c.arg(crate::irdiff::tools::prefixed("--llvm-dir=", llvm));
-        c.arg(format!("-std={}", test.std)).arg("-fno-crash-diagnostics").args(&test.args);
+        c.arg(format!("-std={}", test.std)).arg("-fno-crash-diagnostics").args(&args);
         c.args(["-O0", "-g"]).arg(&source).arg("-o").arg(out);
         // kiln's runner compiles from the repository's root, which the
         // checks' paths assume (`at tests/debuginfo/locals.cpp:53`).
@@ -303,5 +320,34 @@ mod tests {
         assert_eq!(test.gdb.checks, vec!["Breakpoint 1"]);
         assert_eq!(test.lldb.commands, vec!["run"]);
         assert!(parse(Path::new("b.cpp"), "//@ expect: run\n").is_none());
+    }
+
+    #[test]
+    fn expands_kiln_placeholders() {
+        let args: Vec<String> = [
+            "-I%{test_dir}/Inputs",
+            "%{test_dir}/Inputs/class_decl_defs.cpp",
+            "-I%{repo_root}/tests/support",
+            "-resource-dir",
+            "%{resource_dir}",
+            "-DX=1",
+        ]
+        .map(str::to_owned)
+        .into();
+        let source = Path::new("tests/debuginfo/class_decl_two_units.cpp");
+        assert_eq!(
+            arguments(source, &args).unwrap(),
+            [
+                "-Itests/debuginfo/Inputs",
+                "tests/debuginfo/Inputs/class_decl_defs.cpp",
+                "-I./tests/support",
+                "-resource-dir",
+                "resource",
+                "-DX=1",
+            ]
+        );
+        assert_eq!(arguments(Path::new("a.cpp"), &["%{test_dir}/b".into()]).unwrap(), ["./b"]);
+        let err = arguments(source, &["--gcc-toolchain=%{gcc_toolchain}".into()]).unwrap_err();
+        assert!(err.contains("%{gcc_toolchain}"), "{err}");
     }
 }

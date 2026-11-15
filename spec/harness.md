@@ -4522,7 +4522,8 @@ other build system is an error naming the row.
   100 GB, for a test that reserves address space it never touches),
   under the row's `test_timeout`, ctest
   with `CTEST_PARALLEL_LEVEL` 4 unless set, with `TMPDIR` and
-  `TEST_TMPDIR` in the tree.
+  `TEST_TMPDIR` in the tree. Every phase runs with a core size limit of
+  exactly 1 byte (below, "A phase's leftovers").
 - **C.** A `c = "kiln"` row compiles its C through `kiln-cc` and kiln's
   C driver in every mode (hod in the hod modes); a `c = "clang"` row
   gives C to `c_compiler` directly, unlogged.
@@ -4692,6 +4693,48 @@ gate's tests) wait for a slot for as long as the builds run.
 **Clean trees.** Every build empties its tree first, so a tree kept or
 cut off half-built by an earlier build (objects of another kiln or hod,
 which make would not rebuild) is never built on.
+
+**No core dumps** (WP-268). Each phase's leader starts with
+`RLIMIT_CORE` set to 1 byte, soft and hard, which its children inherit.
+A death test's child crashes on purpose. When `core_pattern` names a
+file, 1 byte is below an ELF dump's minimum size and nothing is written,
+as with 0: this host's limit is already 0, so local results are
+unchanged. When `core_pattern` is a pipe, a limit of 0 does not help:
+core(5) says "RLIMIT_CORE will be ignored if the system is configured
+to pipe core dumps to a program" and "The RLIMIT_CORE limit is not
+enforced for core dumps that are piped to a program". The value 1 is
+the kernel's exception. Linux v6.12 `fs/coredump.c`, in the pipe
+branch: `if (cprm.limit == 1) { ... coredump_report_failure("RLIMIT_CORE
+is set to 1, aborting core"); goto fail_unlock; }`. So the host's
+handler is never started. The status of the crashing process is
+unchanged (SIGABRT gives 134). `oss-run.sh` logs `core_pattern` and the
+inherited soft and hard core limits once per run, and each build's
+start line also gives the load, the available memory in MB and the
+free disk in GB.
+
+**A phase's leftovers** (WP-268). Configure, the build and the tests each
+run through `projects.py run-phase`, as the leader of a session of their
+own (the tests' limit, the row's `test_timeout`, is the phase's: SIGTERM
+to the session's process group at the limit, SIGKILL 10 s later, status
+124 as `timeout(1)` gives). When the leader has exited, every process
+still in the session, or carrying the phase's tag (`HOD_OSS_PHASE_TAG`,
+unique per phase run) in its environment, is a leftover: it is named in
+the phase's log (`oss-build: left running after the test phase: <name>
+(pid, CPU seconds, the signal that ended it): <args>`), sent SIGTERM,
+and SIGKILL after 10 s, and the phase's line is appended to the tree's
+`leftovers.jsonl` (`phase`, `rc`, `timed_out`, `count`, `names`,
+`processes`). The leader stays unreaped until the sweep is over, and
+each process is signalled through a pidfd after its membership is
+checked again, so the sweep reaches no process outside the phase.
+`report.json` carries `leftovers` (`count`, `names`, `phases`: per phase
+`count` and `names`; null for a tree from before WP-268), the lane's
+line for the phase ends with `; N left running, killed: <names>`, and
+the status and census pages show it beside the tree's test counts.
+Leftovers are the project's behaviour, not a verdict: the phase's status
+is the leader's, and a control's leftovers are shown as plainly as a hod
+build's. Without the sweep, a test's child that outlives ctest (a test
+ctest timed out kills only the test's own process) keeps running into
+the next build of the project.
 
 **Hosted.** `.github/workflows/oss.yml` runs `oss-run.sh` per project on
 the `ubuntu-24.04` and `ubuntu-24.04-arm` runners (by hand or on an

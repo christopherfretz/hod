@@ -5123,15 +5123,38 @@ LLVM 19 and 22 selects for it; the intrinsic emits nothing else.
   architecture (Arm ARM, the local and global monitors) lets a load,
   and a store of the same PE outside the reservation granule, leave the
   monitor as it is; a store inside the granule (64 bytes on this host's
-  `CTR_EL0`) may clear it, and forward progress is promised only to
-  loops without explicit memory accesses between the pair. So hod, like
-  `llc -O0`, gives the program exactly the instruction it asked for but
-  no guarantee that a loop whose exclusive target shares a granule with
-  the function's frame ever succeeds. Measured: every such loop of
-  `tests/exclusive.rs` (targets in the function's own frame, plain,
-  stressed and far) and of the corpus module succeeds on this host and
-  under `qemu-aarch64` (which reserves an address, not a granule, and
-  checks the value at the store).
+  `CTR_EL0`, up to 2048 bytes by the architecture) may clear it, and
+  forward progress is promised only to loops without explicit memory
+  accesses between the pair.
+- **The reservation granule (the rule).** What hod guarantees: between
+  a load-exclusive and its store-exclusive the only stores hod adds of
+  its own are into the function's own frame (the slots above), never
+  into any other memory (what the program itself does there, a store or
+  a call, it does as written).
+  What it cannot guarantee: that a store-exclusive succeeds when its
+  target shares a reservation granule with the frame (an `alloca` of the
+  same function, or a caller's stack object close by): a frame store
+  between the pair then clears the monitor and on hardware every attempt
+  of a retry loop can fail, so the loop never ends. `llc -O0` has the
+  same property for the values it spills between the pair. A target in
+  a global or on the heap, which is where a program keeps the memory
+  threads share, is not affected. Measured on this host (ERG 4, 64
+  bytes): an `str` 8 or 56 bytes from the target fails 1000 of 1000
+  attempts, one 64 bytes or more away 0 of 1000, an `ldr` 8 bytes away
+  1 of 1000. The retry loops of `tests/exclusive.rs` when their target
+  was an `alloca` hung natively or not depending on the stack address
+  modulo 64 (for `llc`'s object as for hod's: `llc`'s `ldaxp`/`stlxp`
+  loop stores both halves to the frame before `stlxp`), and ran to the
+  end every time under `qemu-aarch64`, which reserves an address, not a
+  granule, and checks the value at the store. Not done (a follow-up
+  candidate): keeping a load-exclusive's result in registers up to the
+  store-exclusive of the same block, so that no frame store lies
+  between them. Counted over the test table: in hod's plain build 3 of
+  16 pairs have frame stores between them (8 stores, all the `{i64,
+  i64}` results of `ldxp`/`ldaxp`, which are class `Mem`), stressed 8
+  (18 stores), `llc` 1 (2 stores); single-register loops of one block
+  have none in the plain build. Avoiding them changes where a `Mem`
+  value lives, which is the frame policy of §4.1, not this lowering.
 - **`clrex`** clears the local monitor: the next store-exclusive fails
   with status 1 and stores nothing, on hardware by the architecture and
   under `qemu-user`, which forgets the reserved address.

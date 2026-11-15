@@ -11,6 +11,8 @@
 //!   `llc`'s coroutine. Clang 19 and 22 pre-optimisation IR, every linker,
 //!   plain and with poisoned frees; every program prints what the all-`llc`
 //!   build prints.
+//! - Suspends in unreachable blocks (WP-262): no re-entry, the other
+//!   indices kept; plain and `-g`, against `llc`.
 //! - The suspended region: no `[x19…]` operand between an
 //!   `await_suspend` wrapper's call and its suspend.
 //! - Refusals by name: `coro:outside-coroutine`, `a64:coro-preserve-cc`,
@@ -28,7 +30,7 @@ use common::linking::Toolchain;
 use common::{ll_header, objdump, parse, write_object};
 use hod_a64::compile_module;
 use hod_cg::{CgError, Options, RelocModel, Stress};
-use hod_testutil::{Scratch, run_with, tools_required};
+use hod_testutil::{Scratch, run_with, tool, tools_required};
 
 const PIC: Options = Options {
     reloc_model: RelocModel::Pic,
@@ -230,6 +232,17 @@ fn run_ok(command: &mut Command, what: &str) {
 
 /// Pre-optimisation IR of C++ `source` by clang++ `major`.
 fn pre_opt(dir: &Scratch, major: u32, source: &str, name: &str) -> Option<PathBuf> {
+    pre_opt_with(dir, major, source, name, &[])
+}
+
+/// [`pre_opt`] with `extra` arguments (`-g`).
+fn pre_opt_with(
+    dir: &Scratch,
+    major: u32,
+    source: &str,
+    name: &str,
+    extra: &[&str],
+) -> Option<PathBuf> {
     let clang = versioned("clang++", major)?;
     let cpp = dir.write(&format!("{name}.cpp"), source);
     let ir = dir.join(format!("{name}.ll"));
@@ -244,6 +257,7 @@ fn pre_opt(dir: &Scratch, major: u32, source: &str, name: &str) -> Option<PathBu
                 "-w",
                 "-fPIC",
             ])
+            .args(extra)
             .args(["-Xclang", "-disable-llvm-passes", "--target=aarch64-unknown-linux-gnu"])
             .arg(&cpp)
             .arg("-o")
@@ -414,6 +428,66 @@ fn coroutines_mixed_with_llc_objects_keep_x19() {
         }
     }
     eprintln!("{runs} mixed runs");
+}
+
+/// WP-262: coroutines with suspends in unreachable blocks (§7.6
+/// "Suspend points in unreachable blocks"); the source is shared with
+/// the x86-64 test.
+const UNREACHABLE_SUSPENDS: &str =
+    include_str!("../../hod_x64/tests/data/coro/unreachable_suspends.cpp");
+
+/// What [`UNREACHABLE_SUSPENDS`] prints (the `llc` build's output,
+/// checked here as well).
+const UNREACHABLE_WANT: &str =
+    "n=5 m=2 done=000 trace: 31 39 31 33 39 1 1 103 1 7 8 7 8 7 8 7 242 7\n";
+
+/// WP-262: a suspend in an unreachable block (the final suspend of a
+/// body that never falls off its end, and one in the middle) has no
+/// re-entry in the stubs; the others keep their indices. The awaits
+/// suspend through `invoke`d wrappers, one of whose `await_suspend`
+/// throws into the body's handler, and through the `handle` form. hod's
+/// object, plain and with `-g` (`llvm-dwarfdump --verify` clean), prints
+/// what `llc`'s does, under every linker, plain and poisoned.
+#[test]
+fn suspends_in_unreachable_blocks_have_no_reentry() {
+    if !cfg!(target_arch = "aarch64") {
+        return;
+    }
+    let dir = Scratch::new("coro-body-unreachable");
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
+    let mut runs = 0;
+    for major in [19, 22] {
+        let name = |what: &str| format!("{what}{major}");
+        let Some(ir) = pre_opt(&dir, major, UNREACHABLE_SUSPENDS, &name("co")) else { continue };
+        let Some(ir_g) = pre_opt_with(&dir, major, UNREACHABLE_SUSPENDS, &name("co-g"), &["-g"])
+        else {
+            continue;
+        };
+        let text = std::fs::read_to_string(&ir).unwrap();
+        assert!(text.contains("invoke void @llvm.coro.await.suspend.void"), "LLVM {major}");
+        assert!(text.contains("invoke void @llvm.coro.await.suspend.handle"), "LLVM {major}");
+        let Some(llc) = opt_llc(&dir, major, &ir, &name("co-llc"), true) else { continue };
+        for (what, out) in link_and_run_all(&toolchain, &dir, &name("llc"), &[llc.as_path()]) {
+            assert_eq!(out, UNREACHABLE_WANT, "{what}");
+        }
+        let hod = hod_file(&dir, &ir, &name("co-hod"), PIC);
+        let hod_g = hod_file(&dir, &ir_g, &name("co-hod-g"), PIC);
+        if let Some(dwarfdump) = tool("llvm-dwarfdump") {
+            let ran = run_with(
+                Command::new(dwarfdump).arg("--verify").arg(&hod_g),
+                &[],
+                Duration::from_mins(2),
+            );
+            assert!(ran.success(), "LLVM {major}: {}{}", ran.stdout_text(), ran.stderr_text());
+        }
+        for (what, object) in [("hod", hod.as_path()), ("hod-g", hod_g.as_path())] {
+            for (run, out) in link_and_run_all(&toolchain, &dir, &name(what), &[object]) {
+                assert_eq!(out, UNREACHABLE_WANT, "{run}");
+                runs += 1;
+            }
+        }
+    }
+    eprintln!("{runs} runs");
 }
 
 /// The suspended region (design 0005 §3.3): between the call of an

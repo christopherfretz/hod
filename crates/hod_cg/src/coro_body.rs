@@ -90,6 +90,10 @@ struct Point {
     index: u32,
     is_final: bool,
     reentry: Label,
+    /// Whether the suspend was emitted, so that `reentry` is bound: a
+    /// suspend in an unreachable block never is, and the stubs leave it
+    /// out of their dispatch (WP-262).
+    emitted: bool,
 }
 
 /// The per-function state of a coroutine body (or of a function forced
@@ -354,6 +358,7 @@ impl<'a, T: Target> FnCx<'a, T> {
                 index: suspend.index,
                 is_final: suspend.is_final,
                 reentry,
+                emitted: false,
             });
         }
         coro.pre_begin = pre_begin(body, plan)?;
@@ -663,23 +668,34 @@ impl<'a, T: Target> FnCx<'a, T> {
             return self.bug("a register value live across a coro.suspend");
         }
         let id = inst.id();
-        let found = self
-            .coro
-            .as_deref()
-            .and_then(|coro| coro.points.iter().find(|point| point.suspend == id).copied());
-        let Some(point) = found else {
+        let found = self.coro.as_deref_mut().and_then(|coro| {
+            let point = coro.points.iter_mut().find(|point| point.suspend == id)?;
+            point.emitted = true;
+            Some(point.reentry)
+        });
+        let Some(reentry) = found else {
             return self.bug("a coro.suspend the plan does not know");
         };
         self.set_region(true);
-        Ok(point.reentry)
+        Ok(reentry)
     }
 
     /// The re-entry points, as `(index, label)`, for the stubs'
-    /// dispatch.
+    /// dispatch: those of the suspends that were emitted. A suspend in
+    /// an unreachable block (a final suspend after a body that never
+    /// falls off its end) never stores its index, so no frame can hold
+    /// it; its label is never bound, and the stub's trap for an unknown
+    /// index covers it (`spec/codegen.md` §7.6, WP-262).
     pub fn coro_reentries(&self) -> Vec<(u32, Label)> {
         self.coro
             .as_deref()
-            .map(|coro| coro.points.iter().map(|point| (point.index, point.reentry)).collect())
+            .map(|coro| {
+                coro.points
+                    .iter()
+                    .filter(|point| point.emitted)
+                    .map(|point| (point.index, point.reentry))
+                    .collect()
+            })
             .unwrap_or_default()
     }
 

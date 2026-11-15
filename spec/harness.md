@@ -4103,6 +4103,53 @@ fold and `debug::permitted` has no class yet:
   class replaces any further folding in the self-assignment's numbering
   (which stays as above): `SelectionDAG`'s folder is not emulated piece by
   piece.
+- hod-only, a **dead store** (`dead-store`, `case::dead_store`, WP-266):
+  a pair (F, L) left unclassified and not a selector split, where hod has
+  rows and the oracle (`SelectionDAG`) none, the two other selectors are
+  built as for a selector split, `FastISel` gives evidence with at least
+  one row at L in F, and `GlobalISel`'s build printed its fallback
+  warning for F itself (`Instruction selection used fallback path for
+  F`, read from its `stderr` by function name: its rows in F are
+  `SelectionDAG`'s, it gave no answer of its own); and, by the module's
+  IR facts (`permitted::IrFacts::dead_store`, the instructions of F at
+  line L of the pair's file in blocks with a predecessor, any column),
+  the line is a statement without effect: every instruction there is a
+  load, a store, an `icmp`/`fcmp`, a cast or a binary operation (no call,
+  no invoke, no terminator, no intrinsic, no other opcode), none
+  `volatile` or `atomic`, and at least one store is of `poison`/`undef`
+  or to the pointer a load of the line reads. The IR condition stands in
+  for `GlobalISel`'s row only where `GlobalISel` gave no answer: a
+  `GlobalISel` that selects F itself decides alone (a row: selector
+  split; none: a finding). Any piece missing (a build or link failed,
+  `GlobalISel` did not fall back on F, a fallback on another function
+  only, the IR not read, F not in it) and the pair stays unclassified. It
+  never applies to llc-only pairs. Each pair is printed with its evidence
+  (`dead-store: seed S F at prog.c:L: rows hod H selection-dag 0
+  fast-isel A global-isel fell back ("warning: Instruction selection used
+  fallback path for F"); the IR: loads, stores, compares, casts, <a store
+  of poison | a store to the pointer a load of the line reads>`), counted
+  with the selector splits in the summary and under its own name in the
+  budget's `set-apart` column and "Set apart" census. Why it is LLVM's
+  configurations that differ and not hod that is wrong: such a store
+  changes nothing in memory (`poison` may be anything; the reloaded value
+  is the one there); `SelectionDAG` deletes it (a store of `undef`, a
+  store of a load of the same address), while `FastISel` and
+  `GlobalISel` keep its code and row as hod does (`spec/dwarf.md` §5.10,
+  last paragraph). Evidence: the 1.0 candidate's budget (hod 02fe2d02),
+  x86-64 LLVM 22 debug: seed 220612 func_1 prog.c:713 `l_2459 |=
+  (&g_1494[0] == &g_1494[2]);` (`icmp eq ptr` of two constants, `zext`, a
+  load of `%277`, `zext`, `or`, `trunc`, a store to `%277`) and seed
+  220916 func_23 prog.c:718 `(*l_161) = (g_168 = 0x8.564011p+55);`
+  (`store i32 poison` to `@g_168`, a load, `store float poison`):
+  `is_stmt` rows hod / `SelectionDAG` / `FastISel` 1/0/1 at each, and
+  `GlobalISel` fell back on func_1 (a call with a `byval` argument at
+  line 346) and on func_23 (a `volatile` 24-bit load at line 789), so its
+  0 rows were `SelectionDAG`'s. The same two statements alone in a
+  function `GlobalISel` selects (`fuzz_real`
+  `dead_stores_without_fallback_are_a_selector_split`, clang and `llc`
+  22; LLVM 19 the same by hand) have rows under `FastISel` and `GlobalISel` and none under
+  `SelectionDAG`: a selector split, which the fallback hid
+  (`spec/landed/harness/WP-266.md`).
 
 The summary adds the
 comparisons of every seed,
@@ -4217,6 +4264,27 @@ of `--debug`'s pairs ("Debug"):
   finding's detail>`. Evidence: the 21 findings of the 1.0 budget's
   x86-64 LLVM 19 `abi` slices (seeds 125392 to 125843 whole, 126005 to
   126118 `--mix`), each set apart on a re-run (WP-249).
+  **At `--mix`'s self-check** (WP-266, `int128::decide_self_check`):
+  where `llc`'s two halves disagree with its whole module (an ERROR of
+  the harness otherwise), the class is asked under the same conditions
+  (the `abi` profile, x86-64, LLVM 19, the module has the shape), with
+  the same two programs, gcc's of `prog.c` and `llc` 22's of the whole
+  module. The seed is set apart (no hod program is judged; `set-apart`
+  is not `agree`) when those two end the same way and print exactly the
+  same, and the oracle's program (`llc` 19, the whole module) does not:
+  two other compilers agree and `llc` 19 alone differs (its callee's
+  `va_arg` reads `r9`, which its caller left unset, so its output
+  changes from run to run and its halves and its whole module print
+  different garbage). Otherwise the ERROR stays, its detail ending `;
+  not llc19-int128-last-register: <why>` when the shape was there. The
+  line: `llc19-int128-last-register: seed S: i128 at <site> with one
+  integer register left; gcc -O0 (prog.c) and llc-22 -O0 (the module)
+  print the same (B bytes, <end>) and llc-19's whole module does not;
+  llc-19: llc's two halves disagree with the whole module: <detail>`.
+  Evidence: seed 226098 of the 1.0 candidate's budget (x86-64 LLVM 19
+  `abi` `--mix`, `call @callee_0` argument 7): gcc and `llc` 22 print the
+  same 1377 bytes, `llc` 19 1387 bytes differing from byte 266 and from
+  one run to the next.
 
 ### Findings
 
@@ -4371,6 +4439,15 @@ when their tools are missing, whatever `HOD_REQUIRE_TOOLS` says:
   19, `llc` 22, x86-64 gcc): the 1.0 budget's seeds 125392 (whole) and
   126005 (`--mix`) at x86-64 LLVM 19 are `set-apart` as
   `llc19-int128-last-register` with their sites, no finding;
+- `llc19_int128_self_check_is_set_apart` (the same, WP-266): seed 226098
+  (`--mix`), whose self-check fails, is `set-apart` with the self-check's
+  evidence line, no error;
+- `dead_stores_are_set_apart` (csmith, clang and `llc` 22, x86-64 gcc,
+  WP-266): seeds 220612 and 220916 at x86-64 LLVM 22 `--debug` print
+  their `dead-store` lines, no finding;
+- `dead_stores_without_fallback_are_a_selector_split` (clang and `llc`
+  22, x86-64 gcc, WP-266): the two statements alone, built by hod and the
+  three selectors, are a selector split, never `dead-store`;
 - `a_wrong_convention_with_the_shape_stays_a_finding` (the same and
   clang, `llvm-extract` 22): the swapping hod on abi seed 2 `--mix`
   (x86-64; the shape is there at LLVM 19) is a finding at LLVM 19 (its
@@ -4378,7 +4455,14 @@ when their tools are missing, whatever `HOD_REQUIRE_TOOLS` says:
   is not asked).
 
 Unit tests: `int128::tests` (the shape, where the class applies, the
-decision: set apart only when both agree with hod) and
+decision: set apart only when both agree with hod; at the self-check,
+only when both agree with each other and not with `llc` 19's whole
+module), `case::tests::dead_stores` and `permitted::tests::dead_stores`
+(`dead-store`: the two seeds' statements set apart; a call at the line,
+a `volatile` store, a store to a pointer no load of the line reads, a
+store of a constant, `FastISel` without a row, `GlobalISel` without
+fallback with or without a row, a fallback on another function only, a
+failed build: not) and
 `case::tests::csmith_writes_only_in_the_seed_directory` (a csmith
 stand-in writes its `platform.info` in the seed's directory, not in the
 test's or the workspace's). The tests that run csmith also check that

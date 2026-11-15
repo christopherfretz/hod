@@ -832,6 +832,17 @@ next instruction is as long), no fixup, nothing for the shrink pass or
 the far and stressed layouts to move but the row. An unconditional `br`
 hod falls through stays P1 (§5.7): it is not a branch on a constant.
 
+**A statement without effect keeps its code and its row** (WP-266).
+hod does not delete a store at `-O0`: a store of `poison` or `undef`
+(clang's out-of-range float-to-integer conversion, `g = 0x8.56p+55`)
+writes 0, and a store of the value just loaded from the same address
+(`x |= (&a[0] == &a[2])`, the compare folding to 0) is written as the
+IR says; each keeps its line's rows. `llc`'s `FastISel` and `GlobalISel`
+do the same; its `SelectionDAG` deletes such a store and leaves the line
+without code. The harness's `selector-split` and `dead-store` classes
+(`spec/harness.md` "Random programs", "Set apart") recognise that
+difference on evidence.
+
 ## 6. DIEs (core implemented, WP-053; the type graph, WP-058; functions, WP-057)
 
 ### 6.1 Abbreviations: a fixed table (implemented)

@@ -2,7 +2,7 @@
 //! §2.3, `spec/codegen.md` §5.6.8 "Intrinsics (WP-128)"): optimization
 //! barriers such as `asm volatile("" : : "r,m"(x) : "memory")` and
 //! `asm("" : "+r"(x))`. A template that assembles to something is
-//! [`template`]'s (WP-187); in a `callbr` it is [`INLINE_ASM`].
+//! [`template`]'s (WP-187), in a `callbr` too (WP-254).
 //!
 //! **Owner: WP-128.** Tests: `tests/barrier.rs`. Entry: `target.rs`
 //! (`lower_call`). The decisions are `hod_a64::barrier`'s (WP-075); only
@@ -84,8 +84,6 @@ pub const CLOBBER: &str = "x64:inline-asm-clobber";
 pub const OPERAND: &str = "x64:inline-asm-operand";
 /// A call of inline assembly with an operand bundle.
 pub const BUNDLE: &str = "x64:inline-asm-bundle";
-/// A `callbr` whose template assembles to something.
-pub const INLINE_ASM: &str = "x64:inline-asm";
 /// A choice among alternatives (`r|m`) hod did not measure
 /// (`spec/asm.md` §19): an operand with more than one alternative but
 /// fewer than another operand; a vector operand of 256 bits weighed by
@@ -96,7 +94,7 @@ pub const ALTERNATIVE: &str = "x64:inline-asm-alternative";
 
 /// Every name this module refuses with.
 pub const UNSUPPORTED: &[&str] =
-    &[OUTPUT, OUTPUTS, CONSTRAINT, CLOBBER, OPERAND, BUNDLE, INLINE_ASM, ALTERNATIVE];
+    &[OUTPUT, OUTPUTS, CONSTRAINT, CLOBBER, OPERAND, BUNDLE, ALTERNATIVE];
 
 /// What makes a choice among alternatives one hod did not measure
 /// ([`ALTERNATIVE`]): `vector` are the operands an `x` or `v` code
@@ -571,8 +569,8 @@ fn effect<'a>(
 /// `inst` (module documentation).
 ///
 /// # Errors
-/// [`INLINE_ASM`] for a template that is not empty; the names of this
-/// module.
+/// The names of this module and of [`template`] (a template that is not
+/// empty).
 pub fn asm<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>) -> CgResult<()> {
     let Some(site) = inst.call() else {
         return cx.bug("an inline-assembly lowering of something that is no call");
@@ -582,10 +580,7 @@ pub fn asm<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>) -> CgResult<()> {
     };
     let asm = cx.module.asm(id);
     if !hod_ir::asm_template_is_empty(hod_ir::Arch::X86_64, asm.template) {
-        // WP-187: a `callbr` with a template stays refused.
-        if inst.opcode() == Opcode::CallBr {
-            return unsupported(INLINE_ASM);
-        }
+        // WP-187; a `callbr` with a template since WP-254.
         return template::call(cx, inst);
     }
     if site.bundle_count() != 0 {
@@ -610,8 +605,8 @@ pub fn asm<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>) -> CgResult<()> {
         // (several outputs, an output of another type than its input, a
         // tied pointer stored as an integer) is lowered as a template
         // with no bytes: the inputs into their places, the outputs from
-        // them, as `llc` allocates them. A `callbr` keeps the refusal.
-        Err(e @ hod_cg::CgError::Unsupported { .. }) if inst.opcode() != Opcode::CallBr => {
+        // them, as `llc` allocates them; a `callbr` too since WP-254.
+        Err(e @ hod_cg::CgError::Unsupported { .. }) => {
             return template::call(cx, inst).map_err(|t| match t {
                 hod_cg::CgError::Unsupported { .. } => e,
                 other => other,

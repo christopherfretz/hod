@@ -570,8 +570,8 @@ The lowering is `spec/codegen.md` §5.6.28. In short:
   register. Another is `asm:clobber/<name>`; `rsp`, `rbp` are
   `x64:inline-asm-frame-register`.
 - **`inteldialect`** is `x64:inline-asm-intel`; `unwind` on an `invoke`
-  is `x64:inline-asm-unwind`; a `callbr` with a template stays
-  `x64:inline-asm`; a bundle `x64:inline-asm-bundle`.
+  is `x64:inline-asm-unwind`; a `callbr` with a template is built
+  since WP-254 (§21); a bundle `x64:inline-asm-bundle`.
 
 Tests: `crates/hod_x64/tests/inline_asm.rs` (§5.6.28).
 
@@ -765,7 +765,8 @@ modules (176) and the census (220):
 | form | refusal | corpus | census |
 |---|---|---|---|
 | `.cfi_*` in a template (valgrind's `CALL_FN_*`): taken since WP-212, §15 | — | 0 | 15 |
-| a `callbr` with a template (`asm goto`, `jmp ${0:l}`) | `x64:inline-asm` | 2 | 0 |
+| a `callbr` with a template (`asm goto`, `jmp ${0:l}`): taken since WP-254, §21 | — | 2 | 0 |
+| in an `asm goto`: a label referred to other than by a branch, x87 operands (§21) | `x64:inline-asm-goto` | 0 | 0 |
 | the control registers | `asm:operand/register` | 0 | 2 |
 | AVX | `asm:mnemonic/v*` | 0 | 2 |
 | an indirect branch or call | `asm:operand/form` | 0 | 2 |
@@ -849,8 +850,8 @@ stay `asm:directive/<name>` there.
 The x86-64 census: 212 of 220 bodies assemble (197 before).
 
 **`asm goto` with a template** on x86-64 (a `callbr` whose template is
-not empty) stays refused as `x64:inline-asm` (§11, §14's table: 2
-corpus modules); it is WP-212's second part, a follow-up.
+not empty, 2 corpus modules) is WP-212's second part, landed as WP-254
+(§21).
 
 **`.symver` on AArch64** (`module.rs`, `hod_cg::emit::module_asm`):
 §14's `.symver`, read and applied the same way on AArch64 (the code was
@@ -1433,3 +1434,52 @@ template each:
 - `.arch_extension crypto` (`asm:directive/arch_extension`);
 - `cntb` (SVE, `asm:mnemonic/cntb`);
 - `.inst` (`asm:directive/inst`).
+
+## 21. `asm goto` with a template on x86-64 (WP-254)
+
+A `callbr` whose template is not empty goes through §11's lowering
+(`hod_x64::barrier::template`), with its label operands and edges:
+
+**Label operands** (`!i`, one per indirect destination, counted in the
+constraint string's order). The `n`th prints as `.Lhod_asm_goto_<n>`
+whatever the modifier: `llc` 19 and 22 print the destination block's
+label bare for `${N:l}`, `${N:P}`, `${N:c}`, `$N` and every other
+letter. A template cannot define that name (a named label definition
+in a template is `asm:label`). The assembler sees an undefined symbol;
+a reference to it is taken only as a branch to it: a `jmp` or `jcc`
+whose field `llvm-mc` relocates as `R_X86_64_PLT32` of the label alone
+(addend −4). Any other reference (`leaq L(%rip)`, `jmp L+2`) is
+`x64:inline-asm-goto`; a `.quad L` is `asm:operand/symbol`, as for any
+symbol in a template's data. `llc` builds them all.
+
+**Trampolines.** After the template the sequence is §11's (outputs to
+their slots, the result), then the fallthrough's `phi`s and a branch to
+the default destination. Then, for each indirect destination some
+branch of the template names, a trampoline, every such branch's `rel32`
+field bound to it: the outputs are stored again from the registers the
+template left them in, the result is defined again, that edge's `phi`s
+are written, and it branches to the destination. hod enters every block
+with no value in a register (`spec/codegen.md` §4.5); at the template's
+branch the outputs still are, so the branch cannot go to the block
+itself. The callee-saved registers the template writes are saved by the
+prologue (§11), so a trampoline restores none. A destination no branch
+names gets no trampoline (it is entered only from elsewhere, as for an
+empty template). A destination that is also the fallthrough takes both
+edges; a `phi` there of the result is
+`call:callbr-result-repeated-edge` (`spec/codegen.md` §4.5).
+
+**Outputs on the indirect edges** are written as `llc` 22 writes them.
+`llc` 19 does not always: at `-O0` it can reload a spilled output on
+the indirect edge before spilling it, and at `-fast-isel=0` it loses
+the first of two outputs there (`crates/hod_x64/tests/asm_goto.rs`
+leaves those columns out of `llc` 19's builds; AArch64 shows the same,
+`spec/codegen.md` §5.5.3).
+
+**x87 operands and clobbers** in an `asm goto` are
+`x64:inline-asm-goto`: §14's register-stack model is not applied on its
+edges.
+
+Tests: `crates/hod_x64/tests/asm_goto.rs` (every path of 9 functions
+and the corpus module `dcl.asm/asm-goto.cpp`, against `llc` 22 and 19
+at both selections, under every linker), `crates/hod_x64/tests/callbr.rs`
+(the refusals).

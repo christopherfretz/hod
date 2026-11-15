@@ -54,9 +54,17 @@ everything else:
 The kiln pin moved to 1.2.0 (`8f93304ee`) and hod `main` to `56a4695f`
 right after this run. The x86-64 legs of WP-233
 (`docs/status/libcxx-hod-x64.md`) ran on that pair. These native numbers
-are therefore kiln 1.1.0 with hod `46076a33` until they are re-measured: a
-native control on kiln 1.2.0 (`-j 3`, the lanes' pool) is recorded for the
-release candidate's strict run to be compared against.
+are therefore kiln 1.1.0 with hod `46076a33` until they are re-measured.
+
+**Recorded control on kiln 1.2.0** (`8f93304ee`), for the release
+candidate's strict run to be compared against: the same command,
+`HOD_JOBS=3` on the lanes' jobserver pool, 2026-11-15 04:25 to 05:35 EST.
+9,247 tests: 8,608 pass, 4 fail, 46 xfail, 2 xpass, 585 unsupported, 2
+timeout; wall 4,241 s; `oom_kill` 1 before and after. It differs from the
+kiln 1.1.0 control in one test only, `buffered_reads.pass.cpp` (TIMEOUT
+then, PASS now, the test that takes about the limit). Its failures,
+timeouts (`lost_wakeup`, `offset_range`) and XPASSes are the ones listed
+above.
 
 ## Earlier measurements (WP-077, WP-088, WP-102)
 

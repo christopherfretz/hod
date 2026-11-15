@@ -178,6 +178,30 @@ pub fn llc_object(llc: &Path, ir: &Path, object: &Path, limits: Limits) -> Resul
     }
 }
 
+/// `llc -O0` with one of the other selectors (`selector`, from
+/// [`crate::fuzz::case::OTHER_SELECTORS`]) on `ir` into `object`, as
+/// [`llc_object`] builds the reference otherwise: `llc`'s standard error
+/// (where `GlobalISel` names the functions it fell back on), or why the
+/// build failed.
+pub fn llc_selector_object(
+    llc: &Path,
+    ir: &Path,
+    object: &Path,
+    selector: &[&str],
+    limits: Limits,
+) -> Result<Vec<u8>, String> {
+    let split = split_dwarf_args(ir, object);
+    let configure = |c: &mut Command| {
+        c.arg("-O0").args(selector).args(&split);
+        c.args(["-filetype=obj", "-relocation-model=pic", "-o"]).arg(object).arg(ir);
+    };
+    let output = process::run(llc, configure, b"", limits)?;
+    match output.end {
+        End::Exit(0) if object.is_file() => Ok(output.stderr),
+        _ => Err(failure("llc", &output, limits)),
+    }
+}
+
 /// `opt -passes='default<O0>'` (the `opt` beside `llc`) on `ir` into
 /// `out`: what `llc` is given in a `pre-opt: checks` test.
 pub fn opt_ir(llc: &Path, ir: &Path, out: &Path, limits: Limits) -> Result<(), String> {

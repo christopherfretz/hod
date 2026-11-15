@@ -172,7 +172,7 @@ pub fn selector_split(
 }
 
 /// The functions `llc`'s `stderr` says `GlobalISel` fell back on.
-fn fallbacks(stderr: &[u8]) -> std::collections::BTreeSet<String> {
+pub(crate) fn fallbacks(stderr: &[u8]) -> std::collections::BTreeSet<String> {
     String::from_utf8_lossy(stderr)
         .lines()
         .filter_map(|l| l.split_once(FALLBACK_WARNING).map(|(_, f)| f.trim().to_owned()))

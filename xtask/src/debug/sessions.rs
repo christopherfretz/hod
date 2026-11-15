@@ -16,6 +16,7 @@ use super::lines::{self, LineTools, LinesReport};
 use super::permitted::{self, IrFacts};
 use super::transcript::{self, Debugger, Ended};
 use super::xlink;
+use crate::fuzz::case::{self, OTHER_SELECTORS, SELECTOR_SPLIT, SelectorRows, SelectorSplit};
 use crate::irdiff::directives::Arch;
 use crate::irdiff::process::Limits;
 use crate::irdiff::tools::Linker;
@@ -182,6 +183,23 @@ pub struct LinesResult {
     pub test: String,
     pub frontend: String,
     pub report: LinesReport,
+    /// The evidence of each pair set apart as `selector-split` (WP-250).
+    pub selector_splits: Vec<SelectorSplit>,
+}
+
+impl LinesResult {
+    /// The evidence of a `selector-split` pair as a line of the run's
+    /// output: `selector-split: T [F] f at file:L: rows hod H selection-dag
+    /// 0 fast-isel A global-isel B`.
+    pub fn selector_split_line(&self, split: &SelectorSplit) -> String {
+        let (function, file, line) = &split.pair;
+        let file = Path::new(file).file_name().map_or(file.clone(), |f| f.to_string_lossy().into());
+        format!(
+            "{SELECTOR_SPLIT}: {} [{}] {function} at {file}:{line}: rows hod {} selection-dag 0 \
+             fast-isel {} global-isel {}",
+            self.test, self.frontend, split.hod, split.fast_isel, split.global_isel
+        )
+    }
 }
 
 /// What a run found.
@@ -249,6 +267,9 @@ impl Report {
             );
         }
         for result in &self.lines {
+            for split in &result.selector_splits {
+                let _ = writeln!(out, "{}", result.selector_split_line(split));
+            }
             let shown = verbose || result.report.unclassified() > 0;
             if shown {
                 let _ = writeln!(
@@ -542,6 +563,45 @@ pub fn run(options: &Options) -> Result<Report, String> {
     Ok(report)
 }
 
+/// `selector-split` (WP-250, `spec/harness.md` "debug", "Lines"): for a
+/// unit whose hod-only pairs include an unclassified one, the modules
+/// `irs` built by the oracle's `llc` (`tools.0`) with each of
+/// [`OTHER_SELECTORS`], linked by `link` as the oracle's program is, and
+/// their `is_stmt` rows counted (`tools.1`); the pairs of `report` both
+/// set apart ([`lines::set_apart_selector_splits`]), with their evidence.
+/// A build or link that fails gives no evidence (the pair stays a
+/// finding); it is no error of the run.
+fn selector_splits(
+    irs: &[PathBuf],
+    hod: &Path,
+    (llc, line_tools): (&Path, &LineTools),
+    link: &dyn Fn(&str, &[PathBuf]) -> Result<PathBuf, String>,
+    report: &mut LinesReport,
+    limits: Limits,
+) -> Result<Vec<SelectorSplit>, String> {
+    let selector_rows = |(name, selector): (&str, [&str; 2])| -> Result<SelectorRows, String> {
+        let failed = SelectorRows { failed: true, ..SelectorRows::default() };
+        let (mut objects, mut stderr) = (Vec::new(), Vec::new());
+        for ir in irs {
+            let object = ir.with_extension(format!("{name}.o"));
+            match build::llc_selector_object(llc, ir, &object, &selector, limits) {
+                Ok(err) => stderr.extend(err),
+                Err(_) => return Ok(failed),
+            }
+            objects.push(object);
+        }
+        let Ok(program) = link(name, &objects) else { return Ok(failed) };
+        Ok(SelectorRows {
+            rows: lines::stmt_row_counts(&program, line_tools)?,
+            no_evidence: case::fallbacks(&stderr),
+            failed: false,
+        })
+    };
+    let hod_rows = lines::stmt_row_counts(hod, line_tools)?;
+    let (fast, global) = (selector_rows(OTHER_SELECTORS[0])?, selector_rows(OTHER_SELECTORS[1])?);
+    Ok(lines::set_apart_selector_splits(report, &hod_rows, &fast, &global))
+}
+
 /// What one unit gave.
 #[derive(Clone, Debug, Default)]
 struct Done {
@@ -746,11 +806,26 @@ impl Run<'_> {
                 && let Some(line_tools) = self.line_tools
                 && let Some((_, ours)) = programs.iter().find(|(v, _)| v == "hod")
             {
-                match lines::compare(ours, &reference, line_tools, &facts) {
-                    Ok(report) => done.lines.push(LinesResult {
+                let compared = lines::compare(ours, &reference, line_tools, &facts).and_then(
+                    |mut report| {
+                        let splits = if lines::has_unclassified_hod_only(&report) {
+                            let irs: Vec<PathBuf> = (0..test.modules.len())
+                                .map(|i| dir.join(format!("m{i}.ll")))
+                                .collect();
+                            let tools = (llc, line_tools);
+                            selector_splits(&irs, ours, tools, &link, &mut report, limits)?
+                        } else {
+                            Vec::new()
+                        };
+                        Ok((report, splits))
+                    },
+                );
+                match compared {
+                    Ok((report, selector_splits)) => done.lines.push(LinesResult {
                         test: test_name(&test.path),
                         frontend: frontend.to_owned(),
                         report,
+                        selector_splits,
                     }),
                     Err(e) => done.records.push(record("hod", at_linker, None, Outcome::Error, e)),
                 }

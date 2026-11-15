@@ -806,8 +806,8 @@ impl Run<'_> {
                 && let Some(line_tools) = self.line_tools
                 && let Some((_, ours)) = programs.iter().find(|(v, _)| v == "hod")
             {
-                let compared = lines::compare(ours, &reference, line_tools, &facts).and_then(
-                    |mut report| {
+                let compared =
+                    lines::compare(ours, &reference, line_tools, &facts).and_then(|mut report| {
                         let splits = if lines::has_unclassified_hod_only(&report) {
                             let irs: Vec<PathBuf> = (0..test.modules.len())
                                 .map(|i| dir.join(format!("m{i}.ll")))
@@ -818,8 +818,7 @@ impl Run<'_> {
                             Vec::new()
                         };
                         Ok((report, splits))
-                    },
-                );
+                    });
                 match compared {
                     Ok((report, selector_splits)) => done.lines.push(LinesResult {
                         test: test_name(&test.path),

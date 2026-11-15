@@ -78,7 +78,7 @@ Module properties (`ModuleProps`, §2.1) and module-level tables.
 | `module:branch-protection-pauth-lr` | not-implemented | supported | unplanned. AArch64: `paciasppc` and the PC-modifier forms (FEAT_PAuth_LR); x86-64: ignored (WP-185) |
 | `module:cf-protection-branch` | rejected | supported | an x86 property. `endbr64` at every function entry but a `nocf_check` one, at address-taken blocks, landing pads, the `llvm.eh.sjlj.setjmp` resume point, coroutine entry stubs and after direct calls of `returns_twice` functions, then the IBT bit in `.note.gnu.property` (WP-184); `llc` 19 and 22 turn it on for any value, 0 included (WP-143), as `hod_ir` reads it (WP-144) |
 | `module:cf-protection-return` | rejected | supported | an x86 property. the shadow-stack bit in `.note.gnu.property`; the code does not change (WP-143); on for any value, 0 included, as `llc` (WP-144) |
-| `module:asm` | supported | supported | module-level assembly of code and data: `hod_asm` (WP-112 on AArch64, WP-204 on x86-64 with `.symver`, `spec/asm.md` §9, §14); what it does not read is refused by an `asm:*` name |
+| `module:asm` | supported | supported | module-level assembly of code and data: `hod_asm` (WP-112 on AArch64, WP-204 on x86-64 with `.symver`, `spec/asm.md` §9, §14), sections of the text's own name on both (WP-255, §9.1); what it does not read is refused by an `asm:*` name |
 | `module:asm-symbols` | supported | supported | module-level assembly made only of symbol directives (`spec/ir.md` §2.3) |
 | `module:linker-options` | supported | supported | `!llvm.linker.options` |
 | `module:dependent-libraries` | supported | supported | `!llvm.dependent-libraries` |
@@ -396,7 +396,7 @@ Instructions.
 | `inst:indirectbr` | supported | supported |  |
 | `inst:ret` | supported | supported |  |
 | `inst:unreachable` | supported | supported |  |
-| `inst:callbr` | supported | supported | inline assembly with labels, `asm goto` (WP-103, `spec/codegen.md` §5.5.3; x86-64: an empty template, WP-181, §5.6.23) |
+| `inst:callbr` | supported | supported | inline assembly with labels, `asm goto` (WP-103, `spec/codegen.md` §5.5.3; x86-64: an empty template, WP-181, §5.6.23, a template, WP-254, `spec/asm.md` §21) |
 | `inst:invoke` | supported | supported |  |
 | `inst:resume` | supported | supported |  |
 | `inst:catchswitch` | rejected | rejected | Windows funclet exception handling; not an ELF construct |

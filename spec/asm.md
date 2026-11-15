@@ -278,7 +278,14 @@ The lowering is `spec/codegen.md` §5.5.3 "WP-103". In short:
   directive, section shape, reference kind, and module-symbol meeting)
   emitted by hod and by `llc` 19 and 22: sections with their bytes,
   symbols, relocations and code-section mapping symbols equal; the
-  refusal table; x86-64 stays `module:asm`.
+  refusal table; the same on x86-64 (§14); the sections of the text's
+  own name of §9.1 on both targets.
+- `crates/hod_cg/tests/emit_module_asm_link.rs` (§9.1): the reduced
+  gdb-script module (`tests/data/gdb-scripts-*.ll`) on both targets:
+  its `.debug_gdb_scripts` header and bytes equal `llc` 19's and 22's,
+  linked with a C `main` under each linker present the program runs
+  and carries `llc`'s program's section; on an AArch64 host gdb runs an
+  inlined script of hod's program.
 
 ## 8. Refusals
 
@@ -310,21 +317,25 @@ operation that is no name of §16 is `asm:operand/option`; `prfm` and
 ## 9. Module-level assembly (`module.rs`, WP-112)
 
 `assemble_module(text, features, &mut ModuleCode)` reads the module's
-text (AArch64 ELF only; on x86-64 such text stays `module:asm`, it never
-reaches this assembler) into sections, symbols and relocations, as
+text (AArch64 ELF; x86-64 reads it through `assemble_module_x64` since
+WP-204, §14) into sections, symbols and relocations, as
 `llc` (which emits module assembly before anything else) writes them.
 Text that is only symbol directives stays WP-075's (`spec/ir.md` §2.3).
 The emitter's side is `spec/codegen.md` §9.7.3.
 
-- **Sections.** `.text`, `.data`, `.bss`, `.section name{,"flags"{,@type}}`,
-  `.pushsection`/`.popsection`, `.previous`. A name is `.text`, `.rodata`,
-  `.data` or `.bss`, alone or followed by `.` and more; its kind (type and
-  flags) is LLVM's default for the name, and the flags written may only
-  be ones the kind has (`a`, `w` for data and bss, `x` for text) and are
-  OR'd with the defaults; `@progbits`/`@nobits` must agree with the kind.
-  Anything else (a mergeable `.rodata.str*`/`.rodata.cst*`, a group,
-  `.tbss`, a custom name, `.popsection` of an empty stack) is
-  `asm:section`. Text before any section directive is in `.text`.
+- **Sections.** `.text`, `.data`, `.bss`,
+  `.section name{,"flags"{,@type{,entsize}}}`, `.pushsection` (same
+  operands)/`.popsection`, `.previous`. A name is a string `"..."`
+  (without `"` or `\`) or bare (letters, digits, `_ . $ -`, not first a
+  digit or `-`). A standard name is `.text`, `.rodata`, `.data` or
+  `.bss`, alone or followed by `.` and more; its kind (type and flags)
+  is LLVM's default for the name, and the flags written may only be ones
+  the kind has (`a`, `w` for data and bss, `x` for text) and are OR'd
+  with the defaults; `@progbits`/`@nobits` must agree with the kind. Any
+  other name is §9.1's. A mergeable `.rodata.str*`/`.rodata.cst*`, a
+  subsection number, `.popsection` of an empty stack are `asm:section`;
+  the flags and types §9.1 refuses by name are refused by the same names
+  on standard names. Text before any section directive is in `.text`.
   Alignment starts at 4 for code (LLVM 22; LLVM 19 gives a code section
   the text creates alignment 1, `.text` 4: the one difference, and hod
   follows 22) and at 1 otherwise, raised by each alignment directive.
@@ -372,6 +383,61 @@ What the emitter adds (`spec/codegen.md` §9.7.3): a label named as a
 module symbol must be the definition of a module declaration (external
 linkage, not thread-local), else `asm:symbol`; directives on module
 symbols follow WP-075's rules.
+
+### 9.1 Sections of the text's own name (WP-255)
+
+Both targets (`assemble_module` and `assemble_module_x64` share the
+code). A name that is not standard (§9 "Sections") opens a section
+`SectionKind::Custom { sh_type, flags, entsize }`, as LLVM's
+`ELFAsmParser::parseSectionArguments` does for a name without defaults
+(llc 19 and 22 agree on every shape):
+
+- **Flags.** `a` (`SHF_ALLOC`), `w` (`SHF_WRITE`), `M` (`SHF_MERGE`), `S`
+  (`SHF_STRINGS`), `R` (`SHF_GNU_RETAIN`); none written, or `""`, is 0.
+  Refused by name, on any section: `x` here (`asm:section-flags/exec`;
+  a code section of the text's own name is not read), `G`
+  (`asm:section-flags/group`), `T` (`/tls`), `o` (`/link-order`), `e`
+  (`/exclude`), any other character (`/other`: `l`, `y`, `?`, digits).
+- **Type.** `@progbits`/`%progbits` (the default), `@nobits`, `@note`;
+  any other type is `asm:section-type`, a type without `@`/`%`
+  `asm:section`.
+- **Entry size.** With `M`, the operand after the type: a constant
+  above 0 (`M` without it is LLVM's "expected the entry size",
+  `asm:section`); without `M` no fourth operand (`,unique,N`, a group
+  name: `asm:section`). Alignment is 1 until an alignment directive
+  raises it; the entry size does not raise it.
+- **Again.** A later directive for the name switches back to the
+  section. If it writes a flag, a type or an entry size, the flags and
+  entry size must equal the first's, and a written type the first's
+  (LLVM's "changed section flags/entsize/type" errors): else
+  `asm:section`. A directive that writes none (`.section m`,
+  `.section m,""`) keeps the first's.
+- **Contents.** The data directives of §9 (strings with their escapes:
+  `\b \f \n \r \t \" \\`, one to three octal digits, `\x` and hex
+  digits truncated to a byte; any other escape is an error to LLVM and
+  `asm:operand/syntax` here), alignment, labels and symbols, and
+  relocations from 2-, 4- and 8-byte fields, in allocated and
+  non-allocated sections alike. No instruction (`asm:section`). A
+  `@nobits` section takes only zeros (§9's `.bss` rules).
+- **Reserved names** (`asm:section-name`): those LLVM gives defaults or
+  hod writes itself: `.tdata`, `.tbss`, `.init_array`, `.fini_array`,
+  `.preinit_array` (alone or followed by `.`), every `.note*`, `.rela*`,
+  `.rel.*`; `.init`, `.fini`, `.data1`, `.rodata1`, `.eh_frame`,
+  `.eh_frame_hdr`, `.gcc_except_table`, `.comment`, `.group`, `.symtab`,
+  `.symtab_shndx`, `.strtab`, `.shstrtab`, `.llvm_addrsig`,
+  `.llvm.call-graph-profile`; and the DWARF sections `.debug_<d>` (alone,
+  followed by `.`, or with `.dwo`) for `d` in `info abbrev line line_str
+  str str_offsets addr rnglists loclists frame aranges ranges loc names
+  pubnames pubtypes gnu_pubnames gnu_pubtypes types macinfo macro
+  cu_index tu_index`. Other `.debug_*` names (`.debug_gdb_scripts`) are
+  taken.
+
+The case that asked for it: a library's gdb pretty printers embedded as
+`.pushsection ".debug_gdb_scripts", "MS",%progbits,1`, `.ascii` lines of
+an inlined script (kind byte `\4`), `.byte 0`, `.popsection`: a section
+`SHT_PROGBITS`, `SHF_MERGE | SHF_STRINGS`, entries of 1, alignment 1,
+not allocated. Globals of an explicit section of the same name are
+`spec/codegen.md` §9.7.3's.
 
 ## 10. x86-64 instructions (`x64/`, WP-187)
 
@@ -504,8 +570,8 @@ The lowering is `spec/codegen.md` §5.6.28. In short:
   register. Another is `asm:clobber/<name>`; `rsp`, `rbp` are
   `x64:inline-asm-frame-register`.
 - **`inteldialect`** is `x64:inline-asm-intel`; `unwind` on an `invoke`
-  is `x64:inline-asm-unwind`; a `callbr` with a template stays
-  `x64:inline-asm`; a bundle `x64:inline-asm-bundle`.
+  is `x64:inline-asm-unwind`; a `callbr` with a template is built
+  since WP-254 (§21); a bundle `x64:inline-asm-bundle`.
 
 Tests: `crates/hod_x64/tests/inline_asm.rs` (§5.6.28).
 
@@ -699,7 +765,8 @@ modules (176) and the census (220):
 | form | refusal | corpus | census |
 |---|---|---|---|
 | `.cfi_*` in a template (valgrind's `CALL_FN_*`): taken since WP-212, §15 | — | 0 | 15 |
-| a `callbr` with a template (`asm goto`, `jmp ${0:l}`) | `x64:inline-asm` | 2 | 0 |
+| a `callbr` with a template (`asm goto`, `jmp ${0:l}`): taken since WP-254, §21 | — | 2 | 0 |
+| in an `asm goto`: a label referred to other than by a branch, x87 operands (§21) | `x64:inline-asm-goto` | 0 | 0 |
 | the control registers | `asm:operand/register` | 0 | 2 |
 | AVX | `asm:mnemonic/v*` | 0 | 2 |
 | an indirect branch or call | `asm:operand/form` | 0 | 2 |
@@ -783,8 +850,8 @@ stay `asm:directive/<name>` there.
 The x86-64 census: 212 of 220 bodies assemble (197 before).
 
 **`asm goto` with a template** on x86-64 (a `callbr` whose template is
-not empty) stays refused as `x64:inline-asm` (§11, §14's table: 2
-corpus modules); it is WP-212's second part, a follow-up.
+not empty, 2 corpus modules) is WP-212's second part, landed as WP-254
+(§21).
 
 **`.symver` on AArch64** (`module.rs`, `hod_cg::emit::module_asm`):
 §14's `.symver`, read and applied the same way on AArch64 (the code was
@@ -1367,3 +1434,52 @@ template each:
 - `.arch_extension crypto` (`asm:directive/arch_extension`);
 - `cntb` (SVE, `asm:mnemonic/cntb`);
 - `.inst` (`asm:directive/inst`).
+
+## 21. `asm goto` with a template on x86-64 (WP-254)
+
+A `callbr` whose template is not empty goes through §11's lowering
+(`hod_x64::barrier::template`), with its label operands and edges:
+
+**Label operands** (`!i`, one per indirect destination, counted in the
+constraint string's order). The `n`th prints as `.Lhod_asm_goto_<n>`
+whatever the modifier: `llc` 19 and 22 print the destination block's
+label bare for `${N:l}`, `${N:P}`, `${N:c}`, `$N` and every other
+letter. A template cannot define that name (a named label definition
+in a template is `asm:label`). The assembler sees an undefined symbol;
+a reference to it is taken only as a branch to it: a `jmp` or `jcc`
+whose field `llvm-mc` relocates as `R_X86_64_PLT32` of the label alone
+(addend −4). Any other reference (`leaq L(%rip)`, `jmp L+2`) is
+`x64:inline-asm-goto`; a `.quad L` is `asm:operand/symbol`, as for any
+symbol in a template's data. `llc` builds them all.
+
+**Trampolines.** After the template the sequence is §11's (outputs to
+their slots, the result), then the fallthrough's `phi`s and a branch to
+the default destination. Then, for each indirect destination some
+branch of the template names, a trampoline, every such branch's `rel32`
+field bound to it: the outputs are stored again from the registers the
+template left them in, the result is defined again, that edge's `phi`s
+are written, and it branches to the destination. hod enters every block
+with no value in a register (`spec/codegen.md` §4.5); at the template's
+branch the outputs still are, so the branch cannot go to the block
+itself. The callee-saved registers the template writes are saved by the
+prologue (§11), so a trampoline restores none. A destination no branch
+names gets no trampoline (it is entered only from elsewhere, as for an
+empty template). A destination that is also the fallthrough takes both
+edges; a `phi` there of the result is
+`call:callbr-result-repeated-edge` (`spec/codegen.md` §4.5).
+
+**Outputs on the indirect edges** are written as `llc` 22 writes them.
+`llc` 19 does not always: at `-O0` it can reload a spilled output on
+the indirect edge before spilling it, and at `-fast-isel=0` it loses
+the first of two outputs there (`crates/hod_x64/tests/asm_goto.rs`
+leaves those columns out of `llc` 19's builds; AArch64 shows the same,
+`spec/codegen.md` §5.5.3).
+
+**x87 operands and clobbers** in an `asm goto` are
+`x64:inline-asm-goto`: §14's register-stack model is not applied on its
+edges.
+
+Tests: `crates/hod_x64/tests/asm_goto.rs` (every path of 9 functions
+and the corpus module `dcl.asm/asm-goto.cpp`, against `llc` 22 and 19
+at both selections, under every linker), `crates/hod_x64/tests/callbr.rs`
+(the refusals).

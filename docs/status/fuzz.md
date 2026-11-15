@@ -212,3 +212,13 @@ of `cb8b1ae0` or later, from seed 200001, with `ub-float-cast` and
 `selector-split` counted as set apart (not findings). Class 3 is not
 set apart by any harness yet: with an unchanged oracle, the `abi`
 slices at x86-64 LLVM 19 will report it again (a follow-up).
+
+Since `64b45de6` (WP-249) the harness sets class 3 apart as
+`llc19-int128-last-register` (`spec/harness.md` "Set apart (seeds)"):
+only a `disagree` of the `abi` profile at x86-64 LLVM 19 whose module
+passes an `i128` with one integer register left, and only when gcc on
+`prog.c` and `llc` 22 on the module (in `--mix`, with hod's half) print
+exactly hod's output. Re-run with that harness against this run's
+frozen hod, one seed at a time, all 21 findings of class 3 came out
+`set-apart` with their evidence and none a finding (the same finding
+detail as in this run for each seed).

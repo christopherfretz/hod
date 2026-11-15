@@ -24,7 +24,7 @@ use std::time::Duration;
 use float_gen::{ll_header, parse, pic};
 use hod_cg::{CgError, Stress};
 use hod_testutil::{Scratch, run_with};
-use hod_x64::barrier;
+use hod_x64::barrier::template::GOTO;
 
 /// The functions: each `callbr` has an empty template.
 const FUNCTIONS: &str = r#"
@@ -197,19 +197,50 @@ fn empty_template_callbr_runs_as_llc_builds_it() {
     eprintln!("x64 callbr: 7 functions x 11 arguments agree over {ran:?}");
 }
 
-/// A `callbr` whose template assembles to something stays refused.
+/// A `callbr` whose template assembles to something is built since
+/// WP-254 (`tests/asm_goto.rs` runs it); what it does not take is
+/// refused by name: a label referred to other than by a branch (`lea`,
+/// an addend) and the x87 stack, `x64:inline-asm-goto`. Each of these
+/// `llc` 19 and 22 accept. (A `.quad` of a label is the assembler's
+/// `asm:operand/symbol`, as a `.quad` of any symbol in a template.)
 #[test]
 fn callbr_of_instructions_is_refused_by_name() {
-    let text = format!(
-        "{}define void @f() {{\nentry:\n  callbr void asm \"jmp ${{0:l}}\", \"!i\"() to label %a [label %b]\na:\n  ret void\nb:\n  ret void\n}}\n",
-        ll_header()
-    );
-    let (m, bodies) = parse(&text);
-    match hod_x64::compile_to_object(&m, &bodies, &pic(Stress::default())) {
-        Err(hod_x64::ModuleError::Function { error, .. }) => {
-            assert_eq!(error, CgError::unsupported(barrier::INLINE_ASM));
+    let built = "jmp ${0:l}";
+    let refused = [
+        ("leaq ${0:l}(%rip), %rax", "!i,~{rax}", "void"),
+        ("jmp ${0:l}+2", "!i", "void"),
+        ("fld1; jmp ${0:l}", "!i,~{st}", "void"),
+        ("fld1; jmp ${1:l}", "={st},!i", "double"),
+    ];
+    let module = |template: &str, constraints: &str, ty: &str| {
+        let r = if ty == "void" { "" } else { "%r = " };
+        format!(
+            "{}define void @f() {{\nentry:\n  {r}callbr {ty} asm sideeffect \"{template}\", \"{constraints}\"() to label %a [label %b]\na:\n  ret void\nb:\n  ret void\n}}\n",
+            ll_header(),
+        )
+    };
+    let (m, bodies) = parse(&module(built, "!i", "void"));
+    hod_x64::compile_to_object(&m, &bodies, &pic(Stress::default()))
+        .unwrap_or_else(|e| panic!("{built}: {e}"));
+    for (template, constraints, ty) in refused {
+        let text = module(template, constraints, ty);
+        let (m, bodies) = parse(&text);
+        match hod_x64::compile_to_object(&m, &bodies, &pic(Stress::default())) {
+            Err(hod_x64::ModuleError::Function { error, .. }) => {
+                assert_eq!(error, CgError::unsupported(GOTO), "{template}");
+            }
+            other => panic!("{template}: not refused: {:?}", other.map(|o| o.len())),
         }
-        other => panic!("not refused: {:?}", other.map(|o| o.len())),
+        for major in [22, 19] {
+            let Some(llc) = float_gen::llc_of(major) else { continue };
+            let scratch = Scratch::new("x64-callbr-refused");
+            let input = scratch.write("m.ll", &text);
+            let mut command = std::process::Command::new(llc);
+            command.args(["-O0", "-mtriple=x86_64-unknown-linux-gnu", "-filetype=obj", "-o"]);
+            command.arg(scratch.join("m.o")).arg(&input);
+            let outcome = run_with(&mut command, &[], Duration::from_mins(2));
+            assert!(outcome.success(), "llc {major} {template}: {}", outcome.stderr_text());
+        }
     }
 }
 

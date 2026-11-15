@@ -3492,6 +3492,33 @@ function reads, and **is-constant** a pair only hod's has in a function that cal
 `llvm.is.constant` (`spec/dwarf.md` §5.7); else **unclassified**. An
 unclassified pair fails the run.
 
+**selector-split** (WP-250, `lines::set_apart_selector_splits`, with
+the fuzz layer's rule `case::selector_split`, "fuzz" `--debug`): a pair
+only hod's program has, left unclassified by every class above, where
+LLVM's two other `-O0` selectors disagree with the oracle. Only for a
+unit with such a pair, the oracle's `llc` (same LLVM, target, flags and
+split-DWARF arguments) builds each module of the unit again with
+`FastISel` (`-O0 -global-isel=0 -fast-isel=1`) and with `GlobalISel`
+(`-O0 -global-isel=1 -global-isel-abort=2`, falling back to
+`SelectionDAG` with a warning that names the function); each is linked
+by the first linker as the oracle's program is and its `is_stmt` rows
+are counted per pair (`lines::stmt_row_counts`). The pair is set apart
+when both selectors give evidence (the builds and the link succeed, and
+`GlobalISel` did not fall back on the pair's function) and both have at
+least one row at it; one without a row, or one without evidence, and it
+stays unclassified. It never applies to a pair only `llc`'s program
+has, nor to a pair another class explains, nor to the columns. Each
+pair set apart is printed with its evidence, verbose or not
+(`selector-split: <test> [<front end>] <function> at <file>:<line>:
+rows hod H selection-dag 0 fast-isel A global-isel B`), and counted in
+the `lines` and `debug: lines:` summaries. Evidence: `sort`'s `j--`
+(line 18) in `tests/debug/declare_fragment.c` at clang `-O1`: the
+`add nsw i32 %j, -1` has a row under hod, `FastISel` and `GlobalISel`
+of `llc` 19 and 22, and none under `SelectionDAG`, which selects it
+with the loop test's `icmp sgt i32 %j, 1` (line 16) into one `subs w9,
+w8, #1` placed inside the row of line 17's copy (on AArch64 with clang 19
+and 22, on x86-64 with clang 22; `spec/landed/harness/WP-250.md`).
+
 ### Columns
 
 The same rows with their columns, per function both programs have
@@ -3872,7 +3899,10 @@ run's work directory:
 
 1. the generator writes `prog.c` (csmith with a 60 s limit, as for
    every tool, and with the seed's directory as its current directory:
-   csmith also writes `platform.info` there, never in the checkout);
+   csmith also writes `platform.info` there, never in the checkout; the
+   seed's directory is under the run's output directory, and no csmith
+   is started with another current directory, so a run writes nothing
+   into the source tree);
 2. clang writes `prog.ll`;
 3. the oracle: `llc -O0 -global-isel=0 -fast-isel=0 -filetype=obj
    -mtriple=<triple> -relocation-model=pic` writes `oracle.o`;
@@ -4016,6 +4046,7 @@ its occurrences.
 | skipped | `csmith-failed`, `ub-float-cast` ("Float casts"), `clang-failed`, `both-timed-out`, `oracle-timed-out`, and in `--mix` `split-timed-out`, `nothing-to-split` | 0 |
 | error | `llc` failed, the oracle's link failed, `llc`'s halves disagree with the whole module, both objects fail the verifier: about the oracle's or the harness's side | 3 |
 | finding | `disagree` (end or stdout differs), `hod-failed` (any other end of hod, a panic, no object or coverage log), `hod-link` (hod's object does not link), `hod-hang` (hod's program did not end in four times the limit), `debug-verify`, `debug-lines` | 1 |
+| set-apart | a finding that a class sets apart on the evidence gathered for it ("Set apart (seeds)"): `llc19-int128-last-register` | 0 |
 
 ### Float casts
 
@@ -4051,6 +4082,49 @@ Every saved finding with a `prog.c`, of every flavour, also gets
 `ubsan.txt`: the commands and every report of a recovering build under
 `-fsanitize=float-cast-overflow,undefined`. It is a label for the triage
 and decides nothing.
+
+### Set apart (seeds)
+
+A class may set a seed's finding apart only on evidence gathered for
+that finding in that run: no comparison is loosened, the seed's verdict
+is `set-apart` (not `agree`), it is counted and printed with its
+evidence in the summary (`set apart (by a class's evidence)`), the
+results file's detail is the evidence's line, and the budget counts it
+in its `set-apart` column and lists it with its seed. A label (a triage
+script's) never sets a finding apart. One class, beside `selector-split`
+of `--debug`'s pairs ("Debug"):
+
+- **`llc19-int128-last-register`** (`xtask/src/fuzz/int128.rs`, WP-249):
+  `llc` 19's x86-64 call lowering of an `__int128` argument that comes
+  when only one integer argument register (r9) is left. The psABI passes
+  that argument wholly on the stack and gives r9 to the next integer
+  argument; gcc, `llc` 22 and hod do that, `llc` 19 leaves r9 unused, so
+  `llc` 19's caller and anyone else's callee disagree. It applies only to
+  a `disagree` finding of the `abi` profile at LLVM 19 on x86-64 (never
+  to LLVM 22, AArch64 or another profile, nor to another kind of
+  finding) whose module has the shape (`int128::last_register_site`): a
+  call or a definition whose arguments, counted in order (a pointer or an
+  integer of at most 64 bits one register, `i128` two, floating point,
+  vectors and `byval` none; any other type: the site is not judged; a
+  definition's `...` ends it), reach an `i128` with exactly five of the
+  six registers taken. Then, in the seed's directory: the target's gcc
+  builds `prog.c` (`-O0 -w -pie`, linked as the oracle) and `llc` 22
+  builds `prog.ll` with the oracle's flags; both run as the oracle's
+  program. In `--mix`, hod's program is the finding's assignment with
+  `llc` 22 building the other half (the one `llc` 19 built). The finding
+  is set apart when gcc's and `llc` 22's programs both end as hod's
+  program did and print exactly its output: two other compilers agree
+  with hod and `llc` 19 alone differs. Otherwise it stays a finding and
+  its detail gets `; not llc19-int128-last-register: <why>` (gcc's or
+  `llc` 22's program differs, or gave no evidence: a build, link or run
+  that failed). `llc-22` is a tool of every run where the class applies.
+  The line: `llc19-int128-last-register: seed S: i128 at <call @f
+  argument N | define @f parameter N> with one integer register left;
+  gcc -O0 (prog.c) and llc-22 -O0 (the module) print what <hod | hod A +
+  llc-22 B | llc-22 A + hod B> printed (B bytes, <end>); llc-19: <the
+  finding's detail>`. Evidence: the 21 findings of the 1.0 budget's
+  x86-64 LLVM 19 `abi` slices (seeds 125392 to 125843 whole, 126005 to
+  126118 `--mix`), each set apart on a re-run (WP-249).
 
 ### Findings
 
@@ -4160,8 +4234,11 @@ budget (`docs/VALIDATION.md` "Random programs (L10)", "The budget"):
   LLVM, profile, mode, `first-last`, agree, refused, skipped, error,
   finding, minutes, then the refusals and the skips as `name=count`
   joined by `,` (`-` for none), the findings as `seed:kind:directory`
-  and the errors as `seed:detail` (cut to 160 characters) joined by `;`.
-  At the start the file is read and rewritten without any line that does
+  and the errors as `seed:detail` (cut to 160 characters) joined by `;`,
+  `set-apart` (what classes set apart, `class=count` joined by `,`:
+  `selector-split` pairs and seeds of "Set apart (seeds)") and
+  `set-apart-seeds` (`seed:class` joined by `;`); a row of 15 or 16
+  fields (written before those columns) reads them as `-`. At the start the file is read and rewritten without any line that does
   not parse (a write cut short); a slice whose key (the first five
   fields) is there is not run again; an interrupted slice runs again
   whole. The slice's per-seed results file is kept as
@@ -4170,8 +4247,10 @@ budget (`docs/VALIDATION.md` "Random programs (L10)", "The budget"):
 - **The table**: `<out>/budget.md`, rewritten after every slice: the
   slices run of those planned; seeds, the verdicts, minutes and programs
   per minute per target and LLVM and in all, then per target, LLVM,
-  profile and mode with the seed ranges; the refusals and the skips
-  added by name; every finding and every error with its slice.
+  profile and mode with the seed ranges (the verdicts' columns include
+  `set apart`, the seeds of "Set apart (seeds)"); the refusals, the
+  skips and what was set apart added by name; every seed set apart,
+  every finding and every error with its slice.
 - Exit status: 1 when a row has a finding, 3 when one has an error and
   none a finding, 0 otherwise; 3 also when a slice cannot run (a missing
   tool), with the rows so far kept.
@@ -4195,7 +4274,24 @@ when their tools are missing, whatever `HOD_REQUIRE_TOOLS` says:
   module, and is a `--mix` finding blamed on hod by both witnesses,
   reduced with the split kept, with a seed of two modules;
 - `the_census_of_the_abi_profile` (clang 22): the ABI generator's
-  programs have variadic definitions, `i128`, `va_start` and `sret`.
+  programs have variadic definitions, `i128`, `va_start` and `sret`;
+- `llc19_int128_findings_are_set_apart` (clang, `llc`, `llvm-extract`
+  19, `llc` 22, x86-64 gcc): the 1.0 budget's seeds 125392 (whole) and
+  126005 (`--mix`) at x86-64 LLVM 19 are `set-apart` as
+  `llc19-int128-last-register` with their sites, no finding;
+- `a_wrong_convention_with_the_shape_stays_a_finding` (the same and
+  clang, `llvm-extract` 22): the swapping hod on abi seed 2 `--mix`
+  (x86-64; the shape is there at LLVM 19) is a finding at LLVM 19 (its
+  detail says why it is not set apart) and at LLVM 22 (where the class
+  is not asked).
+
+Unit tests: `int128::tests` (the shape, where the class applies, the
+decision: set apart only when both agree with hod) and
+`case::tests::csmith_writes_only_in_the_seed_directory` (a csmith
+stand-in writes its `platform.info` in the seed's directory, not in the
+test's or the workspace's). The tests that run csmith also check that
+no `platform.info` newer than their start is in the crate's or the
+workspace's directory (an older one, from csmith run by hand, is a note).
 
 `xtask/tests/fuzz_budget.rs` tests the budget's own logic with a
 stand-in for a slice's run (no tools, nothing generated or compiled):

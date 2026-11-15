@@ -23,6 +23,7 @@ use std::fs;
 use std::path::Path;
 
 use super::case::{Bench, Files, Finding, Kind, Outcome, Side, Verdict, compare};
+use super::int128::MixSide;
 use crate::irdiff::process::{End, Output};
 
 /// FNV-1a of `name`, mixed with the seed.
@@ -246,7 +247,11 @@ impl Bench {
         );
         outcome.oracle = Some(oracle);
         outcome.hod = output;
-        Ok(Verdict::Finding(found))
+        let (hod_object, other_half) =
+            if found.side == Side::HodA { (&hod_a, &halves.b) } else { (&hod_b, &halves.a) };
+        let side = found.side;
+        let mix = MixSide { side, hod_object, other_half };
+        Ok(self.set_apart_int128(Verdict::Finding(found), files, outcome, Some(mix)))
     }
 }
 

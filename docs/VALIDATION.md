@@ -198,7 +198,17 @@ Per seed the verdict is:
   halves disagreeing with its whole module);
 - **finding**: the programs disagree, hod failed, hod's object does not
   link, hod's program hangs, hod's DWARF does not verify, or its lines
-  differ without a permitted class.
+  differ without a permitted class;
+- **set apart**: a finding a class sets apart on evidence gathered for
+  that finding in that run, counted and listed with its seed, never by a
+  label (`spec/harness.md` "Set apart (seeds)"). One class:
+  `llc19-int128-last-register`, a `disagree` of the `abi` profile at
+  x86-64 LLVM 19 whose module passes an `__int128` with only r9 left
+  (`llc` 19 leaves r9 unused where the psABI gives it to the next
+  integer argument), set apart only when gcc on `prog.c` and `llc` 22 on
+  the module both print exactly hod's output. In `--debug`,
+  `selector-split` sets apart a line pair where LLVM's other two `-O0`
+  selectors keep hod's row.
 
 A finding is saved under `<build>/fuzz/findings/<run>-seed<S>/` with the
 source, the module, every command as a shell line, both outputs and the
@@ -257,7 +267,11 @@ defect), or shown not to be hod's (`llc`, clang, csmith's undefined
 behaviour, the harness, a timeout of the loaded machine that does not
 happen when the seed runs alone) with its evidence on the page. A
 refusal is coverage, not a finding; errors (the oracle's side) are
-listed and explained.
+listed and explained. Seeds set apart (`set-apart`, with their
+evidence) are not findings; skips such as `ub-float-cast` are not
+either. The run is made with a harness that has every class known at
+the candidate (since WP-249: `ub-float-cast`, `selector-split`,
+`llc19-int128-last-register`).
 
 ### Real projects (L9)
 

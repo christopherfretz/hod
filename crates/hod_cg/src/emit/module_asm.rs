@@ -156,6 +156,17 @@ impl ModuleEmitter<'_> {
             asm::assemble_module(text, Features::BASE, &mut code)
         }
         .map_err(|r| refused(r.0))?;
+        // A global of an explicit section that names a `@nobits` section
+        // of the text's own: `llc` joins a zero one to it (and rejects an
+        // initialized one); hod does not place a global in such a section.
+        for s in &code.sections {
+            if matches!(s.kind, SectionKind::Custom { .. })
+                && s.kind.is_nobits()
+                && module.symbols().any(|sym| sym.section() == Some(s.name.as_bytes()))
+            {
+                return Err(refused(hod_asm::reason::other::SECTION));
+            }
+        }
         let sections = self.asm_sections(&code)?;
         self.asm_idents(&code.idents)?;
         let (ids, mut deferred) = self.asm_symbols(&code, &sections)?;
@@ -222,6 +233,29 @@ impl ModuleEmitter<'_> {
                 SectionKind::ReadOnly => Kind::ReadOnly,
                 SectionKind::Data => Kind::Data,
                 SectionKind::Bss => Kind::Bss { local: false },
+                // A name of the text's own: its type, flags and entry
+                // size as written (`spec/asm.md` §9.1).
+                SectionKind::Custom { sh_type, flags, entsize } => {
+                    name.clear();
+                    name.extend_from_slice(s.name.as_bytes());
+                    let id = match self.sections.assembly(&name, sh_type, flags, entsize) {
+                        Found::Old(id) => id,
+                        Found::New(new, pending) => {
+                            let id =
+                                self.obj.add_section(&name, new.kind, s.align).map_err(obj_err)?;
+                            self.sections.created(&name, &pending, id, None);
+                            id
+                        }
+                    };
+                    self.obj.raise_section_align(id, s.align);
+                    if s.kind.is_nobits() {
+                        self.obj.append_zeros(id, s.size);
+                    } else {
+                        self.obj.append(id, &s.bytes);
+                    }
+                    ids.push(id);
+                    continue;
+                }
             };
             let standard = matches!(s.name.as_str(), ".text" | ".rodata" | ".data" | ".bss");
             let found = if standard {

@@ -10,6 +10,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::time::{Duration, SystemTime};
 
 use hod_testutil::Scratch;
 use xtask::fuzz::case::{Kind, Mode};
@@ -44,16 +45,22 @@ fn found(tools: &[&str]) -> bool {
 }
 
 /// csmith writes `platform.info` into its current directory: every csmith
-/// child runs in its seed's directory under the build directory, so none
-/// is left in the crate's directory (a test's) or the workspace's.
-fn no_platform_info() {
+/// child runs in its seed's directory under the run's output directory,
+/// so the run writes none in the crate's directory (a test's) or the
+/// workspace's. A file written there before `since` (by csmith run by
+/// hand) is not the run's: a note, not a failure.
+/// When a test started, less two seconds (a file system's coarse times).
+fn started() -> SystemTime {
+    SystemTime::now() - Duration::from_secs(2)
+}
+
+fn no_platform_info(since: SystemTime) {
     let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     for dir in [crate_dir, crate_dir.parent().expect("the workspace")] {
-        assert!(
-            !dir.join("platform.info").exists(),
-            "csmith wrote {}/platform.info",
-            dir.display()
-        );
+        let file = dir.join("platform.info");
+        let Ok(modified) = file.metadata().and_then(|m| m.modified()) else { continue };
+        assert!(modified < since, "csmith wrote {} during the run", file.display());
+        eprintln!("note: a stray {} older than the run (not the run's)", file.display());
     }
 }
 
@@ -81,6 +88,7 @@ fn seeds_on_the_host() {
     if !tools_found() {
         return;
     }
+    let since = started();
     let scratch = Scratch::new("fuzz-host");
     let summary = run(&options(&scratch, 1, 3)).expect("the run");
     let text = summary.text();
@@ -92,7 +100,7 @@ fn seeds_on_the_host() {
     // The work directory is gone; no finding was saved.
     let left: Vec<_> = std::fs::read_dir(scratch.join("fuzz")).unwrap().flatten().collect();
     assert_eq!(left.len(), 1, "{left:?}");
-    no_platform_info();
+    no_platform_info(since);
 }
 
 // "Float casts": csmith 2.3.0's seed 101105 (c-float) converts -8.4375 to
@@ -168,6 +176,7 @@ fn mixed_and_debug_seeds_on_the_host() {
     if !tools_found() || !found(&["llvm-extract-22", "llvm-dwarfdump-22"]) {
         return;
     }
+    let since = started();
     let scratch = Scratch::new("fuzz-modes");
     for mode in [Mode::Mix, Mode::Debug] {
         let mut options = options(&scratch, 1, 3);
@@ -180,7 +189,7 @@ fn mixed_and_debug_seeds_on_the_host() {
             assert!(summary.lines.as_ref().is_some_and(|l| l.same > 0), "{text}");
         }
     }
-    no_platform_info();
+    no_platform_info(since);
 }
 
 // Harness gap (debug comparison, not hod): `llc -O0` deletes the store of
@@ -315,6 +324,74 @@ fn a_wrong_calling_convention_is_a_mix_finding() {
     assert!(expect.xfail_reason(Arch::host().unwrap(), 22, None).is_some(), "{seed}");
     assert_eq!(seed.matches("\n;@ module: ").count(), 2, "{seed}");
     assert!(!seed.contains(&*scratch.join("").to_string_lossy()), "{seed}");
+}
+
+/// The tools of the `llc19-int128-last-register` tests: the abi profile
+/// at LLVM 19 on x86-64, `--mix`, and `llc` 22.
+fn int128_tools_found() -> bool {
+    let cross = Arch::host() == Some(Arch::X86_64) || found(&["x86_64-linux-gnu-gcc"]);
+    cross && found(&["clang-19", "llc-19", "llvm-extract-19", "llc-22", "awk"])
+}
+
+fn int128_options(scratch: &Scratch, seed: u64, llvm: u32, mode: Mode) -> Options {
+    let mut options = options(scratch, seed, 1);
+    options.profile = Profile::by_name("abi").unwrap();
+    (options.target, options.llvm, options.mode) = (Some(Arch::X86_64), llvm, mode);
+    options.reduce_budget = 0;
+    options
+}
+
+// "Set apart (seeds)" (`llc19-int128-last-register`): seeds 125392 (whole)
+// and 126005 (--mix) of the 1.0 budget (x86-64, LLVM 19, abi): an i128
+// argument with only r9 left, which llc 19 also takes r9 away from. gcc
+// on prog.c and llc 22 on the module print hod's output (in --mix: hod's
+// half with llc 22's other half), so the seed is set apart, no finding.
+#[test]
+fn llc19_int128_findings_are_set_apart() {
+    if !int128_tools_found() {
+        return;
+    }
+    let scratch = Scratch::new("fuzz-int128");
+    for (seed, mode, site) in [
+        (125_392, Mode::Whole, "i128 at call @callee_2 argument 10"),
+        (126_005, Mode::Mix, "i128 at define @callee_2 parameter 7"),
+    ] {
+        let summary = run(&int128_options(&scratch, seed, 19, mode)).expect("the run");
+        let text = summary.text();
+        assert!(summary.findings.is_empty() && summary.errors.is_empty(), "{text}");
+        let [(s, class, line)] = &summary.set_apart[..] else { panic!("one set apart: {text}") };
+        assert_eq!((*s, *class), (seed, "llc19-int128-last-register"), "{text}");
+        assert!(line.contains(&format!("seed {seed}: {site} with one integer")), "{text}");
+        assert!(line.contains("gcc -O0 (prog.c) and llc-22 -O0 (the module) print"), "{text}");
+        let results = std::fs::read_to_string(summary.results_file.as_ref().unwrap()).unwrap();
+        assert!(results.contains(&format!("{seed}\tabi\tset-apart\t")), "{results}");
+    }
+}
+
+// "Set apart (seeds)": the planted ABI bug (hod swaps two parameters) in
+// a program with the shape (abi seed 2 at x86-64 LLVM 19 has one):
+// llc 22's other half disagrees with hod's half as llc 19's does, so the
+// finding stays a finding and says why; at LLVM 22 the class is not asked
+// at all. (On seed 126005 the swap crosses no object boundary that
+// matters: hod A + llc 22 B prints gcc's output, and the seed is set
+// apart, rightly: llc 19 alone explains its finding.)
+#[test]
+fn a_wrong_convention_with_the_shape_stays_a_finding() {
+    if !int128_tools_found() || !found(&["clang-22", "llvm-extract-22"]) {
+        return;
+    }
+    let scratch = Scratch::new("fuzz-int128-wrong");
+    for llvm in [19, 22] {
+        let mut options = int128_options(&scratch, 2, llvm, Mode::Mix);
+        options.hod = Some(swapping_hod(&scratch));
+        let summary = run(&options).expect("the run");
+        let text = summary.text();
+        assert!(summary.set_apart.is_empty(), "{text}");
+        let [found] = &summary.findings[..] else { panic!("one finding: {text}") };
+        assert_eq!(found.kind, Kind::Disagree, "{text}");
+        let asked = found.detail.contains("not llc19-int128-last-register: ");
+        assert_eq!(asked, llvm == 19, "{text}");
+    }
 }
 
 // "Profiles", "Census": the ABI generator's programs reach what csmith's

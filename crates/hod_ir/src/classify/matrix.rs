@@ -517,7 +517,7 @@ const MODULE: [SupportRow; 25] = [
     both(
         "module:asm",
         ON,
-        "module-level assembly of code and data: `hod_asm` (WP-112 on AArch64, WP-204 on x86-64 with `.symver`, `spec/asm.md` §9, §14); what it does not read is refused by an `asm:*` name",
+        "module-level assembly of code and data: `hod_asm` (WP-112 on AArch64, WP-204 on x86-64 with `.symver`, `spec/asm.md` §9, §14), sections of the text's own name on both (WP-255, §9.1); what it does not read is refused by an `asm:*` name",
     ),
     both(
         "module:asm-symbols",
@@ -1756,7 +1756,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
         "inst:callbr",
         ON,
         ON,
-        "inline assembly with labels, `asm goto` (WP-103, `spec/codegen.md` §5.5.3; x86-64: an empty template, WP-181, §5.6.23)",
+        "inline assembly with labels, `asm goto` (WP-103, `spec/codegen.md` §5.5.3; x86-64: an empty template, WP-181, §5.6.23, a template, WP-254, `spec/asm.md` §21)",
     ),
     row("inst:invoke", ON, ON, ""),
     row("inst:resume", ON, ON, ""),

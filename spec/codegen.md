@@ -2947,9 +2947,9 @@ Refused names: `x64:intrinsic` (an intrinsic not listed), and also
 `x64:intrinsic-wide` (a width above 128, or i128 where only `Int` is
 on), `x64:intrinsic-vector`, `x64:mem-inline-length` (an `.inline` form
 with a variable length), `x64:frame-depth`, `x64:eh-typeid`,
-`x64:inline-asm` (a `callbr` whose template is not empty; other
-templates are §5.6.28's since WP-187), and
-`x64:inline-asm-{output,outputs,constraint,clobber,operand,bundle}`.
+and `x64:inline-asm-{output,outputs,constraint,clobber,operand,bundle}`
+(a template that is not empty is §5.6.28's since WP-187, in a `callbr`
+too since WP-254; `x64:inline-asm` is retired).
 
 Evidence: `crates/hod_x64/tests/intrinsic.rs` and `tests/barrier.rs`,
 summarized in `spec/landed/codegen/WP-128.md`.
@@ -3888,8 +3888,9 @@ Evidence: `spec/landed/codegen/WP-173.md`.
    edge: the indirect destinations are blocks like any other, emitted
    because they are successors, entered only from elsewhere (a branch,
    an `indirectbr` through their `blockaddress`), as `llc` builds them.
-   A template that assembles to something stays `x64:inline-asm` (no
-   assembler). A destination's `phi` that takes the result is written
+   A template that assembles to something is §5.6.28's since WP-254:
+   its branches to the labels go through per-destination trampolines
+   (`spec/asm.md` §21). A destination's `phi` that takes the result is written
    on the fallthrough edge after the result (§4.5; the refusal
    `x64:callbr-result-phi` of the first landing is retired: WP-181).
    AArch64 builds `callbr` through its assembler (§5.5.3) and is not
@@ -4283,8 +4284,9 @@ or the registers of a class: `x64:inline-asm-operands`.
 
 **Refused.** `inteldialect` (`x64:inline-asm-intel`), `unwind` on an
 `invoke` (`x64:inline-asm-unwind`), a bundle (`x64:inline-asm-bundle`),
-a `callbr` with a template (`x64:inline-asm`), `asm goto` labels in a
-call, a symbol outside a memory operand (`asm:operand/symbol`), and
+in a `callbr` with a template (WP-254, `spec/asm.md` §21) a label
+referred to other than by a branch and x87 operands
+(`x64:inline-asm-goto`), `asm goto` labels in a call, a symbol outside a memory operand (`asm:operand/symbol`), and
 `hod_asm`'s `asm:*` names.
 
 Evidence: `crates/hod_asm/tests/llvm_mc_x64.rs`,
@@ -6640,6 +6642,20 @@ the `asm:*` name. Then:
   appended, and a code section's mapping symbols written; the
   emitter's mapping state is the text's last, so the next function in
   `.text` writes `$x` only if the text ended in data.
+- **Sections of the text's own name** (`spec/asm.md` §9.1, WP-255, both
+  targets; x86-64's text goes through `assemble_module_x64`, §14) are
+  created with the type, flags and entry size the text wrote
+  (`Sections::assembly`: `MCContext::getELFSection` with the generic
+  id, recorded as `recordELFMergeableSectionInfo` does), their alignment
+  and bytes (or `@nobits` size); no mapping symbols. A global of an
+  explicit section of that name then goes through §9.7's explicit-section
+  rule unchanged: it joins the text's section when its flags and entry
+  size equal the text's, and gets a section of the same name of its own
+  otherwise, as with `llc` (`"aw"` and a writable global: one section;
+  `"a"` or no flags and a writable global, or `"MS",...,1` and an
+  `[N x i8]` constant: two). A global of an explicit section that names
+  a `@nobits` section of the text is `asm:section` (`llc` joins a zero
+  one to it and rejects an initialized one).
 - **Symbols.** A label or `.set` of a name the module does not have is
   a new object symbol (local unless `.globl`/`.weak`; visibility and
   type from the directives; `.set` absolute; `.size` as written; kept in
@@ -6663,7 +6679,8 @@ The oracle is `crates/hod_cg/tests/emit_module_asm.rs` (sections with
 bytes, symbols, relocations, code-section mapping symbols equal to
 `llc` 19's and 22's, LLVM 19's alignment of a created code section
 normalised from 1 to 4); the three corpus modules with code and data in
-their text link (bfd, lld, mold) and behave as `llc`'s.
+their text link (bfd, lld, mold) and behave as `llc`'s. For §9.1's
+sections also `crates/hod_cg/tests/emit_module_asm_link.rs`.
 
 ## 10. Errors and limits
 

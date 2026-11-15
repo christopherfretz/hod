@@ -369,20 +369,18 @@ fn an_invoke_of_a_template() {
     hod_object(&module("sideeffect "), Stress::ALL);
 }
 
-/// A `callbr` whose template is not empty stays refused.
+/// A `callbr` whose template is not empty is built since WP-254 (its
+/// paths are run in `tests/asm_goto.rs`).
 #[test]
-fn a_callbr_with_a_template_stays_refused() {
+fn a_callbr_with_a_template_is_built() {
     let text = format!(
         "{}define void @f() {{\nentry:\n  callbr void asm \"jmp ${{0:l}}\", \"!i\"()\n\
          \x20         to label %a [label %b]\na:\n  ret void\nb:\n  ret void\n}}\n",
         ll_header()
     );
     let (m, bodies) = parse(&text);
-    match hod_x64::compile_to_object(&m, &bodies, &pic(Stress::default())) {
-        Err(hod_x64::ModuleError::Function { error, .. }) => {
-            assert_eq!(error, CgError::unsupported(barrier::INLINE_ASM));
-        }
-        other => panic!("not refused: {:?}", other.map(|o| o.len())),
+    for stress in [Stress::default(), Stress::ALL] {
+        hod_x64::compile_to_object(&m, &bodies, &pic(stress)).unwrap_or_else(|e| panic!("{e}"));
     }
 }
 

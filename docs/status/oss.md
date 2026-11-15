@@ -74,12 +74,18 @@ Host: aarch64; target: x86_64 (cross-built, tests under qemu-x86_64). Rows from 
 | reflect_cpp | O0g | 327 | 323 | 323 | 0 | 0 | ok | ok | 484/484 | 484/484 | 484/484 | same | `hod-02fe2d02` | `8f93304ee` |
 | libunifex | O0 | 114 | 114 | 97 | 17 | 0 | failed (17 TUs) | - | 91/94 | 76/94 | - | hod: 15 worse (programs not built) | `hod-02fe2d02` | `8f93304ee` |
 | libunifex | O0g | 114 | 114 | 97 | 17 | 0 | failed (17 TUs) | - | 91/94 | 76/94 | - | hod: 15 worse (programs not built) | `hod-02fe2d02` | `8f93304ee` |
+| glaze | O0 | 89 | 114 | 86 | 0 | 0 | failed (3 TUs) | failed (3 TUs) | 100/102 | 100/102 | 99/102 | strict: 1 worse (lib_test) | `hod-02fe2d02` | `8f93304ee` |
+| glaze | O0g | 89 | 112 | 84 | 0 | 0 | failed (5 TUs) | failed (5 TUs) | 98/102 | 98/102 | 98/102 | same | `hod-02fe2d02` | `8f93304ee` |
+| stdexec | O0 | 231 | 235 | 231 | 0 | 0 | ok | ok | 907/907 | 907/907 | 907/907 | same | `hod-02fe2d02` | `8f93304ee` |
+| stdexec | O0g | 231 | 235 | 231 | 0 | 0 | ok | ok | 907/907 | 907/907 | 907/907 | same | `hod-02fe2d02` | `8f93304ee` |
 
 1. scnlib: the 69 objects include 22 link rows of kiln's statistics log; the object jobs are 47, all by hod. `scn_stdin_test` fails in every mode: its Python driver runs the x86-64 program directly, not under qemu.
 2. daw_json_link: every object is built by hod, but 47 of 158 links fail: hod keeps the call to `daw::ensure::ensure_compile_error(bool)` (declared, never defined) in the arm of `if (__builtin_constant_p(b))` (`llvm.is.constant.i1` on a non-constant), which llc folds away. Every program that links passes. Fixed by WP-261; re-run at the next candidate.
 3. libunifex: 17 objects (coroutine `connect_impl` functions with `invoke` of `llvm.coro.await.suspend.*`) stop hod with an internal error ("a label that code refers to was never bound"); kiln's fallback warning becomes an error under the project's `-Werror`, so the hybrid build loses them too, and no strict build ran. The 3 io_uring tests fail in the control (not executable under qemu).
 4. reflect_cpp: 4 of the 327 TUs are precompiled headers (no object).
-5. taskflow `-O0 -g`, glaze and stdexec were not run in WP-253.
+5. glaze: the TUs that fail, fail in kiln in every mode, the control included. `cbor_test`, `msgpack_test` and `cli_menu_test` have front-end errors. At `-O0 -g`, the two `json_test` TUs also fail: kiln runs out of memory under the lane's 3 GB address-space cap. The other objects are link rows. O0 strict `lib_test` aborted (`std::bad_function_call`: no library loaded): the test loads `libtest_lib_d.so` from the source tree's `bin/`, which the project's configure step deletes, and the `*_rejects_*` tests run `cmake --build` on the same tree, which reconfigured it during the test run. It passed 5 of 5 reruns, and passed again in a full re-run of the suite. This is a race in the project's tests, not a difference in hod.
+6. stdexec: the 4 objects not by hod are link rows.
+7. taskflow `-O0 -g` was not run in WP-253.
 
 ## Refusal census (hybrid builds)
 

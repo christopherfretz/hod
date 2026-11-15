@@ -21,6 +21,7 @@ interfaces fixed in `spec/`. Several run at once within every milestone.
 | T-A64 | `hod_mc_a64` | pure encoder; tested against `llvm-mc` |
 | T-X64 | `hod_mc_x64` | pure encoder; tested against `llvm-mc` |
 | T-CG | `hod_cg`, `hod_a64`, `hod_x64` | the core; splits by instruction group once the `Target` trait is fixed |
+| T-X86 | `hod_x86` (new), the 32-bit mode of `hod_mc_x64`, the i386 parts of `hod_obj`, `hod_eh`, `hod_dwarf`, `hod_asm` | a third back end beside `hod_x64`; meets the others at `hod_cg`'s `Target` trait and `hod_obj`'s relocation kinds (design 0008) |
 | T-EH | `hod_eh` | consumes the per-function output record |
 | T-DW | `hod_dwarf` | consumes debug metadata and the per-function output record |
 | T-XF | `hod_xform` | IR to IR; tested by running its output through `llc` as well as hod |
@@ -132,7 +133,21 @@ still point at the right milestone.
 **Gate:** the release-candidate gate of `docs/VALIDATION.md`, on both
 targets. This is 1.0. It does not include M5's gate.
 
+## Third target: 32-bit x86 Linux
+
+32-bit x86 Linux (`i686-unknown-linux-gnu`) is a planned third target
+(track T-X86), designed in `docs/design/0008-i386.md` with the ABI
+skeleton `spec/abi-x86.md`. It adds a back-end crate `hod_x86` beside
+`hod_x64`, a 32-bit mode in `hod_mc_x64`, ELF32 with `SHT_REL` in
+`hod_obj`, and i386 tables in `hod_eh` and `hod_dwarf`; `hod_cg` is
+unchanged in shape (a 64-bit integer is a memory value on i386). Its
+milestones: `ret i32` linked and run under `qemu-i386`; csmith agrees
+with `llc`; libc++'s tests built from clang's i686 IR. kiln has no 32-bit
+target yet, so clang's IR is the input until it has. The encoder, object
+and IR packages can start alongside M6; the back end starts after them.
+32-bit Arm is not planned.
+
 ## Later
 
-Optimization at any level; Mach-O and COFF; other architectures; LTO
-interaction. None of it starts before M6.
+Optimization at any level; Mach-O and COFF; other architectures than
+the three; LTO interaction. None of it starts before M6.

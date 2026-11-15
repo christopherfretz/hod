@@ -28,6 +28,10 @@ struct Linear {
     addend: i64,
 }
 
+/// The most lanes a vector `getelementptr` constant is folded for
+/// (`ConstPool::fold_gep`); a longer one stays an `Expr`.
+pub const MAX_FOLDED_LANES: u32 = 256;
+
 impl<L: Layering> ConstPool<L> {
     /// Folds `getelementptr (source_ty, base, indices...)`.
     ///
@@ -35,9 +39,12 @@ impl<L: Layering> ConstPool<L> {
     /// table, wrapping modulo `2^64` like the instruction, and applied to
     /// the base: `Addr` gains the offset, `null` and absolute addresses
     /// become the absolute address, and any base is returned unchanged for
-    /// offset zero. Everything else (a non-constant-integer index, a vector
-    /// of pointers, a scalable source type, a vector whose elements are not
-    /// whole bytes, a base that is not `symbol + addend`) is an `Expr`.
+    /// offset zero. A fixed vector `getelementptr` is folded lane by lane
+    /// into a vector of the lanes' results when every lane folds (WP-234).
+    /// Everything else (a non-constant-integer index, a scalable vector or
+    /// source type, a vector whose elements are not whole bytes, a base
+    /// that is not `symbol + addend`, a lane that does not fold) is an
+    /// `Expr`.
     ///
     /// Errors: `TypeMismatch` when `base` is not a pointer or vector of
     /// pointers or an index is not an integer or vector of integers;
@@ -94,6 +101,14 @@ impl<L: Layering> ConstPool<L> {
             pool.expr(ConstOp::GetElementPtr, result_ty, Some(source_ty), &args)
         };
 
+        if let Some((len, false)) = vector_shape
+            && !types.is_scalable(source_ty)
+        {
+            return match self.fold_gep_lanes(types, source_ty, base, indices, len, result_ty)? {
+                Some(id) => Ok(id),
+                None => unfolded(self),
+            };
+        }
         let offset = self.gep_offset(types, source_ty, indices)?;
         if types.is_scalable(source_ty) || vector_shape.is_some() {
             return unfolded(self);
@@ -112,6 +127,70 @@ impl<L: Layering> ConstPool<L> {
             Const::Undef(_) => self.undef(types, result_ty),
             _ => unfolded(self),
         }
+    }
+
+    /// A `getelementptr` with a fixed vector operand of `len` lanes folded
+    /// lane by lane (WP-234): lane `n` of every vector operand, a scalar
+    /// operand as it is, folded as a scalar `getelementptr`; the result is
+    /// the vector of the lanes' results. `None` when an operand's lane is
+    /// not known here or a lane does not fold (stays an `Expr`), or for
+    /// more than [`MAX_FOLDED_LANES`] lanes.
+    fn fold_gep_lanes(
+        &mut self,
+        types: &mut TypeTable<L>,
+        source_ty: TypeId,
+        base: ConstId,
+        indices: &[ConstId],
+        len: u32,
+        result_ty: TypeId,
+    ) -> IrResult<Option<ConstId>> {
+        if len > MAX_FOLDED_LANES {
+            return Ok(None);
+        }
+        let mut lanes = Vec::with_capacity(len as usize);
+        let mut lane_indices = Vec::with_capacity(indices.len());
+        for lane in 0..len {
+            let Some(lane_base) = self.lane_of(types, base, lane)? else { return Ok(None) };
+            lane_indices.clear();
+            for &index in indices {
+                let Some(lane_index) = self.lane_of(types, index, lane)? else {
+                    return Ok(None);
+                };
+                lane_indices.push(lane_index);
+            }
+            let folded = self.fold_gep(types, source_ty, lane_base, &lane_indices)?;
+            if matches!(self.get(folded), Const::Expr { .. }) {
+                return Ok(None);
+            }
+            lanes.push(folded);
+        }
+        self.aggregate(types, result_ty, &lanes).map(Some)
+    }
+
+    /// Lane `lane` of the constant `id` if it is a fixed vector (its
+    /// element, a splat's element, the zero, `undef` or `poison` of the
+    /// element type), `id` itself if it is a scalar; `None` for a vector
+    /// whose lanes are not known here (an expression).
+    fn lane_of(
+        &mut self,
+        types: &TypeTable<L>,
+        id: ConstId,
+        lane: u32,
+    ) -> IrResult<Option<ConstId>> {
+        let TypeKind::Vector { elem, .. } = types.kind(self.ty(id)) else {
+            return Ok(Some(id));
+        };
+        Ok(Some(match self.get(id) {
+            Const::Aggregate { elems, .. } => match elems.get(lane as usize) {
+                Some(&e) => e,
+                None => return Ok(None),
+            },
+            Const::Splat { elem: e, .. } => e,
+            Const::Zero(_) => self.zero(types, elem)?,
+            Const::Undef(_) => self.undef(types, elem)?,
+            Const::Poison(_) => self.poison(types, elem)?,
+            _ => return Ok(None),
+        }))
     }
 
     /// The byte offset a `getelementptr` over `source_ty` adds, or `None`
@@ -646,12 +725,54 @@ mod tests {
         let zero = c.int(t, TypeId::I64, 0).unwrap();
         let e = c.fold_gep(t, bits, base, &[zero, one]).unwrap();
         assert!(is_expr(c, e, gep));
-        // A vector of indices gives a vector of pointers.
+        // A vector of indices one of whose lanes does not fold (WP-234).
         let v2 = t.vector(TypeId::I64, 2).unwrap();
-        let indices = c.splat(t, v2, one).unwrap();
+        let indices = c.aggregate(t, v2, &[one, unknown]).unwrap();
         let e = c.fold_gep(t, TypeId::I32, base, &[indices]).unwrap();
         assert!(is_expr(c, e, gep));
         assert_eq!(c.ty(e), t.vector(TypeId::PTR, 2).unwrap());
+    }
+
+    /// §4.2, WP-234: a fixed vector GEP folds lane by lane into a vector
+    /// of the lanes' addresses; scalar operands are splatted.
+    #[test]
+    fn vector_gep_folds_lane_by_lane() {
+        fn addrs(c: &ConstPool, id: ConstId) -> Vec<Const<'_>> {
+            let Const::Aggregate { elems, .. } = c.get(id) else { panic!("{:?}", c.get(id)) };
+            elems.iter().map(|&e| c.get(e)).collect()
+        }
+        let mut m = module();
+        let (t, c) = (&mut m.types, &mut m.consts);
+        let (f, g) = (SymId::new(1), SymId::new(2));
+        let (fa, ga) = (c.addr(f, 0).unwrap(), c.addr(g, 16).unwrap());
+        let i = |c: &mut ConstPool, t: &TypeTable, v: i64| c.int_signed(t, TypeId::I64, v).unwrap();
+        let (one, three, minus_two) = (i(c, t, 1), i(c, t, 3), i(c, t, -2));
+        let vp = t.vector(TypeId::PTR, 2).unwrap();
+        let vi = t.vector(TypeId::I64, 2).unwrap();
+        let bases = c.aggregate(t, vp, &[fa, ga]).unwrap();
+        let idx = c.aggregate(t, vi, &[three, minus_two]).unwrap();
+        // Vector base, vector index.
+        let r = c.fold_gep(t, TypeId::I32, bases, &[idx]).unwrap();
+        assert_eq!(c.ty(r), vp);
+        let want = [Const::Addr { sym: f, addend: 12 }, Const::Addr { sym: g, addend: 8 }];
+        assert_eq!(addrs(c, r), want);
+        // Scalar base, vector index; a scalar index after it.
+        let r = c.fold_gep(t, TypeId::I64, fa, &[idx]).unwrap();
+        let want = [Const::Addr { sym: f, addend: 24 }, Const::Addr { sym: f, addend: -16 }];
+        assert_eq!(addrs(c, r), want);
+        // Vector base, splatted scalar index; a zero vector base is `null`.
+        let r = c.fold_gep(t, TypeId::I8, bases, &[one]).unwrap();
+        let want = [Const::Addr { sym: f, addend: 1 }, Const::Addr { sym: g, addend: 17 }];
+        assert_eq!(addrs(c, r), want);
+        let zero = c.zero(t, vp).unwrap();
+        let r = c.fold_gep(t, TypeId::I8, zero, &[idx]).unwrap();
+        let want = [Const::AddrOfInt { value: 3 }, Const::AddrOfInt { value: (-2i64) as u64 }];
+        assert_eq!(addrs(c, r), want);
+        // A splat index.
+        let splat = c.splat(t, vi, one).unwrap();
+        let r = c.fold_gep(t, TypeId::I32, bases, &[splat]).unwrap();
+        let want = [Const::Addr { sym: f, addend: 4 }, Const::Addr { sym: g, addend: 20 }];
+        assert_eq!(addrs(c, r), want);
     }
 
     /// §4.2 errors of `fold_gep`: `TypeMismatch`, `UnsizedType`, `BadIndex`.

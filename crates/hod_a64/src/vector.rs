@@ -97,8 +97,6 @@ pub use crate::aggr::MEM_VECTOR;
 /// An element-wise operation on an `Fpr` vector without one instruction
 /// (vector `frem` among them): the lane loop, WP-080.
 pub use crate::float::VECTOR_OP;
-/// `getelementptr` over a vector of pointers.
-pub use crate::mem::PTRADD_VECTOR;
 
 pub use hod_cg::lanes::{Elem, MAX_LANES};
 
@@ -315,9 +313,15 @@ fn view(shape: &Shape) -> VMemSize {
 /// As [`scratch`].
 pub fn spill(cx: &mut FnCx<'_, A64>, reg: VReg, shape: &Shape, k: u32) -> CgResult<FrameRef> {
     let image = scratch(cx, k)?;
+    spill_at(cx, reg, shape, image);
+    Ok(image)
+}
+
+/// Stores the `Fpr` vector of `shape` in `reg` at frame place `image`.
+/// Writes `x16` (a far frame offset).
+pub fn spill_at(cx: &mut FnCx<'_, A64>, reg: VReg, shape: &Shape, image: FrameRef) {
     let mut at = Cursor::frame(cx, image, X16);
     store_fpr_at(cx, view(shape), reg, &mut at);
-    Ok(image)
 }
 
 /// Loads the `Fpr` vector of `shape` from `image` into `reg`. Writes

@@ -22,7 +22,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use hod::{OutputKind, Report, Settings, compile_with};
-use hod_testutil::{Scratch, run_with, tool};
+use hod_testutil::{Scratch, run_with, tool, tools_required};
 
 const TRIPLES: [&str; 2] = ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"];
 /// The blocks of the chain.
@@ -381,15 +381,15 @@ fn declined(text: &str) -> String {
 fn refusals_are_named() {
     let cases = [
         // WP-225 (§6.31): a fragment that is not whole bytes; a
-        // conversion wider than 64 bits, to a float, or under a memory
-        // location.
+        // conversion wider than 64 bits other than to 128 (WP-230,
+        // §6.34), to a float, or under a memory location.
         (
             hod_dwarf::DEBUG_DBG_VALUE_FRAGMENT,
             "    #dbg_value(i32 %a, !37, !DIExpression(DW_OP_LLVM_fragment, 0, 12), !40)\n",
         ),
         (
             hod_dwarf::DEBUG_DBG_VALUE_EXPR,
-            "    #dbg_value(i32 %a, !37, !DIExpression(DW_OP_LLVM_convert, 32, DW_ATE_signed, DW_OP_LLVM_convert, 128, DW_ATE_signed, DW_OP_stack_value), !40)\n",
+            "    #dbg_value(i32 %a, !37, !DIExpression(DW_OP_LLVM_convert, 32, DW_ATE_signed, DW_OP_LLVM_convert, 96, DW_ATE_signed, DW_OP_stack_value), !40)\n",
         ),
         (
             hod_dwarf::DEBUG_DBG_VALUE_EXPR,
@@ -765,5 +765,212 @@ fn arglists_are_written() {
             ],
             "{arch}"
         );
+    }
+}
+
+/// WP-230 (§6.34): conversions to 128 bits, the shapes of libc++'s
+/// `__itoa` at `-O1`: values with homes widened (one as a fragment, one
+/// signed), a widened constant, an `i128` value narrowed, and an
+/// argument list with an `i128` value.
+fn wide(triple: &str, split: bool) -> String {
+    let split_name = if split { ", splitDebugFilename: \"chain.dwo\"" } else { "" };
+    format!(
+        r#"target triple = "{triple}"
+
+declare void @g(i64)
+
+define i64 @f(i64 %n, i32 %m, ptr %p) !dbg !10 {{
+entry:
+  %w = zext i64 %n to i128, !dbg !20
+  %s = shl i128 %w, 64, !dbg !20
+  %m1 = add i32 %m, 1, !dbg !20
+  br label %b, !dbg !20
+b:
+  call void @g(i64 1), !dbg !20
+    #dbg_value(i64 %n, !30, !DIExpression(DW_OP_LLVM_convert, 64, DW_ATE_unsigned, DW_OP_LLVM_convert, 128, DW_ATE_unsigned, DW_OP_stack_value), !20)
+    #dbg_value(i32 %m1, !31, !DIExpression(DW_OP_LLVM_convert, 32, DW_ATE_unsigned, DW_OP_LLVM_convert, 128, DW_ATE_unsigned, DW_OP_stack_value, DW_OP_LLVM_fragment, 0, 128), !20)
+    #dbg_value(i32 %m1, !32, !DIExpression(DW_OP_LLVM_convert, 32, DW_ATE_signed, DW_OP_LLVM_convert, 128, DW_ATE_signed, DW_OP_stack_value), !20)
+    #dbg_value(i64 7, !33, !DIExpression(DW_OP_LLVM_convert, 64, DW_ATE_unsigned, DW_OP_LLVM_convert, 128, DW_ATE_unsigned, DW_OP_stack_value), !20)
+    #dbg_value(i128 %s, !34, !DIExpression(DW_OP_LLVM_convert, 128, DW_ATE_unsigned, DW_OP_LLVM_convert, 32, DW_ATE_unsigned, DW_OP_constu, 15, DW_OP_and, DW_OP_stack_value), !20)
+    #dbg_value(!DIArgList(i128 %s, ptr %p), !35, !DIExpression(DW_OP_LLVM_arg, 0, DW_OP_LLVM_arg, 1, DW_OP_LLVM_convert, 64, DW_ATE_unsigned, DW_OP_LLVM_convert, 128, DW_ATE_unsigned, DW_OP_or, DW_OP_stack_value), !20)
+  call void @g(i64 2), !dbg !20
+  %t = trunc i128 %s to i64, !dbg !20
+  call void @g(i64 %t), !dbg !20
+  call void @g(i64 %n), !dbg !20
+  %z = zext i32 %m1 to i64, !dbg !20
+  call void @g(i64 %z), !dbg !20
+  %q = ptrtoint ptr %p to i64, !dbg !20
+  call void @g(i64 %q), !dbg !20
+  ret i64 %n, !dbg !20
+}}
+
+!llvm.dbg.cu = !{{!0}}
+!llvm.module.flags = !{{!5, !6}}
+
+!0 = distinct !DICompileUnit(language: DW_LANG_C_plus_plus_14, file: !1, producer: "hand", isOptimized: true, runtimeVersion: 0{split_name}, emissionKind: FullDebug)
+!1 = !DIFile(filename: "wide.c", directory: "/hod/tests")
+!5 = !{{i32 7, !"Dwarf Version", i32 5}}
+!6 = !{{i32 2, !"Debug Info Version", i32 3}}
+!10 = distinct !DISubprogram(name: "f", scope: !1, file: !1, line: 1, type: !11, scopeLine: 1, spFlags: DISPFlagDefinition | DISPFlagOptimized, unit: !0)
+!11 = !DISubroutineType(types: !12)
+!12 = !{{}}
+!14 = !DIBasicType(name: "unsigned __int128", size: 128, encoding: DW_ATE_unsigned)
+!15 = !DIBasicType(name: "__int128", size: 128, encoding: DW_ATE_signed)
+!16 = !DIBasicType(name: "unsigned int", size: 32, encoding: DW_ATE_unsigned)
+!20 = !DILocation(line: 2, scope: !10)
+!30 = !DILocalVariable(name: "wide", scope: !10, file: !1, line: 3, type: !14)
+!31 = !DILocalVariable(name: "piece", scope: !10, file: !1, line: 4, type: !40)
+!32 = !DILocalVariable(name: "signed", scope: !10, file: !1, line: 5, type: !15)
+!33 = !DILocalVariable(name: "konst", scope: !10, file: !1, line: 6, type: !14)
+!34 = !DILocalVariable(name: "narrow", scope: !10, file: !1, line: 7, type: !16)
+!35 = !DILocalVariable(name: "joined", scope: !10, file: !1, line: 8, type: !14)
+!40 = !DICompositeType(tag: DW_TAG_structure_type, name: "P", file: !1, line: 1, size: 256, elements: !41)
+!41 = !{{!42, !43}}
+!42 = !DIDerivedType(tag: DW_TAG_member, name: "lo", scope: !40, file: !1, line: 1, baseType: !14, size: 128)
+!43 = !DIDerivedType(tag: DW_TAG_member, name: "hi", scope: !40, file: !1, line: 1, baseType: !14, size: 128, offset: 128)
+"#
+    )
+}
+
+/// §6.34, as `llc` 22 writes each shape (both targets, its `-O0`
+/// selectors; `llc`'s home is `DW_OP_breg` of the stack pointer and an
+/// 8-byte one is read by `DW_OP_deref_size 0x8`): a home's value
+/// converted to 128 bits through `DW_ATE_unsigned_128` and
+/// `DW_ATE_signed_128` (16 bytes); the widened constant pushed and
+/// converted, not folded (AArch64's `GlobalISel`; x86-64's `FastISel` writes
+/// a bare `DW_OP_stack_value`, which describes nothing); no entry for an
+/// `i128` value, alone or in an argument list. Split, the legacy form:
+/// `emitLegacyZExt(64)` for the unsigned widening as `llc`, and no
+/// entry for the signed one (`llc` leaves its sign in 64 bits).
+#[test]
+fn conversions_to_128_bits() {
+    conversions_to_128_bits_on(&TRIPLES);
+}
+
+/// `llc`'s objects of [`wide`] for `triple` (`-O0`): plain, and the
+/// split one's `.dwo`; `None` without `llc` 22.
+fn llc_wide(dir: &Scratch, triple: &str) -> Option<(PathBuf, PathBuf)> {
+    let Some(llc) = tool("llc-22") else {
+        assert!(!tools_required(), "llc-22 is required");
+        return None;
+    };
+    let arch = triple.split('-').next().unwrap_or(triple);
+    let input = dir.write(&format!("{arch}.ll"), wide(triple, false));
+    let theirs = dir.join(format!("{arch}.llc.o"));
+    let mut command = Command::new(&llc);
+    command.args(["-O0", "-relocation-model=pic", "-filetype=obj"]);
+    output(command.arg(&input).arg("-o").arg(&theirs));
+    let input = dir.write(&format!("{arch}-split.ll"), wide(triple, true));
+    let dwo = dir.join(format!("{arch}.llc.dwo"));
+    let mut command = Command::new(&llc);
+    command.args(["-O0", "-relocation-model=pic", "-filetype=obj"]);
+    command
+        .arg("-split-dwarf-file=chain.dwo")
+        .arg(format!("-split-dwarf-output={}", dwo.display()));
+    output(command.arg(&input).arg("-o").arg(dir.join(format!("{arch}-split.llc.o"))));
+    Some((theirs, dwo))
+}
+
+fn conversions_to_128_bits_on(triples: &[&str]) {
+    let Some(dwarfdump) = tool("llvm-dwarfdump") else { return };
+    let dir = Scratch::new("dbg-value-128");
+    for &triple in triples {
+        let arch = triple.split('-').next().unwrap_or(triple);
+        let plain = dir.write(&format!("{arch}.o"), compile(&wide(triple, false), None));
+        let dwo = dir.join(format!("{arch}-split.dwo"));
+        let split = dir.write(&format!("{arch}-split.o"), compile(&wide(triple, true), Some(&dwo)));
+        for file in [&plain, &split, &dwo] {
+            let verify = output(Command::new(&dwarfdump).arg("--verify").arg(file));
+            assert!(verify.contains("No errors."), "{arch}: {verify}");
+        }
+        let ops = |file: &Path, name: &str| named_ops(&entries(&dwarfdump, file, name));
+        let info = output(Command::new(&dwarfdump).arg("--debug-info").arg(&plain));
+        let base = info.split("DW_AT_name\t(\"DW_ATE_unsigned_128\")").nth(1).unwrap_or_default();
+        let size = base.lines().find(|l| l.contains("DW_AT_byte_size")).unwrap_or_default();
+        assert!(size.contains("(16)") || size.contains("(0x10)"), "{arch}: {info}");
+        let u128 = "DW_OP_convert DW_ATE_unsigned_128, DW_OP_stack_value";
+        assert_eq!(
+            ops(&plain, "wide"),
+            [format!("DW_OP_fbreg, DW_OP_deref, DW_OP_convert DW_ATE_unsigned_64, {u128}")],
+            "{arch}"
+        );
+        assert_eq!(
+            ops(&plain, "piece"),
+            [format!(
+                "DW_OP_fbreg, DW_OP_deref_size 0x4, DW_OP_convert DW_ATE_unsigned_32, {u128}, DW_OP_piece 0x10"
+            )],
+            "{arch}"
+        );
+        assert_eq!(
+            ops(&plain, "signed"),
+            [
+                "DW_OP_fbreg, DW_OP_deref_size 0x4, DW_OP_convert DW_ATE_signed_32, DW_OP_convert DW_ATE_signed_128, DW_OP_stack_value"
+            ],
+            "{arch}"
+        );
+        assert_eq!(
+            ops(&plain, "konst"),
+            [format!("DW_OP_lit7, DW_OP_convert DW_ATE_unsigned_64, {u128}")],
+            "{arch}"
+        );
+        for file in [&plain, &dwo] {
+            for name in ["narrow", "joined"] {
+                assert!(ops(file, name).is_empty(), "{arch} {name}: {:?}", ops(file, name));
+            }
+        }
+        let zext64 = "DW_OP_lit1, DW_OP_constu 0x40, DW_OP_shl, DW_OP_lit1, DW_OP_minus, DW_OP_and, DW_OP_stack_value";
+        assert_eq!(ops(&dwo, "wide"), [format!("DW_OP_fbreg, DW_OP_deref, {zext64}")], "{arch}");
+        assert_eq!(
+            ops(&dwo, "piece"),
+            [
+                "DW_OP_fbreg, DW_OP_deref_size 0x4, DW_OP_constu 0xffffffff, DW_OP_and, DW_OP_stack_value, DW_OP_piece 0x10"
+            ],
+            "{arch}"
+        );
+        assert!(ops(&dwo, "signed").is_empty(), "{arch}: {:?}", ops(&dwo, "signed"));
+        assert_eq!(ops(&dwo, "konst"), [format!("DW_OP_lit7, {zext64}")], "{arch}");
+        // The same against `llc` 22 itself, where its locations describe
+        // the value (its home named from the stack pointer).
+        let Some((theirs, theirs_dwo)) = llc_wide(&dir, triple) else { continue };
+        let llc_ops = |file: &Path, name: &str| -> Vec<String> {
+            named_ops(&entries(&dwarfdump, file, name))
+                .into_iter()
+                .map(|e| {
+                    e.split(", ")
+                        .map(|op| match op {
+                            _ if op.starts_with("DW_OP_breg31 WSP")
+                                || op.starts_with("DW_OP_breg7 RSP") =>
+                            {
+                                "DW_OP_fbreg"
+                            }
+                            "DW_OP_deref_size 0x8" => "DW_OP_deref",
+                            _ => op,
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .collect()
+        };
+        for name in ["wide", "piece", "signed", "joined"] {
+            assert_eq!(ops(&plain, name), llc_ops(&theirs, name), "{arch} {name}");
+        }
+        for name in ["wide", "piece", "joined"] {
+            assert_eq!(ops(&dwo, name), llc_ops(&theirs_dwo, name), "{arch} split {name}");
+        }
+        if triple.starts_with("aarch64") {
+            assert_eq!(ops(&plain, "konst"), llc_ops(&theirs, "konst"), "{arch}");
+            assert_eq!(ops(&dwo, "konst"), llc_ops(&theirs_dwo, "konst"), "{arch}");
+            assert!(llc_ops(&theirs, "narrow").is_empty(), "{arch}");
+        } else {
+            assert_eq!(llc_ops(&theirs, "konst"), ["DW_OP_stack_value"], "{arch}");
+            // x86-64's FastISel reads the low 8 bytes of the `i128`'s
+            // home and narrows them; hod writes no entry for an `i128`
+            // value (§6.34).
+            let narrow = llc_ops(&theirs, "narrow");
+            assert!(
+                narrow.len() == 1 && narrow[0].starts_with("DW_OP_fbreg, DW_OP_deref, DW_OP_convert DW_ATE_unsigned_128, DW_OP_convert DW_ATE_unsigned_32"),
+                "{arch}: {narrow:?}"
+            );
+        }
     }
 }

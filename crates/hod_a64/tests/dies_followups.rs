@@ -402,14 +402,33 @@ fn coroutine_ramps_match_llc() {
 /// kiln++'s ramp: the same, but kiln++ writes the frame type's `void *`
 /// as a second node equal to the first (`!142 = !DIDerivedType(tag:
 /// DW_TAG_pointer_type, baseType: null, size: 64)` beside `!17`). LLVM's
-/// parser makes equal uniqued nodes one; `hod_ll` keeps two, so hod's
-/// unit has one more `void *` DIE than `llc`'s. Outside WP-111
-/// (`crates/hod_ll`, metadata uniquing).
+/// parser makes equal uniqued nodes one, and so do hod's readers since
+/// WP-228 (`spec/ir.md` §6.3), so both units have one `void *` DIE. The
+/// variables declared on the frame pointer's `phi` are left out of the
+/// comparison, as in `coroutine_ramps_match_llc`.
 #[test]
-#[ignore = "hod_ll keeps two equal uniqued metadata nodes apart (an extra void * DIE)"]
 fn kiln_coroutine_ramp_matches_llc() {
-    let (Some(k), Some(_)) = (support::kiln(), tool("llc-22")) else { return };
+    if !cfg!(target_arch = "aarch64") {
+        return;
+    }
+    let (Some(k), Some(llc), Some(dwarfdump)) =
+        (support::kiln(), tool("llc-22"), tool("llvm-dwarfdump"))
+    else {
+        return;
+    };
     let scratch = Scratch::new("dies-followups-kiln-ramp");
     let text = ir(&k, &scratch, "kiln-ramp", "../dies_label/coro.cpp", &[]);
-    compare(&scratch, "llc-22", "kiln-ramp", &text).unwrap();
+    let h = hod_object(&scratch, "kiln-ramp-hod", &text);
+    let l = llc_object(&scratch, &llc, "kiln-ramp-llc", &text);
+    support::verify(&dwarfdump, &h);
+    support::verify(&dwarfdump, &l);
+    let (th, tl) = (trees(&dwarfdump, &h), trees(&dwarfdump, &l));
+    assert_eq!(th.len(), tl.len(), "kiln-ramp: hod's units, llc's");
+    let declared = declared_on_phi(&text);
+    for (ours, theirs) in th.iter().zip(&tl) {
+        let pruned = (without_declared(ours, &declared), without_declared(theirs, &declared));
+        if let Some(d) = first_difference(&pruned.0, &pruned.1) {
+            panic!("kiln-ramp: hod's tree, then llc's, without {declared:?}: {d}");
+        }
+    }
 }

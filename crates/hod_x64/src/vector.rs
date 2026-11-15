@@ -83,12 +83,9 @@ pub const INDEX: &str = "x64:vector-index";
 /// A conversion of a vector of 64-bit integers to `bfloat` (the scalar
 /// rounding by hand is not repeated per lane).
 pub const BFLOAT: &str = "x64:vector-bfloat";
-/// `getelementptr` over a vector of pointers.
-pub use crate::mem::PTRADD_VECTOR;
-
 /// Every stable name this module and the lane loop refuse with.
 pub const UNSUPPORTED: &[&str] =
-    &[VECTOR, MASK_WIDE, ODD_ELEMENT, WIDE_ELEMENT, LENGTH, INDEX, BFLOAT, PTRADD_VECTOR];
+    &[VECTOR, MASK_WIDE, ODD_ELEMENT, WIDE_ELEMENT, LENGTH, INDEX, BFLOAT];
 
 // ---- shapes ----
 

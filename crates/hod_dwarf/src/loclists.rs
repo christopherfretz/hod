@@ -46,7 +46,9 @@
 //! `DW_OP_piece`, a gap an empty `DW_OP_piece`. `DW_OP_LLVM_convert` is
 //! `DW_OP_convert` of one of the unit's base type DIEs (its first
 //! children, in first use), or `llc`'s legacy extension in a split unit;
-//! a constant's leading conversions are folded into it.
+//! a constant's leading conversions are folded into it. A conversion to
+//! 128 bits (§6.34) folds nothing and names a 16-byte base type; split,
+//! a sign extension to 128 bits has no entry.
 //!
 //! Argument lists (§6.32): a `ValueLoc::Args` row is followed by its
 //! values' `LocalPlace::ValueArg` rows; its entry is the expression with
@@ -72,7 +74,7 @@ pub const DEBUG_DBG_VALUE_FRAGMENT: &str = "debug:dbg-value-fragment";
 
 /// A value record's expression hod does not write: an LLVM operation
 /// (`DW_OP_LLVM_*` other than a fragment and a conversion to an integer
-/// of 1 to 64 bits, an entry value), `DW_OP_stack_value` before the end,
+/// of 1 to 64 or of 128 bits, an entry value), `DW_OP_stack_value` before the end,
 /// a memory location that does not end in `DW_OP_deref`, or one with a
 /// conversion.
 pub const DEBUG_DBG_VALUE_EXPR: &str = "debug:dbg-value-expr";
@@ -201,7 +203,8 @@ const DW_ATE_BOOLEAN: u8 = 0x02;
 /// Checks a value record's expression (§6.23, §6.31): the stable name of
 /// why it cannot be written. The operations are those of a declared
 /// location (`func::check_expr`), plus `DW_OP_stack_value` last, a
-/// conversion to a signed or unsigned integer of 1 to 64 bits (not in a
+/// conversion to a signed or unsigned integer of 1 to 64 or 128 bits
+/// ([`convertible`]; not in a
 /// memory location), and a byte-aligned fragment after all of them.
 pub(crate) fn check_value_expr(
     debug: &hod_ir::DebugInfo,
@@ -221,11 +224,7 @@ pub(crate) fn check_value_expr(
             return Err(DEBUG_DBG_VALUE_EXPR);
         }
         match op {
-            DiOp::Convert(bits, encoding)
-                if (1..=64).contains(&bits)
-                    && (encoding == u64::from(DW_ATE_SIGNED)
-                        || encoding == u64::from(DW_ATE_UNSIGNED)) =>
-            {
+            DiOp::Convert(bits, encoding) if convertible(bits, encoding) => {
                 converts = true;
             }
             DiOp::Convert(..)
@@ -271,10 +270,7 @@ pub(crate) fn check_arglist_expr(
             }
             _ if last == Some(DiOp::StackValue) => return Err(DEBUG_DBG_VALUE_EXPR),
             DiOp::Arg(k) if k >= u64::from(count) => return Err(DEBUG_DBG_VALUE_ARGLIST),
-            DiOp::Convert(bits, encoding)
-                if (1..=64).contains(&bits)
-                    && (encoding == u64::from(DW_ATE_SIGNED)
-                        || encoding == u64::from(DW_ATE_UNSIGNED)) => {}
+            DiOp::Convert(bits, encoding) if convertible(bits, encoding) => {}
             DiOp::Convert(..)
             | DiOp::TagOffset(_)
             | DiOp::EntryValue(_)
@@ -292,10 +288,39 @@ pub(crate) fn check_arglist_expr(
     if last == Some(DiOp::StackValue) { Ok(()) } else { Err(DEBUG_DBG_VALUE_ARGLIST) }
 }
 
+/// Whether a value record may convert to `bits` of `encoding` (§6.31,
+/// §6.34): a signed or unsigned integer of 1 to 64 bits, or of 128.
+fn convertible(bits: u64, encoding: u64) -> bool {
+    ((1..=64).contains(&bits) || bits == 128)
+        && (encoding == u64::from(DW_ATE_SIGNED) || encoding == u64::from(DW_ATE_UNSIGNED))
+}
+
+/// Whether an expression converts to more than 64 bits (§6.34).
+fn converts_wide(debug: &hod_ir::DebugInfo, expr: ExprId) -> bool {
+    body(debug, expr).any(|op| matches!(op, DiOp::Convert(bits, _) if bits > 64))
+}
+
+/// Whether an expression extends a value's sign to more than 64 bits
+/// (§6.34): `llc`'s legacy form (a split unit) leaves it 64 bits wide.
+fn sign_extends_wide(debug: &hod_ir::DebugInfo, expr: ExprId) -> bool {
+    body(debug, expr).any(|op| {
+        matches!(op, DiOp::Convert(bits, encoding)
+            if bits > 64 && encoding == u64::from(DW_ATE_SIGNED))
+    })
+}
+
 /// The name of the base type of a conversion (`llc`'s
 /// `createBaseTypeDIEs`: the encoding's name and the bits, e.g.
 /// `DW_ATE_signed_32`).
 pub(crate) fn base_type_name(bits: u8, encoding: u8) -> &'static [u8] {
+    if bits == 128 {
+        // WP-230 (§6.34): the one width over 64 a record converts to.
+        return if encoding == DW_ATE_SIGNED {
+            b"DW_ATE_signed_128"
+        } else {
+            b"DW_ATE_unsigned_128"
+        };
+    }
     let (start, len) = name_span(bits, encoding == DW_ATE_SIGNED);
     &BASE_TYPE_NAMES[start..start + len]
 }
@@ -436,9 +461,15 @@ fn shape(debug: &hod_ir::DebugInfo, expr: ExprId) -> Shape {
 /// many operations were folded.
 fn fold(debug: &hod_ir::DebugInfo, expr: ExprId, bits: u64, width: u8) -> (u64, u8, usize) {
     let (mut v, mut w, mut k) = (bits, width, 0);
+    // §6.34: a conversion to 128 bits folds nothing; the constant is
+    // pushed and every conversion written (`llc`'s GlobalISel; its
+    // FastISel writes a bare `DW_OP_stack_value`).
+    if converts_wide(debug, expr) {
+        return (v, w, k);
+    }
     for op in body(debug, expr) {
         let DiOp::Convert(to, encoding) = op else { break };
-        let to = to as u8; // 1 to 64: `check_value_expr`
+        let to = to as u8; // 1 to 64 (`check_value_expr`; 128 returned above)
         if to <= w {
             v &= mask(to);
         } else if encoding == u64::from(DW_ATE_SIGNED) && (v >> (w - 1)) & 1 == 1 {
@@ -592,8 +623,18 @@ fn arglist_width(ops: impl Iterator<Item = DiOp>, args: &[LocalRow]) -> Option<u
 /// Whether a range at `at` with expression `expr` gets an entry (or,
 /// for a fragment, a piece): §6.23, and for a fragment of `size` bits a
 /// value at least that wide (the piece is its low bits). `args`: a
-/// `DIArgList`'s value rows (§6.32).
-fn located(debug: &hod_ir::DebugInfo, at: ValueLoc, expr: ExprId, args: &[LocalRow]) -> bool {
+/// `DIArgList`'s value rows (§6.32). `legacy`: the unit is split, where
+/// a sign extension to 128 bits has no entry (§6.34).
+fn located(
+    debug: &hod_ir::DebugInfo,
+    at: ValueLoc,
+    expr: ExprId,
+    args: &[LocalRow],
+    legacy: bool,
+) -> bool {
+    if legacy && sign_extends_wide(debug, expr) {
+        return false; // §6.34
+    }
     let fits = |width: u8| fragment(debug, expr).is_none_or(|(_, size)| size <= u64::from(width));
     match (at, shape(debug, expr)) {
         (ValueLoc::Args { .. }, Shape::Value) => {
@@ -643,7 +684,8 @@ impl UnitPlan<'_> {
                 else {
                     continue;
                 };
-                if end <= start || !located(debug, at, expr, arg_rows(vars, r, at)) {
+                let legacy = self.legacy_converts;
+                if end <= start || !located(debug, at, expr, arg_rows(vars, r, at), legacy) {
                     continue;
                 }
                 let piece = self.piece(vars, r, at, expr);
@@ -678,7 +720,8 @@ impl UnitPlan<'_> {
             else {
                 continue;
             };
-            if end <= start || !located(debug, at, expr, arg_rows(vars, r, at)) {
+            let legacy = self.legacy_converts;
+            if end <= start || !located(debug, at, expr, arg_rows(vars, r, at), legacy) {
                 continue;
             }
             let bits = fragment(debug, expr).unwrap_or((0, u64::MAX));

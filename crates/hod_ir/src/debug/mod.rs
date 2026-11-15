@@ -17,6 +17,7 @@ pub(crate) mod expr;
 pub(crate) mod map;
 pub(crate) mod names;
 pub(crate) mod node;
+pub(crate) mod unique;
 
 use crate::error::{IrErrorKind, IrResult, err};
 use crate::ids::{DiId, LocId};
@@ -38,6 +39,9 @@ struct Head {
 }
 
 const DISTINCT: u8 = 1;
+/// Merged into an equal node by [`DebugInfo::unique_nodes`]: nothing in
+/// the tables names it, and `add` never returns it.
+const MERGED: u8 = 2;
 
 /// A source location (§6.5): LLVM's `DILocation`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -126,6 +130,20 @@ impl LocRec {
     fn kind(&self) -> u16 {
         self.state & LOC_KIND
     }
+}
+
+/// The hash a location is interned under: its four fields and, with one,
+/// its atom.
+#[inline]
+fn loc_hash(record: &LocRec, atom: Option<DiAtom>) -> u32 {
+    let mut hasher = Hasher64::new(0x10c);
+    hasher.pair(record.line, u32::from(record.column));
+    hasher.pair(record.scope.raw(), record.inlined_at.raw());
+    if let Some(atom) = atom {
+        hasher.word(atom.group);
+        hasher.pair(u32::from(atom.rank), 0);
+    }
+    hasher.finish()
 }
 
 fn atom_hash(loc: u32) -> u32 {
@@ -283,7 +301,8 @@ impl<L: Layering> DebugInfo<L> {
 
     /// Defines the reserved node `id` as `node`, a node LLVM would
     /// unique. Its id was handed out before its content was known, so it
-    /// is never the answer to a later [`DebugInfo::add`].
+    /// is not the answer to a later [`DebugInfo::add`], nor merged with
+    /// an equal node, until [`DebugInfo::unique_nodes`] runs over it.
     ///
     /// # Errors
     /// `UndefinedDebugNode` if `id` was never reserved, or `node` names
@@ -325,8 +344,9 @@ impl<L: Layering> DebugInfo<L> {
 
     /// The id of `node`, a node LLVM would unique: an equal node that
     /// was added before is returned again. Equal means the same kind
-    /// and the same fields; distinct nodes and nodes defined through
-    /// [`DebugInfo::reserve`] are never returned.
+    /// and the same fields; distinct nodes and merged ones are never
+    /// returned, and a node defined through [`DebugInfo::reserve`] only
+    /// once [`DebugInfo::unique_nodes`] has run over it.
     ///
     /// # Errors
     /// `UndefinedDebugNode` if `node` names an id that was never
@@ -348,6 +368,7 @@ impl<L: Layering> DebugInfo<L> {
             // comparison never needs the other node's length.
             other.kind == head.kind
                 && other.tag == head.tag
+                && other.flags & MERGED == 0
                 && self
                     .cells
                     .from(other.at as usize)
@@ -384,11 +405,15 @@ impl<L: Layering> DebugInfo<L> {
     /// # Errors
     /// `UndefinedDebugNode` if `id` does not exist or `node` names an id
     /// that does not; `InvalidDebugInfo` if either is not such a
-    /// composite type; `TableFull`.
+    /// composite type, or `id` was merged ([`DebugInfo::is_merged`]);
+    /// `TableFull`.
     pub fn complete(&mut self, id: DiId, node: &DiNode<'_>) -> IrResult<()> {
         let Some(&old) = self.heads.get(id.index()) else {
             return err(IrErrorKind::UndefinedDebugNode, format!("{id:?} does not exist"));
         };
+        if old.flags & MERGED != 0 {
+            return invalid(format!("{id:?} was merged into an equal node, which completes it"));
+        }
         let (DiNode::CompositeType(declared), DiNode::CompositeType(defined)) =
             (self.node(id), node)
         else {
@@ -632,15 +657,7 @@ impl<L: Layering> DebugInfo<L> {
         }
         self.check_loc(loc)?;
         check_atom(atom)?;
-        let mut hasher = Hasher64::new(0x10c);
-        hasher.pair(loc.line, u32::from(loc.column));
-        hasher.pair(loc.scope.raw(), loc.inlined_at.raw());
         let with = atom != DiAtom::NONE;
-        if with {
-            hasher.word(atom.group);
-            hasher.pair(u32::from(atom.rank), 0);
-        }
-        let hash = hasher.finish();
         let record = LocRec {
             line: loc.line,
             scope: loc.scope,
@@ -648,6 +665,7 @@ impl<L: Layering> DebugInfo<L> {
             column: loc.column,
             state: LOC_INTERNED | if with { LOC_ATOM } else { 0 },
         };
+        let hash = loc_hash(&record, with.then_some(atom));
         let interner = self.loc_interner.get_or_insert_with(InternTable::new);
         let (locs, atoms, index) = (&self.locs, &self.atoms, self.atom_index.as_ref());
         if let Some(found) = interner.find(hash, |id| {
@@ -672,10 +690,6 @@ impl<L: Layering> DebugInfo<L> {
     #[inline]
     fn loc_without_atom(&mut self, loc: DiLocation) -> IrResult<LocId> {
         self.check_loc(loc)?;
-        let mut hasher = Hasher64::new(0x10c);
-        hasher.pair(loc.line, u32::from(loc.column));
-        hasher.pair(loc.scope.raw(), loc.inlined_at.raw());
-        let hash = hasher.finish();
         let record = LocRec {
             line: loc.line,
             scope: loc.scope,
@@ -683,6 +697,7 @@ impl<L: Layering> DebugInfo<L> {
             column: loc.column,
             state: LOC_INTERNED,
         };
+        let hash = loc_hash(&record, None);
         let interner = self.loc_interner.get_or_insert_with(InternTable::new);
         let locs = &self.locs;
         if let Some(found) = interner.find(hash, |id| locs[id as usize] == record) {

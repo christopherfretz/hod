@@ -454,6 +454,12 @@ impl UnitPlan<'_> {
             // A function-local type: WP-057 makes the function's or the
             // block's DIE first, and the type is then its child.
             DiKind::Subprogram | DiKind::LexicalBlock | DiKind::LexicalBlockFile => {
+                // WP-230 (§6.33): `llc` 22's `getOrCreateContextDIE` takes the
+                // abstract instance's DIE of the scope when there is one, also
+                // when the function has a concrete DIE too.
+                if let Some(d) = crate::local_type::abstract_parent(self, s) {
+                    return Ok(d);
+                }
                 match self.slot[s.index()] {
                     // WP-087: the function's early DIE (§6.12).
                     NONE if kind == DiKind::Subprogram => self.local_type_parent(of, s),

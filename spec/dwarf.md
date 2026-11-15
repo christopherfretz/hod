@@ -1553,7 +1553,7 @@ declaration's),
 | `debug:inlined-discriminator` | a call located in a `DILexicalBlockFile` with a discriminator (`llc` writes `DW_AT_GNU_discriminator`) |
 | `debug:inlined-foreign-unit` | code inlined from a subprogram of another unit |
 | `debug:retained-nodes` | an inlined subprogram with `retainedNodes` that hod does not write: an import in a block of it, or a retained import or label of a function also placed out of line (imports scoped in a subprogram only inlined since WP-195, §6.25; variables and labels since WP-210, §6.29) |
-| `debug:inlined-local-type` | a type local to a function with an abstract instance, or a variable a type names (a VLA bound) in one |
+| `debug:inlined-local-type` | a variable a type names (a VLA bound) in a function with an abstract instance, or a type local to a block of one that has no abstract block (narrowed by WP-230, §6.33) |
 | `debug:local-static` | a static scoped in a block, or in a subprogram that is not a definition of this unit, or whose early DIE no function filled by `seal()`, or read without the module (`UnitPlan::new`) |
 
 **`#dbg_value`** was refused (`debug:dbg-value`) until WP-162, which
@@ -2815,7 +2815,8 @@ The expression of a record is checked before code generation:
   address, and the final deref is dropped), with the plain DWARF ops
   the `#dbg_declare` path writes in between; since WP-225 also
   `DW_OP_LLVM_convert` to a signed or unsigned integer of 1 to 64 bits
-  (not before a final `DW_OP_deref`) and a final byte-aligned
+  (since WP-230 also of 128 bits, §6.34; not before a final
+  `DW_OP_deref`) and a final byte-aligned
   `DW_OP_LLVM_fragment` (§6.31);
 - `debug:dbg-value-fragment`: a `DW_OP_LLVM_fragment` whose offset or
   size is not a whole number of bytes, or of size 0 (none in the
@@ -3159,7 +3160,7 @@ measured shape by shape against `llc` 19 and 22.
 **Checks** (`check_value_expr`, §6.23): a fragment must be the last op,
 byte aligned and of nonzero size (all 389,019 fragments of the census
 are); a convert must be to `DW_ATE_signed` or `DW_ATE_unsigned` of 1 to
-64 bits, and an expression with a convert may not end in
+64 bits (or 128, WP-230, §6.34), and an expression with a convert may not end in
 `DW_OP_deref`. Anything else keeps its refusal name.
 
 **Rows** (`crates/hod_cg/src/dbg_value.rs`). A record now closes only
@@ -3441,6 +3442,136 @@ targets, against `llc` 22; the refusals); sessions
 difference described by argument lists) and
 `tests/debug/declare_fragment.c` (an insertion sort's element whose
 array stays in memory). Evidence:
+`spec/landed/dwarf/WP-230.md`.
+
+### 6.33 Local types of a function placed out of line and inlined (implemented, WP-230)
+
+A function with code in the module that is also inlined somewhere in
+it (a libc++ template the optimizer kept out of line, such as
+`std::midpoint<float>`) has a concrete DIE and an abstract instance.
+hod refused every DIE other than a local entity under such a concrete
+DIE as `debug:inlined-local-type` (75 of the 886 optimized modules of
+the census after §6.32): mostly template parameters, which
+`seal_definition` wrote under the concrete DIE, and the typedefs and
+classes local to the function. Measured with `llc` 22 on both targets
+and `llc` 19 on AArch64, on hand-written modules (the function first, the inlining
+function first, a typedef retained by the unit):
+
+- `finishSubprogramDefinition` gives the concrete DIE of a function
+  with an abstract instance `DW_AT_abstract_origin` only, so the
+  template parameters are the instance's alone (made with it, §6.14).
+  hod's `seal` skips `seal_definition` for such a function.
+- `getOrCreateContextDIE` takes the abstract instance of a local
+  type's subprogram, or the abstract DIE of its block, whenever that
+  DIE exists, even if the function has a concrete DIE too; only a type
+  reached before the instance is made (a type the unit retains, reached
+  at `beginModule`, the early DIE of §6.12) stays under the concrete
+  DIE, and the instance's variables name it there. `UnitPlan::context`
+  now asks `abstract_parent` first for a subprogram or a block scope;
+  `check_local_types` accepts a type under a concrete DIE (it can only
+  have been placed before the instance), and still refuses a template
+  parameter or an import there.
+
+`llc` 19 differs only where it already did: it writes no
+`DW_AT_abstract_origin` on the concrete lexical blocks of such a
+function. Still `debug:inlined-local-type`: a variable named by a type
+(a VLA bound) in a function with an abstract instance, and a type local
+to a block of one whose block has no abstract DIE (`llc` asserts there:
+"Missed lexical block DIE in abstract tree").
+
+**Tests.** `crates/hod/tests/inlined_local_type.rs` (a template with a
+parameter pack, a typedef local to it and a structure local to one of
+its blocks, placed out of line and inlined: the function first, the
+inlining function first, and the typedef retained by the unit; both
+targets; trees equal to `llc` 22's, `--verify` clean, and each type's
+parent checked). `crates/hod_a64/tests/dies_inline.rs` lost its
+`debug:inlined-local-type` row (that typedef is written now); the two
+refusals left have no hand-written module: a VLA bound of such a
+function, tried, names the concrete variable in both writers and is
+written. Evidence: `spec/landed/dwarf/WP-230.md`.
+
+### 6.34 Value records converted to 128 bits (implemented, WP-230)
+
+libc++'s `__itoa` at `-O1` and `-O2` describes an `unsigned __int128`
+by its narrower parts: `i32`, `i64` and `i8` values and constants
+widened by `DW_OP_LLVM_convert, N, DW_ATE_unsigned,
+DW_OP_LLVM_convert, 128, DW_ATE_unsigned` (also as the fragment `0,
+128` of a wider variable), `i128` values narrowed by a conversion to 32
+bits, and `DIArgList(i128 ..., ptr ...)` widened and joined by
+`DW_OP_or`. §6.31 refused a conversion over 64 bits: 12 of the 886
+optimized modules (§6.33's census). Measured with `llc` 19 and 22, both
+targets, at `-O0` (FastISel on x86-64, GlobalISel on AArch64) and with
+SelectionDAG:
+
+- a home's value widened: the value pushed as §6.31 pushes it (`llc`
+  names the home from the stack pointer and reads an 8-byte one by
+  `DW_OP_deref_size 0x8`), then `DW_OP_convert` of each conversion,
+  the last naming a base type `DW_ATE_unsigned_128` (or
+  `DW_ATE_signed_128`), `DW_AT_byte_size` 16, in the unit's base types
+  as §6.31's;
+- a widened constant: GlobalISel pushes it and writes every conversion
+  (`DW_OP_lit7, DW_OP_convert DW_ATE_unsigned_64, DW_OP_convert
+  DW_ATE_unsigned_128, DW_OP_stack_value`); FastISel and SelectionDAG
+  fold the conversions into an `i128` constant they then write as a bare
+  `DW_OP_stack_value`, which describes nothing;
+- an `i128` value: no location, alone or in an argument list, except
+  that x86-64's FastISel reads the low 8 bytes of a single `i128`'s
+  home before a narrowing conversion (`DW_OP_deref, DW_OP_convert
+  DW_ATE_unsigned_128, DW_OP_convert DW_ATE_unsigned_32, ...`);
+- split (§6.15), the legacy form of §6.31: a widening to 128 bits is
+  `emitLegacyZExt(64)` (`DW_OP_lit1, DW_OP_constu 64, DW_OP_shl,
+  DW_OP_lit1, DW_OP_minus, DW_OP_and`, which leaves a 64-bit value
+  unchanged) or `emitLegacySExt(64)`, the value staying 64 bits wide on
+  the expression stack.
+
+hod (`loclists.rs` `convertible`, `fold`, `located`,
+`base_type_name`): a conversion to 128 bits of a signed or unsigned
+integer passes the checks of §6.23 and §6.31 (any other width over 64
+keeps `debug:dbg-value-expr`). A home's value is written as `llc`
+writes it. A constant whose expression converts to 128 bits folds
+nothing: it is pushed (§6.32's constants) and every conversion written,
+as GlobalISel, on both targets. An `i128` value has no place (§6.23:
+only values of 8 to 64 bits have one), so neither it nor an argument
+list holding it gets an entry; x86-64's FastISel location of the low
+half is not matched (a missing entry where that `llc` has one; a
+follow-up could push the low 8 bytes and require a narrowing to at
+most 64 bits before any operation reading high bits). In a split unit
+an unsigned widening to 128 bits takes `llc`'s legacy form (the value
+is unchanged and a consumer zero-extends a stack value to the
+variable's size); a signed widening to 128 bits has no entry, because
+the legacy form leaves the sign in bit 63 and a consumer that
+zero-extends the stack value would show a negative value as a large
+positive one. The code generator tells the plan the unit is split
+before any function is added (`UnitPlan::set_split`).
+
+**Tests.** `crates/hod/tests/dbg_value.rs` `conversions_to_128_bits`
+(both targets, plain and split: each shape above, the 16-byte base
+type, and the same operations as `llc` 22's own objects where they
+describe the value) and `refusals_are_named` (a conversion to 96 bits
+keeps the refusal). Evidence: `spec/landed/dwarf/WP-230.md`.
+
+### 6.35 Imports of an inlined function (implemented, WP-230)
+
+An imported declaration (`using n::map;`, §6.11) whose entity is a
+function definition the module only inlines was refused as
+`debug:import-entity` (4 of the 886 optimized modules:
+`tests/debug/inlined_import.cpp`, `-O1` and `-O2`, both targets). `llc` 22's `constructImportedEntityDIE` names
+the entity's abstract instance whenever the function has one
+(`getAbstractScopeDIEs().lookup(SP)`), also when it has code of its own
+(a concrete DIE); otherwise `getOrCreateSubprogramDIE`. hod does the
+same (`import.rs` `import_target`, `imported_die`): imports are sealed
+after every function is added, so every abstract instance exists. A
+definition with neither code nor an abstract instance keeps
+`debug:import-entity`: libc++'s `isnormal.pass` (4 of the 8) imports
+`std::__math::isnormal`, a definition with a retained parameter that
+the module neither places nor inlines, and `llc` 22 writes it as an
+abstract instance (`DW_AT_inline DW_INL_inlined`, no concrete or
+inlined instance) that the import names; hod does not make one
+(follow-up).
+
+**Tests.** `crates/hod/tests/inlined_import.rs` (the entity inlined
+only, and also placed out of line; both targets; trees equal to `llc`
+22's, the import naming the abstract instance). Evidence:
 `spec/landed/dwarf/WP-230.md`.
 
 ## 7. Speed and memory

@@ -50,8 +50,8 @@
 //!
 //! # Refused
 //!
-//! [`UNALIGNED`]: an access whose alignment is below its size (LLVM calls
-//! libatomic's `__atomic_*` for it). [`TYPE`]: `fp128`, vectors, integer
+//! [`UNALIGNED`]: no longer returned (an under-aligned access calls
+//! libatomic's generic `__atomic_*` routines, WP-232). [`TYPE`]: `fp128`, vectors, integer
 //! widths other than 8, 16, 32, 64 and 128 (LLVM's verifier allows only
 //! these for an `atomicrmw`/`cmpxchg`; wider ones are libatomic calls).
 //! [`BFLOAT_OP`]: floating-point arithmetic on `bfloat`.
@@ -66,12 +66,15 @@ use hod_mc_a64::{
 };
 
 use crate::common::{
-    Cursor, V30, V31, X16, X17, branch, branch_cond, branch_zero, deferred_first, load_fpr_at,
-    load_gpr_at, put, store_gpr_at, unsupported, value_ty, vr, xr,
+    Cursor, V30, V31, X16, X17, branch, branch_bit, branch_cond, branch_zero, deferred_first,
+    load_fpr_at, load_gpr_at, mov_imm, put, store_fpr_at, store_gpr_at, unsupported, value_ty, vr,
+    xr,
 };
 use crate::target::A64;
 
-/// An atomic access whose alignment is below its size.
+/// An atomic access whose alignment is below its size: no longer
+/// returned (WP-232: libatomic's generic routines), kept for the
+/// support table.
 pub const UNALIGNED: &str = "a64:atomic-unaligned";
 /// An atomic access of a type hod has no sequence for: `fp128`, a
 /// vector, an integer that is not 8, 16, 32, 64 or 128 bits wide.
@@ -125,8 +128,21 @@ impl Shape {
 }
 
 /// The shape of a value of `ty` accessed with `mem`.
+///
+/// # Errors
+/// [`TYPE`]; [`UNALIGNED`] below its size's alignment (the callers that
+/// handle that case ask [`under_aligned`] first).
 fn shape(cx: &FnCx<'_, A64>, ty: TypeId, mem: MemFlags) -> CgResult<Shape> {
-    let shape = match cx.types().kind(ty) {
+    let shape = shape_of(cx, ty)?;
+    if mem.align() < shape.bytes() {
+        return unsupported(UNALIGNED);
+    }
+    Ok(shape)
+}
+
+/// The shape of a value of `ty`, whatever its alignment.
+fn shape_of(cx: &FnCx<'_, A64>, ty: TypeId) -> CgResult<Shape> {
+    Ok(match cx.types().kind(ty) {
         TypeKind::Int(8) => Shape::Int(MemSize::B),
         TypeKind::Int(16) => Shape::Int(MemSize::H),
         TypeKind::Int(32) => Shape::Int(MemSize::W),
@@ -137,11 +153,7 @@ fn shape(cx: &FnCx<'_, A64>, ty: TypeId, mem: MemFlags) -> CgResult<Shape> {
         TypeKind::Float => Shape::Float(Fp::S),
         TypeKind::Double => Shape::Float(Fp::D),
         _ => return unsupported(TYPE),
-    };
-    if mem.align() < shape.bytes() {
-        return unsupported(UNALIGNED);
-    }
-    Ok(shape)
+    })
 }
 
 fn acquires(o: AtomicOrdering) -> bool {
@@ -282,8 +294,11 @@ fn extend(cx: &mut FnCx<'_, A64>, ms: MemSize, rd: Reg, rn: Reg, signed: bool) {
 /// # Errors
 /// [`UNALIGNED`], [`TYPE`]; what asking for the operands reports.
 pub fn load<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, ptr: Value, mem: MemFlags) -> CgResult<()> {
-    let shape = shape(cx, inst.ty(), mem)?;
     let ordering = mem.ordering().unwrap_or(AtomicOrdering::SeqCst);
+    if let Some(shape) = under_aligned(cx, inst.ty(), mem)? {
+        return load_generic(cx, inst, ptr, ordering, shape);
+    }
+    let shape = shape(cx, inst.ty(), mem)?;
     deferred_first(cx, inst, None)?;
     let acq = acquires(ordering);
     let word = |ms: MemSize, rt: Reg, rn: Reg| {
@@ -365,8 +380,11 @@ pub fn store<'a>(
     ptr: Value,
     mem: MemFlags,
 ) -> CgResult<()> {
-    let shape = shape(cx, value_ty(cx, value), mem)?;
     let ordering = mem.ordering().unwrap_or(AtomicOrdering::SeqCst);
+    if let Some(shape) = under_aligned(cx, value_ty(cx, value), mem)? {
+        return store_generic(cx, inst, value, ptr, ordering, shape);
+    }
+    let shape = shape(cx, value_ty(cx, value), mem)?;
     deferred_first(cx, inst, None)?;
     let rel = releases(ordering);
     let word = |ms: MemSize, rt: RegZr, rn: Reg| {
@@ -514,8 +532,9 @@ pub fn rmw<'a>(
     value: Value,
     mem: MemFlags,
 ) -> CgResult<()> {
-    let shape = shape(cx, value_ty(cx, value), mem)?;
-    let order = Order::of(mem.ordering().unwrap_or(AtomicOrdering::SeqCst));
+    let shape = shape_of(cx, value_ty(cx, value))?;
+    let ordering = mem.ordering().unwrap_or(AtomicOrdering::SeqCst);
+    let order = Order::of(ordering);
     if op.is_float() && shape == Shape::Float(Fp::B) {
         return unsupported(BFLOAT_OP);
     }
@@ -523,6 +542,12 @@ pub fn rmw<'a>(
     let float_shape = matches!(shape, Shape::Float(_));
     if op.is_float() != float_shape && !(op == RmwOp::Xchg && float_shape) {
         return unsupported(TYPE);
+    }
+    if mem.align() < shape.bytes() {
+        if op == RmwOp::Xchg {
+            return xchg_generic(cx, inst, ptr, value, ordering, shape);
+        }
+        return rmw_generic(cx, inst, op, ptr, value, ordering, shape);
     }
     deferred_first(cx, inst, None)?;
     let ms = match shape {
@@ -629,10 +654,18 @@ fn rmw_int<'a>(
     let pa = cx.use_reg(ptr)?;
     let pv = operand(cx, value, &[(ptr, pa)])?;
     let (a, v) = (xr(pa), xr(pv));
-    let sz = size_of(ms);
-    // The compares read the operand extended as the loaded value is
-    // (`ldxr` zero-extends; the signed ones extend `old` in `x16`). A
-    // pointer operand (`xchg`) is 8 bytes and never extended.
+    extend_operand(cx, op, ms, v);
+    let rd = cx.def_reg(inst)?;
+    let old = xr(rd);
+    exclusive_loop(cx, ms, order, a, old, |cx| int_new(cx, op, ms, old, v))?;
+    cx.finish(inst, rd)
+}
+
+/// The operand of an integer `atomicrmw` in `v`, extended as its compare
+/// reads it: as the loaded value is (`ldxr` and `ldr` zero-extend; the
+/// signed compares extend the old value in `x16`). A pointer operand
+/// (`xchg`) is 8 bytes and never extended.
+fn extend_operand(cx: &mut FnCx<'_, A64>, op: RmwOp, ms: MemSize, v: Reg) {
     let signed = matches!(op, RmwOp::Max | RmwOp::Min);
     let compares = signed
         || matches!(
@@ -647,64 +680,68 @@ fn rmw_int<'a>(
     if compares {
         extend(cx, ms, v, v, signed);
     }
-    let rd = cx.def_reg(inst)?;
-    let old = xr(rd);
+}
+
+/// The new value of an integer `atomicrmw` of `ms` from the old value in
+/// `old` (zero-extended) and the operand in `v` ([`extend_operand`]): its
+/// register, `x16` (`v` for `xchg`). Emits words only; writes `x16` and
+/// the flags.
+fn int_new(cx: &mut FnCx<'_, A64>, op: RmwOp, ms: MemSize, old: Reg, v: Reg) -> RegZr {
+    let sz = size_of(ms);
+    let signed = matches!(op, RmwOp::Max | RmwOp::Min);
     let (o, w, n) = (old.zr(), v.zr(), X16.zr());
-    exclusive_loop(cx, ms, order, a, old, |cx| {
-        let simple = |f: fn(Size, RegZr, RegZr, RegZr) -> u32| f(sz, n, o, w);
-        match op {
-            RmwOp::Xchg => return w,
-            RmwOp::Add => put(cx, simple(mc::add)),
-            RmwOp::Sub => put(cx, simple(mc::sub)),
-            RmwOp::And => put(cx, simple(mc::and)),
-            RmwOp::Or => put(cx, simple(mc::orr)),
-            RmwOp::Xor => put(cx, simple(mc::eor)),
-            RmwOp::Nand => {
-                put(cx, simple(mc::and));
-                put(cx, mc::mvn(sz, n, n));
-            }
-            RmwOp::Max | RmwOp::Min | RmwOp::UMax | RmwOp::UMin => {
-                let cond = match op {
-                    RmwOp::Max => Cond::Gt,
-                    RmwOp::Min => Cond::Lt,
-                    RmwOp::UMax => Cond::Hi,
-                    _ => Cond::Lo,
-                };
-                let lhs = if signed && sz == Size::W && ms != MemSize::W {
-                    extend(cx, ms, X16, old, true);
-                    n
-                } else {
-                    o
-                };
-                put(cx, mc::cmp(sz, lhs, w));
-                put(cx, mc::csel(sz, n, lhs, w, cond));
-            }
-            RmwOp::UIncWrap => {
-                put(cx, mc::add_imm(sz, X16.sp(), old.sp(), 1));
-                put(cx, mc::cmp(sz, o, w));
-                put(cx, mc::csel(sz, n, RegZr::ZR, n, Cond::Hs));
-            }
-            RmwOp::UDecWrap => {
-                put(cx, mc::sub_imm(sz, X16.sp(), old.sp(), 1));
-                put(cx, mc::cmp(sz, o, w));
-                put(cx, mc::csel(sz, n, w, n, Cond::Hi));
-                put(cx, mc::cmp_imm(sz, old.sp(), 0));
-                put(cx, mc::csel(sz, n, w, n, Cond::Eq));
-            }
-            RmwOp::USubCond => {
-                put(cx, mc::subs(sz, n, o, w));
-                put(cx, mc::csel(sz, n, n, o, Cond::Hs));
-            }
-            RmwOp::USubSat => {
-                put(cx, mc::subs(sz, n, o, w));
-                put(cx, mc::csel(sz, n, n, RegZr::ZR, Cond::Hs));
-            }
-            // `rmw` refused it.
-            _ => {}
+    let simple = |f: fn(Size, RegZr, RegZr, RegZr) -> u32| f(sz, n, o, w);
+    match op {
+        RmwOp::Xchg => return w,
+        RmwOp::Add => put(cx, simple(mc::add)),
+        RmwOp::Sub => put(cx, simple(mc::sub)),
+        RmwOp::And => put(cx, simple(mc::and)),
+        RmwOp::Or => put(cx, simple(mc::orr)),
+        RmwOp::Xor => put(cx, simple(mc::eor)),
+        RmwOp::Nand => {
+            put(cx, simple(mc::and));
+            put(cx, mc::mvn(sz, n, n));
         }
-        n
-    })?;
-    cx.finish(inst, rd)
+        RmwOp::Max | RmwOp::Min | RmwOp::UMax | RmwOp::UMin => {
+            let cond = match op {
+                RmwOp::Max => Cond::Gt,
+                RmwOp::Min => Cond::Lt,
+                RmwOp::UMax => Cond::Hi,
+                _ => Cond::Lo,
+            };
+            let lhs = if signed && sz == Size::W && ms != MemSize::W {
+                extend(cx, ms, X16, old, true);
+                n
+            } else {
+                o
+            };
+            put(cx, mc::cmp(sz, lhs, w));
+            put(cx, mc::csel(sz, n, lhs, w, cond));
+        }
+        RmwOp::UIncWrap => {
+            put(cx, mc::add_imm(sz, X16.sp(), old.sp(), 1));
+            put(cx, mc::cmp(sz, o, w));
+            put(cx, mc::csel(sz, n, RegZr::ZR, n, Cond::Hs));
+        }
+        RmwOp::UDecWrap => {
+            put(cx, mc::sub_imm(sz, X16.sp(), old.sp(), 1));
+            put(cx, mc::cmp(sz, o, w));
+            put(cx, mc::csel(sz, n, w, n, Cond::Hi));
+            put(cx, mc::cmp_imm(sz, old.sp(), 0));
+            put(cx, mc::csel(sz, n, w, n, Cond::Eq));
+        }
+        RmwOp::USubCond => {
+            put(cx, mc::subs(sz, n, o, w));
+            put(cx, mc::csel(sz, n, n, o, Cond::Hs));
+        }
+        RmwOp::USubSat => {
+            put(cx, mc::subs(sz, n, o, w));
+            put(cx, mc::csel(sz, n, n, RegZr::ZR, Cond::Hs));
+        }
+        // `rmw` refused it.
+        _ => {}
+    }
+    n
 }
 
 /// A floating-point `atomicrmw` as an exclusive loop over the bits,
@@ -721,36 +758,42 @@ fn rmw_float<'a>(
 ) -> CgResult<()> {
     let a = xr(cx.use_reg(ptr)?);
     let v = vr(cx.use_reg(value)?);
-    let fsz = if fp == Fp::D { FpSize::D } else { FpSize::S };
     if fp == Fp::H {
         put(cx, mc::fcvt(FpFormat::S, v, FpFormat::H, v));
     }
     let old = xr(cx.temp(Class::Gpr)?);
     let ms = fp.mem_size();
     let gsz = fmov_size(fp);
-    exclusive_loop(cx, ms, order, a, old, |cx| {
-        put(cx, mc::fmov_gpr_to_fp(gsz, V30, old.zr()));
-        if fp == Fp::H {
-            put(cx, mc::fcvt(FpFormat::S, V30, FpFormat::H, V30));
-        }
-        let f = match op {
-            RmwOp::FAdd => mc::fadd,
-            RmwOp::FSub => mc::fsub,
-            RmwOp::FMax => mc::fmaxnm,
-            RmwOp::FMin => mc::fminnm,
-            RmwOp::FMaximum => mc::fmax,
-            _ => mc::fmin,
-        };
-        put(cx, f(fsz, V30, V30, v));
-        if fp == Fp::H {
-            put(cx, mc::fcvt(FpFormat::H, V30, FpFormat::S, V30));
-        }
-        put(cx, mc::fmov_fp_to_gpr(gsz, X16.zr(), V30));
-        X16.zr()
-    })?;
+    exclusive_loop(cx, ms, order, a, old, |cx| float_new(cx, op, fp, old, v))?;
     let rd = cx.def_reg(inst)?;
     put(cx, mc::fmov_gpr_to_fp(gsz, vr(rd), old.zr()));
     cx.finish(inst, rd)
+}
+
+/// The bits of a floating-point `atomicrmw`'s new value in `x16`, from
+/// the old value's bits in `old` and the operand in `v` (in single
+/// precision for `half`), computed in `v30`. Emits words only.
+fn float_new(cx: &mut FnCx<'_, A64>, op: RmwOp, fp: Fp, old: Reg, v: VReg) -> RegZr {
+    let gsz = fmov_size(fp);
+    let fsz = if fp == Fp::D { FpSize::D } else { FpSize::S };
+    put(cx, mc::fmov_gpr_to_fp(gsz, V30, old.zr()));
+    if fp == Fp::H {
+        put(cx, mc::fcvt(FpFormat::S, V30, FpFormat::H, V30));
+    }
+    let f = match op {
+        RmwOp::FAdd => mc::fadd,
+        RmwOp::FSub => mc::fsub,
+        RmwOp::FMax => mc::fmaxnm,
+        RmwOp::FMin => mc::fminnm,
+        RmwOp::FMaximum => mc::fmax,
+        _ => mc::fmin,
+    };
+    put(cx, f(fsz, V30, V30, v));
+    if fp == Fp::H {
+        put(cx, mc::fcvt(FpFormat::H, V30, FpFormat::S, V30));
+    }
+    put(cx, mc::fmov_fp_to_gpr(gsz, X16.zr(), V30));
+    X16.zr()
 }
 
 /// An `i128` `atomicrmw` as an exclusive pair loop: the operand in
@@ -772,11 +815,27 @@ fn rmw_wide<'a>(
     let s = xr(cx.temp(Class::Gpr)?);
     // After every request: glue may use `v30`.
     load_q(cx, src, V30);
-    let (x, y, ol, oh, z) = (X16.zr(), X17.zr(), lo.zr(), hi.zr(), RegZr::ZR);
     let again = cx.new_label();
-    let skip = cx.new_label();
     cx.bind(again)?;
     put(cx, order.load_pair(lo, hi, a));
+    wide_new(cx, op, lo, hi, s)?;
+    put(cx, order.store_pair(s, X16, X17, a));
+    branch_zero(cx, Size::W, s, true, again)?;
+    let r = cx.def_mem(inst)?;
+    store_pair_to(cx, r, lo, hi);
+    Ok(())
+}
+
+/// The new value of an `i128` `atomicrmw` in `x16`:`x17`, from the old
+/// value in `lo`:`hi` and the operand in `v30`; `s` is a scratch
+/// register.
+///
+/// # Errors
+/// What binding a label reports.
+#[allow(clippy::many_single_char_names, reason = "register names")]
+fn wide_new(cx: &mut FnCx<'_, A64>, op: RmwOp, lo: Reg, hi: Reg, s: Reg) -> CgResult<()> {
+    let (x, y, ol, oh, z) = (X16.zr(), X17.zr(), lo.zr(), hi.zr(), RegZr::ZR);
+    let skip = cx.new_label();
     put(cx, mc::fmov_fp_to_gpr(Size::X, x, V30));
     put(cx, mc::fmov_hi_to_gpr(y, V30));
     let pair = |cx: &mut FnCx<'_, A64>, f: fn(Size, RegZr, RegZr, RegZr) -> u32| {
@@ -852,12 +911,7 @@ fn rmw_wide<'a>(
         }
         _ => return cx.bug("a floating-point atomicrmw of i128"),
     }
-    cx.bind(skip)?;
-    put(cx, order.store_pair(s, X16, X17, a));
-    branch_zero(cx, Size::W, s, true, again)?;
-    let r = cx.def_mem(inst)?;
-    store_pair_to(cx, r, lo, hi);
-    Ok(())
+    cx.bind(skip)
 }
 
 // ---- cmpxchg ----
@@ -880,17 +934,22 @@ pub fn cmpxchg<'a>(
 ) -> CgResult<()> {
     // A weak `cmpxchg` is a strong one.
     let _ = weak;
-    let shape = shape(cx, value_ty(cx, expected), mem)?;
+    let shape = shape_of(cx, value_ty(cx, expected))?;
     let ms = match shape {
         Shape::Int(ms) => ms,
         Shape::Wide => MemSize::X,
         // LLVM's verifier allows only integers and pointers.
         Shape::Float(_) => return unsupported(TYPE),
     };
-    let order = Order::merged(mem.ordering().unwrap_or(AtomicOrdering::SeqCst), failure);
+    let success = mem.ordering().unwrap_or(AtomicOrdering::SeqCst);
+    let order = Order::merged(success, failure);
     let Ok(flag_at) = u32::try_from(cx.types().field_offset(inst.ty(), 1)) else {
         return unsupported(hod_cg::LIMIT_FRAME_SIZE);
     };
+    if mem.align() < shape.bytes() {
+        let operands = Cas { ptr, expected, replacement, success, failure };
+        return cmpxchg_generic(cx, inst, operands, shape, flag_at);
+    }
     deferred_first(cx, inst, None)?;
     match (shape, outline(cx)) {
         (Shape::Wide, true) => {
@@ -1092,4 +1151,398 @@ fn cmpxchg_wide_call<'a>(
     let mut at = Cursor::frame(cx, r.offset_by(flag_at), X16);
     store_gpr_at(cx, MemSize::B, t.zr(), &mut at);
     Ok(())
+}
+
+// ---- below their size's alignment: libatomic's generic routines ----
+
+/// The shape of an access of `ty` with `mem` when its alignment is below
+/// its size, `None` when it is aligned. Such an access goes to
+/// libatomic's generic, size-parameterized routines, as `llc`'s
+/// `AtomicExpand` sends it (`expandAtomicOpToLibcall`; an exclusive or
+/// LSE access needs an aligned cell), with and without `+lse` and
+/// `+outline-atomics`: `__atomic_load`, `__atomic_store`,
+/// `__atomic_exchange`, `__atomic_compare_exchange`, the values passed by
+/// address and the orderings as C's `memory_order` numbers.
+///
+/// # Errors
+/// [`TYPE`].
+fn under_aligned(cx: &FnCx<'_, A64>, ty: TypeId, mem: MemFlags) -> CgResult<Option<Shape>> {
+    let shape = shape_of(cx, ty)?;
+    Ok((mem.align() < shape.bytes()).then_some(shape))
+}
+
+/// C's `memory_order` number for `ordering` (`relaxed` 0, `acquire` 2,
+/// `release` 3, `acq_rel` 4, `seq_cst` 5; `unordered` is `relaxed`, as
+/// `llc`'s `toCABI`), in a temporary as a call argument.
+fn c_order(cx: &mut FnCx<'_, A64>, ordering: AtomicOrdering) -> CgResult<CallArg> {
+    let number = match ordering {
+        AtomicOrdering::Unordered | AtomicOrdering::Monotonic => 0,
+        AtomicOrdering::Acquire => 2,
+        AtomicOrdering::Release => 3,
+        AtomicOrdering::AcqRel => 4,
+        AtomicOrdering::SeqCst => 5,
+    };
+    let t = cx.temp(Class::Gpr)?;
+    mov_imm(cx, Size::W, xr(t), number);
+    Ok(CallArg::Reg(t))
+}
+
+/// `bytes`, the routines' `size_t` first argument, in a temporary.
+fn c_size(cx: &mut FnCx<'_, A64>, bytes: u64) -> CgResult<CallArg> {
+    let t = cx.temp(Class::Gpr)?;
+    mov_imm(cx, Size::X, xr(t), bytes);
+    Ok(CallArg::Reg(t))
+}
+
+/// The failure ordering of the `cmpxchg` an `atomicrmw` loop uses: the
+/// strongest one `success` allows (`AtomicCmpXchgInst::
+/// getStrongestFailureOrdering`).
+const fn failure_of(success: AtomicOrdering) -> AtomicOrdering {
+    match success {
+        AtomicOrdering::Release | AtomicOrdering::Monotonic | AtomicOrdering::Unordered => {
+            AtomicOrdering::Monotonic
+        }
+        AtomicOrdering::AcqRel | AtomicOrdering::Acquire => AtomicOrdering::Acquire,
+        AtomicOrdering::SeqCst => AtomicOrdering::SeqCst,
+    }
+}
+
+/// A new slot for a value of `shape`, aligned to its size.
+fn generic_slot(cx: &mut FnCx<'_, A64>, shape: Shape) -> CgResult<FrameRef> {
+    let bytes = shape.bytes();
+    cx.alloc_slot(bytes, u32::try_from(bytes).unwrap_or(16))
+}
+
+/// The vector access of a floating-point value's bytes.
+fn vmem(fp: Fp) -> VMemSize {
+    match fp {
+        Fp::H | Fp::B => VMemSize::H,
+        Fp::S => VMemSize::S,
+        Fp::D => VMemSize::D,
+    }
+}
+
+/// The value of `shape` (not [`Shape::Wide`]) in `reg` stored to `slot`.
+fn reg_to_slot(cx: &mut FnCx<'_, A64>, shape: Shape, reg: PReg, slot: FrameRef) {
+    let mut at = Cursor::frame(cx, slot, X16);
+    match shape {
+        Shape::Int(ms) => store_gpr_at(cx, ms, xr(reg).zr(), &mut at),
+        Shape::Float(fp) => store_fpr_at(cx, vmem(fp), vr(reg), &mut at),
+        Shape::Wide => {}
+    }
+}
+
+/// `rd` = the value of `shape` (not [`Shape::Wide`]) in `slot`.
+fn slot_to_reg(cx: &mut FnCx<'_, A64>, shape: Shape, slot: FrameRef, rd: PReg) {
+    let mut at = Cursor::frame(cx, slot, X16);
+    match shape {
+        Shape::Int(ms) => load_gpr_at(cx, load_op(ms), xr(rd), &mut at),
+        Shape::Float(fp) => load_fpr_at(cx, vmem(fp), vr(rd), &mut at),
+        Shape::Wide => {}
+    }
+}
+
+/// The 16 bytes at `from` copied to `to`, through `x17`.
+fn copy_wide(cx: &mut FnCx<'_, A64>, from: FrameRef, to: FrameRef) {
+    for half in [0, 8] {
+        let mut at = Cursor::frame(cx, from.offset_by(half), X16);
+        load_gpr_at(cx, Load::X, X17, &mut at);
+        let mut at = Cursor::frame(cx, to.offset_by(half), X16);
+        store_gpr_at(cx, MemSize::X, X17.zr(), &mut at);
+    }
+}
+
+/// The pointer in `reg` copied to a new slot: the routine's pointer
+/// argument when an operand is the pointer itself (a register value is
+/// asked for once, and passing it to the call would ask again).
+fn ptr_copy(cx: &mut FnCx<'_, A64>, reg: PReg) -> CgResult<FrameRef> {
+    let slot = cx.alloc_slot(8, 8)?;
+    let mut at = Cursor::frame(cx, slot, X16);
+    store_gpr_at(cx, MemSize::X, xr(reg).zr(), &mut at);
+    Ok(slot)
+}
+
+/// The routine's pointer argument: `ptr`, or its copy in `copy`.
+fn ptr_arg(ptr: Value, copy: Option<FrameRef>) -> CallArg {
+    copy.map_or(CallArg::Value(ptr), CallArg::Mem)
+}
+
+/// The slot holding `value` for a routine to read: its own for a
+/// [`Shape::Wide`] value, else a new one it is stored to, its register
+/// given back at once (the call's size and ordering arguments need
+/// registers). When `value` is the pointer, the pointer is copied to
+/// `copy` too.
+fn value_slot(
+    cx: &mut FnCx<'_, A64>,
+    shape: Shape,
+    value: Value,
+    ptr: Value,
+    copy: &mut Option<FrameRef>,
+) -> CgResult<FrameRef> {
+    if shape == Shape::Wide {
+        return cx.use_mem(value);
+    }
+    let slot = generic_slot(cx, shape)?;
+    let reg = cx.use_reg(value)?;
+    reg_to_slot(cx, shape, reg, slot);
+    if value == ptr {
+        *copy = Some(ptr_copy(cx, reg)?);
+    }
+    give_back(cx, value, reg);
+    Ok(slot)
+}
+
+/// `%r = load atomic` below its alignment: `__atomic_load(size, ptr, &r,
+/// order)`.
+fn load_generic<'a>(
+    cx: &mut FnCx<'a, A64>,
+    inst: Inst<'a>,
+    ptr: Value,
+    ordering: AtomicOrdering,
+    shape: Shape,
+) -> CgResult<()> {
+    deferred_first(cx, inst, None)?;
+    let dead = cx.is_dead(inst);
+    let ret =
+        if shape == Shape::Wide && !dead { cx.def_mem(inst)? } else { generic_slot(cx, shape)? };
+    let size = c_size(cx, shape.bytes())?;
+    let order = c_order(cx, ordering)?;
+    let args = [size, CallArg::Value(ptr), CallArg::Addr(ret), order];
+    cx.call_runtime(RuntimeFn::AtomicLoad, &args, None)?;
+    if shape == Shape::Wide || dead {
+        return Ok(());
+    }
+    let rd = cx.def_reg(inst)?;
+    slot_to_reg(cx, shape, ret, rd);
+    cx.finish(inst, rd)
+}
+
+/// `store atomic` below its alignment: `__atomic_store(size, ptr,
+/// &value, order)`.
+fn store_generic<'a>(
+    cx: &mut FnCx<'a, A64>,
+    inst: Inst<'a>,
+    value: Value,
+    ptr: Value,
+    ordering: AtomicOrdering,
+    shape: Shape,
+) -> CgResult<()> {
+    deferred_first(cx, inst, None)?;
+    let mut copy = None;
+    let src = value_slot(cx, shape, value, ptr, &mut copy)?;
+    let size = c_size(cx, shape.bytes())?;
+    let order = c_order(cx, ordering)?;
+    let args = [size, ptr_arg(ptr, copy), CallArg::Addr(src), order];
+    cx.call_runtime(RuntimeFn::AtomicStore, &args, None)?;
+    Ok(())
+}
+
+/// `%r = atomicrmw xchg` below its alignment: `__atomic_exchange(size,
+/// ptr, &value, &r, order)`.
+fn xchg_generic<'a>(
+    cx: &mut FnCx<'a, A64>,
+    inst: Inst<'a>,
+    ptr: Value,
+    value: Value,
+    ordering: AtomicOrdering,
+    shape: Shape,
+) -> CgResult<()> {
+    deferred_first(cx, inst, None)?;
+    let mut copy = None;
+    let src = value_slot(cx, shape, value, ptr, &mut copy)?;
+    let dead = cx.is_dead(inst);
+    let ret =
+        if shape == Shape::Wide && !dead { cx.def_mem(inst)? } else { generic_slot(cx, shape)? };
+    let size = c_size(cx, shape.bytes())?;
+    let order = c_order(cx, ordering)?;
+    let args = [size, ptr_arg(ptr, copy), CallArg::Addr(src), CallArg::Addr(ret), order];
+    cx.call_runtime(RuntimeFn::AtomicExchange, &args, None)?;
+    if shape == Shape::Wide || dead {
+        return Ok(());
+    }
+    let rd = cx.def_reg(inst)?;
+    slot_to_reg(cx, shape, ret, rd);
+    cx.finish(inst, rd)
+}
+
+/// The operands of a `cmpxchg`.
+#[derive(Clone, Copy)]
+struct Cas {
+    ptr: Value,
+    expected: Value,
+    replacement: Value,
+    success: AtomicOrdering,
+    failure: AtomicOrdering,
+}
+
+/// `%r = cmpxchg` below its alignment: the expected value in the result's
+/// own slot, where `__atomic_compare_exchange(size, ptr, &r, &desired,
+/// success, failure)` writes the cell's value when it fails, and the
+/// routine's C `bool` stored as the result's flag.
+fn cmpxchg_generic<'a>(
+    cx: &mut FnCx<'a, A64>,
+    inst: Inst<'a>,
+    cas: Cas,
+    shape: Shape,
+    flag_at: u32,
+) -> CgResult<()> {
+    let Cas { ptr, expected, replacement, success, failure } = cas;
+    deferred_first(cx, inst, None)?;
+    let mut copy = None;
+    let (r, n) = if shape == Shape::Wide {
+        let e = cx.use_mem(expected)?;
+        let n = cx.use_mem(replacement)?;
+        let r = cx.def_mem(inst)?;
+        copy_wide(cx, e, r);
+        (r, n)
+    } else {
+        let pe = cx.use_reg(expected)?;
+        let pn = operand(cx, replacement, &[(expected, pe)])?;
+        let r = cx.def_mem(inst)?;
+        let n = generic_slot(cx, shape)?;
+        reg_to_slot(cx, shape, pe, r);
+        reg_to_slot(cx, shape, pn, n);
+        if ptr == expected {
+            copy = Some(ptr_copy(cx, pe)?);
+        } else if ptr == replacement {
+            copy = Some(ptr_copy(cx, pn)?);
+        }
+        // Both are in their slots: three more registers are needed for
+        // the size and the two orderings.
+        give_back(cx, expected, pe);
+        give_back(cx, replacement, pn);
+        (r, n)
+    };
+    let size = c_size(cx, shape.bytes())?;
+    let success = c_order(cx, success)?;
+    let failure = c_order(cx, failure)?;
+    let args = [size, ptr_arg(ptr, copy), CallArg::Addr(r), CallArg::Addr(n), success, failure];
+    let Some(ok) = cx.call_runtime(RuntimeFn::AtomicCompareExchange, &args, None)? else {
+        return cx.bug("__atomic_compare_exchange without a result");
+    };
+    let mut at = Cursor::frame(cx, r.offset_by(flag_at), X16);
+    store_gpr_at(cx, MemSize::B, xr(ok).zr(), &mut at);
+    Ok(())
+}
+
+/// `%r = atomicrmw <op>` other than `xchg` below its alignment: `llc`'s
+/// expansion (`expandAtomicRMWToCmpXchg`, then the `cmpxchg` to its
+/// call). A plain read of the cell into the old value's slot, then a loop
+/// that computes the new value from the old one and the operand (each in
+/// a slot) into a slot of its own, with the aligned loops' code
+/// ([`int_new`], [`float_new`], [`wide_new`]), and calls
+/// `__atomic_compare_exchange(size, ptr, &old, &new, order, failure)`,
+/// `failure` the strongest ordering `order` allows; the routine writes
+/// the cell's value to the old value's slot when it fails.
+///
+/// Every value is in a slot during the loop (the pointer too) and every
+/// register is displaced before it, so the call displaces nothing and
+/// each pass runs the same code on the same state.
+#[allow(clippy::too_many_lines, reason = "one arm per shape")]
+fn rmw_generic<'a>(
+    cx: &mut FnCx<'a, A64>,
+    inst: Inst<'a>,
+    op: RmwOp,
+    ptr: Value,
+    value: Value,
+    ordering: AtomicOrdering,
+    shape: Shape,
+) -> CgResult<()> {
+    deferred_first(cx, inst, None)?;
+    let dead = cx.is_dead(inst);
+    let old =
+        if shape == Shape::Wide && !dead { cx.def_mem(inst)? } else { generic_slot(cx, shape)? };
+    let new = generic_slot(cx, shape)?;
+    let pa = cx.use_reg(ptr)?;
+    let a = xr(pa);
+    // The first read of the cell: a plain load, as `llc`'s.
+    let parts: &[(MemSize, u32)] = match shape {
+        Shape::Int(ms) => &[(ms, 0)][..],
+        Shape::Float(fp) => &[(fp.mem_size(), 0)][..],
+        Shape::Wide => &[(MemSize::X, 0), (MemSize::X, 8)][..],
+    };
+    for &(ms, off) in parts {
+        put(cx, mc::ldr_off(load_op(ms), X17.zr(), a.sp(), i64::from(off)));
+        let mut at = Cursor::frame(cx, old.offset_by(off), X16);
+        store_gpr_at(cx, ms, X17.zr(), &mut at);
+    }
+    let ptr_slot = ptr_copy(cx, pa)?;
+    let src = if shape == Shape::Wide {
+        cx.use_mem(value)?
+    } else {
+        let slot = generic_slot(cx, shape)?;
+        let pv = operand(cx, value, &[(ptr, pa)])?;
+        reg_to_slot(cx, shape, pv, slot);
+        give_back(cx, value, pv);
+        slot
+    };
+    give_back(cx, ptr, pa);
+    cx.displace_all()?;
+    let again = cx.new_label();
+    cx.bind(again)?;
+    match shape {
+        Shape::Int(ms) => {
+            let (po, pv) = (cx.temp(Class::Gpr)?, cx.temp(Class::Gpr)?);
+            let (o, v) = (xr(po), xr(pv));
+            let mut at = Cursor::frame(cx, old, X16);
+            load_gpr_at(cx, load_op(ms), o, &mut at);
+            let mut at = Cursor::frame(cx, src, X16);
+            load_gpr_at(cx, load_op(ms), v, &mut at);
+            extend_operand(cx, op, ms, v);
+            let n = int_new(cx, op, ms, o, v);
+            let mut at = Cursor::frame(cx, new, X17);
+            store_gpr_at(cx, ms, n, &mut at);
+            cx.free_temp(po);
+            cx.free_temp(pv);
+        }
+        Shape::Float(fp) => {
+            let (po, pv) = (cx.temp(Class::Gpr)?, cx.temp(Class::Fpr)?);
+            let (o, v) = (xr(po), vr(pv));
+            let ms = fp.mem_size();
+            let mut at = Cursor::frame(cx, old, X16);
+            load_gpr_at(cx, load_op(ms), o, &mut at);
+            let mut at = Cursor::frame(cx, src, X16);
+            load_fpr_at(cx, vmem(fp), v, &mut at);
+            if fp == Fp::H {
+                put(cx, mc::fcvt(FpFormat::S, v, FpFormat::H, v));
+            }
+            let n = float_new(cx, op, fp, o, v);
+            let mut at = Cursor::frame(cx, new, X17);
+            store_gpr_at(cx, ms, n, &mut at);
+            cx.free_temp(po);
+            cx.free_temp(pv);
+        }
+        Shape::Wide => {
+            let (pl, ph, ps) = (cx.temp(Class::Gpr)?, cx.temp(Class::Gpr)?, cx.temp(Class::Gpr)?);
+            let (lo, hi) = (xr(pl), xr(ph));
+            for (reg, half) in [(lo, 0), (hi, 8)] {
+                let mut at = Cursor::frame(cx, old.offset_by(half), X16);
+                load_gpr_at(cx, Load::X, reg, &mut at);
+            }
+            load_q(cx, src, V30);
+            wide_new(cx, op, lo, hi, xr(ps))?;
+            put(cx, mc::mov(Size::X, lo.zr(), X16.zr()));
+            put(cx, mc::mov(Size::X, hi.zr(), X17.zr()));
+            store_pair_to(cx, new, lo, hi);
+            for t in [pl, ph, ps] {
+                cx.free_temp(t);
+            }
+        }
+    }
+    let size = c_size(cx, shape.bytes())?;
+    let success = c_order(cx, ordering)?;
+    let failure = c_order(cx, failure_of(ordering))?;
+    let args =
+        [size, CallArg::Mem(ptr_slot), CallArg::Addr(old), CallArg::Addr(new), success, failure];
+    let Some(ok) = cx.call_runtime(RuntimeFn::AtomicCompareExchange, &args, None)? else {
+        return cx.bug("__atomic_compare_exchange without a result");
+    };
+    // The C `bool`'s low bit, as `llc` tests it.
+    branch_bit(cx, xr(ok), 0, false, again)?;
+    if shape == Shape::Wide || dead {
+        return Ok(());
+    }
+    let rd = cx.def_reg(inst)?;
+    slot_to_reg(cx, shape, old, rd);
+    cx.finish(inst, rd)
 }

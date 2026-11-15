@@ -1257,11 +1257,13 @@ fn what_is_refused_is_refused_by_name() {
         ),
         // Vectors across calls pass since WP-082 (`tests/vcall.rs`).
         (
-            "define void @f(<2 x ptr> %p, ptr %o) {\n  \
-             %q = getelementptr i8, <2 x ptr> %p, <2 x i64> <i64 1, i64 2>\n  \
+            // WP-234: a vector `getelementptr` is lowered (`tests/
+            // vector_gep.rs`) unless an index's lanes are not addressable.
+            "define void @f(<2 x ptr> %p, ptr %o) {\n  %i = load <2 x i33>, ptr %o\n  \
+             %q = getelementptr i8, <2 x ptr> %p, <2 x i33> %i\n  \
              store <2 x ptr> %q, ptr %o\n  ret void\n}\n"
                 .into(),
-            vector::PTRADD_VECTOR,
+            vector::ODD_ELEMENT,
         ),
     ];
     let cases: Vec<(&str, &'static str)> = cases.iter().map(|(f, r)| (f.as_str(), *r)).collect();

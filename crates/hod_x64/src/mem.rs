@@ -45,9 +45,6 @@ use crate::target::X64;
 /// The group's refusal before WP-123. Nothing is refused under it any
 /// more; kept for the coverage log's history.
 pub const MEM: &str = "x64:todo:mem";
-/// A `ptradd` whose result is a vector of pointers: the vector element
-/// operations' (as `a64:ptradd-vector` on AArch64).
-pub const PTRADD_VECTOR: &str = "x64:ptradd-vector";
 
 const RAX: Reg = Reg::Rax;
 /// The sum of the variable indices.
@@ -629,14 +626,15 @@ pub fn alloca<'a>(
 }
 
 /// `%r = ptradd %base, <offset> + Σ index × stride`: deferred when its
-/// only use is the next instruction (§4.6), else computed with `lea`.
+/// only use is the next instruction (§4.6), else computed with `lea`. A
+/// vector of pointers is [`ptr_add_vector`]'s (WP-234).
 ///
 /// # Errors
-/// [`PTRADD_VECTOR`] for a vector of pointers; what asking for the
-/// operands reports.
+/// What [`ptr_add_vector`] refuses; what asking for the operands
+/// reports.
 pub fn ptr_add<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, add: &PtrAdd<'a>) -> CgResult<()> {
-    if X64.class_of(cx.types(), inst.ty()) != Class::Gpr {
-        return unsupported(PTRADD_VECTOR);
+    if cx.types().is_vector(inst.ty()) {
+        return ptr_add_vector(cx, inst, add);
     }
     // A deferred operand is emitted now, so that a load or store that
     // fuses this one finds every operand in a location.
@@ -655,6 +653,121 @@ pub fn ptr_add<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, add: &PtrAdd<'a>) -> 
         }
         at @ At::Mem { .. } => access(cx, at, 0, |m| mc::lea(Size::Q, r, m)),
     }
+    cx.finish(inst, rd)
+}
+
+/// Where the lanes of an operand of a vector `ptradd` are read.
+#[derive(Clone, Copy, Debug)]
+enum LaneSrc {
+    /// A vector with addressable lanes: its image.
+    Lanes(FrameRef, crate::vector::Lanes),
+    /// A vector of `i128` lanes: its image (each lane's low 8 bytes are
+    /// read; an index is truncated to 64 bits).
+    Wide(FrameRef, u32),
+    /// A scalar, the same in every lane (splatted).
+    Scalar(Value),
+}
+
+/// The lanes of operand `value` of a vector `ptradd`; an operand already
+/// in `seen` shares its image. A register vector is stored into a
+/// scratch image and given back at once, so the lane loop pins nothing.
+///
+/// # Errors
+/// What `vector::lanes` refuses (`x64:vector-odd-element`,
+/// `x64:vector-mask`, ...); what asking for the operand reports.
+fn lane_src(cx: &mut FnCx<'_, X64>, value: Value, seen: &[(Value, LaneSrc)]) -> CgResult<LaneSrc> {
+    if let Some(&(_, src)) = seen.iter().find(|(v, _)| *v == value) {
+        return Ok(src);
+    }
+    let ty = value_ty(cx, value);
+    if !cx.types().is_vector(ty) {
+        return Ok(LaneSrc::Scalar(value));
+    }
+    if let Some(wide) = crate::vector::Wide::of(cx, ty) {
+        let wide = wide?;
+        return Ok(LaneSrc::Wide(cx.use_mem(value)?, wide.stride));
+    }
+    let lanes = crate::vector::lanes(cx, ty)?;
+    Ok(LaneSrc::Lanes(crate::vector::image(cx, value, &lanes, 0)?, lanes))
+}
+
+/// Puts lane `lane` of `src` in `reg` (64 bits) and returns the width of
+/// its meaningful low bits (at most 64). Writes `r11`.
+fn lane_into(cx: &mut FnCx<'_, X64>, src: LaneSrc, lane: u32, reg: Reg) -> CgResult<u32> {
+    match src {
+        LaneSrc::Lanes(image, lanes) => {
+            let at = crate::vector::At::Frame(image.offset_by(lanes.offset(lane)));
+            crate::vector::load_lane(cx, &lanes, at, crate::reg::gpr(reg));
+            Ok(8 * lanes.bytes())
+        }
+        LaneSrc::Wide(image, stride) => {
+            let at = image.offset_by(lane * stride);
+            crate::common::frame_inst(cx, at, |m| mc::mov_rm(Size::Q, reg, m));
+            Ok(64)
+        }
+        LaneSrc::Scalar(value) => int_into(cx, value, reg),
+    }
+}
+
+/// `%r = ptradd <N x ptr> ...` (a `getelementptr` with a vector
+/// operand): one lane at a time, `rcx` = the base's lane plus the
+/// constant offset, then for each variable index `rdx` = its lane
+/// sign-extended (or truncated) to 64 bits and scaled, `rcx += rdx`;
+/// `rcx` stored as the result's lane. A scalar operand is the same in
+/// every lane; a constant scalar index is folded into the offset. The
+/// result's image is its slot (`Mem`) or a scratch image loaded into its
+/// register at the end; nothing is pinned during the loop.
+///
+/// # Errors
+/// What [`lane_src`] refuses; what asking for the operands reports.
+fn ptr_add_vector<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, add: &PtrAdd<'a>) -> CgResult<()> {
+    deferred_first(cx, inst, None)?;
+    let result = crate::vector::lanes(cx, inst.ty())?;
+    let mut offset = add.offset;
+    let mut seen: Vec<(Value, LaneSrc)> = Vec::with_capacity(1 + add.index_count());
+    let base = lane_src(cx, add.base, &seen)?;
+    seen.push((add.base, base));
+    let mut terms: Vec<(LaneSrc, u64)> = Vec::with_capacity(add.index_count());
+    for (index, scale) in add.indices() {
+        if scale == 0 {
+            continue;
+        }
+        let vector = cx.types().is_vector(value_ty(cx, index));
+        match const_int(cx, index) {
+            // A scalar constant, or a zero-like vector one.
+            Some((value, bits)) if !vector || value == 0 => {
+                offset = offset.wrapping_add(sext(value, bits).wrapping_mul(scale as i64));
+                continue;
+            }
+            _ => {}
+        }
+        let src = lane_src(cx, index, &seen)?;
+        seen.push((index, src));
+        terms.push((src, scale));
+    }
+    let Some(rdx) = RDX.index() else { return cx.bug("rdx is no index register") };
+    let dst = if result.shape.class == Class::Fpr {
+        crate::vector::scratch(cx, 0)?
+    } else {
+        cx.def_mem(inst)?
+    };
+    for lane in 0..result.count() {
+        lane_into(cx, base, lane, RCX)?;
+        add_addend(cx, RCX, offset);
+        for &(src, scale) in &terms {
+            let bits = lane_into(cx, src, lane, RDX)?;
+            sign_extend(cx, RDX, bits);
+            let s = scale_term(cx, RDX, scale);
+            put(cx, mc::lea(Size::Q, RCX, Mem::base_index(RCX, rdx, s, 0)));
+        }
+        let at = crate::vector::At::Frame(dst.offset_by(result.offset(lane)));
+        crate::vector::store_lane(cx, &result, at, crate::reg::gpr(RCX));
+    }
+    if result.shape.class != Class::Fpr {
+        return Ok(());
+    }
+    let rd = cx.def_reg(inst)?;
+    crate::vector::reload(cx, xm(rd), &result, dst);
     cx.finish(inst, rd)
 }
 

@@ -174,13 +174,31 @@ fn accepted(cases: Vec<Case>, features: Features) -> (Vec<Case>, BTreeMap<&'stat
     (kept, refused)
 }
 
+/// The `llc` configurations the grid of machine `n` executes (WP-238):
+/// `llc` 22 at `-O0` with `FastISel`, the reference, and one of the
+/// others in turn, so that over the machines each configuration
+/// executes; every configuration's convention is compared on every
+/// machine all the same ([`same_as_llc`]). Running all six on every
+/// machine took the hosted lane's job past its limit.
+fn executed_configs(
+    all: &[(crate::run::Config, std::path::PathBuf)],
+    n: usize,
+) -> Vec<(crate::run::Config, std::path::PathBuf)> {
+    let reference = |c: &crate::run::Config| c.tag() == "22-O0";
+    let others: Vec<_> = all.iter().filter(|(c, _)| !reference(c)).cloned().collect();
+    let mut chosen: Vec<_> = all.iter().filter(|(c, _)| reference(c)).cloned().collect();
+    assert_eq!(chosen.len(), 1, "llc 22 -O0 is a configuration");
+    chosen.extend(others.get(n % others.len().max(1)).cloned());
+    chosen
+}
+
 /// §1.3, §3.2, §4.3, §5.1, §8.7, §9.1, §11 (WP-208): the grid on every
 /// machine of [`machines`]: every signature hod accepts is placed as each
 /// `llc` places it ([`same_as_llc`]); hod refuses only a mask of more
 /// than 64 elements (`x64:mask-vector`), as it refuses one without
 /// AVX-512. With `HOD_X64_AVX512_RUNNER`, or natively on a processor with
-/// the machine's features ([`avx512_runner`]), the signatures the driver
-/// generator makes ([`generated`]) also run; each machine's outcome is
+/// the machine's features ([`avx512_runner`]), every signature also runs
+/// (WP-238), under [`executed_configs`]; each machine's outcome is
 /// reported with their number (`HOD_AVX512_REPORT`).
 #[test]
 fn zmm_grid() {
@@ -206,26 +224,29 @@ fn zmm_grid() {
         // The number: two labels can be equal (the label cuts the
         // feature string short).
         let name = format!("abi zmm_grid {n} {}", machine.label());
-        if let Some((tools, how)) = avx512_runner(&base, &machine, &name) {
-            // The signatures the driver generator makes run; the others
-            // are counted in the report.
-            let mut types = table();
-            let all = cases.len();
-            let cases: Vec<Case> = cases
-                .into_iter()
-                .filter(|case| {
-                    case.assign_with(&mut types, features).is_ok_and(|asg| generated(case, &asg))
-                })
-                .collect();
-            assert!(!cases.is_empty(), "{}: no signature the generator makes", machine.label());
+        if let Some((mut tools, how)) = avx512_runner(&base, &machine, &name) {
+            // Every accepted signature runs (WP-238), under two of the
+            // six configurations ([`executed_configs`]), for the time.
+            tools.llc = executed_configs(&tools.llc, n);
+            let configs: Vec<String> = tools.llc.iter().map(|(c, _)| c.tag()).collect();
             let how = format!(
-                "{how}; {} of {all} signatures, {} not executed (the driver generator \
-                 does not make their parts)",
+                "{how}; {} signatures; executed with llc {} ({} of {} configurations)",
                 cases.len(),
-                all - cases.len()
+                configs.join(" and "),
+                configs.len(),
+                base.llc.len()
             );
+            eprintln!("zmm grid run {n}, {}: starting ({how})", machine.label());
+            // The time is printed, for the cost of a run under an
+            // emulator; nothing depends on it.
+            let start = std::time::Instant::now();
             let report = run_cases(&format!("abi-zmm-run{n}"), &cases, 0x208, &tools);
-            eprintln!("zmm grid run, {} ({how}): {}", machine.label(), report.summary());
+            eprintln!(
+                "zmm grid run {n}, {} ({how}; {:.0?}): {}",
+                machine.label(),
+                start.elapsed(),
+                report.summary()
+            );
             if !report.failures.is_empty() {
                 let first = report.failures.first().map_or("", String::as_str);
                 let detail = format!("{how}; {} failure(s); {first}", report.failures.len());
@@ -239,64 +260,119 @@ fn zmm_grid() {
     eprintln!("zmm grid: {total} signatures over {} machines", machines().len());
 }
 
-/// Whether the driver generator (`emit.rs`) passes and receives every
-/// part of `case` as `asg` places it. It was written for the machines
-/// `qemu` runs (WP-203): it moves a vector of at most 32 bytes and a mask
-/// whose lanes fill one `xmm`. A vector of more than 256 bits (a `zmm`,
-/// or memory aligned to 64, wherever it travels), a mask in the byte
-/// lanes of a `ymm` or a `zmm`, and a mask passed a byte per element
-/// (§4.3, WP-208) it does not make (WP-238): those signatures are held to
-/// `llc`'s convention ([`same_as_llc`]) and not run.
-fn generated(case: &Case, asg: &Assignment) -> bool {
-    let narrow = case.params.iter().map(|param| &param.ty).chain(&case.ret).all(|ty| !over_256(ty));
-    let masks_in_xmm = asg.args.iter().chain(&asg.ret).all(|part| match part.kind {
-        PartKind::Lanes { bits: 1, .. } => part.size == 16,
-        _ => true,
-    });
-    narrow && masks_in_xmm
-}
-
-/// Whether `ty` is or holds a vector, other than a mask, of more than 256
-/// bits.
-fn over_256(ty: &Ty) -> bool {
-    match ty {
-        Ty::Vec(elem, len) => {
-            let bits: u64 = match **elem {
-                Ty::Int(1) => return false,
-                Ty::Int(bits) => bits.into(),
-                Ty::Half | Ty::BFloat => 16,
-                Ty::Float => 32,
-                Ty::Ptr | Ty::Double => 64,
-                _ => 128,
-            };
-            bits * u64::from(*len) > 256
-        }
-        Ty::Arr(elem, _) => over_256(elem),
-        Ty::Struct(fields) | Ty::Packed(fields) => fields.iter().any(over_256),
-        _ => false,
-    }
-}
-
-/// WP-238: the signatures of the grid the generator makes are the masks
-/// of 2, 4, 8 and 16 elements and what holds only those; a `zmm`, a mask
-/// of 32 or 64 elements and one passed a byte per element are not.
+/// WP-238: the driver generator (`emit.rs`) makes every signature the
+/// grid accepts on every machine, which it did not before: a 64-byte part
+/// in a `zmm` or on the stack, a mask in the byte lanes of a `ymm`, a
+/// `zmm` or two `ymm`, and a mask passed a byte per element in general
+/// registers and stack slots (§4.3). Each batch is generated and
+/// assembled with its driver, not run (no emulator here has AVX-512):
+/// what [`zmm_grid`] runs where a processor or a runner has AVX-512. The
+/// grid has every one of those shapes.
 #[test]
-fn generator_covers_xmm_masks_only() {
-    let features = machines()[0].abi();
-    let mut types = table();
-    let mut made = |ty: Ty| {
-        let case = Case::of(std::slice::from_ref(&ty)).ret(ty);
-        let asg = case.assign_with(&mut types, features).expect("accepted");
-        generated(&case, &asg)
-    };
-    for len in [2, 4, 8, 16] {
-        assert!(made(vec(I1, len)), "<{len} x i1>");
+fn generator_makes_every_signature() {
+    let Some(base) = Tools::find() else { return };
+    let mut shapes = BTreeSet::new();
+    for (n, machine) in machines().into_iter().enumerate() {
+        let features = machine.abi();
+        let (cases, _) = accepted(zmm_cases(), features);
+        let mut types = table();
+        for case in &cases {
+            let asg = case.assign_with(&mut types, features).expect("accepted");
+            for part in asg.args.iter().chain(&asg.ret) {
+                let reg = match part.place {
+                    Place::Reg(reg) if reg::is_gpr(reg) => "gpr",
+                    Place::Reg(_) => "vector",
+                    Place::Stack(_) => "stack",
+                };
+                let lanes = matches!(part.kind, PartKind::Lanes { bits: 1, .. });
+                if lanes || part.size > 32 {
+                    shapes.insert((lanes, part.size, reg));
+                }
+            }
+        }
+        let tools = base.with_machine(machine).expect("the tools");
+        for (number, chunk) in cases.chunks(crate::grid::BATCH).enumerate() {
+            crate::run::Batch::new(&format!("abi-zmm-gen{n}"), chunk, number as u64, &tools);
+        }
     }
-    for len in [3, 5, 32, 48, 64] {
-        assert!(!made(vec(I1, len)), "<{len} x i1>");
+    for shape in [
+        (false, 64, "vector"),
+        (false, 64, "stack"),
+        (true, 32, "vector"),
+        (true, 64, "vector"),
+        (true, 1, "gpr"),
+        (true, 1, "stack"),
+    ] {
+        assert!(shapes.contains(&shape), "the grid has no part {shape:?}: {shapes:?}");
     }
-    assert!(!made(vec(Ty::Float, 16)) && !made(vec(I8, 33)) && !made(st(&[vec(Ty::Double, 8)])));
-    assert!(made(st(&[vec(I1, 16), I8])));
+}
+
+/// WP-238, §12: `llc` 19 and 22 (every configuration) abort on a call
+/// passing a `<1 x i1>` under AVX-512 ("LLVM ERROR: Cannot emit physreg
+/// copy instruction", naming no function), and compile the function that
+/// receives one. The batch pins the error on the caller by halving
+/// (`Batch::bisect`), so the grid leaves that one direction out as an
+/// `llc` crash and runs the rest.
+#[test]
+fn llc_cannot_pass_a_mask_of_one_under_avx512() {
+    let Some(base) = Tools::find() else { return };
+    let tools = base.with_machine(machines()[0].clone()).expect("the tools");
+    let cases = [Case::of(&[I32, vec(I1, 4)]), Case::of(&[vec(I1, 1), I32]), Case::of(&[I8])];
+    let batch = crate::run::Batch::new("abi-zmm-v1i1", &cases, 1, &tools);
+    for (config, llc) in &tools.llc {
+        let all = batch.bisect(*config, llc, &tools, &|_, _| true);
+        assert_eq!(all, Some((1, false)), "llc {}", config.tag());
+        let callee = batch.bisect(*config, llc, &tools, &|index, callee| index == 1 && callee);
+        assert_eq!(callee, None, "llc {}", config.tag());
+    }
+}
+
+/// WP-238, §12: on `znver4` (`bf16`), `llc` 19's FastISel (`-O0` and
+/// `-O2` with `-fast-isel=1`, as the grid runs them) passes the
+/// `float` after a `<32 x bfloat>` in `xmm0`, over the vector, where its
+/// `SelectionDAG` and `llc` 22 pass it in `xmm1` (the vector in `zmm0`, as
+/// hod does). The grid runs no such case under that configuration
+/// (`run::runs`); this fails when LLVM 19 passes it as the others do.
+#[test]
+fn llc_19_fastisel_drops_a_bfloat_vector_under_bf16() {
+    let Some(base) = Tools::find() else { return };
+    let scratch = Scratch::new("abi-zmm-bf16");
+    let source = scratch.write(
+        "bf16.ll",
+        "declare void @callee(i64, <32 x bfloat>, i32, float)\n\
+         define void @caller(ptr %p) {\n\
+         \x20 %v = load <32 x bfloat>, ptr %p\n\
+         \x20 call void @callee(i64 1, <32 x bfloat> %v, i32 2, float 3.0)\n\
+         \x20 ret void\n\
+         }\n",
+    );
+    for (config, llc) in &base.llc {
+        let outcome = run(
+            llc,
+            [
+                config.opt.as_ref(),
+                if config.dag { "-fast-isel=0" } else { "-fast-isel=1" }.as_ref(),
+                "-mtriple=x86_64-linux-gnu".as_ref(),
+                "-mcpu=znver4".as_ref(),
+                "-o".as_ref(),
+                "-".as_ref(),
+                source.as_os_str(),
+            ],
+        );
+        assert!(outcome.success(), "llc {}: {}", config.tag(), outcome.stderr_text());
+        let asm = outcome.stdout_text();
+        let float = asm
+            .lines()
+            .find(|line| line.contains("vmovss") && line.contains(".LCPI"))
+            .and_then(|line| line.split('#').next()?.rsplit('%').next())
+            .map(|reg| reg.trim().to_owned());
+        // `-fast-isel=1` selects FastISel at `-O2` as well.
+        let fast19 = config.major < 22 && !config.dag;
+        let want = if fast19 { "xmm0" } else { "xmm1" };
+        assert_eq!(float.as_deref(), Some(want), "llc {}:\n{asm}", config.tag());
+        // FastISel 19 at `-O2` drops the vector's load altogether.
+        assert!(fast19 || asm.contains("(%rdi), %zmm0"), "llc {}:\n{asm}", config.tag());
+    }
 }
 
 /// The features a program compiled for `machine` may use that an x86-64
@@ -425,7 +501,7 @@ fn differences(
     // next `xmm` argument takes `xmm0`) or runs out of memory
     // (`sapphirerapids`). Its SelectionDAG and LLVM 22 pass it in `zmm0`,
     // as hod does. Those cases are left out of the module it compiles.
-    let bf16 = |index: usize| plans[index].case.text().contains("<32 x bfloat>");
+    let bf16 = |index: usize| plans[index].case.has_bf16_zmm();
     let runs19 = |index: usize, hod_calls: bool| runs(index, hod_calls) && !bf16(index);
     let scratch = Scratch::new(label);
     let attributes = machine.attributes();
@@ -437,9 +513,10 @@ fn differences(
         let fast19 = config.major < 22 && !config.dag;
         let source = if fast19 { &source19 } else { &source };
         // A grid module holds two functions per case: more than the
-        // default minute for `llc` 19 on some machines.
+        // default minute for `llc` 19 on some machines. Its memory is
+        // capped as the grid's (`run::LLC_MEMORY_KIB`).
         let outcome = hod_testutil::run_with(
-            std::process::Command::new(llc).args([
+            crate::run::capped_llc(llc).args([
                 "-O0".as_ref(),
                 if config.dag { "-fast-isel=0" } else { "-fast-isel=1" }.as_ref(),
                 "-relocation-model=pic".as_ref(),

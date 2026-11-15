@@ -2,10 +2,14 @@
 //! x86-64 feature only some processors have): `spec/harness.md` "CI",
 //! "AVX-512 execution", and `docs/design/0007-avx512.md` §9.
 //!
-//! - `HOD_X64_AVX512_RUNNER` set: the command it names runs every such
+//! - `HOD_X64_AVX512_RUNNER` set: the command it names runs such a
 //!   program (its words are a command prefix, the program's path is
-//!   appended; `native` runs the program directly). It wins over
-//!   everything below.
+//!   appended; `native` runs the program directly). Alone it runs every
+//!   one and wins over everything below. With
+//!   `HOD_X64_AVX512_RUNNER_CPUINFO` naming a file of the processor the
+//!   command runs programs on (an emulator's, in `/proc/cpuinfo`'s form;
+//!   WP-238) it runs only what that processor can and the host cannot
+//!   ([`decide`]).
 //! - Unset, on x86-64 Linux: the processor's flags are read from
 //!   `/proc/cpuinfo`, and a program runs natively when the processor has
 //!   every feature it requires ([`CpuInfo::missing`]); otherwise it is
@@ -138,43 +142,121 @@ impl Host {
     }
 }
 
-/// What to do with a program requiring the features `required` (LLVM
-/// names), given the runner variable's value and the host.
-pub fn decide(runner: Option<&str>, host: &Host, required: &[&str]) -> Execution {
-    if let Some(runner) = runner {
-        let words: Vec<String> = runner.split_whitespace().map(str::to_owned).collect();
-        match words.first().map(String::as_str) {
-            None => {}
-            Some("native") => {
-                let how = "runner: native (HOD_X64_AVX512_RUNNER)".to_owned();
-                return Execution::Run { prefix: Vec::new(), how };
-            }
-            Some(_) => return Execution::Run { how: format!("runner: {runner}"), prefix: words },
+/// The command `HOD_X64_AVX512_RUNNER` names, and the processor it is
+/// (`HOD_X64_AVX512_RUNNER_CPUINFO`), if that is said.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Runner {
+    /// The command's words (`native`: the host itself).
+    pub words: Vec<String>,
+    /// The flags of the processor the command runs programs on (an
+    /// emulator's): with them the runner is chosen only for a program
+    /// the host cannot run and the runner can; without them it runs
+    /// every program.
+    pub cpu: Option<CpuInfo>,
+}
+
+impl Runner {
+    /// The runner `command` names, `None` when it has no word.
+    pub fn new(command: &str, cpu: Option<CpuInfo>) -> Option<Runner> {
+        let words: Vec<String> = command.split_whitespace().map(str::to_owned).collect();
+        (!words.is_empty()).then_some(Runner { words, cpu })
+    }
+
+    fn prefix(&self) -> Vec<String> {
+        if self.words[0] == "native" { Vec::new() } else { self.words.clone() }
+    }
+
+    fn how(&self) -> String {
+        match &self.cpu {
+            None if self.words[0] == "native" => "runner: native (HOD_X64_AVX512_RUNNER)".into(),
+            None => format!("runner: {}", self.words.join(" ")),
+            Some(cpu) => format!("runner: {} ({})", self.words.join(" "), cpu.model),
         }
     }
-    match host {
-        Host::None(why) => Execution::Skip(why.clone()),
-        Host::X86(cpu) | Host::Faked(cpu) => {
-            let missing = cpu.missing(required);
-            if !missing.is_empty() {
-                return Execution::Skip(format!("missing {} on {}", missing.join(","), cpu.model));
-            }
-            match host {
+}
+
+/// What to do with a program requiring the features `required` (LLVM
+/// names), and that uses `wanted` where the processor has them (a
+/// program that checks `__builtin_cpu_supports`), given the runner and
+/// the host.
+///
+/// A runner without flags runs everything. Otherwise the first that has
+/// the features runs the program, in this order: the host with
+/// `required` and `wanted` (natively; a dry run for flags of
+/// `HOD_AVX512_CPUINFO`), the runner with both, the host with
+/// `required`, the runner with `required`; else it is skipped, naming
+/// what each lacks.
+pub fn decide(
+    runner: Option<&Runner>,
+    host: &Host,
+    required: &[&str],
+    wanted: &[&str],
+) -> Execution {
+    if let Some(runner) = runner.filter(|r| r.cpu.is_none()) {
+        return Execution::Run { prefix: runner.prefix(), how: runner.how() };
+    }
+    let emulated = runner.and_then(|r| Some((r, r.cpu.as_ref()?)));
+    let mut all: Vec<&str> = required.to_vec();
+    all.extend(wanted.iter().filter(|w| !required.contains(w)));
+    for need in [&all[..], required] {
+        if let Host::X86(cpu) | Host::Faked(cpu) = host
+            && cpu.missing(need).is_empty()
+        {
+            return match host {
                 Host::Faked(_) => Execution::DryRun(format!(
                     "would execute natively on {} (flags from HOD_AVX512_CPUINFO)",
                     cpu.model
                 )),
                 _ => Execution::Run { prefix: Vec::new(), how: format!("native: {}", cpu.model) },
-            }
+            };
         }
+        if let Some((runner, cpu)) = emulated
+            && cpu.missing(need).is_empty()
+        {
+            return Execution::Run { prefix: runner.prefix(), how: runner.how() };
+        }
+    }
+    let why = match host {
+        Host::None(why) => why.clone(),
+        Host::X86(cpu) | Host::Faked(cpu) => {
+            format!("missing {} on {}", cpu.missing(required).join(","), cpu.model)
+        }
+    };
+    match emulated {
+        None => Execution::Skip(why),
+        Some((_, cpu)) => Execution::Skip(format!(
+            "{why}; missing {} on {} (HOD_X64_AVX512_RUNNER)",
+            cpu.missing(required).join(","),
+            cpu.model
+        )),
     }
 }
 
-/// [`decide`] for this process: `HOD_X64_AVX512_RUNNER` and
-/// [`Host::detect`].
+/// The runner of this process: `HOD_X64_AVX512_RUNNER`, with the flags of
+/// the file `HOD_X64_AVX512_RUNNER_CPUINFO` names (in `/proc/cpuinfo`'s
+/// form). A file that cannot be read or has no flags is a failure: the
+/// runner's processor would be unknown.
+pub fn runner() -> Option<Runner> {
+    let command = std::env::var("HOD_X64_AVX512_RUNNER").ok()?;
+    let cpu = std::env::var_os("HOD_X64_AVX512_RUNNER_CPUINFO").map(|path| {
+        let shown = path.to_string_lossy().into_owned();
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("HOD_X64_AVX512_RUNNER_CPUINFO {shown}: {e}"));
+        CpuInfo::parse(&text)
+            .unwrap_or_else(|| panic!("HOD_X64_AVX512_RUNNER_CPUINFO {shown}: no flags line"))
+    });
+    Runner::new(&command, cpu)
+}
+
+/// [`decide`] for this process: [`runner`] and [`Host::detect`], nothing
+/// wanted beyond `required`.
 pub fn execution(required: &[&str]) -> Execution {
-    let runner = std::env::var("HOD_X64_AVX512_RUNNER").ok();
-    decide(runner.as_deref(), &Host::detect(), required)
+    execution_wanting(required, &[])
+}
+
+/// [`decide`] for this process, with `wanted`.
+pub fn execution_wanting(required: &[&str], wanted: &[&str]) -> Execution {
+    decide(runner().as_ref(), &Host::detect(), required, wanted)
 }
 
 /// Appends `program\toutcome\tdetail` to the file `HOD_AVX512_REPORT`
@@ -210,7 +292,7 @@ pub fn skip(program: &str, outcome: &str, why: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{CpuInfo, Execution, Host, decide, normalize};
+    use super::{CpuInfo, Execution, Host, Runner, decide, normalize};
 
     /// `/proc/cpuinfo` of an Intel Xeon with AVX-512 (Ice Lake server, as
     /// a cloud virtual machine lists it), first processor and the start
@@ -306,39 +388,83 @@ mod tests {
         let f = ["avx512f"];
         let native = |how: &str| Execution::Run { prefix: Vec::new(), how: how.into() };
         assert_eq!(
-            decide(None, &xeon, &f),
+            decide(None, &xeon, &f, &[]),
             native("native: Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz")
         );
         assert_eq!(
-            decide(None, &xeon, &["avx512f", "avx512fp16"]),
+            decide(None, &xeon, &["avx512f", "avx512fp16"], &[]),
             Execution::Skip(
                 "missing avx512fp16 on Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz".into()
             )
         );
+        // Wanted features the host lacks do not keep it from running.
+        assert_eq!(decide(None, &xeon, &f, &["avx512fp16"]), decide(None, &xeon, &f, &[]));
         assert_eq!(
-            decide(None, &epyc, &["avx512f", "avx512vl"]),
+            decide(None, &epyc, &["avx512f", "avx512vl"], &[]),
             Execution::Skip("missing avx512f,avx512vl on AMD EPYC 7763 64-Core Processor".into())
         );
-        // An explicit runner wins, whatever the flags; an empty one does
-        // not count.
+        // An explicit runner without flags wins, whatever the flags; an
+        // empty one does not count.
+        let plain = |command: &str| Runner::new(command, None);
         assert_eq!(
-            decide(Some("native"), &epyc, &f),
+            decide(plain("native").as_ref(), &epyc, &f, &[]),
             native("runner: native (HOD_X64_AVX512_RUNNER)")
         );
         assert_eq!(
-            decide(Some("sde64 -spr --"), &epyc, &f),
+            decide(plain("sde64 -spr --").as_ref(), &xeon, &f, &[]),
             Execution::Run {
                 prefix: vec!["sde64".into(), "-spr".into(), "--".into()],
                 how: "runner: sde64 -spr --".into()
             }
         );
-        assert_eq!(decide(Some("  "), &epyc, &f), decide(None, &epyc, &f));
+        assert_eq!(plain("  "), None);
         // No flags: skipped, as before detection.
         let none = Host::None("the host is aarch64 linux".into());
-        assert_eq!(decide(None, &none, &f), Execution::Skip("the host is aarch64 linux".into()));
+        let skip = Execution::Skip("the host is aarch64 linux".into());
+        assert_eq!(decide(None, &none, &f, &[]), skip);
         // Faked flags never execute.
         let faked = Host::Faked(CpuInfo::parse(XEON).unwrap());
-        assert!(matches!(decide(None, &faked, &f), Execution::DryRun(_)));
-        assert!(matches!(decide(None, &faked, &["avx512fp16"]), Execution::Skip(_)));
+        assert!(matches!(decide(None, &faked, &f, &[]), Execution::DryRun(_)));
+        assert!(matches!(decide(None, &faked, &["avx512fp16"], &[]), Execution::Skip(_)));
+    }
+
+    /// WP-238: a runner with its processor's flags (an emulator's) runs
+    /// what the host cannot, and only what its processor can.
+    #[test]
+    fn a_runner_with_flags_runs_what_the_host_cannot() {
+        let xeon = Host::X86(CpuInfo::parse(XEON).unwrap());
+        let epyc = Host::X86(CpuInfo::parse(EPYC).unwrap());
+        let spr = CpuInfo::parse(
+            "model name : Intel SDE -spr\nflags : avx512f avx512vl avx512bw avx512dq \
+             avx512fp16 avx512bf16\n",
+        );
+        let sde = Runner::new("sde64 -spr --", spr).unwrap();
+        let by_sde = Execution::Run {
+            prefix: vec!["sde64".into(), "-spr".into(), "--".into()],
+            how: "runner: sde64 -spr -- (Intel SDE -spr)".into(),
+        };
+        let at_home = decide(None, &xeon, &["avx512bw"], &[]);
+        assert!(matches!(&at_home, Execution::Run { prefix, .. } if prefix.is_empty()));
+        // The host first, when it has everything.
+        assert_eq!(decide(Some(&sde), &xeon, &["avx512bw"], &[]), at_home);
+        // The runner when the host lacks a required feature.
+        assert_eq!(decide(Some(&sde), &xeon, &["avx512fp16"], &[]), by_sde);
+        assert_eq!(decide(Some(&sde), &epyc, &["avx512f"], &[]), by_sde);
+        // The runner when only it has the wanted ones; the host when
+        // neither has them.
+        assert_eq!(decide(Some(&sde), &xeon, &["avx512f"], &["avx512fp16"]), by_sde);
+        assert_eq!(decide(Some(&sde), &xeon, &["avx512f"], &["avx512er"]), at_home);
+        assert_eq!(decide(Some(&sde), &epyc, &["avx512f"], &["avx512er"]), by_sde);
+        // Neither: skipped, naming both.
+        assert_eq!(
+            decide(Some(&sde), &epyc, &["avx512f", "avx512er"], &[]),
+            Execution::Skip(
+                "missing avx512f,avx512er on AMD EPYC 7763 64-Core Processor; missing \
+                 avx512er on Intel SDE -spr (HOD_X64_AVX512_RUNNER)"
+                    .into()
+            )
+        );
+        let none = Host::None("the host is aarch64 linux".into());
+        assert_eq!(decide(Some(&sde), &none, &["avx512fp16"], &[]), by_sde);
     }
 }

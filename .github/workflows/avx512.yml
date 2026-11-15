@@ -1,0 +1,80 @@
+name: avx512
+# The AVX-512 execution tests alone (WP-238; spec/harness.md "CI" item 8,
+# docs/design/0007-avx512.md section 4.4), on GitHub's x86-64 runner in the
+# CI lane's container: `x86_avx512::*_on_hardware` and the `abi` tests
+# named `zmm` (the grid of zmm_grid). A program runs natively when the
+# runner's processor has its features, else under Intel SDE (the sde
+# action), else it is skipped; the summary of what ran where goes to the
+# log and the job's summary. Only Knights Landing's machine of the grid may
+# be skipped (ER and PF: no processor or emulator at hand has them).
+# It never gates a merge: start it by pushing an `avx512/<name>` branch or
+# with workflow_dispatch. A newer push of the same ref cancels the older run.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["avx512/**"]
+permissions:
+  contents: read
+concurrency:
+  group: avx512-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  HOD_REQUIRE_TOOLS: "1"
+  CARGO_TERM_COLOR: never
+defaults:
+  run: { shell: bash }
+jobs:
+  avx512:
+    name: avx512 execution
+    runs-on: ubuntu-24.04
+    container:
+      image: buildpack-deps:trixie
+      # SDE (Pin) traces the program it runs.
+      options: --cap-add=SYS_PTRACE --ulimit core=0
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/hod-ci
+        with: { cache-key: ci-x86_64 }
+      - uses: ./.github/actions/sde
+      - name: avx512 report
+        run: |
+          rm -f "$RUNNER_TEMP/avx512-report.tsv"
+          echo "HOD_AVX512_REPORT=$RUNNER_TEMP/avx512-report.tsv" >> "$GITHUB_ENV"
+          grep -m1 '^model name' /proc/cpuinfo
+          nproc
+          free -m
+      # The memory of the steps after this one, every 5 s: the time, `free
+      # -m`'s Mem line, the number of llc processes and the three largest
+      # processes (RSS in MB); printed by the memory step at the end.
+      - name: memory watch
+        run: |
+          log="$RUNNER_TEMP/memory.log"
+          echo "MEMORY_LOG=$log" >> "$GITHUB_ENV"
+          nohup bash -c 'while true; do
+            echo "$(date -u +%T) $(free -m | awk "/^Mem/ {print \"used \" \$3 \" avail \" \$7}") llc $(ps -eo comm= | grep -c "^llc") top: $(ps -eo rss=,comm= --sort=-rss | head -3 | awk "{printf \"%s=%d \", \$2, \$1/1024}")"
+            sleep 5
+          done' >> "$log" 2>&1 &
+      # Step limits under the job's, so that a slow step still leaves the
+      # job its log and its summary.
+      - name: build
+        timeout-minutes: 20
+        run: cargo test -q -p hod_x64 --test x86_avx512 --test abi --no-run
+      - name: x86_avx512 on hardware
+        timeout-minutes: 15
+        run: cargo test -q -p hod_x64 --test x86_avx512 -- on_hardware --nocapture
+      - name: abi zmm
+        if: always()
+        timeout-minutes: 35
+        run: cargo test -q -p hod_x64 --test abi -- zmm --nocapture
+      - name: memory
+        if: always()
+        run: |
+          echo "least memory available (MB): $(awk '{print $5}' "$MEMORY_LOG" | sort -n | head -1)"
+          echo "most llc processes at once: $(awk '{print $7}' "$MEMORY_LOG" | sort -n | tail -1)"
+          cat "$MEMORY_LOG"
+      - name: avx512 execution summary
+        if: always()
+        run: scripts/avx512-summary.sh "$RUNNER_TEMP/avx512-report.tsv" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: nothing skipped but knl
+        run: scripts/avx512-summary.sh --check "$RUNNER_TEMP/avx512-report.tsv"

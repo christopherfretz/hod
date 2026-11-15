@@ -144,20 +144,41 @@ kiln's lanes). Its rules:
    fixed range of seeds natively: every program built by hod and by
    `llc`, a difference a failure. `.github/actions/hod-ci` already
    installs `csmith` and `libcsmith-dev`.
-8. **AVX-512 execution (WP-229).** No emulator of either lane executes
-   AVX-512 (`qemu-x86_64` has none), so the AVX-512 execution tests
+8. **AVX-512 execution (WP-229, WP-238).** `qemu-x86_64` executes no
+   AVX-512 (Debian 13's 10.0 lists the flags, and its TCG faults on the
+   first EVEX instruction), so the AVX-512 execution tests
    (`hod_x64`: `x86_avx512::avx512_names_agree_with_llc_on_hardware`,
    `x86_avx512::vsib_names_agree_with_llc_on_hardware`, `abi::zmm_grid`)
    run a program only (a) by the command `HOD_X64_AVX512_RUNNER` names
    (a command prefix, the program's path appended; `native`: directly),
-   which wins, or (b) natively on x86-64 Linux when the first
+   which alone wins, (b) natively on x86-64 Linux when the first
    processor's `flags` line of `/proc/cpuinfo` has every feature the
    program requires (`hod_testutil::avx512`; the requirements are
-   `docs/design/0007-avx512.md` §4.4). Otherwise the program is linked
-   and skipped, as on the AArch64 lane. **Executed** means the program
+   `docs/design/0007-avx512.md` §4.4), or (c) by the runner when
+   `HOD_X64_AVX512_RUNNER_CPUINFO` names a file of the runner's
+   processor (`/proc/cpuinfo`'s form) whose flags have them and the host
+   lacks them (first the host, then the runner, with every feature the
+   program uses where present: the `x86_avx512` drivers' checks; then
+   with the required ones alone). Otherwise the program is linked and
+   skipped, as on the AArch64 lane. **The emulator** (WP-238): on the
+   x86-64 lane `.github/actions/sde` sets up Intel's Software
+   Development Emulator, 10.13.1 (Linux kit
+   `sde-external-10.13.1-2026-07-28-lin.tar.xz` from Intel's download
+   mirror, sha256 `94e97d62…bf2b50` as Intel's download page publishes
+   it, kept in the Actions cache under the sha256; "free of charge for
+   any type of use" under the Intel Simplified Software License, used
+   unmodified, not redistributed), with `HOD_X64_AVX512_RUNNER=sde64
+   -spr --` and the flags `cpu-flags.c` reads from CPUID under it: a
+   Sapphire Rapids has every feature of the grid's machines but Knights
+   Landing's ER and PF, which no SDE of this version emulates (its chips
+   are listed by `sde64 -help`), so `knl`'s machine is the one program
+   that stays skipped. **Executed** means the program
    ran on that processor and hod's results equaled `llc` 22's for every
    function or call it ran; an executed program that disagrees fails its
-   test with the whole output. With `HOD_AVX512_REPORT=<file>` each test
+   test with the whole output. `abi::zmm_grid` executes each machine
+   against two of the six `llc` configurations (`llc` 22 at `-O0` and one
+   other, in turn by machine; `zmm::executed_configs`), which its line
+   names: all six under an emulator took about 35 minutes. With `HOD_AVX512_REPORT=<file>` each test
    appends one line per program: `program`, `executed`, `skipped`,
    `dry-run` or `failed`, and a detail (how it ran and the processor's
    model, or the missing features), separated by tabs. On the x86-64
@@ -169,16 +190,28 @@ kiln's lanes). Its rules:
    flags, the counts executed, skipped, dry-run and failed, each
    program's line, and in bold that nothing executed when nothing did.
    GitHub's `ubuntu-24.04` runners are a mixed fleet, some with AVX-512
-   and some without; the lane does not set `HOD_REQUIRE_AVX512`, so a
-   run on a processor without it stays green with every program skipped,
-   and only its summary says whether AVX-512 code ran. `HOD_REQUIRE_AVX512=1`
+   and some without: what the processor runs runs natively, the rest
+   under SDE, and the summary says how many of each and names the
+   runner's processor. In the `test x64` job SDE is set up only when
+   the repository variable `HOD_CI_SDE` is `1` (not yet: the operator's
+   agreement to the download in that lane is pending, and SDE adds about
+   20 minutes there on a runner without AVX-512); without it what the
+   processor lacks is skipped, as before WP-238. With it, a last step,
+   `scripts/avx512-summary.sh --check`, fails the job unless every
+   program executed but the skipped `knl` machine. `avx512.yml` (a push
+   to an `avx512/**` branch, or `workflow_dispatch`; never a gate)
+   always sets up SDE and runs only these tests, with `--check`, for
+   iterating on them and for the verdict on any processor. The lane does not set `HOD_REQUIRE_AVX512`
+   (the `knl` skip would fail it). `HOD_REQUIRE_AVX512=1`
    (for a host known to have AVX-512) makes a skip a failure.
    `HOD_AVX512_CPUINFO=<file>` exists only to test this plumbing: the
    flags are read from that file on any host, and a program they would
    run natively is reported `dry-run` and not run. Tests:
    `hod_testutil::avx512::tests` (the parser on an Intel Xeon's flags
    with AVX-512, an AMD EPYC 7763's without, malformed files; the
-   decision), `abi::zmm::zmm_machines_require_their_features`.
+   decision; `a_runner_with_flags_runs_what_the_host_cannot`),
+   `abi::zmm::zmm_machines_require_their_features`,
+   `abi::zmm::generator_makes_every_signature`.
 
 What runs where, and the tests compiled or run for one host only, is
 `docs/VALIDATION.md` "Hosted CI".

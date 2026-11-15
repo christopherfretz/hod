@@ -64,6 +64,10 @@ pub struct Func<'a> {
     /// is a `ymm` (§1.3), the `ymm`s are poisoned whole, and the
     /// stack-argument area is aligned to 32 (§3.2).
     pub avx: bool,
+    /// WP-238: the function has AVX-512: a vector part of more than 32
+    /// bytes is a `zmm` (§4.3), the `zmm`s are poisoned whole, and the
+    /// stack-argument area is aligned to 64 (§3.2).
+    pub avx512: bool,
 }
 
 /// The bits a producer leaves in every byte it does not owe.
@@ -74,13 +78,20 @@ const JUNK: u64 = 0xe7e7_e7e7_e7e7_e7e7;
 /// `r15`.
 const TEMPS: [u8; 9] = [3, 4, 5, 10, 11, 12, 13, 14, 15];
 
-/// Where the 32-byte scratch area is, below `rbp` and the five saved
-/// registers.
-const SCRATCH: i64 = -72;
+/// Where the slot that keeps the address of a return in memory is, below
+/// `rbp` and the five saved registers.
+const ADDRESS: i64 = -48;
+
+/// Where the 64-byte scratch area is, below the address slot.
+const SCRATCH: i64 = -128;
+
+/// The bytes of the scratch area: a `zmm` (WP-238).
+const SCRATCH_SIZE: u64 = 64;
 
 /// The bytes below `rbp` a function without a register save area keeps:
-/// the saved registers and the scratch area, aligned to 16.
-const LOCALS: u64 = 80;
+/// the saved registers, the address slot and the scratch area, aligned to
+/// 16.
+const LOCALS: u64 = 128;
 
 /// The helper routines every file needs once: `hodabi_copy` copies `r10`
 /// bytes from `r14` to `r15`; `hodabi_fill` fills `r10` bytes (a multiple
@@ -150,6 +161,12 @@ fn x87_op(op: &str, size: u32) -> String {
         _ => panic!("an x87 part of {size} bytes"),
     };
     format!("{op}{suffix}")
+}
+
+/// The bytes of the narrowest vector register (`xmm`, `ymm`, `zmm`) that
+/// holds `size` bytes, 16 for fewer: what a move to one reads.
+fn width(size: u64) -> u64 {
+    size.max(16).next_power_of_two()
 }
 
 fn general(reg: PReg) -> &'static str {
@@ -232,30 +249,48 @@ impl Asm<'_> {
         for reg in ["rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9"] {
             ins!(self, "movq %r13, %{reg}");
         }
-        ins!(self, "movq %r13, {SCRATCH}(%rbp)");
-        ins!(self, "movq %r13, {}(%rbp)", SCRATCH + 8);
+        self.junk(SCRATCH_SIZE);
         for number in 0..8 {
-            ins!(self, "movdqu {SCRATCH}(%rbp), %xmm{number}");
-        }
-        if self.func.avx {
-            self.junk_wide();
-            for number in 0..8 {
+            if self.func.avx512 {
+                // WP-238: the whole `zmm`.
+                ins!(self, "vmovdqu64 {SCRATCH}(%rbp), %zmm{number}");
+            } else if self.func.avx {
                 ins!(self, "vmovdqu {SCRATCH}(%rbp), %ymm{number}");
+            } else {
+                ins!(self, "movdqu {SCRATCH}(%rbp), %xmm{number}");
             }
         }
     }
 
-    /// Fills the whole 32-byte scratch area with junk.
-    fn junk_wide(&mut self) {
-        for at in (0..32).step_by(8) {
-            ins!(self, "movq %r13, {}(%rbp)", SCRATCH + at);
+    /// Fills the first `bytes` bytes of the scratch area (at least 16)
+    /// with junk.
+    fn junk(&mut self, bytes: u64) {
+        assert!(bytes <= SCRATCH_SIZE, "{bytes} bytes of a {SCRATCH_SIZE}-byte scratch area");
+        for at in (0..bytes.max(16).next_multiple_of(8)).step_by(8) {
+            ins!(self, "movq %r13, {}(%rbp)", SCRATCH + at as i64);
         }
     }
 
     /// Fills the first 16 bytes of the scratch area with junk.
     fn junk_scratch(&mut self) {
-        ins!(self, "movq %r13, {SCRATCH}(%rbp)");
-        ins!(self, "movq %r13, {}(%rbp)", SCRATCH + 8);
+        self.junk(16);
+    }
+
+    /// The register that holds `size` bytes of the vector register
+    /// `number`, and the move between it and memory.
+    fn vector(&self, number: u8, size: u64) -> (&'static str, String) {
+        match size {
+            0..=16 => ("movdqu", format!("xmm{number}")),
+            17..=32 => {
+                assert!(self.func.avx, "a ymm holds 32 bytes, with AVX");
+                ("vmovdqu", format!("ymm{number}"))
+            }
+            33..=64 => {
+                assert!(self.func.avx512, "a zmm holds 64 bytes, with AVX-512");
+                ("vmovdqu64", format!("zmm{number}"))
+            }
+            _ => panic!("a vector register of {size} bytes"),
+        }
     }
 
     /// The extension the producer owes in `part`'s last 8-byte unit, in
@@ -300,25 +335,36 @@ impl Asm<'_> {
     fn produce(&mut self, item: &Item, part: &Part, stack: &str) {
         // WP-174: a lone `<1 x i64>`'s part (`Lanes` of one 64-bit
         // element) has the bytes of a plain part: only masks are lanes here.
-        if let PartKind::Lanes { bits: 1, lane, len, .. } = part.kind {
-            // §4.3: element `i` in the low bit of lane `i`; the other bits
-            // of the lane are junk.
-            self.junk_scratch();
-            for index in 0..i64::from(len) {
+        if let PartKind::Lanes { bits: 1, lane, first, .. } = part.kind {
+            // §4.3: the part's elements from `first`, element `first + k`
+            // in the low bit of lane `k`; the other bits of the lane are
+            // junk. Every part of a mask is at the mask's offset.
+            let size = u64::from(part.size);
+            self.junk(width(size));
+            for k in 0..i64::from(part.size / u32::from(lane)) {
+                let index = i64::from(first) + k;
                 let at = (item.src + u64::from(part.offset)) as i64 + index / 8;
                 ins!(self, "movzbl {at}(%rbx), %r11d");
                 ins!(self, "shrl ${}, %r11d", index % 8);
                 ins!(self, "xorb %r13b, %r11b");
                 ins!(self, "andb $1, %r11b");
                 ins!(self, "xorb %r13b, %r11b");
-                ins!(self, "movb %r11b, {}(%rbp)", SCRATCH + index * i64::from(lane));
+                ins!(self, "movb %r11b, {}(%rbp)", SCRATCH + k * i64::from(lane));
             }
             match part.place {
                 Place::Reg(reg) => match classify(reg) {
-                    Reg::Vector(number) => ins!(self, "movdqu {SCRATCH}(%rbp), %xmm{number}"),
-                    _ => panic!("lanes outside a vector register"),
+                    Reg::Vector(number) => {
+                        let (mov, name) = self.vector(number, size);
+                        ins!(self, "{mov} {SCRATCH}(%rbp), %{name}");
+                    }
+                    // WP-238: one element in the low byte of a general
+                    // register, the rest junk.
+                    Reg::General(name) if size == 1 => ins!(self, "movq {SCRATCH}(%rbp), %{name}"),
+                    _ => panic!("lanes of {size} bytes in {reg:?}"),
                 },
-                Place::Stack(offset) => self.copy(16, ("rbp", SCRATCH), (stack, i64::from(offset))),
+                Place::Stack(offset) => {
+                    self.copy(size, ("rbp", SCRATCH), (stack, i64::from(offset)));
+                }
             }
             return;
         }
@@ -336,18 +382,12 @@ impl Asm<'_> {
                         self.extend(name, ext);
                     }
                 }
-                Reg::Vector(number) if size > 16 => {
-                    // WP-203: a `ymm`.
-                    assert!(size <= 32 && self.func.avx, "a ymm holds 32 bytes, with AVX");
-                    self.junk_wide();
-                    self.copy(size, src, ("rbp", SCRATCH));
-                    ins!(self, "vmovdqu {SCRATCH}(%rbp), %ymm{number}");
-                }
                 Reg::Vector(number) => {
-                    assert!(size <= 16, "a vector register holds 16 bytes");
-                    self.junk_scratch();
+                    // WP-203: a `ymm`; WP-238: a `zmm`.
+                    let (mov, name) = self.vector(number, size);
+                    self.junk(width(size));
                     self.copy(size, src, ("rbp", SCRATCH));
-                    ins!(self, "movdqu {SCRATCH}(%rbp), %xmm{number}");
+                    ins!(self, "{mov} {SCRATCH}(%rbp), %{name}");
                 }
                 Reg::X87 => {}
             },
@@ -392,28 +432,36 @@ impl Asm<'_> {
         let dst = ("r12", (item.dst + u64::from(part.offset)) as i64);
         // WP-174: a lone `<1 x i64>`'s part (`Lanes` of one 64-bit
         // element) has the bytes of a plain part: only masks are lanes here.
-        if let PartKind::Lanes { bits: 1, lane, len, .. } = part.kind {
+        if let PartKind::Lanes { bits: 1, lane, first, len } = part.kind {
+            let size = u64::from(part.size);
             match part.place {
                 Place::Reg(reg) => match classify(reg) {
-                    Reg::Vector(number) => ins!(self, "movdqu %xmm{number}, {SCRATCH}(%rbp)"),
-                    _ => panic!("lanes outside a vector register"),
+                    Reg::Vector(number) => {
+                        let (mov, name) = self.vector(number, size);
+                        ins!(self, "{mov} %{name}, {SCRATCH}(%rbp)");
+                    }
+                    Reg::General(name) if size == 1 => ins!(self, "movq %{name}, {SCRATCH}(%rbp)"),
+                    _ => panic!("lanes of {size} bytes in {reg:?}"),
                 },
                 Place::Stack(offset) => {
-                    self.copy(16, (stack.0, stack.1 + i64::from(offset)), ("rbp", SCRATCH));
+                    self.copy(size, (stack.0, stack.1 + i64::from(offset)), ("rbp", SCRATCH));
                 }
             }
-            // The low bit of each lane, packed.
-            ins!(self, "xorl %r10d, %r10d");
-            for index in 0..i64::from(len) {
-                ins!(self, "movzbl {}(%rbp), %r11d", SCRATCH + index * i64::from(lane));
-                ins!(self, "andl $1, %r11d");
-                ins!(self, "shll ${index}, %r11d");
-                ins!(self, "orl %r11d, %r10d");
+            // The mask's image is the bits of its elements: the part
+            // with element 0, the first of the mask's parts, clears it,
+            // and each part sets the bits of its own elements from the
+            // low bit of their lanes.
+            if first == 0 {
+                for byte in 0..i64::from(len.div_ceil(8)) {
+                    ins!(self, "movb $0, {}(%r12)", dst.1 + byte);
+                }
             }
-            if len > 8 {
-                ins!(self, "movw %r10w, {}(%r12)", dst.1);
-            } else {
-                ins!(self, "movb %r10b, {}(%r12)", dst.1);
+            for k in 0..i64::from(part.size / u32::from(lane)) {
+                let index = i64::from(first) + k;
+                ins!(self, "movzbl {}(%rbp), %r11d", SCRATCH + k * i64::from(lane));
+                ins!(self, "andl $1, %r11d");
+                ins!(self, "shll ${}, %r11d", index % 8);
+                ins!(self, "orb %r11b, {}(%r12)", dst.1 + index / 8);
             }
             return;
         }
@@ -429,13 +477,9 @@ impl Asm<'_> {
                         assert!(size <= 8, "a general register holds 8 bytes");
                         ins!(self, "movq %{name}, {SCRATCH}(%rbp)");
                     }
-                    Reg::Vector(number) if size > 16 => {
-                        assert!(size <= 32 && self.func.avx, "a ymm holds 32 bytes, with AVX");
-                        ins!(self, "vmovdqu %ymm{number}, {SCRATCH}(%rbp)");
-                    }
                     Reg::Vector(number) => {
-                        assert!(size <= 16, "a vector register holds 16 bytes");
-                        ins!(self, "movdqu %xmm{number}, {SCRATCH}(%rbp)");
+                        let (mov, name) = self.vector(number, size);
+                        ins!(self, "{mov} %{name}, {SCRATCH}(%rbp)");
                     }
                     Reg::X87 => {
                         assert!(size <= 10, "an x87 register holds 10 bytes");
@@ -466,7 +510,10 @@ pub fn caller(text: &mut String, func: Func<'_>) {
     assert!(area < 1 << 30, "a stack-argument area the emitter cannot make");
     if area != 0 {
         ins!(asm, "subq ${area}, %rsp");
-        if func.avx {
+        if func.avx512 {
+            // §3.2: a `zmm` piece's slot is aligned to 64.
+            ins!(asm, "andq $-64, %rsp");
+        } else if func.avx {
             // §3.2: a `ymm` piece's slot is aligned to 32.
             ins!(asm, "andq $-32, %rsp");
         }
@@ -582,12 +629,13 @@ impl Asm<'_> {
                     Place::Reg(reg) => ins!(self, "movq %{}, %r10", general(reg)),
                     Place::Stack(offset) => ins!(self, "movq {}(%rbp), %r10", 16 + offset),
                 }
-                ins!(self, "movq %r10, {}(%rbp)", SCRATCH + 16);
+                // Kept outside the scratch area, which `poison` fills.
+                ins!(self, "movq %r10, {ADDRESS}(%rbp)");
                 // §5.2: what a `store` of the value leaves there.
                 self.copy(ret.size, ("rbx", ret.memory as i64), ("r10", 0));
                 self.poison();
                 if let Some(reg) = memory.returned_in {
-                    ins!(self, "movq {}(%rbp), %{}", SCRATCH + 16, general(reg));
+                    ins!(self, "movq {ADDRESS}(%rbp), %{}", general(reg));
                 }
             } else {
                 self.poison();

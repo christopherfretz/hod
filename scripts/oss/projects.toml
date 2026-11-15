@@ -544,9 +544,14 @@ checkout = "icu"
 cxx_std = 17
 c = "kiln"
 configure = ["--disable-samples", "--enable-tests"]
+# kiln (1.2.0) rejects `-nodefaultlibs` (findings oss4/kiln/driver-nodefaultlibs),
+# which config/mh-linux puts on the stub data library's link beside
+# `-nostdlib`: a make variable override keeps only `-nostdlib` (which
+# implies it), in the build and in the test step's make.
+build_targets = ["all", "LDFLAGSICUDT=-nostdlib"]
 # ICU's own test suites (test/Makefile's check-recursive: intltest,
 # cintltst, iotest, ...); the result is the ALL TESTS SUMMARY block.
-test = "make -k check"
+test = "make -k check LDFLAGSICUDT=-nostdlib"
 test_timeout = 7200
 wave = 4
 notes = "WP-223. ICU4C through its committed configure (autotools row), out of source; C (common's C parts, stubdata, cintltst) through kiln-cc. Tests: make check, one result per suite."

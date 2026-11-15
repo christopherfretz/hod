@@ -1147,4 +1147,3 @@ pub fn assign_preserve_all(
         crate::abi::assign(types, &hod_cg::abi::Sig { cc: hod_ir::CallConv::C, ..*sig }, out)
     })
 }
-

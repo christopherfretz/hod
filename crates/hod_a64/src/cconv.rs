@@ -77,9 +77,7 @@ impl Kept {
     /// `preserve_mostcc`).
     pub fn of(cc: CallConv) -> Option<Kept> {
         match cc {
-            CallConv::PRESERVE_ALL => {
-                Some(Kept { general: &crate::tail2::PRESERVED, vectors: 24 })
-            }
+            CallConv::PRESERVE_ALL => Some(Kept { general: &crate::tail2::PRESERVED, vectors: 24 }),
             CallConv::WIN64 => Some(Kept { general: &[Reg::X18], vectors: 0 }),
             CallConv::AARCH64_VECTOR_PCS => Some(Kept { general: &[], vectors: 16 }),
             _ => None,
@@ -149,9 +147,7 @@ pub fn kept(cx: &FnCx<'_, A64>) -> Option<Kept> {
 fn check(cx: &FnCx<'_, A64>, cc: CallConv) -> CgResult<()> {
     let [variadic, musttail, coroutine] = match cc {
         CallConv::WIN64 => [WIN64_VARIADIC_DEFINITION, WIN64_MUSTTAIL, WIN64_COROUTINE],
-        CallConv::AARCH64_VECTOR_PCS => {
-            [VPCS_VARIADIC_DEFINITION, VPCS_MUSTTAIL, VPCS_COROUTINE]
-        }
+        CallConv::AARCH64_VECTOR_PCS => [VPCS_VARIADIC_DEFINITION, VPCS_MUSTTAIL, VPCS_COROUTINE],
         _ => return Ok(()),
     };
     if crate::frame::is_variadic(cx) {

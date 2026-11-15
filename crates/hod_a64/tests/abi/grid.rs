@@ -390,7 +390,8 @@ fn conventions() -> Vec<Case> {
     let win64_variadic = [
         Case::of(&[I64, d.clone(), f.clone(), I128, vec(I32, 4), Ty::Fp128, arr(d.clone(), 2)])
             .variadic(1),
-        Case::of(&[d.clone(), f.clone(), arr(f.clone(), 3), st(&[I64, d.clone()]), I64]).variadic(1),
+        Case::of(&[d.clone(), f.clone(), arr(f.clone(), 3), st(&[I64, d.clone()]), I64])
+            .variadic(1),
         Case::of(&seq(&[(&d, 7), (&arr(d.clone(), 2), 1), (&f, 3), (&I8, 1)])).variadic(2),
         Case::of(&seq(&[(&I64, 6), (&arr(d.clone(), 3), 1), (&d, 2), (&arr(f.clone(), 2), 1)]))
             .variadic(6)
@@ -400,7 +401,13 @@ fn conventions() -> Vec<Case> {
             .ret(arr(d.clone(), 2)),
     ];
     cases.extend(win64_variadic.map(|case| case.cc(CallConv::WIN64)));
-    for cc in [CallConv::FAST, CallConv::SWIFT, CallConv::CXX_FAST_TLS, CallConv::WIN64, CallConv::AARCH64_VECTOR_PCS] {
+    for cc in [
+        CallConv::FAST,
+        CallConv::SWIFT,
+        CallConv::CXX_FAST_TLS,
+        CallConv::WIN64,
+        CallConv::AARCH64_VECTOR_PCS,
+    ] {
         cases.extend(
             [
                 Case::of(&[I64, d.clone(), I128, arr(I64, 2)]).ret(I64),

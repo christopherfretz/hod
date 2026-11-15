@@ -56,6 +56,7 @@ The types and attributes are `hod_ir`'s (`spec/ir.md`).
 |---|---|
 | `ccc` (0) | specified by this document |
 | `fastcc` (8), `swiftcc` (16), `cxx_fast_tlscc` (17) | exactly as `ccc` |
+| `win64cc` (79), `aarch64_vector_pcs` (97) | as `ccc` but a variadic `win64cc` call (§13, WP-247) |
 | every other number | `abi:cc` |
 
 `hod_a64::abi::cc_is_c` is the predicate for the first two rows. "Exactly
@@ -1044,3 +1045,142 @@ a value and variadic `fastcc`; LLVM has no AArch64 lowering for
 `coldcc`; and on the stack LLVM's callers write one byte for an `i1` or
 `i8` argument and two for an `i16`, whatever the extension attribute
 (§7).
+
+## 13. `win64cc` and `aarch64_vector_pcs` (WP-247)
+
+`win64cc` (79) is the Windows on Arm convention clang emits for
+`__attribute__((ms_abi))`; `aarch64_vector_pcs` (97) is AAPCS64's
+vector procedure call standard (`__attribute__((aarch64_vector_pcs))`).
+The rules are LLVM's for a Linux triple (`AArch64CallingConvention.td`:
+`CC_AArch64_Win64PCS`, `CC_AArch64_Win64_VarArg`, `CSR_AArch64_AAVPCS`;
+`AArch64RegisterInfo.cpp`, which gives `win64cc` the save list
+`CSR_AArch64_AAPCS_X18` on a non-Windows target), each confirmed by
+executed interop with `llc` 22 and 19 (§13.7); both versions agree on
+every rule. `hod_a64::abi::assign` assigns both; `hod_a64::cconv` saves
+what the callee keeps.
+
+### 13.1 Scope
+
+1. hod defines, calls directly, calls through a pointer and `invoke`s
+   functions of both conventions, from and to functions of every other
+   convention it builds. On a Linux triple neither is Windows: there is
+   no x18 platform register, no Windows `va_list` in a hod function, no
+   SEH; the convention is what LLVM makes of the keyword there.
+2. SVE's `aarch64_sve_vector_pcs` stays refused (`classify`, scalable
+   vectors).
+
+### 13.2 Arguments and results
+
+1. A signature that is not variadic is assigned exactly as under `ccc`
+   (§3 to §7): the places, the extension duties, `sret` in `x8` (not
+   handed back in `x0`: `llc`'s `win64cc` callee leaves `x0` alone),
+   `byval`, a return in registers or through `x8`.
+2. `nest` on a `win64cc` argument is `cc:win64cc-nest` (LLVM 19 and 22
+   name different registers for `ccc`'s, §6.3, and no test pins
+   `win64cc`'s).
+3. `aarch64_vector_pcs` passes and returns as `ccc` in every case,
+   variadic calls included (LLVM assigns it with `CC_AArch64_AAPCS`).
+
+*Evidence:* `table::conventions` (both conventions assign the `ccc`
+case); the grid's `conventions()` cases for both (§11), in the four
+configurations of §1.1; `cconv::calls_in_both_directions`.
+
+### 13.3 Variadic `win64cc` calls
+
+1. In a variadic `win64cc` call **every** argument, fixed or not, is
+   assigned by `CC_AArch64_Win64_VarArg`: a `float` travels as the `i32`
+   of its bits, a `double` as the `i64` of its bits, then the rules of
+   §3 apply to them as to integers. A lone `float` or `double` takes the
+   next general register (a `float`'s upper 32 bits zero), or an 8-byte
+   stack slot; an array of `double`s is a block of `X` pieces (§3.3, all
+   in general registers or all on the stack), an array of `float`s, as
+   an array of `i32`, is no block: one general register or one 8-byte
+   slot per member. A `double` member of a structure is one `X` piece, a
+   `float` one `W` piece.
+2. Vectors, `fp128` and `i128` travel as under `ccc` (vector registers,
+   the even-register rule).
+3. hod moves a lone `float` or `double` to its general register with
+   `umov` (a one-lane part, `vcall::lanes_out`); a member of an aggregate
+   is loaded from the aggregate's memory like any other piece.
+4. A `half` or `bfloat` argument of such a call (alone or in an
+   aggregate) is `cc:win64cc-variadic-half`: LLVM passes it as an `i16`
+   whose upper bits no rule fixes.
+5. A variadic `win64cc` **definition** is `cc:win64cc-variadic-definition`:
+   its `va_list` is a pointer to the home area of the general registers
+   followed by the stack arguments, not §9's structure.
+6. The return value is as under `ccc`: a `double` result is in `d0`.
+
+*Evidence:* the grid's variadic `win64cc` cases (doubles and floats in
+`x0`..`x7` and on the stack, arrays of each, a structure of an `i64`
+and a `double`, vectors, `fp128`, an `i128` at an even register, no
+fixed argument); with 13.3.1 not applied (floating point in vector
+registers) the systematic grid fails 25 checks.
+`cconv::calls_in_both_directions` calls `llc`'s variadic `v_sum` and
+`v_sum2` (whose fixed `double` is in `x0`), directly and through a
+pointer, with nine and eleven arguments.
+
+### 13.4 What a `win64cc` callee keeps
+
+1. A `win64cc` function keeps `x18` for its caller, beyond the AAPCS64
+   set (`llc` saves `x18` even in a leaf function). hod, which never
+   holds a value in `x19`..`x28` or `d8`..`d15`, stores `x18` right
+   after the frame record (`str x18, [x29, #16]`), with the CFI rule
+   `x18 at CFA + 16 - FRAME`, and reloads it in every exit (rule back to
+   "same value").
+2. A caller needs nothing: hod keeps no value in a register across any
+   call.
+3. A `musttail` call in a `win64cc` function is `cc:win64cc-musttail`, a
+   `win64cc` coroutine body `cc:win64cc-coroutine`, and
+   `llvm.eh.unwind.init` in one `a64:unwind-init-convention` (its save
+   area would be at the same place).
+4. An exception may unwind through a `win64cc` frame and land in a
+   `win64cc` function's landing pad. libgcc does not install `x18` (no
+   AAPCS64 callee-saved register) into a landing pad of a frame below;
+   that is so for `llc`'s frames too, and hod's code keeps no value in it.
+
+### 13.5 What an `aarch64_vector_pcs` callee keeps
+
+1. An `aarch64_vector_pcs` function keeps `q8`..`q23` whole, beyond the
+   AAPCS64 set (`CSR_AArch64_AAVPCS`; `x` registers as AAPCS64). hod
+   stores them in pairs (`stp q8, q9, [x29, #16]` .. `stp q22, q23,
+   [x29, #240]`) after the frame record, with one CFI rule each (DWARF
+   numbers 72 to 87, as `llc`'s), and reloads them in every exit.
+2. A variadic `aarch64_vector_pcs` definition is
+   `cc:aarch64_vector_pcs-variadic-definition`, a `musttail` call in one
+   `cc:aarch64_vector_pcs-musttail`, a coroutine body
+   `cc:aarch64_vector_pcs-coroutine`, `llvm.eh.unwind.init`
+   `a64:unwind-init-convention`: none is tested. Calls to variadic
+   `aarch64_vector_pcs` functions are built (§13.2.3).
+3. `preserve_allcc` (WP-101) shares the save plan: `x9`..`x15` from
+   offset 16, then `q8`..`q31` from offset 80.
+
+### 13.6 Refused, by name
+
+`hod_a64::cconv::UNSUPPORTED`, in order: `cc:win64cc-variadic-half`,
+`cc:win64cc-variadic-definition`, `cc:win64cc-nest`,
+`cc:win64cc-musttail`, `cc:win64cc-coroutine`,
+`cc:aarch64_vector_pcs-variadic-definition`,
+`cc:aarch64_vector_pcs-musttail`, `cc:aarch64_vector_pcs-coroutine`.
+
+### 13.7 Validation
+
+`crates/hod_a64/tests/cconv.rs`, every linker of the matrix, natively
+on AArch64 and under the emulator elsewhere:
+
+- `callees_keep_what_llc_keeps`: callees of both conventions by hod
+  (plain, stressed, far) and by `llc` 22 and 19, called by `bl` from C
+  assembly that loads `x18`..`x27` and `q8`..`q31` and checks them after
+  the call (`clobber`, called twice by each callee, writes `x9`..`x18`,
+  `v0`..`v7`, `v16`..`v31` and the upper halves of `v8`..`v15`); the
+  unwinder, from `clobber`, recovers `x18` in the caller; the registers
+  hod's CFI rows describe equal `llc`'s. With `x17` saved in place of
+  `x18` the program fails.
+- `calls_in_both_directions`: `caller.ll` and `callee.ll`, each by hod
+  (callers in three modes) and by `llc` 22 and 19, in every pairing.
+- `exceptions_through_such_frames`: thrown through hod's and `llc`'s
+  `mid_w` and `mid_v` to catchers by hod and `llc`, and caught in
+  `win64cc` and `aarch64_vector_pcs` landing pads.
+- `corpus_module_runs`: `dcl.attr.cconv/cc-run.cpp`'s module as kiln
+  writes it, by hod and by `llc` 22: `pm 21 pa 3.5 ms 60 msr 44 v 7 l
+  9` / `t 42`.
+- `refusals_are_named`; `coro_body`'s refusal table for the coroutines.

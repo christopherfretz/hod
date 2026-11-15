@@ -232,6 +232,7 @@ pub fn assumed_extension(bits: u32, attrs: ParamAttrs, place: Place) -> Option<E
 /// vector register and the next stack offset, plus the two registers
 /// outside the argument registers.
 #[derive(Default)]
+#[allow(clippy::struct_excessive_bools, reason = "independent facts of one signature")]
 struct State {
     ngrn: u8,
     nsrn: u8,

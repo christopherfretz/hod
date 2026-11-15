@@ -536,7 +536,7 @@ pub fn random(seed: u64, count: usize) -> (Vec<Case>, BTreeMap<&'static str, usi
 }
 
 /// The cases of one object file.
-const BATCH: usize = 400;
+pub const BATCH: usize = 400;
 
 /// Runs `cases` against every `llc`, a batch at a time; three
 /// configurations of a batch run side by side.

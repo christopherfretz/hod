@@ -514,6 +514,7 @@ impl Batch {
                 ret,
                 variadic: plan.case.fixed.is_some(),
                 avx: tools.features().avx,
+                avx512: tools.features().avx512,
             };
             emit::caller(&mut asm, func);
             let callee =

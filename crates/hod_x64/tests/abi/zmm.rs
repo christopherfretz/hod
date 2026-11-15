@@ -207,23 +207,8 @@ fn zmm_grid() {
         // feature string short).
         let name = format!("abi zmm_grid {n} {}", machine.label());
         if let Some((tools, how)) = avx512_runner(&base, &machine, &name) {
-            // The signatures the driver generator makes run; the others
-            // are counted in the report.
-            let mut types = table();
-            let all = cases.len();
-            let cases: Vec<Case> = cases
-                .into_iter()
-                .filter(|case| {
-                    case.assign_with(&mut types, features).is_ok_and(|asg| generated(case, &asg))
-                })
-                .collect();
-            assert!(!cases.is_empty(), "{}: no signature the generator makes", machine.label());
-            let how = format!(
-                "{how}; {} of {all} signatures, {} not executed (the driver generator \
-                 does not make their parts)",
-                cases.len(),
-                all - cases.len()
-            );
+            // Every accepted signature runs (WP-238).
+            let how = format!("{how}; {} signatures", cases.len());
             let report = run_cases(&format!("abi-zmm-run{n}"), &cases, 0x208, &tools);
             eprintln!("zmm grid run, {} ({how}): {}", machine.label(), report.summary());
             if !report.failures.is_empty() {
@@ -239,64 +224,51 @@ fn zmm_grid() {
     eprintln!("zmm grid: {total} signatures over {} machines", machines().len());
 }
 
-/// Whether the driver generator (`emit.rs`) passes and receives every
-/// part of `case` as `asg` places it. It was written for the machines
-/// `qemu` runs (WP-203): it moves a vector of at most 32 bytes and a mask
-/// whose lanes fill one `xmm`. A vector of more than 256 bits (a `zmm`,
-/// or memory aligned to 64, wherever it travels), a mask in the byte
-/// lanes of a `ymm` or a `zmm`, and a mask passed a byte per element
-/// (§4.3, WP-208) it does not make (WP-238): those signatures are held to
-/// `llc`'s convention ([`same_as_llc`]) and not run.
-fn generated(case: &Case, asg: &Assignment) -> bool {
-    let narrow = case.params.iter().map(|param| &param.ty).chain(&case.ret).all(|ty| !over_256(ty));
-    let masks_in_xmm = asg.args.iter().chain(&asg.ret).all(|part| match part.kind {
-        PartKind::Lanes { bits: 1, .. } => part.size == 16,
-        _ => true,
-    });
-    narrow && masks_in_xmm
-}
-
-/// Whether `ty` is or holds a vector, other than a mask, of more than 256
-/// bits.
-fn over_256(ty: &Ty) -> bool {
-    match ty {
-        Ty::Vec(elem, len) => {
-            let bits: u64 = match **elem {
-                Ty::Int(1) => return false,
-                Ty::Int(bits) => bits.into(),
-                Ty::Half | Ty::BFloat => 16,
-                Ty::Float => 32,
-                Ty::Ptr | Ty::Double => 64,
-                _ => 128,
-            };
-            bits * u64::from(*len) > 256
-        }
-        Ty::Arr(elem, _) => over_256(elem),
-        Ty::Struct(fields) | Ty::Packed(fields) => fields.iter().any(over_256),
-        _ => false,
-    }
-}
-
-/// WP-238: the signatures of the grid the generator makes are the masks
-/// of 2, 4, 8 and 16 elements and what holds only those; a `zmm`, a mask
-/// of 32 or 64 elements and one passed a byte per element are not.
+/// WP-238: the driver generator (`emit.rs`) makes every signature the
+/// grid accepts on every machine, which it did not before: a 64-byte part
+/// in a `zmm` or on the stack, a mask in the byte lanes of a `ymm`, a
+/// `zmm` or two `ymm`, and a mask passed a byte per element in general
+/// registers and stack slots (§4.3). Each batch is generated and
+/// assembled with its driver, not run (no emulator here has AVX-512):
+/// what [`zmm_grid`] runs where a processor or a runner has AVX-512. The
+/// grid has every one of those shapes.
 #[test]
-fn generator_covers_xmm_masks_only() {
-    let features = machines()[0].abi();
-    let mut types = table();
-    let mut made = |ty: Ty| {
-        let case = Case::of(std::slice::from_ref(&ty)).ret(ty);
-        let asg = case.assign_with(&mut types, features).expect("accepted");
-        generated(&case, &asg)
-    };
-    for len in [2, 4, 8, 16] {
-        assert!(made(vec(I1, len)), "<{len} x i1>");
+fn generator_makes_every_signature() {
+    let Some(base) = Tools::find() else { return };
+    let mut shapes = BTreeSet::new();
+    for (n, machine) in machines().into_iter().enumerate() {
+        let features = machine.abi();
+        let (cases, _) = accepted(zmm_cases(), features);
+        let mut types = table();
+        for case in &cases {
+            let asg = case.assign_with(&mut types, features).expect("accepted");
+            for part in asg.args.iter().chain(&asg.ret) {
+                let reg = match part.place {
+                    Place::Reg(reg) if reg::is_gpr(reg) => "gpr",
+                    Place::Reg(_) => "vector",
+                    Place::Stack(_) => "stack",
+                };
+                let lanes = matches!(part.kind, PartKind::Lanes { bits: 1, .. });
+                if lanes || part.size > 32 {
+                    shapes.insert((lanes, part.size, reg));
+                }
+            }
+        }
+        let tools = base.with_machine(machine).expect("the tools");
+        for (number, chunk) in cases.chunks(crate::grid::BATCH).enumerate() {
+            crate::run::Batch::new(&format!("abi-zmm-gen{n}"), chunk, number as u64, &tools);
+        }
     }
-    for len in [3, 5, 32, 48, 64] {
-        assert!(!made(vec(I1, len)), "<{len} x i1>");
+    for shape in [
+        (false, 64, "vector"),
+        (false, 64, "stack"),
+        (true, 32, "vector"),
+        (true, 64, "vector"),
+        (true, 1, "gpr"),
+        (true, 1, "stack"),
+    ] {
+        assert!(shapes.contains(&shape), "the grid has no part {shape:?}: {shapes:?}");
     }
-    assert!(!made(vec(Ty::Float, 16)) && !made(vec(I8, 33)) && !made(st(&[vec(Ty::Double, 8)])));
-    assert!(made(st(&[vec(I1, 16), I8])));
 }
 
 /// The features a program compiled for `machine` may use that an x86-64

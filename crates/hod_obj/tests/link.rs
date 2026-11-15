@@ -20,7 +20,7 @@ use common::{
 use hod_obj::{
     A64Reloc, Arch, Binding, GroupKind, Object, SectionKind, Symbol, SymbolKind, SymbolPlace,
 };
-use hod_testutil::{Scratch, Target};
+use hod_testutil::{Scratch, Target, linkers};
 
 /// (a) `main` returns 42.
 #[test]
@@ -113,9 +113,12 @@ fn duplicate_global_definitions_without_comdat_fail() {
     for linker in &tools.linkers {
         let linked = tools.link(linker, &[], &[&first, &second], &scratch.join("duplicate"));
         assert!(!linked.success(), "{}", linker.name);
+        // GNU ld and mold: "multiple definition"; lld: "duplicate symbol";
+        // wild: "Duplicate symbols detected".
         let message = linked.stderr_text();
+        let lower = message.to_lowercase();
         assert!(
-            message.contains("multiple definition") || message.contains("duplicate symbol"),
+            lower.contains("multiple definition") || lower.contains("duplicate symbol"),
             "{}: {message}",
             linker.name
         );
@@ -462,6 +465,12 @@ fn mergeable_sections_are_merged() {
         for linker in &tools.linkers {
             let program = scratch.join(format!("{label}-{}", linker.name));
             let ran = tools.link_and_run(linker, &[], &[&main, &other], &program);
+            // A linker excepted from merging constants merges the strings
+            // alone (1).
+            let expected = match linkers::exception(linker.name, "merge-constants") {
+                Some(_) if mergeable => 1,
+                _ => expected,
+            };
             assert_eq!(exit_code(&ran), Some(expected), "{} {label}", linker.name);
         }
     }

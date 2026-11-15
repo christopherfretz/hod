@@ -59,6 +59,29 @@ runs:
         # its path relative to the workspace, and several tests expect
         # their scratch files (in the build directory) to be outside it.
         echo "CARGO_TARGET_DIR=$(dirname "$GITHUB_WORKSPACE")/target" >> "$GITHUB_ENV"
+    # The fourth linker of the matrix (docs/VALIDATION.md "Linker matrix",
+    # docs/status/linkers.md): wild is not a Debian package, so the pinned
+    # release (hod_testutil::linkers::WILD_VERSION) is downloaded, its
+    # checksum verified, and HOD_WILD names it for every later step. Not
+    # yet required under HOD_REQUIRE_TOOLS=1 (linkers::WILD_REQUIRED) until
+    # a hosted run has shown this step works on both runners.
+    - name: Install the wild linker
+      shell: bash
+      run: |
+        version=0.11.0
+        case "$(uname -m)" in
+          aarch64) sha=d8c77589f3024230bab58a7792abd4a3871cf097b2342004e1204850f1406071 ;;
+          x86_64) sha=25012a78de164686f552b7703b5d0223adab4829c79cd1fb351108221d61c7d8 ;;
+        esac
+        name="wild-linker-$version-$(uname -m)-unknown-linux-gnu"
+        dir="/opt/wild/$version"
+        mkdir -p "$dir"
+        curl -fsSL -o "/tmp/$name.tar.gz" \
+          "https://github.com/wild-linker/wild/releases/download/$version/$name.tar.gz"
+        echo "$sha  /tmp/$name.tar.gz" | sha256sum -c -
+        tar -xzf "/tmp/$name.tar.gz" -C "$dir" --strip-components=1 "$name/wild"
+        "$dir/wild" --version
+        echo "HOD_WILD=$dir/wild" >> "$GITHUB_ENV"
     # As kiln-ci: the job runs as root in a container whose $HOME is
     # /github/home while root's passwd home is /root; rustup-init's anti-sudo
     # check refuses that mismatch. rust-toolchain.toml pins the same version.

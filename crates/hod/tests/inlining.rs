@@ -823,12 +823,7 @@ impl Tools {
         for linker in &self.toolchain.linkers {
             let exe = dir.join(format!("{label}-{}", linker.name));
             let mut link = Command::new(&self.gxx);
-            link.arg(format!("-fuse-ld={}", linker.name))
-                .arg(format!("-B{}", dir.join(format!("use-{}", linker.name)).display()))
-                .arg("-pie")
-                .args(objects)
-                .arg("-o")
-                .arg(&exe);
+            link.args(linker.driver_flags()).arg("-pie").args(objects).arg("-o").arg(&exe);
             run_ok(&mut link, &format!("{label}: {} link", linker.name));
             outputs.push(run_ok(&mut Command::new(&exe), &format!("{label}: {}", linker.name)));
         }

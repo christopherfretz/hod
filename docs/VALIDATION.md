@@ -268,11 +268,30 @@ pass count does not.
 
 ### Linker matrix
 
-Every linking test runs with each of: GNU ld, lld, mold, and wild once it
-is provisioned (until then it is optional and its absence a note). The same
-object must link with all of them and the programs must behave identically.
+Every linking test runs with each of: GNU ld, lld, mold and wild
+(`hod_testutil::linkers`, `spec/harness.md` "Linkers"). The same object
+must link with all of them and the programs must behave identically.
 Linker versions are pinned in the provisioning script and recorded in
-status reports.
+status reports; what links and runs per linker and target, and every
+exception with its reason, is `docs/status/linkers.md`.
+
+wild is not a Debian package: a pinned release (0.11.0) is installed by
+the workspace's provisioning script under `.toolchain/wild/<version>/`
+and by the hosted set-up (`.github/actions/hod-ci`, checksum verified,
+`HOD_WILD`). It is selected as the driver's `ld` with `-B` (GCC 14 has no
+`-fuse-ld=wild`) and given `--no-gc-sections`, since it discards unused
+sections by default where the other three do not. A missing wild stays a
+note under `HOD_REQUIRE_TOOLS=1` until a hosted run proves the set-up
+(`linkers::WILD_REQUIRED`).
+
+A case one linker cannot pass is excepted in ONE table,
+`hod_testutil::linkers::EXCEPTIONS` (linker, version, case, class,
+reason), never by skipping a test: the test changes that one assertion
+and still fails when the linker regresses on anything else. A failure
+with one linker is triaged as (a) hod writing something the others
+accept by leniency and the ABI forbids: fixed in hod; (b) the linker's
+bug or an allowed difference, kept with a reproduction from objects hod
+did not write; (c) a feature the linker says it does not support.
 
 ### Debug information (L7)
 

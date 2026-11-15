@@ -12,7 +12,8 @@
 //! test binary is a jobserver client like the cargo that built it.
 //!
 //! [`target`] names a target's tools, system root and emulator, for the
-//! tests that link and run programs of another architecture.
+//! tests that link and run programs of another architecture; [`linkers`]
+//! finds the linker matrix (GNU ld, lld, mold, wild) and selects one.
 //!
 //! [`avx512`] decides whether a program needing AVX-512 runs: by
 //! `HOD_X64_AVX512_RUNNER`, or natively on an x86-64 processor whose
@@ -20,6 +21,7 @@
 
 pub mod avx512;
 pub mod jobs;
+pub mod linkers;
 pub mod target;
 
 pub use target::Target;

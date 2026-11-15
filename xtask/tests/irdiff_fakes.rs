@@ -137,6 +137,7 @@ fn fake_linker(name: &str) -> String {
     let signature = match name {
         "lld" => "echo '# Linker: LLD 22.0.0'",
         "mold" => "echo '# mold 2.0.0 (compatible with GNU ld)'",
+        "wild" => "echo '# Linker: Wild 0.11.0 (compatible with GNU linkers)'",
         _ => ":",
     };
     format!(
@@ -1897,6 +1898,8 @@ fn command(world: &World, args: &[&str], env: &[(&str, &str)]) -> hod_testutil::
     command.arg("irdiff").args(["--hod".as_ref(), world.hod().as_os_str()]);
     command.args(args).arg(world.scratch.join("tests"));
     command.env("PATH", world.scratch.join("bin")).env("CARGO_TARGET_DIR", world.build());
+    // The fake `PATH` alone: not the provisioned wild (`HOD_WILD` empty).
+    command.env("HOD_WILD", "");
     for name in ["HOD_REQUIRE_TOOLS", "HOD_STRICT", "HOD_FALLBACK_LLC", "HOD_COVERAGE_LOG"] {
         command.env_remove(name);
     }

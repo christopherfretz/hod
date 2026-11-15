@@ -5,24 +5,16 @@
 use std::ffi::OsString;
 use std::path::Path;
 
-use hod_testutil::{Scratch, tool};
+use hod_testutil::{Scratch, Target, linkers};
 
-/// The linkers, each as the `g++` flags that select it.
+/// The host's linkers of the matrix, each as the `g++` flags that select
+/// it ([`hod_testutil::linkers`]).
 pub fn linkers(scratch: &Scratch) -> Vec<(&'static str, Vec<OsString>)> {
-    let mut out = Vec::new();
-    for (name, program) in [("bfd", "ld.bfd"), ("lld", "ld.lld"), ("mold", "ld.mold")] {
-        let Some(found) = tool(program) else { continue };
-        let dir = scratch.join(format!("use-{name}"));
-        std::fs::create_dir_all(&dir).unwrap();
-        let link = dir.join(format!("ld.{name}"));
-        if !link.exists() {
-            std::os::unix::fs::symlink(&found, &link).unwrap();
-        }
-        let mut prefix = OsString::from("-B");
-        prefix.push(&dir);
-        out.push((name, vec![prefix, format!("-fuse-ld={name}").into()]));
-    }
-    out
+    let target = Target::host().unwrap_or(Target::Aarch64);
+    linkers::present(target)
+        .into_iter()
+        .map(|(name, found)| (name, linkers::driver_flags(scratch.path(), name, &found)))
+        .collect()
 }
 
 /// The session's output with what differs from run to run masked:

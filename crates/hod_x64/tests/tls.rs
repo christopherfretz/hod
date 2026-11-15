@@ -493,7 +493,18 @@ fn every_model_links_runs_and_relaxes() {
                     // access of a variable of the general or local dynamic
                     // model; the static models are the four left.
                     "shared" => {
-                        assert!(seq.dynamic_calls >= 40, "{tag}: {seq:?}");
+                        // wild's PLT is `.plt.got` entries that
+                        // `llvm-objdump` names five bytes off (case
+                        // `plt-names`): its calls are counted as calls
+                        // into the PLT, `ident` and `check_fp` among them.
+                        let calls = if hod_testutil::linkers::exception(linker.name, "plt-names")
+                            .is_some()
+                        {
+                            code.iter().filter(|l| l.contains("call") && l.contains("@plt")).count()
+                        } else {
+                            seq.dynamic_calls
+                        };
+                        assert!(calls >= 40, "{tag}: {seq:?}, {calls} calls");
                         assert_eq!(seq.thread_pointer, 4, "{tag}: {seq:?}");
                     }
                     // Into a PIE: the variables of the executable relaxed to

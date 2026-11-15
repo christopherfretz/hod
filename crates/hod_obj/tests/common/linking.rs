@@ -8,7 +8,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use hod_obj::{Object, elf};
-use hod_testutil::{Outcome, Scratch, Target, find_tool, run, run_with, tool};
+use hod_testutil::{Outcome, Scratch, Target, find_tool, linkers, run, run_with, tool};
 
 /// One way to link: the linker's name and the compiler-driver flags that
 /// select it.
@@ -20,22 +20,24 @@ pub struct Linker {
 
 impl Linker {
     /// The linker `program`, selected as `name` through a directory
-    /// `<base>/use-<name>` that holds it as `ld.<name>` (see
-    /// [`Toolchain`]'s constructor).
+    /// `<base>/use-<name>` ([`hod_testutil::linkers::driver_flags`]).
     fn through(base: &Path, name: &'static str, program: &Path) -> Self {
-        let dir = base.join(format!("use-{name}"));
-        std::fs::create_dir(&dir).unwrap();
-        std::os::unix::fs::symlink(program, dir.join(format!("ld.{name}"))).unwrap();
-        let mut prefix = OsString::from("-B");
-        prefix.push(&dir);
-        Linker { name, flags: vec![prefix, format!("-fuse-ld={name}").into()] }
+        Linker { name, flags: linkers::driver_flags(base, name, program) }
+    }
+
+    /// The compiler-driver flags that select this linker, for a test that
+    /// runs its own `g++` link.
+    #[allow(dead_code)] // Not every test binary that includes this uses it.
+    pub fn driver_flags(&self) -> &[OsString] {
+        &self.flags
     }
 
     /// Whether this linker honors `SHF_LINK_ORDER` and keeps the members of
     /// a group together when it discards unused sections. GNU ld and lld
-    /// do; mold 2.37 treats such sections like any other.
+    /// do; mold 2.37 treats such sections like any other; wild is excepted
+    /// (`hod_testutil::linkers::EXCEPTIONS`, case `link-order`).
     pub fn keeps_associated_sections(&self) -> bool {
-        self.name != "mold"
+        self.name != "mold" && linkers::exception(self.name, "link-order").is_none()
     }
 }
 
@@ -44,8 +46,8 @@ impl Linker {
 ///
 /// A test for AArch64 and one for x86-64 differ in the [`Target`] given to
 /// [`Toolchain::for_target`] alone: on a host of another architecture the
-/// GNU cross drivers compile and link, the three linkers are the same
-/// programs (lld and mold link for every target; GNU ld is the cross
+/// GNU cross drivers compile and link, the linkers are the same programs
+/// (lld, mold and wild link for every target; GNU ld is the cross
 /// `<prefix>-ld.bfd`), and programs run under `qemu-<arch>` with the cross
 /// system root and the baseline CPU model ([`hod_testutil::target`]).
 #[derive(Debug)]
@@ -64,7 +66,7 @@ impl Toolchain {
     /// The host's toolchain.
     pub fn host(scratch: &Scratch) -> Option<Self> {
         let target = Target::host().unwrap_or(Target::Aarch64);
-        Self::new(scratch, target, "gcc", "g++", "ld.bfd", Vec::new())
+        Self::new(scratch, target, "gcc", "g++", Vec::new())
     }
 
     /// A toolchain for AArch64 Linux: [`Toolchain::for_target`] (the
@@ -90,29 +92,28 @@ impl Toolchain {
         let sysroot = target.tool("sysroot")?;
         let mut runner = vec![target.tool("emulator")?.into_os_string()];
         runner.extend(target.emulator_args(&sysroot));
-        let (driver, cxx, bfd) = (target.c_driver(), target.cxx_driver(), target.bfd());
-        Self::new(scratch, target, &driver, &cxx, &bfd, runner)
+        let (driver, cxx) = (target.c_driver(), target.cxx_driver());
+        Self::new(scratch, target, &driver, &cxx, runner)
     }
 
-    /// `gcc -fuse-ld=<name>` runs the program `ld.<name>` it finds on its
-    /// program path, so each linker gets a directory holding exactly that
-    /// name, passed with `-B`. This selects the linker `hod_testutil` found
-    /// whatever it is called and wherever it is installed (`ld.lld-22`,
-    /// `/usr/lib/llvm-22/bin/ld.lld`, `x86_64-linux-gnu-ld.bfd`).
+    /// The linkers of the matrix that are present
+    /// ([`hod_testutil::linkers::present`]), each selected through a
+    /// directory passed with `-B` ([`hod_testutil::linkers::driver_flags`]):
+    /// the linker `hod_testutil` found, whatever it is called and wherever
+    /// it is installed (`ld.lld-22`, `x86_64-linux-gnu-ld.bfd`, wild's
+    /// pinned release).
     fn new(
         scratch: &Scratch,
         target: Target,
         driver: &str,
         cxx: &str,
-        bfd: &str,
         runner: Vec<OsString>,
     ) -> Option<Self> {
         let driver = tool(driver)?;
-        let mut linkers = Vec::new();
-        for (name, program) in [("bfd", bfd), ("lld", "ld.lld"), ("mold", "ld.mold")] {
-            let Some(found) = tool(program) else { continue };
-            linkers.push(Linker::through(scratch.path(), name, &found));
-        }
+        let linkers = linkers::present(target)
+            .into_iter()
+            .map(|(name, found)| Linker::through(scratch.path(), name, &found))
+            .collect();
         Some(Self { target, driver, cxx_driver: find_tool(cxx), linkers, runner })
     }
 
@@ -220,23 +221,24 @@ impl Toolchain {
             outcome.timed_out(),
             outcome.stderr_text()
         );
-        assert_eq!(outcome.stderr_text(), "", "{}: the link printed diagnostics", linker.name);
+        let printed = outcome.stderr_text();
+        let tolerated = linkers::tolerated_warning(linker.name, flags);
+        if tolerated != Some(printed.as_str()) {
+            assert_eq!(printed, "", "{}: the link printed diagnostics", linker.name);
+        }
         // Which linker really ran is recorded in the output's `.comment`:
-        // lld and mold sign it; GNU ld leaves only what the C runtime's
-        // start files carry.
+        // lld, mold and wild sign it; GNU ld leaves only what the C
+        // runtime's start files carry.
         if let Some(readelf) = find_tool("readelf") {
             let flags_and_file =
                 ["-p", ".comment"].map(OsStr::new).into_iter().chain([output.as_os_str()]);
             let comment = run(readelf, flags_and_file).stdout_text();
-            let signed = |by: &str| comment.contains(by);
+            let signer = linkers::signer(&comment);
             let ok = match linker.name {
-                "lld" => signed("LLD") && !signed("mold"),
-                "mold" => signed("mold") && !signed("LLD"),
-                _ => {
-                    !signed("LLD")
-                        && !signed("mold")
-                        && (signed("GCC") || flags.contains(&"-nostdlib"))
+                "bfd" => {
+                    signer.is_none() && (comment.contains("GCC") || flags.contains(&"-nostdlib"))
                 }
+                name => signer == Some(name),
             };
             assert!(ok, "{} did not link this:\n{comment}", linker.name);
         }

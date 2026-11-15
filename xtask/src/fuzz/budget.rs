@@ -37,12 +37,12 @@ const fn line(profile: &'static str, mode: Mode, seeds: u64) -> Line {
 /// The budget of 1.0, per target and at LLVM 22 (`docs/VALIDATION.md`
 /// "Random programs (L10)" gives the reasons for the numbers).
 pub const BUDGET: &[Line] = &[
-    line("default", Mode::Whole, 1000),
-    line("aggregates", Mode::Whole, 500),
-    line("float", Mode::Whole, 500),
-    line("wide", Mode::Whole, 500),
-    line("volatile", Mode::Whole, 500),
-    line("narrow", Mode::Whole, 500),
+    line("default", Mode::Whole, 2000),
+    line("aggregates", Mode::Whole, 1000),
+    line("float", Mode::Whole, 1000),
+    line("wide", Mode::Whole, 1000),
+    line("volatile", Mode::Whole, 1000),
+    line("narrow", Mode::Whole, 1000),
     line("abi", Mode::Whole, 2000),
     line("default", Mode::Mix, 500),
     line("abi", Mode::Mix, 500),
@@ -338,6 +338,15 @@ pub fn run(
     let out = &options.out;
     fs::create_dir_all(out.join("results"))
         .map_err(|e| format!("cannot create '{}': {e}", out.display()))?;
+    // The work directories (`run-<pid>-<time>`) of a budget run that was
+    // stopped: nothing reads them, and a run cleans only its own.
+    if let Ok(entries) = fs::read_dir(out) {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with("run-") && entry.path().is_dir() {
+                let _ = fs::remove_dir_all(entry.path());
+            }
+        }
+    }
     let file = out.join("budget.tsv");
     let mut done: BTreeMap<String, Row> =
         read_rows(&file).into_iter().map(|row| (row.key(), row)).collect();

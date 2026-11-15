@@ -102,6 +102,10 @@ fn the_run_resumes() {
     text.push_str("aarch64\t22\tdefault\twhole\t");
     fs::write(&file, text).unwrap();
 
+    // ... and left its work directory behind.
+    let stale = options.out.join("run-12-34").join("seed-5");
+    fs::create_dir_all(&stale).unwrap();
+
     let mut seen = Vec::new();
     let outcome = budget::run(&options, &slices, |o| {
         seen.push((o.seed, o.count, o.profile.name, o.mode, o.target, o.llvm));
@@ -109,6 +113,7 @@ fn the_run_resumes() {
     })
     .unwrap();
     assert_eq!((outcome.ran, outcome.kept), (3, 2));
+    assert!(!options.out.join("run-12-34").exists());
     let expected: Vec<_> = slices[2..]
         .iter()
         .map(|s| (s.first, s.count, s.profile.name, s.mode, Some(s.arch), s.llvm))

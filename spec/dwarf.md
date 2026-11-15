@@ -617,12 +617,11 @@ hod emits none (a terminate landing pad left behind by a folded
   not from the IR (`spec/harness.md` "debug", "Lines"). hod's side only.
 - `is-constant`: hod's pair in a function that calls `llvm.is.constant`.
   `llc` folds the call to false even at `-O0` and deletes the blocks it
-  guards (`LowerConstantIntrinsics`); hod does not emit the dead
-  instructions (WP-084) but keeps the blocks and the branch, so their
-  lines have rows (`is_constant.c`). Deleting them would need the
-  branch folded and `mark_reachable` (`crates/hod_cg/src/driver.rs`) to
-  know the target's folded calls, which it does not (the target decides
-  in `begin_function`, after reachability): not free. Also §6.12 for DIE
+  guards (`LowerConstantIntrinsics`). Since WP-261 hod deletes them too
+  (`spec/codegen.md` §5.6.8 "Folded constants and the blocks they
+  remove"), so the class remains for what hod's simplification does not
+  model (a branch on a value `InstSimplify` folds by known bits or
+  ranges keeps its blocks in hod; `is_constant.c`). Also §6.12 for DIE
   trees.
 - `return-column` (sessions only): after `finish`, the stop is at a
   call's return address, which is in `llc`'s table the row of whatever
@@ -1341,10 +1340,12 @@ is the whole list of permitted differences:
     finds no code and `step` goes on to the next call. The function had
     no code, so no value is lost;
   - *blocks under an `llvm.is.constant` `llc` folds to false*
-    (`LowerConstantIntrinsics`, run even at `-O0`; `isconst.cpp`): hod's
-    code generator keeps the never-run code, so hod keeps the block and
-    its variables' DIEs; `llc` has neither. hod's tree without that one
-    block is `llc`'s. A debugger user sees a breakpoint on a line of the
+    (`LowerConstantIntrinsics`, run even at `-O0`): since WP-261 hod
+    deletes the blocks `llc` deletes (`spec/codegen.md` §5.6.8), and the
+    trees of `isconst.cpp` are equal. What remains is a block hod keeps
+    because its simplification is a subset of `InstSimplify`'s: hod
+    keeps the never-run code, the block and its variables' DIEs; `llc`
+    has neither. A debugger user sees a breakpoint on a line of the
     dead block never hit under hod (its code never runs); under `llc` the
     line has no code, the breakpoint moves to the next line with code,
     and hits there;

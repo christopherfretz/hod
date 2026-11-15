@@ -28,6 +28,7 @@
 //! have no package and are refused here.
 
 use hod_cg::abi::{AbiUnsupported, Assignment, LaneLoc, Part, Sig};
+use hod_cg::const_fold::Action as FoldAction;
 use hod_cg::{
     CallEmit, CgResult, Class, FixupKind, FnCx, FrameDesc, FrameRef, Label, PReg, RegInfo, RegSet,
     Target,
@@ -64,8 +65,6 @@ pub struct FnState {
     pub va: call::VaState,
     /// The scratch images of vectors (`vector`, WP-079).
     pub vector: vector::VectorState,
-    /// Whether instructions are not emitted (`tail`, WP-084).
-    pub tail: crate::tail::TailState,
     /// The stack guard (`guard`, WP-183).
     pub guard: crate::guard::GuardState,
 }
@@ -219,7 +218,6 @@ impl Target for A64 {
     }
 
     fn begin_function(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()> {
-        crate::tail::begin(cx);
         frame::begin(cx)
     }
 
@@ -232,8 +230,13 @@ impl Target for A64 {
     }
 
     fn lower<'a>(&self, cx: &mut FnCx<'a, Self>, inst: Inst<'a>) -> CgResult<()> {
-        if cx.state.tail.drops && crate::tail::dropped(inst) {
-            return Ok(());
+        // What `llc` deletes or rewrites in a function that asks
+        // `is.constant` or `objectsize` (`spec/codegen.md` §5.6.8).
+        match cx.fold_action(inst) {
+            FoldAction::Emit => {}
+            FoldAction::Drop => return Ok(()),
+            FoldAction::Jump(target) => return term::br(cx, target),
+            FoldAction::Unreachable => return term::unreachable(cx),
         }
         if let Some(done) = crate::tail3::lower(cx, inst) {
             return done;

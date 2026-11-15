@@ -48,6 +48,101 @@ pub enum SectionKind {
     /// Zero-initialized writable data: `SHT_NOBITS`,
     /// `SHF_ALLOC | SHF_WRITE`.
     Bss,
+    /// A section of a name of the text's own (`spec/asm.md` §9.1):
+    /// the ELF type, flags and entry size the directive writes.
+    Custom {
+        /// `SHT_PROGBITS`, `SHT_NOBITS` or `SHT_NOTE`.
+        sh_type: u32,
+        /// A subset of `SHF_ALLOC | SHF_WRITE | SHF_MERGE | SHF_STRINGS |
+        /// SHF_GNU_RETAIN`.
+        flags: u64,
+        /// The entry size (`M` only), else 0.
+        entsize: u64,
+    },
+}
+
+/// `SHT_PROGBITS`.
+pub const SHT_PROGBITS: u32 = 1;
+/// `SHT_NOTE`.
+pub const SHT_NOTE: u32 = 7;
+/// `SHT_NOBITS`.
+pub const SHT_NOBITS: u32 = 8;
+/// `SHF_WRITE`.
+pub const SHF_WRITE: u64 = 0x1;
+/// `SHF_ALLOC`.
+pub const SHF_ALLOC: u64 = 0x2;
+/// `SHF_MERGE`.
+pub const SHF_MERGE: u64 = 0x10;
+/// `SHF_STRINGS`.
+pub const SHF_STRINGS: u64 = 0x20;
+/// `SHF_GNU_RETAIN`.
+pub const SHF_GNU_RETAIN: u64 = 0x20_0000;
+
+/// Whether `name` is one LLVM's assembler or hod's own writer gives a
+/// meaning of its own, so that a section of the text's own may not take
+/// it (`spec/asm.md` §9.1): the thread-local and array sections, notes,
+/// relocation and symbol tables, `.init`/`.fini`, the exception and
+/// unwind tables, `.comment`, `.group`, and the DWARF sections hod
+/// writes (`.debug_info`, ... and their `.dwo` forms).
+fn is_reserved_name(name: &str) -> bool {
+    let has = |prefix: &str| {
+        name.strip_prefix(prefix).is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+    };
+    const PREFIXED: &[&str] = &[".tdata", ".tbss", ".init_array", ".fini_array", ".preinit_array"];
+    const EXACT: &[&str] = &[
+        ".init",
+        ".fini",
+        ".data1",
+        ".rodata1",
+        ".eh_frame",
+        ".eh_frame_hdr",
+        ".gcc_except_table",
+        ".comment",
+        ".group",
+        ".symtab",
+        ".symtab_shndx",
+        ".strtab",
+        ".shstrtab",
+        ".llvm_addrsig",
+        ".llvm.call-graph-profile",
+    ];
+    const DWARF: &[&str] = &[
+        "info",
+        "abbrev",
+        "line",
+        "line_str",
+        "str",
+        "str_offsets",
+        "addr",
+        "rnglists",
+        "loclists",
+        "frame",
+        "aranges",
+        "ranges",
+        "loc",
+        "names",
+        "pubnames",
+        "pubtypes",
+        "gnu_pubnames",
+        "gnu_pubtypes",
+        "types",
+        "macinfo",
+        "macro",
+        "cu_index",
+        "tu_index",
+    ];
+    if PREFIXED.iter().any(|p| has(p)) || EXACT.contains(&name) {
+        return true;
+    }
+    if name.starts_with(".note") || name.starts_with(".rela") || name.starts_with(".rel.") {
+        return true;
+    }
+    name.strip_prefix(".debug_").is_some_and(|rest| {
+        let rest = rest.strip_suffix(".dwo").unwrap_or(rest);
+        DWARF.iter().any(|d| {
+            rest.strip_prefix(d).is_some_and(|tail| tail.is_empty() || tail.starts_with('.'))
+        })
+    })
 }
 
 impl SectionKind {
@@ -90,7 +185,7 @@ impl SectionKind {
 
     /// Without file space.
     pub fn is_nobits(self) -> bool {
-        self == SectionKind::Bss
+        matches!(self, SectionKind::Bss | SectionKind::Custom { sh_type: SHT_NOBITS, .. })
     }
 }
 
@@ -457,6 +552,37 @@ fn plain_name(name: &str) -> R<&str> {
     match c.name() {
         Some(n) if n != "." && c.at_end() => Ok(n),
         _ => fail(op_reason::SYNTAX),
+    }
+}
+
+/// A section directive's name: a string `"..."` (any bytes but `"` and
+/// `\`, not empty), or bare letters, digits, `_`, `.`, `$` and `-`, not
+/// starting with a digit or `-` (else `asm:section`).
+fn section_name(text: &str) -> R<&str> {
+    let (name, quoted) = match text.strip_prefix('"').and_then(|n| n.strip_suffix('"')) {
+        Some(name) if text.len() >= 2 => (name, true),
+        _ => (text, false),
+    };
+    let ok = !name.is_empty()
+        && if quoted {
+            !name.contains(['"', '\\'])
+        } else {
+            !name.starts_with(|c: char| c.is_ascii_digit() || c == '-')
+                && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.$-".contains(&b))
+        };
+    if ok { Ok(name) } else { fail(other::SECTION) }
+}
+
+/// A flag of a section directive's flag string that hod reads (`a`,
+/// `w`, `x`, `M`, `S`, `R`), or the refusal that names it.
+fn check_flag(f: u8) -> R<()> {
+    match f {
+        b'a' | b'w' | b'x' | b'M' | b'S' | b'R' => Ok(()),
+        b'G' => fail(other::SECTION_FLAGS_GROUP),
+        b'T' => fail(other::SECTION_FLAGS_TLS),
+        b'o' => fail(other::SECTION_FLAGS_LINK_ORDER),
+        b'e' => fail(other::SECTION_FLAGS_EXCLUDE),
+        _ => fail(other::SECTION_FLAGS_OTHER),
     }
 }
 
@@ -884,35 +1010,109 @@ impl State<'_> {
         Ok(())
     }
 
-    /// `name[, "flags"[, @type]]`: the section's index.
+    /// `name[, "flags"[, @type[, entsize]]]`: the section's index.
     fn section_directive(&mut self, rest: &str) -> R<u32> {
         let parts = split_commas(rest);
-        let name = parts.first().copied().unwrap_or("");
-        let name = name.strip_prefix('"').and_then(|n| n.strip_suffix('"')).unwrap_or(name);
-        let name = plain_name(name).map_err(|_| Refusal(other::SECTION))?;
-        let Some(kind) = SectionKind::of_name(name) else { return fail(other::SECTION) };
+        let name = section_name(parts.first().copied().unwrap_or(""))?;
+        let flags = match parts.get(1) {
+            Some(flags) => Some(
+                flags
+                    .strip_prefix('"')
+                    .and_then(|f| f.strip_suffix('"'))
+                    .filter(|_| flags.len() >= 2)
+                    .ok_or(Refusal(other::SECTION))?,
+            ),
+            None => None,
+        };
+        let ty = match parts.get(2) {
+            Some(ty) => Some(match ty.strip_prefix(['@', '%']) {
+                Some("progbits") => SHT_PROGBITS,
+                Some("nobits") => SHT_NOBITS,
+                Some("note") => SHT_NOTE,
+                Some(_) => return fail(other::SECTION_TYPE),
+                None => return fail(other::SECTION),
+            }),
+            None => None,
+        };
+        let Some(kind) = SectionKind::of_name(name) else {
+            if name.starts_with(".rodata.") {
+                // `.rodata.str*`, `.rodata.cst*`: mergeable sections that
+                // code generation also writes.
+                return fail(other::SECTION);
+            }
+            return self.custom_section(name, flags, ty, &parts);
+        };
         if parts.len() > 3 {
             return fail(other::SECTION);
         }
-        if let Some(flags) = parts.get(1) {
-            let flags = flags
-                .strip_prefix('"')
-                .and_then(|f| f.strip_suffix('"'))
-                .ok_or(Refusal(other::SECTION))?;
-            if !flags.bytes().all(|f| kind.allows_flag(f)) {
-                return fail(other::SECTION);
+        if let Some(flags) = flags {
+            for f in flags.bytes() {
+                check_flag(f)?;
+                if !kind.allows_flag(f) {
+                    return fail(other::SECTION);
+                }
             }
         }
-        if let Some(ty) = parts.get(2) {
-            let ty = ty.strip_prefix(['@', '%']).ok_or(Refusal(other::SECTION))?;
-            let nobits = match ty {
-                "progbits" => false,
-                "nobits" => true,
-                _ => return fail(other::SECTION),
+        if ty.is_some_and(|ty| ty == SHT_NOTE || (ty == SHT_NOBITS) != kind.is_nobits()) {
+            return fail(other::SECTION);
+        }
+        Ok(self.section_named(name, kind))
+    }
+
+    /// A section of the text's own name (`spec/asm.md` §9.1): LLVM's
+    /// `ELFAsmParser::parseSectionArguments` for a name without defaults
+    /// (flags 0, `@progbits`). A second directive for the name that
+    /// writes flags, a type or an entry size must agree with the first
+    /// (LLVM's "changed section flags/type/entsize" errors).
+    fn custom_section(
+        &mut self,
+        name: &str,
+        flags: Option<&str>,
+        ty: Option<u32>,
+        parts: &[&str],
+    ) -> R<u32> {
+        if is_reserved_name(name) {
+            return fail(other::SECTION_NAME);
+        }
+        let mut bits = 0;
+        for f in flags.unwrap_or("").bytes() {
+            check_flag(f)?;
+            bits |= match f {
+                b'a' => SHF_ALLOC,
+                b'w' => SHF_WRITE,
+                b'M' => SHF_MERGE,
+                b'S' => SHF_STRINGS,
+                b'R' => SHF_GNU_RETAIN,
+                b'x' => return fail(other::SECTION_FLAGS_EXEC),
+                _ => return fail(other::SECTION_FLAGS_OTHER),
             };
-            if nobits != kind.is_nobits() {
+        }
+        let entsize = if bits & SHF_MERGE != 0 {
+            // `M` needs a type and then the entry size.
+            let [_, _, _, size] = parts else { return fail(other::SECTION) };
+            match constant(size) {
+                Ok(n) if n > 0 => n as u64,
+                _ => return fail(other::SECTION),
+            }
+        } else {
+            if parts.len() > 3 {
                 return fail(other::SECTION);
             }
+            0
+        };
+        let written = bits != 0 || entsize != 0 || ty.is_some();
+        let sh_type = ty.unwrap_or(SHT_PROGBITS);
+        let kind = SectionKind::Custom { sh_type, flags: bits, entsize };
+        if let Some(i) = self.out.sections.iter().position(|s| s.name == name) {
+            let SectionKind::Custom { sh_type: t, flags: f, entsize: e } =
+                self.out.sections[i].kind
+            else {
+                return Err(Refusal(other::SECTION));
+            };
+            if ty.is_some_and(|ty| ty != t) || (written && (f != bits || e != entsize)) {
+                return fail(other::SECTION);
+            }
+            return Ok(i as u32);
         }
         Ok(self.section_named(name, kind))
     }
@@ -1413,8 +1613,8 @@ mod tests {
             [Symver { sym: 0, alias: "a@V1".to_owned() }]
         );
         assert_eq!(r(".symver a, a@@@@V1"), Some(op_reason::SYNTAX));
-        assert_eq!(r(".section .init_array"), Some(other::SECTION));
-        assert_eq!(r(".section .text,\"axG\""), Some(other::SECTION));
+        assert_eq!(r(".section .init_array"), Some(other::SECTION_NAME));
+        assert_eq!(r(".section .text,\"axG\""), Some(other::SECTION_FLAGS_GROUP));
         assert_eq!(r(".data\n nop"), Some(other::SECTION));
         assert_eq!(r(".byte 1\n nop"), Some(other::UNALIGNED));
         assert_eq!(r("f:\nf:"), Some(other::LABEL));
@@ -1425,6 +1625,69 @@ mod tests {
         assert_eq!(r(".size u, 4"), Some(other::SYMBOL));
         assert_eq!(r(".popsection"), Some(other::SECTION));
         assert_eq!(r(".quad ."), Some(op_reason::EXPRESSION));
+    }
+
+    /// `spec/asm.md` §9.1: a section of the text's own name takes the
+    /// type, flags and entry size written; a later directive that writes
+    /// any of them must agree; the reserved names, the other flags and
+    /// types are refused by name.
+    #[test]
+    fn custom_sections() {
+        let custom = |sh_type, flags, entsize| SectionKind::Custom { sh_type, flags, entsize };
+        let code = asm(".pushsection \".debug_gdb_scripts\", \"MS\",%progbits,1\n\
+             .ascii \"\\4gdb\\n\"\n.byte 0\n.popsection\n.section mine\n.byte 1\n\
+             .section mine,\"\"\n.byte 2\n.section \"my sec\",\"awR\",@nobits\n.zero 3\n\
+             .section n.x,\"a\",@note\n.long 1\n.section m4,\"aM\",@progbits,4\n.long 7")
+        .unwrap();
+        let shapes: Vec<_> = code.sections.iter().map(|s| (s.name.as_str(), s.kind)).collect();
+        assert_eq!(
+            shapes,
+            [
+                (".text", SectionKind::Text),
+                (".debug_gdb_scripts", custom(SHT_PROGBITS, SHF_MERGE | SHF_STRINGS, 1)),
+                ("mine", custom(SHT_PROGBITS, 0, 0)),
+                ("my sec", custom(SHT_NOBITS, SHF_ALLOC | SHF_WRITE | SHF_GNU_RETAIN, 0)),
+                ("n.x", custom(SHT_NOTE, SHF_ALLOC, 0)),
+                ("m4", custom(SHT_PROGBITS, SHF_ALLOC | SHF_MERGE, 4)),
+            ]
+        );
+        assert_eq!(code.sections[1].bytes, b"\x04gdb\n\0");
+        assert_eq!(code.sections[2].bytes, [1, 2]);
+        assert_eq!(code.sections[3].size, 3);
+        let r = |t: &str| asm(t).err().map(|r| r.0);
+        // LLVM's "changed section flags/type/entsize" errors.
+        assert_eq!(r(".section m,\"a\"\n.section m,\"aw\""), Some(other::SECTION));
+        assert_eq!(r(".section m\n.section m,\"a\""), Some(other::SECTION));
+        assert_eq!(r(".section m,\"a\"\n.section m,\"a\",@nobits"), Some(other::SECTION));
+        assert_eq!(
+            r(".section m,\"M\",@progbits,1\n.section m,\"M\",@progbits,2"),
+            Some(other::SECTION)
+        );
+        assert_eq!(r(".section m,\"a\"\n.section m\n.section m,\"a\",@progbits"), None);
+        // `M` needs the entry size; a size without `M` is LLVM's error.
+        assert_eq!(r(".section m,\"aM\",@progbits"), Some(other::SECTION));
+        assert_eq!(r(".section m,\"a\",@progbits,1"), Some(other::SECTION));
+        assert_eq!(r(".section m,\"a\",@progbits,unique,1"), Some(other::SECTION));
+        assert_eq!(r(".section m,\"ax\""), Some(other::SECTION_FLAGS_EXEC));
+        assert_eq!(r(".section m,\"aG\",@progbits,g,comdat"), Some(other::SECTION_FLAGS_GROUP));
+        assert_eq!(r(".section m,\"awT\""), Some(other::SECTION_FLAGS_TLS));
+        assert_eq!(r(".section m,\"ao\",@progbits,f"), Some(other::SECTION_FLAGS_LINK_ORDER));
+        assert_eq!(r(".section m,\"ae\""), Some(other::SECTION_FLAGS_EXCLUDE));
+        assert_eq!(r(".section m,\"al\""), Some(other::SECTION_FLAGS_OTHER));
+        assert_eq!(r(".section m,\"a\",@init_array"), Some(other::SECTION_TYPE));
+        assert_eq!(r(".section m,\"a\",progbits"), Some(other::SECTION));
+        for name in [".note.x", ".tdata.x", ".tbss", ".eh_frame", ".comment", ".rela.m", ".init"] {
+            assert_eq!(r(&format!(".section {name}")), Some(other::SECTION_NAME), "{name}");
+        }
+        for name in [".debug_info", ".debug_str", ".debug_line.dwo", ".debug_str_offsets"] {
+            assert_eq!(r(&format!(".section {name}")), Some(other::SECTION_NAME), "{name}");
+        }
+        assert_eq!(r(".section .debug_strx\n.section .tdata1\n.section .bssx"), None);
+        assert_eq!(r(".section 1m"), Some(other::SECTION));
+        assert_eq!(r(".section \"a\\\"b\""), Some(other::SECTION));
+        // No code and no non-zero byte in a `@nobits` section.
+        assert_eq!(r(".section m,\"a\"\nnop"), Some(other::SECTION));
+        assert_eq!(r(".section m,\"aw\",@nobits\n.byte 1"), Some(other::SECTION));
     }
 
     #[test]

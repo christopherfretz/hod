@@ -82,6 +82,23 @@ pub mod other {
     /// A statement in a section that is not the one the text started in
     /// (inline assembly), or a section directive's operands not covered.
     pub const SECTION: &str = "asm:section";
+    /// A section of module-level assembly whose name LLVM or hod gives
+    /// a meaning of its own (`spec/asm.md` §9.1).
+    pub const SECTION_NAME: &str = "asm:section-name";
+    /// A section type other than `@progbits`, `@nobits`, `@note`.
+    pub const SECTION_TYPE: &str = "asm:section-type";
+    /// The `x` flag on a section of the text's own name.
+    pub const SECTION_FLAGS_EXEC: &str = "asm:section-flags/exec";
+    /// The `G` flag (a section group).
+    pub const SECTION_FLAGS_GROUP: &str = "asm:section-flags/group";
+    /// The `T` flag (thread-local).
+    pub const SECTION_FLAGS_TLS: &str = "asm:section-flags/tls";
+    /// The `o` flag (`SHF_LINK_ORDER`).
+    pub const SECTION_FLAGS_LINK_ORDER: &str = "asm:section-flags/link-order";
+    /// The `e` flag (`SHF_EXCLUDE`).
+    pub const SECTION_FLAGS_EXCLUDE: &str = "asm:section-flags/exclude";
+    /// Any other flag (`l`, `y`, `?`, a number, ...).
+    pub const SECTION_FLAGS_OTHER: &str = "asm:section-flags/other";
     /// A symbol directive whose effect is not reproduced, or a symbol
     /// use of module-level assembly that is not (`spec/asm.md` §9).
     pub const SYMBOL: &str = "asm:symbol";

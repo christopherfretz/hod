@@ -206,14 +206,47 @@ fn capture_verify_and_count_real_programs() {
     config.mode = Mode::Hybrid;
     config.hod = Some(irdiff::build_workspace_hod(&build_dir()).expect("hod builds"));
     config.require_tools = hod_testutil::tools_required();
-    let verified =
-        verify::verify(&verify::Options { dir: out.clone(), config, manifest_only: false })
-            .unwrap();
+    let options =
+        verify::Options { dir: out.clone(), config, manifest_only: false, expected: None };
+    let verified = verify::verify(&options).unwrap();
     assert_eq!(verified.problems, [""; 0]);
     assert_eq!(verified.exit_status(), 0, "{}", verified.summary(true));
     assert_eq!(verified.runs.len(), majors.len());
     for (_, run) in &verified.runs {
         assert_eq!(run.tests(), 5, "{}", run.summary(true));
+    }
+
+    // spec/harness.md "Expected results", in strict mode: an undefined
+    // entry is built and not compared; a refused row for a test hod
+    // builds is stale and fails the run.
+    if let Some(host) = irdiff::Arch::host() {
+        let list = scratch.join("expected.tsv");
+        let host = host.name();
+        std::fs::write(
+            &list,
+            format!(
+                "{host}\tundefined\t{TORTURE} hello.c\t-\tan example\n\
+                 {host}\trefused\t{TORTURE} shapes.c\tcc:none\tan example\n"
+            ),
+        )
+        .unwrap();
+        let mut strict = options.clone();
+        strict.config.mode = Mode::Strict;
+        strict.expected = Some(list);
+        let listed = verify::verify(&strict).unwrap();
+        let summary = listed.summary(true);
+        let (_, applied) = listed.applied.as_ref().expect("the list applied");
+        let hello = format!("{TORTURE} hello.c");
+        assert_eq!(applied.undefined.len(), 1, "{summary}");
+        assert_eq!(applied.undefined[0].0, hello);
+        assert!(applied.refused.is_empty(), "{summary}");
+        assert_eq!(applied.problems.len(), 1, "{summary}");
+        assert!(applied.problems[0].contains("stale"), "{summary}");
+        assert_eq!(listed.exit_status(), 1, "{summary}");
+        for (_, run) in &listed.runs {
+            assert_eq!(run.count(irdiff::Outcome::Fail), 0, "{summary}");
+            assert!(run.count(irdiff::Outcome::Skip) >= 1, "{summary}");
+        }
     }
 
     // The census of real modules, of the two entries the counts are for.

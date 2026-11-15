@@ -224,6 +224,42 @@ fn constant_branches_are_a_permitted_class() {
     assert_eq!(summary.constant_branches, 0, "{}", summary.text());
 }
 
+// "Set apart" (`selector-split`): seeds 110043 (`l_419 |= ((&l_31 == &l_31)
+// & (-4L));`, prog.c:258) and 110164 (`g_31 |= (4294967294UL == (p_22 !=
+// g_29));`, prog.c:425) of the 1.0 budget (aarch64, LLVM 22, debug):
+// SelectionDAG folds the statement away and has no row at the line;
+// FastISel and GlobalISel keep rows, as hod does. The pair is set apart
+// with its evidence, and the seed is no finding.
+#[test]
+fn selector_splits_are_set_apart() {
+    let cross = Arch::host() == Some(Arch::Aarch64) || found(&["aarch64-linux-gnu-gcc"]);
+    if !cross || !tools_found() || !found(&["llvm-dwarfdump-22", "llvm-nm-22", "llvm-objdump-22"]) {
+        return;
+    }
+    let scratch = Scratch::new("fuzz-selector-split");
+    for (seed, function, line, counts) in
+        [(110_043, "func_1", 258, (1, 1, 1)), (110_164, "func_19", 425, (1, 1, 1))]
+    {
+        let mut options = options(&scratch, seed, 1);
+        options.mode = Mode::Debug;
+        options.target = Some(Arch::Aarch64);
+        let summary = run(&options).expect("the run");
+        let text = summary.text();
+        assert!(summary.findings.is_empty() && summary.errors.is_empty(), "{text}");
+        let split = summary
+            .selector_splits
+            .iter()
+            .find(|(s, split)| *s == seed && split.pair.0 == function && split.pair.2 == line)
+            .map(|(_, split)| (split.hod, split.fast_isel, split.global_isel));
+        assert_eq!(split, Some(counts), "{text}");
+        let evidence = format!(
+            "selector-split: seed {seed} {function} at prog.c:{line}: rows hod 1 selection-dag 0 \
+             fast-isel 1 global-isel 1"
+        );
+        assert!(text.contains(&evidence), "{text}");
+    }
+}
+
 /// A hod that swaps the first two parameters of every `callee_*` of the
 /// ABI generator's programs in its definitions, declarations and calls
 /// alike (`fuzz/swap-params.awk`): a module agrees with itself, an object

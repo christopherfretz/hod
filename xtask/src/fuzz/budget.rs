@@ -158,11 +158,15 @@ pub struct Row {
     pub findings: String,
     /// `seed:detail;...`, each detail cut to 160 characters.
     pub errors: String,
+    /// `--debug`'s pairs set apart by evidence, `class=count,...`
+    /// (`selector-split`); `-` for none, and for a row written before the
+    /// column existed.
+    pub set_apart: String,
 }
 
 /// The header of `budget.tsv`.
 pub const HEADER: &str = "# target\tllvm\tprofile\tmode\tseeds\tagree\trefused\tskipped\terror\t\
-                          finding\tminutes\trefusals\tskips\tfindings\terrors";
+                          finding\tminutes\trefusals\tskips\tfindings\terrors\tset-apart";
 
 fn clean(text: &str) -> String {
     text.replace(['\t', '\n', ';', ','], " ")
@@ -231,6 +235,11 @@ impl Row {
                     })
                     .collect::<Vec<_>>(),
             ),
+            set_apart: if summary.selector_splits.is_empty() {
+                "-".to_owned()
+            } else {
+                format!("{}={}", super::case::SELECTOR_SPLIT, summary.selector_splits.len())
+            },
         }
     }
 
@@ -250,7 +259,7 @@ impl Row {
     /// The row as a line of `budget.tsv`.
     pub fn line(&self) -> String {
         format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{:.2}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{:.2}\t{}\t{}\t{}\t{}\t{}",
             self.key(),
             self.agree,
             self.refused,
@@ -261,7 +270,8 @@ impl Row {
             self.refusals,
             self.skips,
             self.findings,
-            self.errors
+            self.errors,
+            self.set_apart
         )
     }
 
@@ -272,7 +282,8 @@ impl Row {
             return None;
         }
         let f: Vec<&str> = line.split('\t').collect();
-        if f.len() != 15 {
+        // 15 fields: a row written before the `set-apart` column.
+        if f.len() != 15 && f.len() != 16 {
             return None;
         }
         let n = |i: usize| f[i].parse::<usize>().ok();
@@ -292,6 +303,7 @@ impl Row {
             skips: f[12].to_owned(),
             findings: f[13].to_owned(),
             errors: f[14].to_owned(),
+            set_apart: f.get(15).map_or("-", |s| *s).to_owned(),
         })
     }
 }
@@ -390,6 +402,10 @@ pub fn run(
             "fuzz budget: {} agree {} refused {} skipped {} error {} finding {} in {:.1} min",
             row.seeds, row.agree, row.refused, row.skipped, row.error, row.finding, row.minutes
         );
+        // The evidence of each pair set apart, in the run's log.
+        for (seed, split) in &summary.selector_splits {
+            eprintln!("fuzz budget: {}", split.line(*seed));
+        }
         let mut appended = fs::OpenOptions::new()
             .append(true)
             .open(&file)
@@ -467,6 +483,7 @@ pub fn markdown(rows: &[Row], planned: usize) -> String {
     let mut totals: BTreeMap<(String, String), Sum> = BTreeMap::new();
     let mut refusals: BTreeMap<String, usize> = BTreeMap::new();
     let mut skips: BTreeMap<String, usize> = BTreeMap::new();
+    let mut set_apart: BTreeMap<String, usize> = BTreeMap::new();
     let mut all = Sum::default();
     for row in rows {
         let key = (row.target.clone(), row.llvm.clone(), row.profile.clone(), row.mode.clone());
@@ -481,6 +498,9 @@ pub fn markdown(rows: &[Row], planned: usize) -> String {
         }
         for (name, n) in parse_counts(&row.skips) {
             *skips.entry(name).or_default() += n;
+        }
+        for (name, n) in parse_counts(&row.set_apart) {
+            *set_apart.entry(name).or_default() += n;
         }
     }
     let _ = writeln!(text, "| target | LLVM | {head} |\n|---|---|{rule}|");
@@ -505,7 +525,7 @@ pub fn markdown(rows: &[Row], planned: usize) -> String {
             sum.cells()
         );
     }
-    let census = |text: &mut String, title: &str, map: &BTreeMap<String, usize>| {
+    let census = |text: &mut String, title: &str, map: &BTreeMap<String, usize>, unit: &str| {
         let _ = writeln!(text, "\n## {title}\n");
         if map.is_empty() {
             let _ = writeln!(text, "None.");
@@ -513,13 +533,15 @@ pub fn markdown(rows: &[Row], planned: usize) -> String {
         }
         let mut pairs: Vec<(&String, &usize)> = map.iter().collect();
         pairs.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
-        let _ = writeln!(text, "| name | seeds |\n|---|---:|");
+        let _ = writeln!(text, "| name | {unit} |\n|---|---:|");
         for (name, n) in pairs {
             let _ = writeln!(text, "| `{name}` | {n} |");
         }
     };
-    census(&mut text, "Refusals", &refusals);
-    census(&mut text, "Skipped", &skips);
+    census(&mut text, "Refusals", &refusals, "seeds");
+    census(&mut text, "Skipped", &skips, "seeds");
+    // The evidence of each pair is in the slice's summary in the run's log.
+    census(&mut text, "Set apart (debug pairs)", &set_apart, "pairs");
     let _ = writeln!(text, "\n## Findings\n");
     let mut any = false;
     for row in rows.iter().filter(|r| r.findings != "-") {

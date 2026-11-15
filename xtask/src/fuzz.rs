@@ -449,6 +449,9 @@ pub struct Summary {
     pub lines: Option<LinesReport>,
     pub self_assigned: usize,
     pub constant_branches: usize,
+    /// `--debug`: hod's pairs set apart as `selector-split`, with their
+    /// seed and evidence ([`case::selector_split`]).
+    pub selector_splits: Vec<(u64, case::SelectorSplit)>,
 }
 
 impl Summary {
@@ -481,6 +484,8 @@ impl Summary {
         }
         self.self_assigned += outcome.self_assigned.len();
         self.constant_branches += outcome.constant_branches.len();
+        self.selector_splits
+            .extend(outcome.selector_splits.iter().map(|split| (outcome.seed, split.clone())));
     }
 
     /// The table a run prints.
@@ -559,6 +564,15 @@ impl Summary {
                  deletes) {}, llc's at a constant branch (which hod folds) {}",
                 self.self_assigned, self.constant_branches
             );
+            let _ = writeln!(
+                text,
+                "  not counted above: hod's pairs where LLVM's -O0 selectors split (FastISel and \
+                 GlobalISel have rows, SelectionDAG has none) {}",
+                self.selector_splits.len()
+            );
+            for (seed, split) in &self.selector_splits {
+                let _ = writeln!(text, "    {}", split.line(*seed));
+            }
             let _ = writeln!(text, "  columns: {}", report.columns.summary());
         }
         if let Some(file) = &self.results_file {

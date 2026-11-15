@@ -3818,10 +3818,47 @@ fold and `debug::permitted` has no class yet:
   `llvm.memmove` whose source and destination number the same counts as
   such a store (a struct's `s = s;`);
 - llc-only, a **constant branch** (`case::constant_branch`): the line's
-  instructions are `br label` or `br i1 true|false` and loads and
-  `getelementptr`s nothing uses. That is csmith's `if ((x, -6L))`: hod
-  folds the branch (and omits one to the block it emits next) and drops
-  the loads, `llc` keeps a test and a jump.
+  instructions are `br label` or `br i1 true|false`, and loads (neither
+  volatile nor atomic), `getelementptr`s, `icmp`s and casts that nothing
+  uses except another such unused value of the line (no call, no store).
+  That is csmith's `if ((x, -6L))` and `if (((&x == (void*)0), 7L))`
+  (seed 110478 of the 1.0 budget: an unused `icmp eq ptr` and its `zext`):
+  hod folds the branch (and omits one to the block it emits next) and
+  emits nothing for the unused values, `llc` keeps a test and a jump.
+  This is a debug-quality difference, not a wrong program: all three of
+  LLVM's `-O0` selectors keep one row at such a line, hod has none, and
+  the programs agree;
+- hod-only, a **selector split** (`selector-split`,
+  `case::selector_split`): a pair (function F, line L) left unclassified
+  where hod has rows and the oracle (`SelectionDAG`) has none. The same
+  `llc` (same LLVM, target, `-O0` and other flags) builds the module with
+  the two other selectors, `FastISel` (`-global-isel=0 -fast-isel=1`) and
+  `GlobalISel` (`-global-isel=1 -global-isel-abort=2`, falling back to
+  `SelectionDAG` with a warning that names the function); each is linked
+  as the oracle is and its `is_stmt` rows are counted per pair. The pair
+  is set apart when both selectors give evidence (the build and link
+  succeed, and `GlobalISel` did not fall back on F) and both have at
+  least one row at L in F: LLVM's own `-O0` selectors disagree at that
+  line and hod agrees with two of three. One with a row and one without,
+  or one with no evidence: the pair stays unclassified and is a finding.
+  It never applies to llc-only pairs, nor outside the line comparison.
+  The two builds run only for a seed with such a pair, so the cost is per
+  finding, not per seed. Each pair set apart is printed with its evidence
+  (`selector-split: seed S F at prog.c:L: rows hod H selection-dag 0
+  fast-isel A global-isel B`), counted in the summary, and in the budget's
+  `set-apart` column and its "Set apart" census. Evidence: the 1.0
+  budget's aarch64 LLVM 22 debug slice, where `SelectionDAG` deletes a
+  statement `x |= c` whose `c` it folds to 0 (a pointer comparison it
+  folds, or a 0-or-1 value compared with a constant out of that range).
+  `is_stmt` rows at the pair, hod / `SelectionDAG` / `FastISel` /
+  `GlobalISel`, are 1/0/1/1 at each of seed 110011 func_48 prog.c:590,
+  110043 func_1 :258, 110164 func_19 :425, 110267 func_1 :279, 110360
+  func_23 :811, 110367 func_1 :412 and func_26 :723, 110393 func_1 :396
+  (all rows of prog.c at the line, any flag: 5/0/5/5, 4/0/4/4, 6/0/6/6,
+  6/0/6/6, 7/0/7/7, 7/0/6/6 at :412, 7/0/7/7). This
+  class replaces any further folding in the self-assignment's numbering
+  (which stays as above): `SelectionDAG`'s folder is not emulated piece by
+  piece.
 
 The summary adds the
 comparisons of every seed,

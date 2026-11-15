@@ -344,9 +344,9 @@ fn what_is_not_lowered_is_refused_by_name() {
     );
 }
 
-/// `intrinsic::begin`/`dropped` (not yet called by `Target`): in a
-/// function that calls `is.constant`, the chain only the folded call
-/// used is dropped; elsewhere nothing.
+/// `hod_cg::const_fold` (§5.6.8): in a function that calls
+/// `is.constant`, the chain only the folded call used is dropped;
+/// elsewhere nothing.
 #[test]
 fn the_operands_of_a_folded_call_are_marked_dropped() {
     let text = format!(
@@ -356,11 +356,12 @@ fn the_operands_of_a_folded_call_are_marked_dropped() {
          %r = add i32 %z, %y\n  ret i32 %r\n}}\n",
         ll_header()
     );
-    let (_, bodies) = parse(&text);
+    let (module, bodies) = parse(&text);
     let body = &bodies[0];
-    intrinsic::begin_body(body);
-    let marked: Vec<usize> =
-        body.insts().filter(|&i| intrinsic::dropped(i)).map(|i| i.id().index()).collect();
+    let folding = hod_cg::const_fold::analyse(&module, body).expect("no refusal");
+    let marked: Vec<usize> = (0..folding.actions.len())
+        .filter(|&i| folding.actions[i] == hod_cg::const_fold::Action::Drop)
+        .collect();
     assert_eq!(marked, [0, 1], "the load and the add, not the rest");
 }
 

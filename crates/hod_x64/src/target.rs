@@ -32,6 +32,7 @@
 //! `vector`; atomics are `atomic`. Funclets are refused here.
 
 use hod_cg::abi::{AbiUnsupported, Assignment, LaneLoc, Part, Sig};
+use hod_cg::const_fold::Action as FoldAction;
 use hod_cg::{
     CallEmit, CgResult, Class, FixupKind, FnCx, FrameDesc, FrameRef, Label, PReg, RegInfo, RegSet,
     Target,
@@ -380,7 +381,6 @@ impl Target for X64 {
         if self.features.no_x87 && features::uses_x86_fp80(cx.module, cx.body) {
             return unsupported(features::NO_X87);
         }
-        intrinsic::begin(cx);
         frame::begin(cx)
     }
 
@@ -393,10 +393,13 @@ impl Target for X64 {
     }
 
     fn lower<'a>(&self, cx: &mut FnCx<'a, Self>, inst: Inst<'a>) -> CgResult<()> {
-        // An instruction `llc` deletes in a function that asks
+        // What `llc` deletes or rewrites in a function that asks
         // `is.constant` or `objectsize` (`spec/codegen.md` §5.6.8).
-        if intrinsic::dropped(inst) {
-            return Ok(());
+        match cx.fold_action(inst) {
+            FoldAction::Emit => {}
+            FoldAction::Drop => return Ok(()),
+            FoldAction::Jump(target) => return term::br(cx, target),
+            FoldAction::Unreachable => return term::unreachable(cx),
         }
         if let Some(done) = mask::lower(cx, inst) {
             return done;

@@ -62,17 +62,12 @@
 //!   is `llc`'s `isManifestConstant` ([`is_manifest`]); `prefetch` and
 //!   `clear_cache` emit nothing (x86 caches are coherent, as `llc`);
 //!   `ptrmask` is an `and`; `readcyclecounter` is `rdtsc`.
-//! - **Dead instructions** in a function that calls `is.constant` or
-//!   `objectsize` ([`begin`], [`dropped`]): as `hod_a64::tail`.
-
-use std::cell::RefCell;
+//! - **Dead instructions and blocks** in a function that calls
+//!   `is.constant` or `objectsize`: `hod_cg::const_fold` (WP-261).
 
 use hod_cg::memplan::{MemOp, MemPlan, mem_plan};
 use hod_cg::{CallArg, CgResult, Class, FnCx};
-use hod_ir::{
-    Body, CallSite, Const, ConstId, Inst, InstKind, Intrinsic, Opcode, TypeId, TypeKind, Value,
-    ValueKind,
-};
+use hod_ir::{Const, Inst, Intrinsic, TypeId, TypeKind, Value, ValueKind};
 use hod_mc_x64 as mc;
 use hod_mc_x64::{Cond, FpSize, Mem, Reg, Size};
 
@@ -1310,177 +1305,7 @@ fn sjlj_longjmp<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, buf: Value) -> CgRes
 /// The address of a symbol or block, and so anything built on one, is
 /// not. (`hod_a64::tail::is_manifest`.)
 pub fn is_manifest(cx: &FnCx<'_, X64>, value: Value) -> bool {
-    let Some(id) = value.as_const() else { return false };
-    let mut pending: Vec<ConstId> = Vec::new();
-    let mut next = Some(id);
-    while let Some(id) = next {
-        match cx.module.consts.get(id) {
-            Const::Int { .. }
-            | Const::WideInt { .. }
-            | Const::Float { .. }
-            | Const::WideFloat { .. }
-            | Const::Null(_)
-            | Const::Zero(_)
-            | Const::Undef(_)
-            | Const::Poison(_)
-            | Const::NoneToken
-            | Const::Bytes { .. }
-            // `inttoptr` of an integer: an expression of data.
-            | Const::AddrOfInt { .. } => {}
-            Const::Aggregate { elems: args, .. } | Const::Expr { args, .. } => {
-                pending.extend_from_slice(args);
-            }
-            Const::Splat { elem, .. } => pending.push(elem),
-            _ => return false,
-        }
-        next = pending.pop();
-    }
-    true
-}
-
-/// The high bit of a use count: a use outside the block, or by a `phi`.
-const EXPORTED: u32 = 1 << 31;
-
-thread_local! {
-    /// Per instruction of the function: its uses by instructions other
-    /// than folded calls, and [`EXPORTED`]. One buffer per thread.
-    static USES: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
-    /// Two bitsets over the instructions: the folded calls, then the
-    /// instructions not emitted. Empty when the function drops nothing.
-    static BITS: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
-}
-
-/// Whether the call is one `llc`'s `LowerConstantIntrinsics` replaces by
-/// a constant before instruction selection.
-fn folds(site: &CallSite<'_>) -> bool {
-    matches!(site.intrinsic(), Some(Intrinsic::IsConstant | Intrinsic::ObjectSize))
-}
-
-/// Whether `inst` has no effect but its result: the driver's rule for a
-/// result nothing uses (`hod_cg`'s `driver.rs`, `has_no_effect`), which is
-/// also what `SelectionDAG` deletes when nothing uses its node.
-fn removable(inst: Inst<'_>) -> bool {
-    let op = inst.opcode();
-    if op.is_binary() || op.is_cast() {
-        return true;
-    }
-    match op {
-        Opcode::FNeg
-        | Opcode::ICmp
-        | Opcode::FCmp
-        | Opcode::PtrAdd
-        | Opcode::Select
-        | Opcode::Freeze
-        | Opcode::ExtractValue
-        | Opcode::InsertValue
-        | Opcode::ExtractElement
-        | Opcode::InsertElement
-        | Opcode::ShuffleVector => true,
-        Opcode::Load => matches!(
-            inst.kind(),
-            InstKind::Load { mem, .. } if !mem.is_volatile() && mem.ordering().is_none()
-        ),
-        _ => false,
-    }
-}
-
-/// `Target::begin_function`'s part (`spec/codegen.md` §5.5.1 "WP-084",
-/// §5.6.8): in a function that calls `llvm.is.constant` or
-/// `llvm.objectsize`, decides which instructions are not emitted, as
-/// `llc` does (`hod_a64::tail::begin`). Its IR pass replaces those calls
-/// by constants and nothing else; `SelectionDAG` then deletes a node
-/// nothing uses and that has no effect, which frees its operands' nodes
-/// in turn; a value used in another block (or by a `phi`) is exported and
-/// stays. A function without those calls costs a look at its call sites.
-/// [`dropped`] answers for each instruction afterwards.
-pub fn begin(cx: &FnCx<'_, X64>) {
-    begin_body(cx.body);
-}
-
-/// [`begin`] for `body`.
-pub fn begin_body(body: &Body) {
-    let drops = body.calls().any(|site| folds(&site)) && decide(body);
-    if !drops {
-        BITS.with(|bits| bits.borrow_mut().clear());
-    }
-}
-
-/// Fills [`USES`] and [`BITS`] for `body`; whether any instruction is
-/// not emitted.
-fn decide(body: &Body) -> bool {
-    let n = body.inst_count();
-    let words = n.div_ceil(64);
-    USES.with(|uses| {
-        BITS.with(|bits| {
-            let (mut uses, mut bits) = (uses.borrow_mut(), bits.borrow_mut());
-            uses.clear();
-            uses.resize(n, 0);
-            bits.clear();
-            bits.resize(2 * words, 0);
-            let set =
-                |bits: &mut [u64], base: usize, i: usize| bits[base + i / 64] |= 1 << (i % 64);
-            let get =
-                |bits: &[u64], base: usize, i: usize| bits[base + i / 64] >> (i % 64) & 1 != 0;
-            for site in body.calls() {
-                if folds(&site) {
-                    set(&mut bits, 0, site.inst().index());
-                }
-            }
-            for block in body.blocks() {
-                let range = block.inst_range();
-                for inst in block.insts() {
-                    if get(&bits, 0, inst.id().index()) {
-                        continue;
-                    }
-                    let phi = inst.opcode() == Opcode::Phi;
-                    for &op in inst.operands() {
-                        if let ValueKind::Inst(x) = op.kind() {
-                            let u = &mut uses[x.index()];
-                            *u = (*u & EXPORTED) | ((*u & !EXPORTED) + 1).min(!EXPORTED);
-                            if phi || !range.contains(&x.raw()) {
-                                *u |= EXPORTED;
-                            }
-                        }
-                    }
-                }
-            }
-            let mut any = false;
-            for block in body.blocks() {
-                for inst in block.insts().rev() {
-                    let i = inst.id().index();
-                    if uses[i] != 0
-                        || inst.ty() == TypeId::VOID
-                        || get(&bits, 0, i)
-                        || !removable(inst)
-                    {
-                        continue;
-                    }
-                    set(&mut bits, words, i);
-                    any = true;
-                    for &op in inst.operands() {
-                        if let ValueKind::Inst(x) = op.kind() {
-                            let u = &mut uses[x.index()];
-                            if *u & !EXPORTED != 0 {
-                                *u -= 1;
-                            }
-                        }
-                    }
-                }
-            }
-            any
-        })
-    })
-}
-
-/// Whether `inst` of the function [`begin`] last looked at is not
-/// emitted: `Target::lower` returns at once for it.
-pub fn dropped(inst: Inst<'_>) -> bool {
-    let i = inst.id().index();
-    BITS.with(|bits| {
-        let bits = bits.borrow();
-        let words = bits.len() / 2;
-        words != 0 && bits.get(words + i / 64).is_some_and(|w| w >> (i % 64) & 1 != 0)
-    })
+    hod_cg::const_fold::is_manifest(cx.module, value)
 }
 
 /// Whether a register is one of those a lowering here may write freely.

@@ -174,13 +174,31 @@ fn accepted(cases: Vec<Case>, features: Features) -> (Vec<Case>, BTreeMap<&'stat
     (kept, refused)
 }
 
+/// The `llc` configurations the grid of machine `n` executes (WP-238):
+/// `llc` 22 at `-O0` with `FastISel`, the reference, and one of the
+/// others in turn, so that over the machines each configuration
+/// executes; every configuration's convention is compared on every
+/// machine all the same ([`same_as_llc`]). Running all six on every
+/// machine took the hosted lane's job past its limit.
+fn executed_configs(
+    all: &[(crate::run::Config, std::path::PathBuf)],
+    n: usize,
+) -> Vec<(crate::run::Config, std::path::PathBuf)> {
+    let reference = |c: &crate::run::Config| c.tag() == "22-O0";
+    let others: Vec<_> = all.iter().filter(|(c, _)| !reference(c)).cloned().collect();
+    let mut chosen: Vec<_> = all.iter().filter(|(c, _)| reference(c)).cloned().collect();
+    assert_eq!(chosen.len(), 1, "llc 22 -O0 is a configuration");
+    chosen.extend(others.get(n % others.len().max(1)).cloned());
+    chosen
+}
+
 /// §1.3, §3.2, §4.3, §5.1, §8.7, §9.1, §11 (WP-208): the grid on every
 /// machine of [`machines`]: every signature hod accepts is placed as each
 /// `llc` places it ([`same_as_llc`]); hod refuses only a mask of more
 /// than 64 elements (`x64:mask-vector`), as it refuses one without
 /// AVX-512. With `HOD_X64_AVX512_RUNNER`, or natively on a processor with
-/// the machine's features ([`avx512_runner`]), the signatures the driver
-/// generator makes ([`generated`]) also run; each machine's outcome is
+/// the machine's features ([`avx512_runner`]), every signature also runs
+/// (WP-238), under [`executed_configs`]; each machine's outcome is
 /// reported with their number (`HOD_AVX512_REPORT`).
 #[test]
 fn zmm_grid() {
@@ -206,9 +224,18 @@ fn zmm_grid() {
         // The number: two labels can be equal (the label cuts the
         // feature string short).
         let name = format!("abi zmm_grid {n} {}", machine.label());
-        if let Some((tools, how)) = avx512_runner(&base, &machine, &name) {
-            // Every accepted signature runs (WP-238).
-            let how = format!("{how}; {} signatures", cases.len());
+        if let Some((mut tools, how)) = avx512_runner(&base, &machine, &name) {
+            // Every accepted signature runs (WP-238), under two of the
+            // six configurations ([`executed_configs`]), for the time.
+            tools.llc = executed_configs(&tools.llc, n);
+            let configs: Vec<String> = tools.llc.iter().map(|(c, _)| c.tag()).collect();
+            let how = format!(
+                "{how}; {} signatures; executed with llc {} ({} of {} configurations)",
+                cases.len(),
+                configs.join(" and "),
+                configs.len(),
+                base.llc.len()
+            );
             eprintln!("zmm grid run {n}, {}: starting ({how})", machine.label());
             // The time is printed, for the cost of a run under an
             // emulator; nothing depends on it.

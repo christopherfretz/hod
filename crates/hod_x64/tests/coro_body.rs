@@ -19,6 +19,8 @@
 //! - Symmetric transfer in constant stack: a million awaits between
 //!   coroutines of two objects (hod, `llc`, mixed) under a 1 MiB guest
 //!   stack.
+//! - Suspends in unreachable blocks (WP-262): no re-entry, the other
+//!   indices kept; plain and `-g`.
 //! - Shapes: nothing addresses `[rbx…]` between a wrapper's call and its
 //!   suspend, nor in the transfer; the stubs and the prologue's words.
 //! - Refusals by name.
@@ -341,12 +343,24 @@ fn run_ok(command: &mut Command, what: &str) {
 
 /// Pre-optimisation IR of C++ `source` by clang++ `major`, for x86-64.
 fn pre_opt(dir: &Scratch, major: u32, source: &str, name: &str) -> Option<PathBuf> {
+    pre_opt_with(dir, major, source, name, &[])
+}
+
+/// [`pre_opt`] with `extra` arguments (`-g`).
+fn pre_opt_with(
+    dir: &Scratch,
+    major: u32,
+    source: &str,
+    name: &str,
+    extra: &[&str],
+) -> Option<PathBuf> {
     let clang = versioned("clang++", major)?;
     let cpp = dir.write(&format!("{name}.cpp"), source);
     let ir = dir.join(format!("{name}.ll"));
     run_ok(
         Command::new(clang)
             .args(["-std=c++20", "-O0", "-S", "-emit-llvm", "-w", "-fPIC"])
+            .args(extra)
             .args(["-Xclang", "-disable-llvm-passes", "--target=x86_64-unknown-linux-gnu"])
             .arg(&cpp)
             .arg("-o")
@@ -584,6 +598,65 @@ fn symmetric_transfer_between_objects_runs_in_constant_stack() {
             for (run, out) in link_and_run_all(&toolchain, &dir, &name(what), &inputs, envs, &stack)
             {
                 assert_eq!(out, TRANSFER_WANT, "LLVM {major}: {run}");
+                runs += 1;
+            }
+        }
+    }
+    eprintln!("{runs} runs");
+}
+
+/// WP-262: coroutines with suspends in unreachable blocks (§7.6
+/// "Suspend points in unreachable blocks").
+const UNREACHABLE_SUSPENDS: &str = include_str!("data/coro/unreachable_suspends.cpp");
+
+/// What [`UNREACHABLE_SUSPENDS`] prints (the `llc` build's output,
+/// checked here as well).
+const UNREACHABLE_WANT: &str =
+    "n=5 m=2 done=000 trace: 31 39 31 33 39 1 1 103 1 7 8 7 8 7 8 7 242 7\n";
+
+/// WP-262: a suspend in an unreachable block (the final suspend of a
+/// body that never falls off its end, and one in the middle) has no
+/// re-entry in the stubs; the others keep their indices. The awaits
+/// suspend through `invoke`d wrappers, one of whose `await_suspend`
+/// throws into the body's handler, and through the `handle` form. hod's
+/// object, plain and with `-g` (`llvm-dwarfdump --verify` clean), prints
+/// what `llc`'s does, under every linker, plain and poisoned.
+#[test]
+fn suspends_in_unreachable_blocks_have_no_reentry() {
+    let dir = Scratch::new("x64-coro-unreachable");
+    let Some(toolchain) = Toolchain::x86_64(&dir) else { return };
+    let mut runs = 0;
+    for major in [19, 22] {
+        let name = |what: &str| format!("{what}{major}");
+        let Some(ir) = pre_opt(&dir, major, UNREACHABLE_SUSPENDS, &name("co")) else { continue };
+        let Some(ir_g) = pre_opt_with(&dir, major, UNREACHABLE_SUSPENDS, &name("co-g"), &["-g"])
+        else {
+            continue;
+        };
+        let text = std::fs::read_to_string(&ir).unwrap();
+        assert!(text.contains("invoke void @llvm.coro.await.suspend.void"), "LLVM {major}");
+        assert!(text.contains("invoke void @llvm.coro.await.suspend.handle"), "LLVM {major}");
+        let Some(llc) = opt_llc(&dir, major, &ir, &name("co-llc"), true) else { continue };
+        let reference =
+            link_and_run_all(&toolchain, &dir, &name("llc"), &[llc.as_path()], &POISONS[..1], &[]);
+        for (what, out) in reference {
+            assert_eq!(out, UNREACHABLE_WANT, "{what}");
+        }
+        let hod = hod_file(&dir, &ir, &name("co-hod"));
+        let hod_g = hod_file(&dir, &ir_g, &name("co-hod-g"));
+        if let Some(dwarfdump) = tool("llvm-dwarfdump") {
+            let ran = run_with(
+                Command::new(dwarfdump).arg("--verify").arg(&hod_g),
+                &[],
+                Duration::from_mins(2),
+            );
+            assert!(ran.success(), "LLVM {major}: {}{}", ran.stdout_text(), ran.stderr_text());
+        }
+        for (what, object) in [("hod", hod.as_path()), ("hod-g", hod_g.as_path())] {
+            for (run, out) in
+                link_and_run_all(&toolchain, &dir, &name(what), &[object], &POISONS, &[])
+            {
+                assert_eq!(out, UNREACHABLE_WANT, "{run}");
                 runs += 1;
             }
         }

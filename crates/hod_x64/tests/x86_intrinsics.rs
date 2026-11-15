@@ -694,7 +694,7 @@ fn rows_and_refusals_by_name() {
 /// execution test.
 const SYS_FEATURES: &str = "+cx8,+fxsr,+mmx,+sse,+sse2,+x87,+xsave,+xsaveopt,+xsavec,+xsaves,\
                             +rdrnd,+rdseed,+clflushopt,+clwb,+bmi,+bmi2,+crc32,+fsgsbase,+rtm,\
-                            +rdpid,+pku,+serialize,+shstk";
+                            +rdpid,+pku,+serialize,+shstk,+waitpkg";
 
 /// The features of the CPU model the execution test runs on (each one
 /// QEMU 10 implements in user mode; SSE3 to SSE4.2 because the C
@@ -804,6 +804,18 @@ const SYS_COMPILED: &[(&str, &str, &str)] = &[
     ),
     ("wrpkru", "call void @llvm.x86.wrpkru(i32 %a)\n  ret i64 0", "wrpkru"),
     ("serialize", "call void @llvm.x86.serialize()\n  ret i64 0", "serialize"),
+    // WAITPKG (§5.6.31): QEMU's user mode does not implement it.
+    (
+        "tpause",
+        "%r = call i8 @llvm.x86.tpause(i32 %a, i32 %a, i32 7)\n  %z = zext i8 %r to i64\n  ret i64 %z",
+        "tpause",
+    ),
+    (
+        "umwait",
+        "%r = call i8 @llvm.x86.umwait(i32 1, i32 0, i32 %a)\n  %z = zext i8 %r to i64\n  ret i64 %z",
+        "umwait",
+    ),
+    ("umonitor", "call void @llvm.x86.umonitor(ptr %p)\n  ret i64 0", "umonitor"),
     ("incsspd", "call void @llvm.x86.incsspd(i32 %a)\n  ret i64 0", "incsspd"),
     (
         "incsspq",
@@ -915,7 +927,9 @@ fn sys_declarations() -> String {
          declare void @llvm.x86.xend()\ndeclare void @llvm.x86.xabort(i8 immarg)\n\
          declare i32 @llvm.x86.xtest()\ndeclare i32 @llvm.x86.rdpkru()\n\
          declare void @llvm.x86.wrpkru(i32)\ndeclare void @llvm.x86.serialize()\n\
-         declare void @llvm.x86.incsspd(i32)\ndeclare void @llvm.x86.incsspq(i64)\n",
+         declare void @llvm.x86.incsspd(i32)\ndeclare void @llvm.x86.incsspq(i64)\n\
+         declare i8 @llvm.x86.tpause(i32, i32, i32)\ndeclare i8 @llvm.x86.umwait(i32, i32, i32)\n\
+         declare void @llvm.x86.umonitor(ptr)\n",
     );
     d
 }
@@ -1295,6 +1309,9 @@ const SYS_ALL: &[(&str, &str, &[&str], &str, &str)] = &[
     ("incsspq", "void", &["i64"], "shstk", "incsspq"),
     ("rdsspd", "i32", &["i32"], "shstk", "rdsspd"),
     ("rdsspq", "i64", &["i64"], "shstk", "rdsspq"),
+    ("tpause", "i8", &["i32", "i32", "i32"], "waitpkg", "tpause"),
+    ("umwait", "i8", &["i32", "i32", "i32"], "waitpkg", "umwait"),
+    ("umonitor", "void", &["ptr"], "waitpkg", "umonitor"),
 ];
 
 /// A function calling `llvm.x86.<name>` on its parameters (`xabort`'s
@@ -1408,4 +1425,126 @@ fn system_rows_and_refusals_by_name() {
     let wrong = "declare i32 @llvm.x86.rdtsc()\ndefine i32 @f() {\n  \
                  %r = call i32 @llvm.x86.rdtsc()\n  ret i32 %r\n}\n";
     assert_eq!(compile(wrong), Err(CgError::unsupported(hod_x64::x86::SIGNATURE)));
+}
+
+// ---- §5.6.31: the WAITPKG intrinsics (WP-267) ----
+
+/// Functions calling the three WAITPKG intrinsics on parameters and on
+/// constants (the form `<waitpkgintrin.h>`'s `_tpause` takes at `-O0`
+/// after inlining), under `waitpkg`.
+const WAITPKG: &str = "declare i8 @llvm.x86.tpause(i32, i32, i32)\n\
+    declare i8 @llvm.x86.umwait(i32, i32, i32)\ndeclare void @llvm.x86.umonitor(ptr)\n\
+    define i8 @tp(i32 %c, i64 %t) #0 {\n  %h = lshr i64 %t, 32\n  %hi = trunc i64 %h to i32\n  \
+    %lo = trunc i64 %t to i32\n  %r = call i8 @llvm.x86.tpause(i32 %c, i32 %hi, i32 %lo)\n  \
+    ret i8 %r\n}\n\
+    define i8 @uw(i32 %c, i32 %hi, i32 %lo) #0 {\n  \
+    %r = call i8 @llvm.x86.umwait(i32 %c, i32 %hi, i32 %lo)\n  ret i8 %r\n}\n\
+    define i8 @tc() #0 {\n  %r = call i8 @llvm.x86.tpause(i32 0, i32 0, i32 0)\n  ret i8 %r\n}\n\
+    define void @um(ptr %p) #0 {\n  call void @llvm.x86.umonitor(ptr %p)\n  ret void\n}\n\
+    attributes #0 = { \"frame-pointer\"=\"all\" \"target-features\"=\"+waitpkg\" }\n";
+
+/// The Intel-syntax lines of `object`'s code.
+fn objdump(object: &std::path::Path) -> Option<Vec<String>> {
+    let objdump = hod_testutil::tool("llvm-objdump")?;
+    let mut command = std::process::Command::new(objdump);
+    command.args(["-d", "-M", "intel", "--no-show-raw-insn", "--no-leading-addr"]).arg(object);
+    let outcome = hod_testutil::run_with(&mut command, &[], std::time::Duration::from_mins(1));
+    assert!(outcome.success(), "llvm-objdump: {}", outcome.stderr_text());
+    Some(
+        outcome
+            .stdout_text()
+            .lines()
+            .filter(|line| line.starts_with(char::is_whitespace) && !line.trim().is_empty())
+            .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect(),
+    )
+}
+
+/// The register choreography of each WAITPKG call in `lines`: for
+/// `tpause`/`umwait`, the destinations of the two instructions before it
+/// (sorted), the width of its operand and the instruction after it; for
+/// `umonitor`, the width of its operand.
+fn waitpkg_shapes(lines: &[String]) -> Vec<String> {
+    let width = |op: &str| if op.starts_with('r') && !op.ends_with('d') { 64 } else { 32 };
+    let mut shapes = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let mut words = line.split(' ');
+        let (m, op) = (words.next().unwrap_or(""), words.next().unwrap_or(""));
+        match m {
+            "tpause" | "umwait" => {
+                let mut before: Vec<&str> = lines[i - 2..i]
+                    .iter()
+                    .map(|l| {
+                        let mut w = l.split([' ', ',']);
+                        match (w.next(), w.next()) {
+                            (Some("mov"), Some(r @ ("edx" | "eax"))) => r,
+                            _ => "other",
+                        }
+                    })
+                    .collect();
+                before.sort_unstable();
+                let after = mnemonic(&lines[i + 1]);
+                shapes.push(format!("{m} {before:?} r{} {after}", width(op)));
+            }
+            "umonitor" => shapes.push(format!("{m} r{}", width(op))),
+            _ => {}
+        }
+    }
+    shapes
+}
+
+/// §5.6.31: hod's code of each WAITPKG call is `llc`'s (19 and 22): the
+/// deadline moved into `edx` and `eax` just before the instruction, the
+/// 32-bit control register, `setb` just after; `umonitor` of the 64-bit
+/// address register. The encodings are the encoder's (`hod_mc_x64`'s
+/// `tests/l1/state.rs` against `llvm-mc`).
+#[test]
+fn waitpkg_sequence_is_llcs() {
+    // In `@tp`, the high half (`lshr 32`) goes to `edx`: the register the
+    // `shr` wrote, read as 32 bits, is `mov edx`'s source.
+    let high_to_edx = |lines: &[String]| {
+        let shr = lines.iter().position(|l| l.starts_with("shr ")).expect("a shr");
+        let reg = lines[shr][4..].split(',').next().unwrap_or("");
+        let low = match reg.strip_prefix('r') {
+            Some(n) if n.starts_with(char::is_numeric) => format!("{reg}d"),
+            Some(n) => format!("e{n}"),
+            None => reg.to_string(),
+        };
+        let wait = lines.iter().position(|l| l.starts_with("tpause ")).expect("a tpause");
+        assert!(
+            lines[shr..wait].contains(&format!("mov edx, {low}")),
+            "no mov edx, {low}: {:#?}",
+            &lines[shr..=wait]
+        );
+    };
+    let want: Vec<String> = [
+        "tpause [\"eax\", \"edx\"] r32 setb",
+        "umwait [\"eax\", \"edx\"] r32 setb",
+        "tpause [\"eax\", \"edx\"] r32 setb",
+        "umonitor r64",
+    ]
+    .iter()
+    .map(ToString::to_string)
+    .collect();
+    for stress in [Stress::default(), Stress::ALL] {
+        if let Some(lines) = disassembly(WAITPKG, stress) {
+            assert_eq!(waitpkg_shapes(&lines), want, "hod {stress:?}: {lines:#?}");
+            // (Under stress the value passes through frame slots.)
+            if stress == Stress::default() {
+                high_to_edx(&lines);
+            }
+        }
+    }
+    let scratch = Scratch::new("x64-waitpkg");
+    for major in [22, 19] {
+        let Some(object) =
+            llc(&scratch, major, &format!("llc{major}"), &format!("{}{WAITPKG}", ll_header()))
+        else {
+            continue;
+        };
+        if let Some(lines) = objdump(&object) {
+            assert_eq!(waitpkg_shapes(&lines), want, "llc {major}: {lines:#?}");
+            high_to_edx(&lines);
+        }
+    }
 }

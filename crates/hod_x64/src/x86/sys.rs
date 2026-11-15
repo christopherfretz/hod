@@ -3,7 +3,8 @@
 //! of the non-vector headers (`<ia32intrin.h>`, `<fxsrintrin.h>`,
 //! `<xsaveintrin.h>` and its variants, `<immintrin.h>`'s `_rdrand*`,
 //! `<adcintrin.h>`, `<bmiintrin.h>`, `<bmi2intrin.h>`, `<crc32intrin.h>`,
-//! `<rtmintrin.h>`, ...), each as `llc -O0` writes it.
+//! `<rtmintrin.h>`, `<waitpkgintrin.h>` (WP-267, §5.6.31), ...), each as
+//! `llc -O0` writes it.
 //!
 //! **Owner: WP-190.** Tests: `tests/x86_intrinsics.rs`.
 //!
@@ -56,6 +57,7 @@ pub enum Feature {
     Pku,
     Serialize,
     Shstk,
+    Waitpkg,
 }
 
 impl Feature {
@@ -80,6 +82,7 @@ impl Feature {
             Feature::Pku => "pku",
             Feature::Serialize => "serialize",
             Feature::Shstk => "shstk",
+            Feature::Waitpkg => "waitpkg",
         }
     }
 
@@ -176,6 +179,10 @@ enum Op {
     Wrpkru,
     Incssp(Size),
     Rdssp(Size),
+    /// `tpause` or `umwait` of the control operand, the deadline (high,
+    /// low) in `edx:eax`; the result is CF.
+    Wait(fn(Reg) -> mc::Inst),
+    Umonitor,
 }
 
 /// The signature, the feature and the lowering of `which`, if it is one
@@ -270,6 +277,13 @@ fn row(which: Intrinsic<'_>) -> Option<(K, &'static [K], Option<Feature>, Op)> {
         I::X86Incsspq => (Void, I64, Some(F::Shstk), Op::Incssp(q)),
         I::X86Rdsspd => (Int(32), I32, Some(F::Shstk), Op::Rdssp(d)),
         I::X86Rdsspq => (Int(64), I64, Some(F::Shstk), Op::Rdssp(q)),
+        I::X86Tpause => {
+            (Int(8), &[Int(32), Int(32), Int(32)], Some(F::Waitpkg), Op::Wait(mc::tpause_r))
+        }
+        I::X86Umwait => {
+            (Int(8), &[Int(32), Int(32), Int(32)], Some(F::Waitpkg), Op::Wait(mc::umwait_r))
+        }
+        I::X86Umonitor => (Void, PTR, Some(F::Waitpkg), Op::Umonitor),
         _ => return None,
     })
 }
@@ -343,6 +357,9 @@ pub fn refusal(which: Intrinsic<'_>) -> &'static str {
         I::X86Incsspq => "intrinsic:llvm.x86.incsspq",
         I::X86Rdsspd => "intrinsic:llvm.x86.rdsspd",
         I::X86Rdsspq => "intrinsic:llvm.x86.rdsspq",
+        I::X86Tpause => "intrinsic:llvm.x86.tpause",
+        I::X86Umwait => "intrinsic:llvm.x86.umwait",
+        I::X86Umonitor => "intrinsic:llvm.x86.umonitor",
         _ => super::SIGNATURE,
     }
 }
@@ -589,6 +606,20 @@ fn lower<'a>(
             let ra = cx.use_reg(args[0])?;
             put(cx, mc::rdssp_r(size, gp(ra)));
             cx.finish(inst, ra)
+        }
+        Op::Wait(make) => {
+            let [c, hi, lo] = regs::<3>(cx, args)?;
+            let rd = cx.def_reg(inst)?;
+            put(cx, mc::mov_rr(Size::D, RDX, hi));
+            put(cx, mc::mov_rr(Size::D, RAX, lo));
+            put(cx, make(c));
+            put(cx, mc::setcc_r(Cond::B, gp(rd)));
+            cx.finish(inst, rd)
+        }
+        Op::Umonitor => {
+            let [p] = regs::<1>(cx, args)?;
+            put(cx, mc::umonitor_r(p));
+            Ok(())
         }
     }
 }

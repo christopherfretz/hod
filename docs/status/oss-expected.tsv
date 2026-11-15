@@ -1,0 +1,17 @@
+# What the real-project lanes expect besides "every test that passes under
+# llc passes under hod" (spec/harness.md "Real projects", "Expected
+# results"), read by `scripts/oss/oss-report.py` (check, unexpected,
+# status, census; oss-run.sh copies it beside its snapshot of the scripts).
+# One entry per line, nine tab-separated columns, none empty:
+#   <project> <target> <flavour> <mode> <test> fails <text> <reason> <spec section>
+# <target> aarch64, x86_64 or *; <flavour> O0, O0g or *; <mode> hod, strict
+# or *. `fails`: the test fails in that build. <text>: `-`, or a string the
+# test's output (the build's LastTest.log) must contain for the failure to
+# be the one the entry describes; another failure stays a regression.
+# A test that passes in the control and fails in the build is EXPECTED
+# when an entry matches it (and its text); a build where the control fails
+# too has no difference: the entry is moot there, not stale. The entry is
+# STALE, and fails the summary like a regression, when the test passes in
+# a build it matches or neither the control nor the build has the test;
+# the list only shrinks by an edit.
+abseil	x86_64	*	*	absl_symbolize_test	fails	Which is: "inline_func"	a call to an always_inline function is compiled out of line: the pc inline_func reads with `leaq 0(%rip)` is in inline_func, which the symbolizer names, not its caller; a difference where the control passes (native x86-64), none under qemu-x86_64 (the control fails too)	spec/cli.md "Always-inline"

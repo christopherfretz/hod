@@ -3682,7 +3682,9 @@ compared on x86-64, masked on AArch64), and the relocations of
 `.debug_info` as a sorted multiset of (kind, symbol). Each module is
 SAME (with its DIE count), PERMITTED (the §6.7 classes named: `sret`,
 `byval`, `realigned frame`, `split pubnames`, `(a) fallthrough inlined`,
-`(b) is.constant block`, `llc 19 blocks`), DIFFERS (the first
+`(b) is.constant block`, `llc 19 blocks`; `spec/dwarf.md` §6.30's
+`declared value` and §6.37's `value records`, `no frame pointer`,
+`unit range lists`), DIFFERS (the first
 difference; `-v` the whole of it), DECLINED or FAILED. `-j` at most 4.
 Exit status 1 when a module differs or fails. The evidence of a package;
 not a gate step.
@@ -3756,7 +3758,13 @@ missing required tool; else 0. 2 is a usage error.
 `debug kiln` runs kiln's own debugger tests (`<kiln repo>/tests/debuginfo/
 *.cpp` with `//@ expect: debugger`; kiln's `spec/harness.md`) with kiln's
 directives `std:` (default `c++26`), `args:`, `gdb:`, `lldb:`,
-`gdb-check:`, `lldb-check:`. Each is compiled and linked by `kiln++
+`gdb-check:`, `lldb-check:`. In `args:` the placeholders of kiln's runner
+are expanded (WP-259), relative to the repository's root: `%{test_dir}`
+is the test's directory (`tests/debuginfo`), `%{repo_root}` is `.`,
+`%{resource_dir}` is `resource`; any other (`%{gcc_toolchain}`,
+`%{libcxx_modules}`) fails the test's compile with both writers, naming
+it (test: `debug::kiln::tests::expands_kiln_placeholders`). Each is
+compiled and linked by `kiln++
 --llvm-dir=<dir> -std=<std> -fno-crash-diagnostics <args> -O0 -g`, from
 the kiln repository's root with the test's relative path (the checks name
 `tests/debuginfo/...`), twice: with LLVM 22's installation (`llc`), and
@@ -4095,6 +4103,53 @@ fold and `debug::permitted` has no class yet:
   class replaces any further folding in the self-assignment's numbering
   (which stays as above): `SelectionDAG`'s folder is not emulated piece by
   piece.
+- hod-only, a **dead store** (`dead-store`, `case::dead_store`, WP-266):
+  a pair (F, L) left unclassified and not a selector split, where hod has
+  rows and the oracle (`SelectionDAG`) none, the two other selectors are
+  built as for a selector split, `FastISel` gives evidence with at least
+  one row at L in F, and `GlobalISel`'s build printed its fallback
+  warning for F itself (`Instruction selection used fallback path for
+  F`, read from its `stderr` by function name: its rows in F are
+  `SelectionDAG`'s, it gave no answer of its own); and, by the module's
+  IR facts (`permitted::IrFacts::dead_store`, the instructions of F at
+  line L of the pair's file in blocks with a predecessor, any column),
+  the line is a statement without effect: every instruction there is a
+  load, a store, an `icmp`/`fcmp`, a cast or a binary operation (no call,
+  no invoke, no terminator, no intrinsic, no other opcode), none
+  `volatile` or `atomic`, and at least one store is of `poison`/`undef`
+  or to the pointer a load of the line reads. The IR condition stands in
+  for `GlobalISel`'s row only where `GlobalISel` gave no answer: a
+  `GlobalISel` that selects F itself decides alone (a row: selector
+  split; none: a finding). Any piece missing (a build or link failed,
+  `GlobalISel` did not fall back on F, a fallback on another function
+  only, the IR not read, F not in it) and the pair stays unclassified. It
+  never applies to llc-only pairs. Each pair is printed with its evidence
+  (`dead-store: seed S F at prog.c:L: rows hod H selection-dag 0
+  fast-isel A global-isel fell back ("warning: Instruction selection used
+  fallback path for F"); the IR: loads, stores, compares, casts, <a store
+  of poison | a store to the pointer a load of the line reads>`), counted
+  with the selector splits in the summary and under its own name in the
+  budget's `set-apart` column and "Set apart" census. Why it is LLVM's
+  configurations that differ and not hod that is wrong: such a store
+  changes nothing in memory (`poison` may be anything; the reloaded value
+  is the one there); `SelectionDAG` deletes it (a store of `undef`, a
+  store of a load of the same address), while `FastISel` and
+  `GlobalISel` keep its code and row as hod does (`spec/dwarf.md` §5.10,
+  last paragraph). Evidence: the 1.0 candidate's budget (hod 02fe2d02),
+  x86-64 LLVM 22 debug: seed 220612 func_1 prog.c:713 `l_2459 |=
+  (&g_1494[0] == &g_1494[2]);` (`icmp eq ptr` of two constants, `zext`, a
+  load of `%277`, `zext`, `or`, `trunc`, a store to `%277`) and seed
+  220916 func_23 prog.c:718 `(*l_161) = (g_168 = 0x8.564011p+55);`
+  (`store i32 poison` to `@g_168`, a load, `store float poison`):
+  `is_stmt` rows hod / `SelectionDAG` / `FastISel` 1/0/1 at each, and
+  `GlobalISel` fell back on func_1 (a call with a `byval` argument at
+  line 346) and on func_23 (a `volatile` 24-bit load at line 789), so its
+  0 rows were `SelectionDAG`'s. The same two statements alone in a
+  function `GlobalISel` selects (`fuzz_real`
+  `dead_stores_without_fallback_are_a_selector_split`, clang and `llc`
+  22; LLVM 19 the same by hand) have rows under `FastISel` and `GlobalISel` and none under
+  `SelectionDAG`: a selector split, which the fallback hid
+  (`spec/landed/harness/WP-266.md`).
 
 The summary adds the
 comparisons of every seed,
@@ -4209,6 +4264,27 @@ of `--debug`'s pairs ("Debug"):
   finding's detail>`. Evidence: the 21 findings of the 1.0 budget's
   x86-64 LLVM 19 `abi` slices (seeds 125392 to 125843 whole, 126005 to
   126118 `--mix`), each set apart on a re-run (WP-249).
+  **At `--mix`'s self-check** (WP-266, `int128::decide_self_check`):
+  where `llc`'s two halves disagree with its whole module (an ERROR of
+  the harness otherwise), the class is asked under the same conditions
+  (the `abi` profile, x86-64, LLVM 19, the module has the shape), with
+  the same two programs, gcc's of `prog.c` and `llc` 22's of the whole
+  module. The seed is set apart (no hod program is judged; `set-apart`
+  is not `agree`) when those two end the same way and print exactly the
+  same, and the oracle's program (`llc` 19, the whole module) does not:
+  two other compilers agree and `llc` 19 alone differs (its callee's
+  `va_arg` reads `r9`, which its caller left unset, so its output
+  changes from run to run and its halves and its whole module print
+  different garbage). Otherwise the ERROR stays, its detail ending `;
+  not llc19-int128-last-register: <why>` when the shape was there. The
+  line: `llc19-int128-last-register: seed S: i128 at <site> with one
+  integer register left; gcc -O0 (prog.c) and llc-22 -O0 (the module)
+  print the same (B bytes, <end>) and llc-19's whole module does not;
+  llc-19: llc's two halves disagree with the whole module: <detail>`.
+  Evidence: seed 226098 of the 1.0 candidate's budget (x86-64 LLVM 19
+  `abi` `--mix`, `call @callee_0` argument 7): gcc and `llc` 22 print the
+  same 1377 bytes, `llc` 19 1387 bytes differing from byte 266 and from
+  one run to the next.
 
 ### Findings
 
@@ -4363,6 +4439,15 @@ when their tools are missing, whatever `HOD_REQUIRE_TOOLS` says:
   19, `llc` 22, x86-64 gcc): the 1.0 budget's seeds 125392 (whole) and
   126005 (`--mix`) at x86-64 LLVM 19 are `set-apart` as
   `llc19-int128-last-register` with their sites, no finding;
+- `llc19_int128_self_check_is_set_apart` (the same, WP-266): seed 226098
+  (`--mix`), whose self-check fails, is `set-apart` with the self-check's
+  evidence line, no error;
+- `dead_stores_are_set_apart` (csmith, clang and `llc` 22, x86-64 gcc,
+  WP-266): seeds 220612 and 220916 at x86-64 LLVM 22 `--debug` print
+  their `dead-store` lines, no finding;
+- `dead_stores_without_fallback_are_a_selector_split` (clang and `llc`
+  22, x86-64 gcc, WP-266): the two statements alone, built by hod and the
+  three selectors, are a selector split, never `dead-store`;
 - `a_wrong_convention_with_the_shape_stays_a_finding` (the same and
   clang, `llvm-extract` 22): the swapping hod on abi seed 2 `--mix`
   (x86-64; the shape is there at LLVM 19) is a finding at LLVM 19 (its
@@ -4370,7 +4455,14 @@ when their tools are missing, whatever `HOD_REQUIRE_TOOLS` says:
   is not asked).
 
 Unit tests: `int128::tests` (the shape, where the class applies, the
-decision: set apart only when both agree with hod) and
+decision: set apart only when both agree with hod; at the self-check,
+only when both agree with each other and not with `llc` 19's whole
+module), `case::tests::dead_stores` and `permitted::tests::dead_stores`
+(`dead-store`: the two seeds' statements set apart; a call at the line,
+a `volatile` store, a store to a pointer no load of the line reads, a
+store of a constant, `FastISel` without a row, `GlobalISel` without
+fallback with or without a row, a fallback on another function only, a
+failed build: not) and
 `case::tests::csmith_writes_only_in_the_seed_directory` (a csmith
 stand-in writes its `platform.info` in the seed's directory, not in the
 test's or the workspace's). The tests that run csmith also check that
@@ -4430,7 +4522,8 @@ other build system is an error naming the row.
   100 GB, for a test that reserves address space it never touches),
   under the row's `test_timeout`, ctest
   with `CTEST_PARALLEL_LEVEL` 4 unless set, with `TMPDIR` and
-  `TEST_TMPDIR` in the tree.
+  `TEST_TMPDIR` in the tree. Every phase runs with a core size limit of
+  exactly 1 byte (below, "A phase's leftovers").
 - **C.** A `c = "kiln"` row compiles its C through `kiln-cc` and kiln's
   C driver in every mode (hod in the hod modes); a `c = "clang"` row
   gives C to `c_compiler` directly, unlogged.
@@ -4472,8 +4565,11 @@ and `examples`.
 flavour: `llc`, then `hod`, then `strict` when no module was declined
 or failed in `hod`; a `hod` or `strict` tree is pruned to its logs,
 report and kept modules unless a test that passes under `llc` does not
-pass in it (that tree is kept whole and the test is listed in
-`<findings>/TEST-REGRESSIONS.txt`). Then `oss-report.py collect` copies
+pass in it and the list of expected results does not name it (that tree
+is kept whole; `oss-report.py unexpected <project> <flavour> <mode>`
+prints those tests). After each flavour, `oss-report.py check` rewrites
+the three result files from every report ("Expected results", below).
+Then `oss-report.py collect` copies
 the kept modules into `<findings>/<project>/<reason>/<n>.ll` (at most
 `$HOD_OSS_KEEP`, default one, per reason per project) with `<n>.cmd` (the compile command, its
 directory, hod's arguments and diagnostic) and a `README.md` line per
@@ -4490,6 +4586,66 @@ kiln commit of the row's builds, each report's `kiln`: `$HOD_OSS_KILN`,
 else the workspace's kiln checkout), then the refusal census of the
 hybrid builds (per reason: `first`, `census`, the builds, the most
 frequent functions) and the objects kiln did not offer, by trigger.
+
+**Expected results** (WP-263). Some tests fail under hod by design
+where the control passes (a difference the specification documents,
+such as `spec/cli.md` "Always-inline", "Code addresses"). The list
+`docs/status/oss-expected.tsv` (`oss-report.py --expected <file>`
+names another; oss-run.sh copies it into its snapshot of the scripts)
+is tab-separated, `#` lines and blank lines ignored, one entry per
+line, nine columns, none empty:
+
+```
+<project>  <target>  <flavour>  <mode>  <test>  fails  <text>  <reason>  <spec section>
+```
+
+`<target>` is `aarch64`, `x86_64` or `*`: the architecture the
+programs are built for, `x86_64` for a `--target x86_64` report and the
+report's `host` for a native one (the hosted x86-64 lane builds
+natively); `<flavour>` is `O0`, `O0g` or `*`; `<mode>` is `hod`,
+`strict` or `*`; `fails` is the only outcome; `<text>` is `-` or a
+string the test's output (its section of the build's
+`Testing/Temporary/LastTest.log`) must contain for the failure to be
+the one the entry describes. A second entry for the same first five
+columns, another value or a missing column is a usage error (exit
+status 2). For every `hod` and `strict` build with a control, and each
+test passing in the control and not in the build ("worse"), and each
+entry matching the build (project, target, flavour, mode):
+
+- **expected**: a worse test that an entry names, present in the
+  build's results, whose output contains the entry's text (or the text
+  is `-`). Listed in `<findings>/TEST-EXPECTED.txt` as `<project>
+  <flavour> <mode>: <test>: expected (<reason>; <spec>)`, on the pages
+  as `<mode>: n expected (<test> (note n))` with the reason in the note,
+  and in the census's section "Expected results".
+- **regression**: any other worse test, also one an entry names whose
+  text is not in its output (another failure: marked `(an expected
+  entry's text is not in its output)`) or that the build does not have.
+  Listed in `<findings>/TEST-REGRESSIONS.txt` as `<project> <flavour>
+  <mode>: <tests>`.
+- **stale**: when the control and the build both have test results, an
+  entry whose test passes in the build (the entry says it fails), or
+  that neither the control nor the build has. Listed in
+  `<findings>/TEST-STALE.txt` as `<project> <flavour> <mode>: <test>:
+  stale entry: <why>`; the list only shrinks by an edit.
+- **moot**: the test does not pass in the control nor in the build (the
+  x86-64 cross lane, where qemu-x86_64 fails the control too): there is
+  no difference to expect, and the entry is neither expected nor stale
+  there; the census lists it as `no difference: the control fails too`.
+- A build or test run that did not happen (no results on either side),
+  or a project the run did not build, tests no entry.
+
+The three files are under `<findings>` (`<findings>/x64/` for
+`--target x86_64`) and are rewritten whole by `oss-report.py check`
+from every report of the root (`--root` to name roots), which exits 1
+when a regression or a stale entry is left, else 0. The hosted lane's
+summary job (`.github/workflows/oss.yml`) runs `check` over the merged
+artifacts of every project, prints the expected differences, and fails
+when `TEST-REGRESSIONS.txt` or `TEST-STALE.txt` is not empty.
+`scripts/oss/oss-report-selftest.py` checks these rules on synthetic
+reports (expected, unexpected, another failure, no entry, stale by a
+pass, stale by a missing test, control fails too, another target, a
+malformed list).
 
 **Reruns.** `oss-report.py rerun <project> <flavour> <mode> <test>
 [--times N]` runs one ctest test of a kept tree N times (default 2) under
@@ -4537,6 +4693,48 @@ gate's tests) wait for a slot for as long as the builds run.
 **Clean trees.** Every build empties its tree first, so a tree kept or
 cut off half-built by an earlier build (objects of another kiln or hod,
 which make would not rebuild) is never built on.
+
+**No core dumps** (WP-268). Each phase's leader starts with
+`RLIMIT_CORE` set to 1 byte, soft and hard, which its children inherit.
+A death test's child crashes on purpose. When `core_pattern` names a
+file, 1 byte is below an ELF dump's minimum size and nothing is written,
+as with 0: this host's limit is already 0, so local results are
+unchanged. When `core_pattern` is a pipe, a limit of 0 does not help:
+core(5) says "RLIMIT_CORE will be ignored if the system is configured
+to pipe core dumps to a program" and "The RLIMIT_CORE limit is not
+enforced for core dumps that are piped to a program". The value 1 is
+the kernel's exception. Linux v6.12 `fs/coredump.c`, in the pipe
+branch: `if (cprm.limit == 1) { ... coredump_report_failure("RLIMIT_CORE
+is set to 1, aborting core"); goto fail_unlock; }`. So the host's
+handler is never started. The status of the crashing process is
+unchanged (SIGABRT gives 134). `oss-run.sh` logs `core_pattern` and the
+inherited soft and hard core limits once per run, and each build's
+start line also gives the load, the available memory in MB and the
+free disk in GB.
+
+**A phase's leftovers** (WP-268). Configure, the build and the tests each
+run through `projects.py run-phase`, as the leader of a session of their
+own (the tests' limit, the row's `test_timeout`, is the phase's: SIGTERM
+to the session's process group at the limit, SIGKILL 10 s later, status
+124 as `timeout(1)` gives). When the leader has exited, every process
+still in the session, or carrying the phase's tag (`HOD_OSS_PHASE_TAG`,
+unique per phase run) in its environment, is a leftover: it is named in
+the phase's log (`oss-build: left running after the test phase: <name>
+(pid, CPU seconds, the signal that ended it): <args>`), sent SIGTERM,
+and SIGKILL after 10 s, and the phase's line is appended to the tree's
+`leftovers.jsonl` (`phase`, `rc`, `timed_out`, `count`, `names`,
+`processes`). The leader stays unreaped until the sweep is over, and
+each process is signalled through a pidfd after its membership is
+checked again, so the sweep reaches no process outside the phase.
+`report.json` carries `leftovers` (`count`, `names`, `phases`: per phase
+`count` and `names`; null for a tree from before WP-268), the lane's
+line for the phase ends with `; N left running, killed: <names>`, and
+the status and census pages show it beside the tree's test counts.
+Leftovers are the project's behaviour, not a verdict: the phase's status
+is the leader's, and a control's leftovers are shown as plainly as a hod
+build's. Without the sweep, a test's child that outlives ctest (a test
+ctest timed out kills only the test's own process) keeps running into
+the next build of the project.
 
 **Hosted.** `.github/workflows/oss.yml` runs `oss-run.sh` per project on
 the `ubuntu-24.04` and `ubuntu-24.04-arm` runners (by hand or on an

@@ -1739,8 +1739,10 @@ that refused it before.
   holding a symbol's or a block's address is false.
 - **The operands of folded `is.constant` and `objectsize`.** `llc`'s IR
   pass (`LowerConstantIntrinsics`; in LLVM 22 inside
-  `pre-isel-intrinsic-lowering`) replaces those calls by constants and
-  folds branches on them; it deletes nothing else. SelectionDAG then
+  `pre-isel-intrinsic-lowering`) replaces those calls by constants,
+  simplifies their users, folds branches on them and deletes the blocks
+  that leaves unreachable: §5.6.8 "Folded constants and the blocks they
+  remove" (WP-261, both targets, `hod_cg::const_fold`). SelectionDAG then
   builds each block's nodes and deletes every node nothing uses that has
   no effect, recursively (a non-volatile load included); a value used in
   another block, or by a `phi`, is exported and stays. So in a function
@@ -1749,12 +1751,11 @@ that refused it before.
   emit an instruction that has no effect (the driver's `has_no_effect`
   set), is not used outside its block or by a `phi` by any instruction
   but a folded call, and whose users in its block are all not emitted
-  (`tail::begin`, one backward pass per block; `target::lower` returns at
-  once for them). GCC's `bcp-1.c` (`__builtin_constant_p(p[123456])`
+  (`hod_cg::const_fold`, one backward pass per block; `target::lower`
+  returns at once for them). GCC's `bcp-1.c` (`__builtin_constant_p(p[123456])`
   with `p` null) is the case: the load is not run. The same holds for
-  `objectsize`'s pointer operand. Not modelled: the blocks `llc` deletes
-  after folding a branch on the result (hod emits them; they never run).
-  In functions without these calls hod still skips only an instruction
+  `objectsize`'s pointer operand. Once a branch folds, the uses §5.6.8
+  removes do not count. In functions without these calls hod still skips only an instruction
   nothing uses (§4.7), not its operands; `llc` deletes such dead chains
   everywhere, a known difference for loads through invalid pointers in
   dead code.
@@ -2961,6 +2962,126 @@ too since WP-254; `x64:inline-asm` is retired).
 
 Evidence: `crates/hod_x64/tests/intrinsic.rs` and `tests/barrier.rs`,
 summarized in `spec/landed/codegen/WP-128.md`.
+
+##### Folded constants and the blocks they remove (WP-261)
+
+Both targets; `hod_cg::const_fold`, run by the driver's
+`mark_reachable` for a function that calls `llvm.is.constant` or
+`llvm.objectsize` (any other function costs a look at its call sites
+and is emitted as before). `llc` runs the IR pass
+`LowerConstantIntrinsics` at every optimization level before
+instruction selection (LLVM 19 in `addIRPasses`, LLVM 22 in
+`pre-isel-intrinsic-lowering`; both behave the same in every case
+below). hod repeats its decisions, in its order:
+
+1. **The constants.** Each call in a block reachable from the entry, in
+   reverse post-order of the blocks (successors in the terminator's
+   order), becomes its constant: `is.constant` is `isManifestConstant`
+   (above), `objectsize` is hod's own value, `-1` (`min` false) or `0`
+   (`min` true). **Known gap:** `llc` evaluates `objectsize`
+   (`lowerObjectSizeCall` with `MustSucceed`): of an `alloca [16 x i8]`
+   it gives 16, of a global `[10 x i8]` 10; hod gives `-1`. hod folds
+   branches with the value it computes at run time, so an arm it removes
+   is dead in hod's object, and nothing it emits was not emitted before;
+   where `llc` knows the size, the two keep different arms. The
+   evaluator is a follow-up.
+2. **The users.** The users of a replaced value are simplified
+   recursively as `replaceAndRecursivelySimplify` does with
+   `InstSimplify`, one call at a time, each instruction at most once per
+   call. hod models (integers of at most 64 bits): `add`, `sub`, `mul`,
+   `and`, `or`, `xor`, `shl`, `lshr`, `ashr` of two constants;
+   `and x, 0`, `or x, -1`, `mul x, 0`, `shl/lshr/ashr 0, x`,
+   `ashr -1, x` (a constant), and `x op 0` / `and x, -1` / `mul x, 1`
+   (the value `x`); `x op x` for `xor`, `sub` (0), `and`, `or` (`x`);
+   `zext`, `sext`, `trunc`; `icmp` of two constants, of `x` with the
+   bounds (`ult 0`, `uge 0`, `ugt max`, `ule max`, and the signed four,
+   either side), of `x` with itself, and `icmp eq i1 x, true` /
+   `ne i1 x, false` (`x`); `select` on a constant (the chosen operand),
+   or of two equal operands; `freeze` of a constant; a `phi` whose
+   remaining entries are one constant, or one value with no `undef`
+   entry. hod's IR keeps no `nsw`/`nuw`/`exact` flags, so a fold that
+   would wrap or lose bits (where a flag would make the result poison)
+   is not a constant for hod; neither are `poison`, `undef`, a constant
+   expression or a call (an `is.constant` of a folded value included).
+   Not modelled, and so kept by hod where `llc` may fold further:
+   `InstSimplify`'s known-bits and range reasoning, divisions,
+   pointers, vectors. A value that goes through memory does not fold
+   (`llc` does not either).
+3. **The branches.** A conditional `br` whose condition became `true`
+   or `false` becomes a `br` to the chosen block (only `br`: a `switch`
+   on a folded value stays, as in `llc`); the other block loses its
+   `phi` entry for the edge, and a `phi` left with one value
+   (`hasConstantValue`) is that value from then on (its users are not
+   simplified again).
+4. **The blocks.** If a block so lost its last predecessor (counting
+   every terminator that names it, in reachable blocks or not), `llc`
+   runs `removeUnreachableBlocks`: hod walks the function from the entry
+   as `markAliveBlocks` does (depth first, successors pushed in order),
+   and in each block reached: a call through `undef`/`poison` or a
+   non-volatile store to `undef`/`poison` ends the block there; a call
+   that does not return (`noreturn` on the call or the callee, or
+   `llvm.trap`, `llvm.ubsantrap`, `llvm.eh.sjlj.longjmp`; not
+   `musttail`) ends it after the call unless `unreachable` follows; a
+   `br` on a constant (also one in the IR from the start), a `br` with
+   both destinations equal, and a `switch` on a constant become a `br`
+   (`ConstantFoldTerminator`). The blocks not reached are deleted.
+   Otherwise `llc`'s `UnreachableBlockElim` deletes the blocks no
+   longer reachable over the rewritten branches.
+
+What hod emits: a deleted block is an unreachable block (§6.1: no code,
+no relocation, no call-site entry, its landing pad gone with it when no
+emitted `invoke` names it, its `phi` inputs never stored, no line row,
+no lexical-block range, its `#dbg_declare`/`#dbg_value` records gone,
+its address, if taken, the function's trap as for every unreachable
+block). A rewritten terminator is lowered as the `br` it became (a jump,
+or nothing when its block comes next, no `nop` row: it is not a branch
+on a constant any more, §5.10 of `spec/dwarf.md` does not apply; where
+the line has no other code, `llc` x86-64 has no row either and `llc`
+AArch64 keeps a `b` to the next instruction there, §5.7 P1), and
+stores the `phi`s of its one edge; a block ended early lowers
+`unreachable` in place of the rest. The instructions `SelectionDAG`
+deletes follow §5.5.1 "WP-084", with the uses in deleted blocks, by
+instructions not emitted, by a rewritten terminator's condition and by
+`phi` entries of removed edges not counted, and a folded call nothing
+emitted uses left out too. A function in which no branch folds keeps
+§5.5.1's rule exactly.
+
+Refused by name, in a function where step 4 runs (each makes `llc`
+rewrite something hod does not model): `intrinsic:const-fold-null-access`
+(a store to, or a call or `invoke` through, `null`: `llc` ends the block
+unless the function has `null_pointer_is_valid`, which hod's IR does not
+keep; an `invoke` through `undef` too),
+`intrinsic:const-fold-nounwind-invoke` (`llc` turns an `invoke` of a
+`nounwind` callee into a call and drops the unwind edge),
+`intrinsic:const-fold-noreturn-invoke` (an `invoke` of a `noreturn`
+callee whose normal destination does not start with `unreachable` gets
+a new one), `intrinsic:const-fold-indirectbr` (an `indirectbr` on a
+constant `blockaddress`).
+
+Decisions, by experiment with `llc` 19 and 22 (x86-64 `-O0`, AArch64
+`-O0 -global-isel=0 -fast-isel=0`; `spec/landed/codegen/WP-261.md`):
+- `blockaddress` of a deleted block: `llc` writes `1` (LLVM replaces
+  the address of a deleted block by `inttoptr 1`); hod writes the
+  address of the function's trap, as for every unreachable block whose
+  address is taken (§9.6). No symbol differs; a known difference in
+  value.
+- `indirectbr` and `callbr` in a deleted block: their targets lose a
+  predecessor and are deleted when nothing else reaches them, as in
+  `llc` (same undefined symbols).
+- `switch` on a folded value in a function where step 4 does not run:
+  kept with both arms, as `llc`.
+- `musttail`: a `noreturn` `musttail` call does not end its block.
+- An `alloca` whose only use is in a deleted block: the frame is the
+  same as for the IR with the block deleted by hand (identical `.text`).
+- `#dbg_declare` in a deleted block: the variable has no DIE in either
+  writer's output, nor its lexical block.
+- `llvm.expect`: hod's reader replaces it by its first operand, so hod
+  folds through it where `llc` (whose `InstSimplify` does not) keeps
+  both arms; kiln and clang do not write it at `-O0` (none in the
+  corpus). A known difference in the safe direction (hod references
+  less).
+- `llvm.assume(false)`: hod's reader drops the call, so a block it ends
+  in `llc` is not ended in hod. Not seen in the corpus.
 
 #### 5.6.9 ABI follow-ups (WP-140)
 
@@ -4360,15 +4481,16 @@ to the result's slot.
    headers write, among them `cmpccxadd*`, `enqcmd*`, `invpcid`,
    `directstore*` (`_directstoreu_*`)/`movdir64b`, `monitorx`/`mwaitx`, `ptwrite*`, `aadd*`/
    `aand*`/`aor*`/`axor*`, `rdpru`, the `uintr` ones (`senduipi`,
-   `testui`, `clui`, `stui`), `urdmsr`/`uwrmsr`, `umonitor`/`umwait`/
-   `tpause`, `wbinvd`, `wbnoinvd`, `xresldtrk`/`xsusldtrk`,
+   `testui`, `clui`, `stui`), `urdmsr`/`uwrmsr`, `wbinvd`, `wbnoinvd`,
+   `xresldtrk`/`xsusldtrk`,
    `clrssbsy`, `rstorssp`, `saveprevssp`, `setssbsy`, `wrss*`/`wruss*`,
    `cldemote`, `clzero`, the `lwp` ones (`llwpcb`, `slwpcb`, `lwpins*`,
    `lwpval*`) and `tbm.bextri.*` (clang 19 only). AArch64
    refuses every `llvm.x86.*` name.
 
 Evidence: `spec/landed/codegen/WP-173.md` for the rules this reuses,
-`spec/landed/codegen/WP-190.md` for these.
+`spec/landed/codegen/WP-190.md` for these. `<waitpkgintrin.h>`
+(`umonitor`, `umwait`, `tpause`) moved from (3) to §5.6.31.
 
 #### 5.6.30 The hardening pieces together (WP-194)
 
@@ -4413,6 +4535,27 @@ own registers, so no combination is refused for being one.
    is the same as `llc`'s for every flag set measured.
 
 Evidence: `spec/landed/codegen/WP-194.md`.
+
+#### 5.6.31 The WAITPKG intrinsics (WP-267)
+
+`<waitpkgintrin.h>`'s three calls, in `crates/hod_x64/src/x86/sys.rs`
+with §5.6.29's rows (3 `hod_ir` `Intrinsic` members, matrix rows
+`never(X64_ONLY)` / `on(X86_SYS)`), under §5.6.29's signature and
+feature rules. All three need `waitpkg` in the function's
+`target-features` (no other feature implies it); without it each is
+refused by `intrinsic:` and its LLVM name, as `llc` 19 and 22 refuse
+it ("Cannot select").
+
+| intrinsic | lowering |
+|---|---|
+| `i8 @llvm.x86.tpause(i32 ctrl, i32 hi, i32 lo)` | `mov edx, hi; mov eax, lo; tpause ctrl` (`66 0F AE /6`, the 32-bit register form), then `setb` into the result's register: the result is CF (the OS time limit ended the wait); bits 8 to 63 unspecified |
+| `i8 @llvm.x86.umwait(i32 ctrl, i32 hi, i32 lo)` | as `tpause`, `umwait ctrl` (`F2 0F AE /6`) |
+| `void @llvm.x86.umonitor(ptr p)` | `umonitor p` (`F3 0F AE /6`, the 64-bit register form, no address-size prefix) |
+
+This is `llc -O0`'s sequence (19 and 22) apart from register choice.
+The instructions fault on a CPU without WAITPKG and QEMU's user mode
+does not implement them: the tests compile and link them, they do not
+run them. Evidence: `spec/landed/codegen/WP-267.md`.
 
 #### 5.6.33 x86 vector intrinsics past SSSE3 (WP-202, WP-207)
 
@@ -6045,6 +6188,27 @@ exit:                           after the epilogue, with the other tail exits:
   program crashes once the freed frame is poisoned (the seed's promise
   does that itself; an `oracle-skip` of `spec/harness.md`). hod's
   program prints the expected output.
+
+*Suspend points in unreachable blocks* (WP-262). The plan numbers every
+`coro.suspend` of the body, reachable or not (instruction order, the
+final suspend last), and `coro_setup` gives each a re-entry label. A
+suspend whose block the driver does not emit (a block without a path
+from the entry: the final suspend of a body that never falls off its
+end and whose `unhandled_exception` does not return, a suspend after a
+`goto` past it, or one in any other block the driver does not reach)
+gets no code, so its label is never bound. Such a suspend's `coro.save`
+never runs either (it is in the same block, or in a block that leads
+only to it, which is then not emitted either; with an `invoke`d
+wrapper, the suspend is in the invoke's normal destination), so no
+frame ever holds its index. The rule: the stubs dispatch only to the
+re-entry labels of the suspends that were emitted (`FnCx::coro_reentry`
+records the emission, `FnCx::coro_reentries` lists only those); the
+indices of the others are unchanged, and an index no emitted suspend
+stores reaches the stub's trap. "Emitted" is the driver's own decision
+(whatever block or instruction it skips), not a second reachability
+analysis. Before WP-262 the dispatch branched to the unbound labels and
+the function was an internal error ("a label that code refers to was
+never bound").
 
 *Hooks.* `Target::CORO_BODIES`, `Target::coro_stubs`,
 `Target::coro_dispatch`, `Target::coro_transfer`; `FnCx::coro_*` for the

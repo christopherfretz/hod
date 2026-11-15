@@ -185,9 +185,24 @@ pub struct Int128SetApart {
     pub finding: String,
 }
 
+/// [`Int128SetApart::program`] of a seed set apart at `--mix`'s self-check
+/// ([`decide_self_check`]): no hod program was judged.
+pub const SELF_CHECK: &str = "llc's halves";
+
 impl Int128SetApart {
     /// The line of the summary and the budget's log.
     pub fn line(&self, seed: u64) -> String {
+        if self.program == SELF_CHECK {
+            return format!(
+                "{LLC19_INT128}: seed {seed}: i128 at {} with one integer register left; gcc -O0 \
+                 (prog.c) and llc-{NEWER_LLVM} -O0 (the module) print the same ({} bytes, {}) and \
+                 llc-{DEFECT_LLVM}'s whole module does not; llc-{DEFECT_LLVM}: {}",
+                self.site,
+                self.bytes,
+                super::case::ended(self.end),
+                self.finding
+            );
+        }
         format!(
             "{LLC19_INT128}: seed {seed}: i128 at {} with one integer register left; gcc -O0 \
              (prog.c) and llc-{NEWER_LLVM} -O0 (the module) print what {} printed ({} bytes, {}); \
@@ -234,6 +249,40 @@ pub fn decide(
     })
 }
 
+/// The decision at `--mix`'s self-check (WP-266): `llc` 19's two halves
+/// disagree with its whole module (`detail`); `oracle` is the whole
+/// module's output. `Ok` sets the seed apart when gcc's and `llc` 22's
+/// programs end the same way and print exactly the same, and the oracle's
+/// differs from them: two other compilers agree with each other and `llc`
+/// 19 alone differs. `Err` says why not.
+pub fn decide_self_check(
+    site: &str,
+    detail: &str,
+    oracle: &Output,
+    gcc: Result<&Output, &str>,
+    newer: Result<&Output, &str>,
+) -> Result<Int128SetApart, String> {
+    let gcc = gcc.map_err(|why| format!("no evidence from gcc -O0: {why}"))?;
+    let newer = newer.map_err(|why| format!("no evidence from llc-{NEWER_LLVM}: {why}"))?;
+    let same = |a: &Output, b: &Output| a.end == b.end && a.stdout == b.stdout;
+    if gcc.end == End::TimedOut {
+        return Err("gcc's program timed out".to_owned());
+    }
+    if !same(newer, gcc) {
+        return Err(format!("llc-{NEWER_LLVM}'s program differs from gcc's"));
+    }
+    if same(oracle, gcc) {
+        return Err(format!("llc-{DEFECT_LLVM}'s whole module prints what gcc's does"));
+    }
+    Ok(Int128SetApart {
+        site: site.to_owned(),
+        program: SELF_CHECK.to_owned(),
+        bytes: gcc.stdout.len(),
+        end: gcc.end,
+        finding: detail.to_owned(),
+    })
+}
+
 /// The halves of a `--mix` finding: hod's object of the side that built
 /// it, and the module of the other half (the one `llc` 19 built).
 #[derive(Clone, Copy, Debug)]
@@ -272,6 +321,56 @@ impl Bench {
                 let _ = write!(finding.detail, "; not {LLC19_INT128}: {why}");
                 outcome.commands.push(format!("# not {LLC19_INT128}: {why}"));
                 Verdict::Finding(finding)
+            }
+        }
+    }
+
+    /// `--mix`'s self-check failed: `llc`'s two halves disagree with the
+    /// whole module (`detail`, the comparison's; `oracle`, the whole
+    /// module's output). [`LLC19_INT128`] where it applies, the module has
+    /// the shape and [`decide_self_check`] holds; otherwise the harness
+    /// error it was, with why not when the shape was there.
+    pub fn set_apart_self_check(
+        &self,
+        oracle: &Output,
+        detail: &str,
+        files: &Files,
+        outcome: &mut Outcome,
+    ) -> Verdict {
+        let detail = format!("llc's two halves disagree with the whole module: {detail}");
+        let error = |d: &str| Verdict::Error(format!("harness: {d}"));
+        if !applies(self.arch, self.tools.llvm_major, self.profile.name) {
+            return error(&detail);
+        }
+        let text = fs::read_to_string(files.ir()).unwrap_or_default();
+        let Some(site) = last_register_site(&text) else { return error(&detail) };
+        let decided = match self.tools.newer_llc.as_ref() {
+            None => Err(format!("llc-{NEWER_LLVM} not found")),
+            Some(newer_llc) => {
+                let log = &mut outcome.commands;
+                let gcc = self.int128_gcc(log, files);
+                let newer_o = files.at(&format!("llc{NEWER_LLVM}.o"));
+                let newer = self.build_with(log, newer_llc, &files.ir(), &newer_o).and_then(|()| {
+                    self.run_objects(log, &[&newer_o], &files.at(&format!("llc{NEWER_LLVM}")))
+                });
+                decide_self_check(
+                    &site,
+                    &detail,
+                    oracle,
+                    gcc.as_ref().map_err(String::as_str),
+                    newer.as_ref().map_err(String::as_str),
+                )
+            }
+        };
+        match decided {
+            Ok(apart) => {
+                outcome.commands.push(format!("# {}", apart.line(outcome.seed)));
+                outcome.int128 = Some(apart);
+                Verdict::SetApart(LLC19_INT128)
+            }
+            Err(why) => {
+                outcome.commands.push(format!("# not {LLC19_INT128}: {why}"));
+                error(&format!("{detail}; not {LLC19_INT128}: {why}"))
             }
         }
     }
@@ -471,5 +570,39 @@ mod tests {
         assert!(decide(site, &hang, ("hod", &hod), Ok(&hod), Ok(&hod)).is_err());
         let late = output(End::TimedOut, b"");
         assert!(decide(site, &finding, ("hod", &late), Ok(&late), Ok(&late)).is_err());
+    }
+
+    // spec/harness.md "Set apart (seeds)", `--mix`'s self-check (WP-266,
+    // seed 226098 of the 1.0 candidate's budget): set apart only when gcc
+    // and llc 22 print the same and llc 19's whole module does not.
+    #[test]
+    fn the_decision_at_the_self_check() {
+        let detail = "llc's two halves disagree with the whole module: stdout differs at byte 268";
+        let site = "call @callee_0 argument 7";
+        let right = output(End::Exit(0), b"p1 27748 0 11 465475096\n");
+        let wrong = output(End::Exit(0), b"p1 27748 0 11\n");
+        let apart = decide_self_check(site, detail, &wrong, Ok(&right), Ok(&right)).unwrap();
+        assert_eq!(
+            (apart.bytes, apart.end, apart.program.as_str()),
+            (24, End::Exit(0), SELF_CHECK)
+        );
+        let line = apart.line(226_098);
+        assert_eq!(
+            line,
+            "llc19-int128-last-register: seed 226098: i128 at call @callee_0 argument 7 with one \
+             integer register left; gcc -O0 (prog.c) and llc-22 -O0 (the module) print the same \
+             (24 bytes, exited with status 0) and llc-19's whole module does not; llc-19: llc's \
+             two halves disagree with the whole module: stdout differs at byte 268"
+        );
+        // llc 22 differs from gcc, or the oracle prints what gcc does, or
+        // one gives no evidence: no class.
+        assert!(decide_self_check(site, detail, &wrong, Ok(&right), Ok(&wrong)).is_err());
+        assert!(decide_self_check(site, detail, &right, Ok(&right), Ok(&right)).is_err());
+        let ended = output(End::Exit(1), b"p1 27748 0 11 465475096\n");
+        assert!(decide_self_check(site, detail, &wrong, Ok(&right), Ok(&ended)).is_err());
+        let why = decide_self_check(site, detail, &wrong, Err("gcc failed"), Ok(&right));
+        assert_eq!(why.unwrap_err(), "no evidence from gcc -O0: gcc failed");
+        let late = output(End::TimedOut, b"");
+        assert!(decide_self_check(site, detail, &wrong, Ok(&late), Ok(&late)).is_err());
     }
 }

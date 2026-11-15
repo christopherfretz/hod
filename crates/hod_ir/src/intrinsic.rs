@@ -655,6 +655,10 @@ intrinsics! {
     X86Incsspq = "llvm.x86.incsspq" [],
     X86Rdsspd = "llvm.x86.rdsspd" [],
     X86Rdsspq = "llvm.x86.rdsspq" [],
+    // `<waitpkgintrin.h>` (WP-267).
+    X86Tpause = "llvm.x86.tpause" [],
+    X86Umwait = "llvm.x86.umwait" [],
+    X86Umonitor = "llvm.x86.umonitor" [],
     // x86 vector intrinsics past SSSE3 (WP-202): the names clang 19 and 22
     // emit at `-O0` for the SSE4.1, SSE4.2, AES, PCLMUL, SHA, AVX, AVX2,
     // FMA, F16C and GFNI headers that hod builds.

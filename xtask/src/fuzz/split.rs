@@ -189,10 +189,8 @@ impl Bench {
             return Err(Verdict::Skipped("split-timed-out"));
         }
         if let Verdict::Finding(differs) = compare(&oracle, &split) {
-            return Err(Verdict::Error(format!(
-                "harness: llc's two halves disagree with the whole module: {}",
-                differs.detail
-            )));
+            // WP-266: `llc` 19's own defect, on evidence (`int128`).
+            return Err(self.set_apart_self_check(&oracle, &differs.detail, files, outcome));
         }
         let (hod_a, hod_b) = (files.at("a.hod.o"), files.at("b.hod.o"));
         for (half, ll, object) in [("A", &halves.a, &hod_a), ("B", &halves.b, &hod_b)] {

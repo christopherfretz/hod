@@ -98,6 +98,8 @@ pub struct Scratch {
     /// instruction each stands before, the label and its location, in
     /// position order.
     pub(crate) dbg_labels: Vec<(u32, hod_ir::DiId, LocId)>,
+    /// §5.6.8 (WP-261): what `llc`'s `LowerConstantIntrinsics` decides.
+    pub(crate) fold: crate::const_fold::Lci,
     /// The key-instructions pass's tables (WP-149).
     pub(crate) key_rows: crate::key_rows::KeyScratch,
     /// The value records' tables (WP-162).
@@ -138,6 +140,7 @@ impl Default for Scratch {
             islands: Vec::new(),
             island_data: Vec::new(),
             dbg_labels: Vec::new(),
+            fold: crate::const_fold::Lci::default(),
             key_rows: crate::key_rows::KeyScratch::default(),
             dbg_values: crate::dbg_value::ValueScratch::default(),
             guard: crate::guard::GuardPlan::default(),
@@ -172,6 +175,7 @@ impl Scratch {
             + bytes(&self.islands)
             + bytes(&self.island_data)
             + bytes(&self.dbg_labels)
+            + self.fold.allocated_bytes()
             + bytes(&self.cuts)
             + bytes(&self.relax)
             + bytes(&self.chosen)
@@ -359,6 +363,16 @@ impl<'a, T: Target> FnCx<'a, T> {
     #[inline]
     pub fn types(&self) -> &'a hod_ir::TypeTable {
         &self.module.types
+    }
+
+    /// What `Target::lower` does with `inst` (§5.6.8, WP-261): lower it,
+    /// leave it out, lower a terminator as a `br` to one block, or as
+    /// `unreachable`. Always [`Action::Emit`](crate::const_fold::Action)
+    /// in a function that calls neither `llvm.is.constant` nor
+    /// `llvm.objectsize`.
+    #[inline]
+    pub fn fold_action(&self, inst: Inst<'_>) -> crate::const_fold::Action {
+        self.s.fold.action(inst.id())
     }
 
     /// The instruction the driver is at: the one being lowered, or the

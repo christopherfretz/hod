@@ -1,5 +1,5 @@
 //! Function DIEs that were declined before WP-094 (`spec/dwarf.md`
-//! §6.13), and three of §6.7's permitted differences held to exactly
+//! §6.13), and two of §6.7's permitted differences held to exactly
 //! their shapes.
 //!
 //! The sources in `data/dies_decline/` (imports scoped in lexical blocks,
@@ -11,10 +11,11 @@
 //! statics) print what they print on `llc`'s under GNU ld, lld and mold.
 //!
 //! The permitted differences (§6.7): an inlined call whose only code is
-//! a branch hod falls through (`fallthrough.cpp`), the blocks under an
-//! `llvm.is.constant` `llc` folds to false (`isconst.cpp`), and the gap
+//! a branch hod falls through (`fallthrough.cpp`), and the gap
 //! in `llc`'s location list of an `sret` result at the function's first
-//! instruction (`sret.cpp`).
+//! instruction (`sret.cpp`). The blocks under an `llvm.is.constant`
+//! `llc` folds to false (`isconst.cpp`) were one until WP-261; hod now
+//! deletes them too, and the trees are equal.
 
 mod common;
 #[path = "dies_support/mod.rs"]
@@ -296,17 +297,18 @@ fn permitted_is_constant_blocks() {
         let (text, hod, llc) = objects(&scratch, &dwarfdump, &tag, &pair, "isconst.cpp", &[]);
         assert!(text.contains("@llvm.is.constant"), "{tag}");
         let (th, tl) = (trees(&dwarfdump, &hod), trees(&dwarfdump, &llc));
+        // WP-261: hod deletes the block under the folded call as `llc`
+        // does, so neither tree has its lexical block or `folded`.
         let mut h = th[0].clone();
-        // hod's only: the block whose code is under the folded call.
         let block = |n: &Node| {
             n.tag == "DW_TAG_lexical_block"
                 && n.children.len() == 1
                 && n.children[0].tag == "DW_TAG_variable"
                 && has(&n.children[0], "DW_AT_name (\"folded\")")
         };
-        assert_eq!(strip(&mut h, &block), 1, "{tag}");
-        if let Some(d) = first_difference(&h, &tl[0]) {
-            panic!("{tag}: hod's tree without the block, then llc's: {d}");
+        assert_eq!(strip(&mut h, &block), 0, "{tag}");
+        if let Some(d) = first_difference(&th[0], &tl[0]) {
+            panic!("{tag}: hod's tree, then llc's: {d}");
         }
     }
 }

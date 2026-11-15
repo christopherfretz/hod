@@ -27,6 +27,12 @@ pub struct Located {
     pub reachable: bool,
     /// A load's or `getelementptr`'s pointer operand (`%13`).
     pub pointer: Option<String>,
+    /// A load's or store's address operand (`%13`, `@g`) and, for a
+    /// store, whether the value it stores is `poison` or `undef` (WP-266,
+    /// [`IrFacts::dead_store`]).
+    pub access: Option<(String, bool)>,
+    /// A `volatile` or `atomic` load or store.
+    pub volatile: bool,
 }
 
 /// What the classes need of one function.
@@ -135,6 +141,8 @@ impl IrFacts {
                     file: files.of_location(n),
                     reachable: true,
                     pointer,
+                    access: access_operands(line, op),
+                    volatile: volatile_access(line, op),
                 });
                 blocks.of_inst.push(blocks.current.clone());
             }
@@ -190,6 +198,37 @@ impl IrFacts {
         None
     }
 
+    /// `dead-store` (WP-266, `spec/harness.md` "Random programs",
+    /// "Set apart"): the function's instructions at that line of that file,
+    /// in blocks with a predecessor, are loads, stores, compares, casts and
+    /// binary operations, none `volatile` or `atomic`, at least one of
+    /// them a store of `poison`/`undef` or a store to the pointer a load
+    /// of the line reads: a statement without effect, which
+    /// `SelectionDAG` and `GlobalISel` delete. `None` otherwise, and where
+    /// the IR does not have the function.
+    pub fn dead_store(&self, function: &str, file: &str, line: u32) -> Option<DeadStore> {
+        let f = self.functions.get(function)?;
+        let at: Vec<&Located> = f
+            .insts
+            .iter()
+            .filter(|i| {
+                i.line == line && i.reachable && i.file.as_deref().is_none_or(|x| x == file)
+            })
+            .collect();
+        if at.is_empty() || at.iter().any(|i| !dead_store_opcode(&i.opcode) || i.volatile) {
+            return None;
+        }
+        let accesses = |op: &'static str| {
+            at.iter().filter(move |i| i.opcode == op).filter_map(|i| i.access.as_ref())
+        };
+        if accesses("store").any(|(_, poison)| *poison) {
+            return Some(DeadStore::Poison);
+        }
+        accesses("store")
+            .any(|(target, _)| accesses("load").any(|(address, _)| address == target))
+            .then_some(DeadStore::Reloaded)
+    }
+
     /// Whether `function`'s subprogram has key instructions (§5.9).
     pub fn key_instructions(&self, function: &str) -> bool {
         self.functions.get(function).is_some_and(|f| f.key_instructions)
@@ -225,6 +264,100 @@ impl IrFunction {
                 self.insts.iter().any(|l| l.opcode == "load" && l.pointer.as_ref() == Some(p))
             })
     }
+}
+
+/// The operands after a `load`'s or `store`'s opcode (`%x = ` taken off).
+fn after_opcode<'l>(line: &'l str, op: &str) -> Option<&'l str> {
+    let mut rest = line.trim_start();
+    if rest.starts_with('%') {
+        rest = rest.split_once(" = ")?.1;
+    }
+    rest.strip_prefix(op)?.strip_prefix(' ')
+}
+
+/// Whether a load or store line is `volatile` or `atomic`.
+fn volatile_access(line: &str, op: &str) -> bool {
+    matches!(op, "load" | "store")
+        && after_opcode(line, op)
+            .is_some_and(|rest| rest.starts_with("volatile ") || rest.starts_with("atomic "))
+}
+
+/// A load's or store's address operand and, for a store, whether its
+/// value is `poison` or `undef`: `load <ty>, ptr <address>, ...`,
+/// `store <ty> <value>, ptr <address>, ...`.
+fn access_operands(line: &str, op: &str) -> Option<(String, bool)> {
+    let rest = after_opcode(line, op)?;
+    let (value, tail) = match op {
+        "load" => rest.split_once(", ptr ")?,
+        "store" => rest.rsplit_once(", ptr ")?,
+        _ => return None,
+    };
+    let address = tail.split(',').next()?.trim();
+    let dead = op == "store" && (value.ends_with(" poison") || value.ends_with(" undef"));
+    (!address.is_empty()).then(|| (address.to_owned(), dead))
+}
+
+/// What sets a pair apart as `dead-store` ([`IrFacts::dead_store`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeadStore {
+    /// A store of `poison` or `undef`.
+    Poison,
+    /// A store to the pointer a load at the same line reads.
+    Reloaded,
+}
+
+impl DeadStore {
+    /// The evidence's words.
+    pub fn describe(self) -> &'static str {
+        match self {
+            DeadStore::Poison => "a store of poison",
+            DeadStore::Reloaded => "a store to the pointer a load of the line reads",
+        }
+    }
+}
+
+/// The opcodes a `dead-store` line may have: loads, stores, compares,
+/// casts and binary operations.
+fn dead_store_opcode(op: &str) -> bool {
+    matches!(
+        op,
+        "load"
+            | "store"
+            | "icmp"
+            | "fcmp"
+            | "trunc"
+            | "zext"
+            | "sext"
+            | "fptrunc"
+            | "fpext"
+            | "fptoui"
+            | "fptosi"
+            | "uitofp"
+            | "sitofp"
+            | "ptrtoint"
+            | "inttoptr"
+            | "bitcast"
+            | "addrspacecast"
+            | "add"
+            | "sub"
+            | "mul"
+            | "udiv"
+            | "sdiv"
+            | "urem"
+            | "srem"
+            | "shl"
+            | "lshr"
+            | "ashr"
+            | "and"
+            | "or"
+            | "xor"
+            | "fadd"
+            | "fsub"
+            | "fmul"
+            | "fdiv"
+            | "frem"
+            | "fneg"
+    )
 }
 
 /// The first `ptr %x` operand of an instruction line (a load's or a
@@ -467,7 +600,7 @@ fn value_hidden(ours: &str, theirs: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     const IR: &str = "\
@@ -634,5 +767,79 @@ define void @release(ptr %0) personality ptr @p !dbg !10 {
         // Another line number.
         let line = hod.replace("c.c:20:7", "c.c:21:7");
         assert!(!only_return_columns(&line, &llc, &facts));
+    }
+
+    // `dead-store` (WP-266): the statements of the 1.0 candidate's budget,
+    // x86-64 LLVM 22 debug. Line 713 (seed 220612, func_1): `l_2459 |=
+    // (&g_1494[0] == &g_1494[2]);`, an `or` with a pointer comparison
+    // that folds to 0, stored back where it was loaded from. Line 718
+    // (seed 220916, func_23): `(*l_161) = (g_168 = 0x8.564011p+55);`, an
+    // out-of-range conversion clang writes as stores of `poison`. The
+    // other lines: what is not a statement without effect.
+    pub(crate) const DEAD_STORES: &str = "\
+define internal void @func_1(ptr %0) !dbg !10 {
+  %2 = alloca i8, align 1
+  %3 = alloca ptr, align 8
+  %4 = icmp eq ptr @g_1494, getelementptr inbounds ([4 x ptr], ptr @g_1494, i64 0, i64 2), !dbg !20
+  %5 = zext i1 %4 to i32, !dbg !20
+  %6 = load i8, ptr %2, align 1, !dbg !21
+  %7 = zext i8 %6 to i32, !dbg !21
+  %8 = or i32 %7, %5, !dbg !21
+  %9 = trunc i32 %8 to i8, !dbg !21
+  store i8 %9, ptr %2, align 1, !dbg !21
+  store i32 poison, ptr @g_168, align 4, !dbg !22
+  %10 = load ptr, ptr %3, align 8, !dbg !23
+  store float poison, ptr %10, align 4, !dbg !24
+  %11 = load i8, ptr %2, align 1, !dbg !25
+  store i8 %11, ptr %2, align 1, !dbg !25
+  call void @f(), !dbg !26
+  store volatile i32 poison, ptr @g_168, align 4, !dbg !27
+  %12 = load i8, ptr %2, align 1, !dbg !28
+  store i8 %12, ptr %3, align 1, !dbg !28
+  store i32 7, ptr @g_168, align 4, !dbg !29
+  %13 = load i8, ptr @x, align 1, !dbg !31
+  store i8 %13, ptr @x, align 1, !dbg !31
+  ret void, !dbg !30
+}
+!1 = !DIFile(filename: \"prog.c\", directory: \"/w\")
+!10 = distinct !DISubprogram(name: \"func_1\", scope: !1, file: !1, line: 700)
+!20 = !DILocation(line: 713, column: 43, scope: !10)
+!21 = !DILocation(line: 713, column: 28, scope: !10)
+!22 = !DILocation(line: 718, column: 31, scope: !10)
+!23 = !DILocation(line: 718, column: 15, scope: !10)
+!24 = !DILocation(line: 718, column: 22, scope: !10)
+!25 = !DILocation(line: 720, column: 5, scope: !10)
+!26 = !DILocation(line: 720, column: 9, scope: !10)
+!27 = !DILocation(line: 721, column: 5, scope: !10)
+!28 = !DILocation(line: 722, column: 5, scope: !10)
+!29 = !DILocation(line: 723, column: 5, scope: !10)
+!30 = !DILocation(line: 724, column: 1, scope: !10)
+!31 = !DILocation(line: 725, column: 5, scope: !10)
+";
+
+    #[test]
+    fn dead_stores() {
+        let facts = IrFacts::of_modules([DEAD_STORES]);
+        let at = |line| facts.dead_store("func_1", "/w/prog.c", line);
+        assert_eq!(at(713), Some(DeadStore::Reloaded));
+        assert_eq!(at(718), Some(DeadStore::Poison));
+        // A global stored back where it was loaded from.
+        assert_eq!(at(725), Some(DeadStore::Reloaded));
+        let f = &facts.functions["func_1"];
+        assert_eq!(f.insts[2].access, Some(("%2".to_owned(), false)));
+        assert_eq!(f.insts[6].access, Some(("%2".to_owned(), false)));
+        assert_eq!(f.insts[7].access, Some(("@g_168".to_owned(), true)));
+        assert_eq!(f.insts[4].access, None);
+        assert!(f.insts[13].volatile && !f.insts[7].volatile);
+        // A call at the line; a volatile store; a store to a pointer no
+        // load of the line reads; a store of a constant; no instruction.
+        assert_eq!(at(720), None);
+        assert_eq!(at(721), None);
+        assert_eq!(at(722), None);
+        assert_eq!(at(723), None);
+        assert_eq!(at(799), None);
+        // Another file, another function.
+        assert_eq!(facts.dead_store("func_1", "/w/other.c", 718), None);
+        assert_eq!(facts.dead_store("func_2", "/w/prog.c", 718), None);
     }
 }

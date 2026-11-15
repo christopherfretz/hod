@@ -65,6 +65,7 @@ pub mod constaddr;
 pub mod control;
 pub mod coro;
 pub mod coro_body;
+pub mod exclusive;
 pub mod features;
 pub mod float;
 pub mod fpintr;

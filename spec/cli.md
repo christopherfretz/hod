@@ -999,6 +999,38 @@ constructs that look inlining-sensitive and are not:
 - `musttail` in the callee becomes a plain call at a non-`musttail`
   site: the same meaning.
 
+**Code addresses** (WP-263): accepted, and observably different. A body
+that observes its own code address (inline assembly reading the program
+counter, such as x86-64 `leaq 0(%rip), %reg` or i386 `call 1f; 1: pop`,
+the address of one of its labels, or a symbolizer, unwinder or `dladdr`
+asked which function a pc of the body is in) sees an address inside the
+out-of-line function, where an inlining compiler gives one inside the
+caller. What a debugger, profiler, stack trace or symbolizer then names
+is the `alwaysinline` function itself, one frame below its caller,
+where after inlining it names the caller (or the inlined frame, from
+the debug information). No result of a program that does not inspect
+code addresses changes: the address is the body's own, as the language
+allows for any function, and the call returns to the caller as the
+inlined code continues there. hod accepts such a body (it is not
+declined: the table below is the constructs whose value would be wrong
+out of line, a stack or frame of the caller; a code address has no
+"right" value the language promises), and a test that asserts the
+inlined name fails under hod. Evidence: abseil 20260107.1,
+`absl_symbolize_test` (`absl/debugging/symbolize_test.cc`, x86-64 and
+i386 only): `TestWithPCInsideInlineFunction` takes the pc inside the
+`always_inline` `inline_func` and expects the symbolizer to name the
+caller (`EXPECT_STREQ(symbol, __FUNCTION__)`, line 482); built by kiln
+with hod on native x86-64 it names `inline_func`, every other check of
+the program (its nine gtest cases, the same pc read in a `noinline`
+function, the return address of `main`) passes, and the control passes
+(the hosted real-project lane; under qemu-x86_64 the control fails this
+test too). A twenty-line reproduction (`leaq 0(%rip)` in an
+`always_inline` function, `dladdr` in the caller) prints the caller's
+name built by kiln with `llc` and the callee's with hod strict
+(`spec/landed/harness/WP-263.md`). The lanes list the test as an
+expected result (`docs/status/oss-expected.tsv`, `spec/harness.md`
+"Real projects", "Expected results").
+
 **Which calls LLVM inlines** (WP-188, measured with
 `opt -passes=always-inline` 19 and 22). A direct call is inlined when
 the callee is `alwaysinline` or the call site carries `alwaysinline`

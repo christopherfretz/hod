@@ -4480,8 +4480,11 @@ and `examples`.
 flavour: `llc`, then `hod`, then `strict` when no module was declined
 or failed in `hod`; a `hod` or `strict` tree is pruned to its logs,
 report and kept modules unless a test that passes under `llc` does not
-pass in it (that tree is kept whole and the test is listed in
-`<findings>/TEST-REGRESSIONS.txt`). Then `oss-report.py collect` copies
+pass in it and the list of expected results does not name it (that tree
+is kept whole; `oss-report.py unexpected <project> <flavour> <mode>`
+prints those tests). After each flavour, `oss-report.py check` rewrites
+the three result files from every report ("Expected results", below).
+Then `oss-report.py collect` copies
 the kept modules into `<findings>/<project>/<reason>/<n>.ll` (at most
 `$HOD_OSS_KEEP`, default one, per reason per project) with `<n>.cmd` (the compile command, its
 directory, hod's arguments and diagnostic) and a `README.md` line per
@@ -4498,6 +4501,66 @@ kiln commit of the row's builds, each report's `kiln`: `$HOD_OSS_KILN`,
 else the workspace's kiln checkout), then the refusal census of the
 hybrid builds (per reason: `first`, `census`, the builds, the most
 frequent functions) and the objects kiln did not offer, by trigger.
+
+**Expected results** (WP-263). Some tests fail under hod by design
+where the control passes (a difference the specification documents,
+such as `spec/cli.md` "Always-inline", "Code addresses"). The list
+`docs/status/oss-expected.tsv` (`oss-report.py --expected <file>`
+names another; oss-run.sh copies it into its snapshot of the scripts)
+is tab-separated, `#` lines and blank lines ignored, one entry per
+line, nine columns, none empty:
+
+```
+<project>  <target>  <flavour>  <mode>  <test>  fails  <text>  <reason>  <spec section>
+```
+
+`<target>` is `aarch64`, `x86_64` or `*`: the architecture the
+programs are built for, `x86_64` for a `--target x86_64` report and the
+report's `host` for a native one (the hosted x86-64 lane builds
+natively); `<flavour>` is `O0`, `O0g` or `*`; `<mode>` is `hod`,
+`strict` or `*`; `fails` is the only outcome; `<text>` is `-` or a
+string the test's output (its section of the build's
+`Testing/Temporary/LastTest.log`) must contain for the failure to be
+the one the entry describes. A second entry for the same first five
+columns, another value or a missing column is a usage error (exit
+status 2). For every `hod` and `strict` build with a control, and each
+test passing in the control and not in the build ("worse"), and each
+entry matching the build (project, target, flavour, mode):
+
+- **expected**: a worse test that an entry names, present in the
+  build's results, whose output contains the entry's text (or the text
+  is `-`). Listed in `<findings>/TEST-EXPECTED.txt` as `<project>
+  <flavour> <mode>: <test>: expected (<reason>; <spec>)`, on the pages
+  as `<mode>: n expected (<test> (note n))` with the reason in the note,
+  and in the census's section "Expected results".
+- **regression**: any other worse test, also one an entry names whose
+  text is not in its output (another failure: marked `(an expected
+  entry's text is not in its output)`) or that the build does not have.
+  Listed in `<findings>/TEST-REGRESSIONS.txt` as `<project> <flavour>
+  <mode>: <tests>`.
+- **stale**: when the control and the build both have test results, an
+  entry whose test passes in the build (the entry says it fails), or
+  that neither the control nor the build has. Listed in
+  `<findings>/TEST-STALE.txt` as `<project> <flavour> <mode>: <test>:
+  stale entry: <why>`; the list only shrinks by an edit.
+- **moot**: the test does not pass in the control nor in the build (the
+  x86-64 cross lane, where qemu-x86_64 fails the control too): there is
+  no difference to expect, and the entry is neither expected nor stale
+  there; the census lists it as `no difference: the control fails too`.
+- A build or test run that did not happen (no results on either side),
+  or a project the run did not build, tests no entry.
+
+The three files are under `<findings>` (`<findings>/x64/` for
+`--target x86_64`) and are rewritten whole by `oss-report.py check`
+from every report of the root (`--root` to name roots), which exits 1
+when a regression or a stale entry is left, else 0. The hosted lane's
+summary job (`.github/workflows/oss.yml`) runs `check` over the merged
+artifacts of every project, prints the expected differences, and fails
+when `TEST-REGRESSIONS.txt` or `TEST-STALE.txt` is not empty.
+`scripts/oss/oss-report-selftest.py` checks these rules on synthetic
+reports (expected, unexpected, another failure, no entry, stale by a
+pass, stale by a missing test, control fails too, another target, a
+malformed list).
 
 **Reruns.** `oss-report.py rerun <project> <flavour> <mode> <test>
 [--times N]` runs one ctest test of a kept tree N times (default 2) under

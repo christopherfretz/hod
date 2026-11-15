@@ -3492,6 +3492,33 @@ function reads, and **is-constant** a pair only hod's has in a function that cal
 `llvm.is.constant` (`spec/dwarf.md` §5.7); else **unclassified**. An
 unclassified pair fails the run.
 
+**selector-split** (WP-250, `lines::set_apart_selector_splits`, with
+the fuzz layer's rule `case::selector_split`, "fuzz" `--debug`): a pair
+only hod's program has, left unclassified by every class above, where
+LLVM's two other `-O0` selectors disagree with the oracle. Only for a
+unit with such a pair, the oracle's `llc` (same LLVM, target, flags and
+split-DWARF arguments) builds each module of the unit again with
+`FastISel` (`-O0 -global-isel=0 -fast-isel=1`) and with `GlobalISel`
+(`-O0 -global-isel=1 -global-isel-abort=2`, falling back to
+`SelectionDAG` with a warning that names the function); each is linked
+by the first linker as the oracle's program is and its `is_stmt` rows
+are counted per pair (`lines::stmt_row_counts`). The pair is set apart
+when both selectors give evidence (the builds and the link succeed, and
+`GlobalISel` did not fall back on the pair's function) and both have at
+least one row at it; one without a row, or one without evidence, and it
+stays unclassified. It never applies to a pair only `llc`'s program
+has, nor to a pair another class explains, nor to the columns. Each
+pair set apart is printed with its evidence, verbose or not
+(`selector-split: <test> [<front end>] <function> at <file>:<line>:
+rows hod H selection-dag 0 fast-isel A global-isel B`), and counted in
+the `lines` and `debug: lines:` summaries. Evidence: `sort`'s `j--`
+(line 18) in `tests/debug/declare_fragment.c` at clang `-O1`: the
+`add nsw i32 %j, -1` has a row under hod, `FastISel` and `GlobalISel`
+of `llc` 19 and 22, and none under `SelectionDAG`, which selects it
+with the loop test's `icmp sgt i32 %j, 1` (line 16) into one `subs w9,
+w8, #1` placed inside the row of line 17's copy (on AArch64 with clang 19
+and 22, on x86-64 with clang 22; `spec/landed/harness/WP-250.md`).
+
 ### Columns
 
 The same rows with their columns, per function both programs have

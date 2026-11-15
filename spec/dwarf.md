@@ -611,6 +611,10 @@ hod emits none (a terminate landing pad left behind by a folded
   `always_inline` call; `xtask/tests/data/debug_post_index/post_index.cpp`,
   `llc` 19 and 22). Reproducing it would be an optimisation. hod's side
   only: the fold removes `llc`'s row.
+- `selector-split` (WP-250): hod's pair otherwise unclassified at which
+  both other `-O0` selectors of the oracle's `llc` (`FastISel`,
+  `GlobalISel`) have a row: decided by building the module with them,
+  not from the IR (`spec/harness.md` "debug", "Lines"). hod's side only.
 - `is-constant`: hod's pair in a function that calls `llvm.is.constant`.
   `llc` folds the call to false even at `-O0` and deletes the blocks it
   guards (`LowerConstantIntrinsics`); hod does not emit the dead

@@ -241,11 +241,8 @@ impl Row {
             ),
             set_apart: {
                 let mut classes: BTreeMap<String, usize> = BTreeMap::new();
-                if !summary.selector_splits.is_empty() {
-                    classes.insert(
-                        super::case::SELECTOR_SPLIT.to_owned(),
-                        summary.selector_splits.len(),
-                    );
+                for (_, split) in &summary.selector_splits {
+                    *classes.entry(split.class().to_owned()).or_default() += 1;
                 }
                 for (_, class, _) in &summary.set_apart {
                     *classes.entry((*class).to_owned()).or_default() += 1;

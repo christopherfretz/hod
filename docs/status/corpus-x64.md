@@ -20,6 +20,13 @@ Inputs:
 The corpus is in `.build/corpus-x64`. Its generated report, with the
 constructs counted, is [corpus-x64-census.md](corpus-x64-census.md).
 
+**At the release candidate** (`02fe2d02`, kiln `8f93304ee`): the corpus
+the candidate was measured on is a later recapture, its kiln groups made
+by kiln 1.2.0 at `8f93304ee` (`corpus-x64-census.md` has its counts and
+each group's producer and revision). This page records the first
+capture and its method; the corpus does not depend on hod, only on kiln,
+the GCC tests and the LLVM tools.
+
 ## Counts
 
 | group | tests | captured | skipped | entry MB | capture s (`-j 3`) | AArch64 captured |

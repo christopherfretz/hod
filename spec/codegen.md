@@ -4481,15 +4481,16 @@ to the result's slot.
    headers write, among them `cmpccxadd*`, `enqcmd*`, `invpcid`,
    `directstore*` (`_directstoreu_*`)/`movdir64b`, `monitorx`/`mwaitx`, `ptwrite*`, `aadd*`/
    `aand*`/`aor*`/`axor*`, `rdpru`, the `uintr` ones (`senduipi`,
-   `testui`, `clui`, `stui`), `urdmsr`/`uwrmsr`, `umonitor`/`umwait`/
-   `tpause`, `wbinvd`, `wbnoinvd`, `xresldtrk`/`xsusldtrk`,
+   `testui`, `clui`, `stui`), `urdmsr`/`uwrmsr`, `wbinvd`, `wbnoinvd`,
+   `xresldtrk`/`xsusldtrk`,
    `clrssbsy`, `rstorssp`, `saveprevssp`, `setssbsy`, `wrss*`/`wruss*`,
    `cldemote`, `clzero`, the `lwp` ones (`llwpcb`, `slwpcb`, `lwpins*`,
    `lwpval*`) and `tbm.bextri.*` (clang 19 only). AArch64
    refuses every `llvm.x86.*` name.
 
 Evidence: `spec/landed/codegen/WP-173.md` for the rules this reuses,
-`spec/landed/codegen/WP-190.md` for these.
+`spec/landed/codegen/WP-190.md` for these. `<waitpkgintrin.h>`
+(`umonitor`, `umwait`, `tpause`) moved from (3) to §5.6.31.
 
 #### 5.6.30 The hardening pieces together (WP-194)
 
@@ -4534,6 +4535,27 @@ own registers, so no combination is refused for being one.
    is the same as `llc`'s for every flag set measured.
 
 Evidence: `spec/landed/codegen/WP-194.md`.
+
+#### 5.6.31 The WAITPKG intrinsics (WP-267)
+
+`<waitpkgintrin.h>`'s three calls, in `crates/hod_x64/src/x86/sys.rs`
+with §5.6.29's rows (3 `hod_ir` `Intrinsic` members, matrix rows
+`never(X64_ONLY)` / `on(X86_SYS)`), under §5.6.29's signature and
+feature rules. All three need `waitpkg` in the function's
+`target-features` (no other feature implies it); without it each is
+refused by `intrinsic:` and its LLVM name, as `llc` 19 and 22 refuse
+it ("Cannot select").
+
+| intrinsic | lowering |
+|---|---|
+| `i8 @llvm.x86.tpause(i32 ctrl, i32 hi, i32 lo)` | `mov edx, hi; mov eax, lo; tpause ctrl` (`66 0F AE /6`, the 32-bit register form), then `setb` into the result's register: the result is CF (the OS time limit ended the wait); bits 8 to 63 unspecified |
+| `i8 @llvm.x86.umwait(i32 ctrl, i32 hi, i32 lo)` | as `tpause`, `umwait ctrl` (`F2 0F AE /6`) |
+| `void @llvm.x86.umonitor(ptr p)` | `umonitor p` (`F3 0F AE /6`, the 64-bit register form, no address-size prefix) |
+
+This is `llc -O0`'s sequence (19 and 22) apart from register choice.
+The instructions fault on a CPU without WAITPKG and QEMU's user mode
+does not implement them: the tests compile and link them, they do not
+run them. Evidence: `spec/landed/codegen/WP-267.md`.
 
 #### 5.6.33 x86 vector intrinsics past SSSE3 (WP-202, WP-207)
 

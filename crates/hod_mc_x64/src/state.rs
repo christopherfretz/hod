@@ -2,8 +2,9 @@
 //! intrinsics that are not vector operations (`spec/mc-x64.md` "Processor
 //! state and extensions", WP-190): the `FXSAVE`/`XSAVE` families, the
 //! cache-line write-backs, `RDRAND`/`RDSEED`, the segment-base accesses,
-//! `CRC32`, the BMI operations, RTM, CET's shadow-stack pointer and the
-//! counters and registers read by one opcode.
+//! `CRC32`, the BMI operations, RTM, CET's shadow-stack pointer, the
+//! WAITPKG waits (WP-267) and the counters and registers read by one
+//! opcode.
 
 use crate::inst::{Inst, Op, digit_m, digit_r, plain};
 use crate::reg::{Mem, Reg, Size};
@@ -216,6 +217,30 @@ checked! {
 #[inline]
 pub const fn rdpid_r(r: Reg) -> Inst {
     digit_r(Op::two(0xc7).rep(0xf3), 7, Size::Q, r)
+}
+
+/// `TPAUSE r32` (`66 0F AE /6`, register operand, WAITPKG): waits until
+/// the time-stamp counter reaches `edx:eax`, in the C0.1 or C0.2 state
+/// `r` selects (bit 0); CF is set when the OS time limit ended the wait.
+#[inline]
+pub const fn tpause_r(r: Reg) -> Inst {
+    let op = Op::two(0xae);
+    digit_r(Op { p66: true, ..op }, 6, Size::D, r)
+}
+
+/// `UMWAIT r32` (`F2 0F AE /6`, register operand, WAITPKG): as
+/// [`tpause_r`], ending early at a store to the range armed by
+/// [`umonitor_r`].
+#[inline]
+pub const fn umwait_r(r: Reg) -> Inst {
+    digit_r(Op::two(0xae).rep(0xf2), 6, Size::D, r)
+}
+
+/// `UMONITOR r64` (`F3 0F AE /6`, register operand, WAITPKG): arms
+/// address monitoring at the address in `r`.
+#[inline]
+pub const fn umonitor_r(r: Reg) -> Inst {
+    digit_r(Op::two(0xae).rep(0xf3), 6, Size::Q, r)
 }
 
 /// `RDPMC` (`0F 33`): performance counter `ecx` into `edx:eax`.

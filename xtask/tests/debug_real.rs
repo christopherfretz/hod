@@ -61,6 +61,13 @@ fn quick_tier_matches_llc() {
     }
     assert_eq!(report.exit_status(), 0, "{summary}");
     assert!(report.count(Outcome::Pass) > 0, "{summary}");
+    // An XLINK (WP-248) is a listed case of a linker exception, nothing else:
+    // on hosted x86-64, tls_static.c under wild (`tls-dtpoff-debug`).
+    for r in report.records.iter().filter(|r| r.outcome == Outcome::Xlink) {
+        let linker = r.linker.as_deref().unwrap_or("-");
+        let target = irdiff::directives::Arch::host().map_or("", |a| a.name());
+        assert!(xtask::debug::xlink::expected(linker, target, &r.test).is_some(), "{r:?}");
+    }
     let finding = |r: &&sessions::Record| r.test.ends_with("tls_static.c");
     assert!(report.records.iter().filter(finding).all(|r| r.outcome != Outcome::Fail), "{summary}");
     let lines = report.lines_total();

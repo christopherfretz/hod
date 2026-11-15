@@ -166,7 +166,7 @@ pub struct Exception {
 /// Every exception of the matrix. A test skips or changes ONE assertion for
 /// a case listed here, never the test, so a linker that regresses on
 /// anything else still fails it.
-pub const EXCEPTIONS: [Exception; 5] = [
+pub const EXCEPTIONS: [Exception; 7] = [
     Exception {
         linker: "wild",
         version: WILD_VERSION,
@@ -211,6 +211,27 @@ pub const EXCEPTIONS: [Exception; 5] = [
         class: Class::Unsupported,
         reason: "`-z text`, which GCC's driver passes for -static-pie, is warned about as \
                  \"not yet supported\" (the link succeeds and the program runs)",
+    },
+    Exception {
+        linker: "wild",
+        version: WILD_VERSION,
+        case: "tls-dtpoff-debug",
+        class: Class::Linker,
+        reason: "on x86-64 an R_X86_64_DTPOFF64 in .debug_info (the operand of \
+                 `DW_OP_const8u, DW_OP_GNU_push_tls_address`, a _Thread_local variable's \
+                 location) is written as the offset from the thread pointer (-8, -4) rather \
+                 than the offset in the module's TLS block (0, 4, as GNU ld, lld and mold \
+                 write), so gdb prints the word 8 bytes before the variable (WP-248)",
+    },
+    Exception {
+        linker: "wild",
+        version: WILD_VERSION,
+        case: "plt-got-gdb",
+        class: Class::Linker,
+        reason: "on AArch64 every PLT entry is a `.plt.got` stub through a GLOB_DAT slot \
+                 (BIND_NOW, no .plt and no .rela.plt), which the ABI allows but BFD's \
+                 synthetic symbols (gdb's `<name>@plt`) do not name on AArch64, so gdb's \
+                 `next` and `nexti` over a call to a shared library stop in `?? ()` (WP-248)",
     },
 ];
 

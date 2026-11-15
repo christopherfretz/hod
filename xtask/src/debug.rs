@@ -24,6 +24,7 @@ pub mod sessions;
 pub mod transcript;
 pub mod trees;
 pub mod verify;
+pub mod xlink;
 
 use std::path::PathBuf;
 

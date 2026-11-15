@@ -1388,7 +1388,9 @@ is the whole list of permitted differences:
   `llc`'s line has a value there (each marker of hod's line matches a
   non-empty run of `llc`'s that is not a marker; the rest equal). Never
   the reverse, and never a different value. A debugger user sees fewer
-  variables (`info locals`) under hod outside the proven ranges.
+  variables (`info locals`) under hod outside the proven ranges. In the
+  trees this is the class `value records` (WP-260, §6.37), with `no
+  frame pointer` and `unit range lists` beside it in optimized units.
 - **declared value** (WP-221, §6.30; `xtask/src/debug/trees.rs`
   `DECLARED_VALUE`): a variable a `#dbg_declare` (or `llvm.dbg.declare`)
   of the module declares on a `phi`'s result, by name
@@ -3668,6 +3670,98 @@ variable DIE located through a stored pointer; two pointers refused);
 `crates/hod/tests/inlined_import.rs` shape `imported-only` (both
 targets, trees equal to `llc` 22's). Evidence:
 `spec/landed/dwarf/WP-236.md`.
+
+### 6.37 The trees of an optimized unit (implemented, WP-260)
+
+A `-g` unit whose IR is optimized (kiln `-O2`; hod still does not
+optimize) describes most variables by value records (§6.23). Its
+functions often ask for no frame pointer, and its scopes are split
+across landing pads. `llc`'s trees and hod's then differ in form, not in
+what a debugger is told. hod changes nothing it writes. These are the
+rules by which `cargo xtask debug trees` (`xtask/src/debug/trees.rs`)
+names those differences, and nothing broader. Each rule is a class of
+§6.7. A module outside its condition keeps the difference as `DIFFERS`.
+
+**`value records`.** Condition: the DIE is a `DW_TAG_variable` or
+`DW_TAG_formal_parameter` of a variable that a `#dbg_value` record (or a
+call of `llvm.dbg.value`) of the module describes
+(`described_by_values`). The DIE is matched by its `DW_AT_name` or its
+`DW_AT_abstract_origin`'s name, or, for an unnamed variable, by having
+neither. Permitted:
+
+- hod's DIE with `DW_AT_location` a list, or with no location, where
+  `llc`'s has a single location expression, `DW_AT_const_value`, a list
+  or no location. All other attributes must be equal, and hod's DIE never
+  has a single expression or a constant of its own;
+- hod's concrete DIE of such a variable (only `DW_AT_abstract_origin`,
+  no location, no children) where `llc` has none. This is the case of
+  `this` in an inlined destructor or lambda whose records are all
+  `poison` or `undef`: `llc` drops the DIE and hod keeps it without a
+  place. Both debuggers print `<optimized out>` from the abstract
+  instance either way;
+- in such a module, the siblings compared as a multiset (§6.7 "sibling
+  and attribute order"). Equal renderings pair first; the rest pair by
+  tag and name (or linkage name, abstract origin, specification, call
+  origin), and unnamed DIEs pair in order. Every `llc` DIE must find its
+  pair, and hod's unpaired DIEs must be of the case above;
+- `llc`'s `DW_AT_loclists_base`, which hod's unit lacks because its
+  lists are `DW_FORM_sec_offset` (§6.23), and that base's relocation
+  against `.debug_loclists`. Also one relocation of hod's against
+  `.debug_loclists` per list of such a variable, and no more.
+
+**`no frame pointer`** (x86-64). Condition: the subprogram's linkage
+name, name or abstract origin names a function that the module defines
+without a `"frame-pointer"` of `all`, `non-leaf...` or `reserved`, on
+its definition or in one of its attribute groups
+(`without_frame_pointer`). Permitted: hod's `DW_AT_frame_base
+DW_OP_reg6` (hod keeps `rbp` in every function, §6.17) where `llc`'s is
+`DW_OP_reg7` (it uses `rsp`). The rest of the DIE must be equal. The
+`DW_OP_fbreg` locations under it are compared by their operations, as
+everywhere.
+
+**`unit range lists`.** Condition: hod's tree has more `DW_AT_ranges`
+than `llc`'s. That happens for a scope of several ranges in hod's code
+and one in `llc`'s, which §6.7 already treats as equal. Permitted: hod's
+unit `DW_AT_rnglists_base` where `llc`'s has none (the base of hod's
+`DW_FORM_rnglistx` lists, §6.4), and its one relocation against
+`.debug_rnglists`.
+
+**Call-site addresses**: `DW_AT_call_return_pc` and `DW_AT_call_pc`
+are masked in the trees, as §6.7 already said. Until WP-260 the trees
+compared them, and no module before had call sites. They are checked
+against the disassembly in `crates/hod_a64/tests` (§6.19), and for this
+unit in the record below.
+
+**Why these are differences of form.** Evidence for the corpus's
+`lifetime-markers-O2-g-fpic-run.cpp`, the LLVM 22 and LLVM 19 modules,
+AArch64 and x86-64 (the latter under qemu's gdb stub), on the 1.0
+candidate's objects:
+
+- gdb was stopped at EVERY instruction of the six functions and printed
+  every visible variable. Every value hod describes is the program's
+  value at that point under the IR's records: no location is stale and
+  none reaches past the next record of its variable;
+- line sessions with gdb (both targets) and lldb 19 (AArch64), against
+  `llc`'s program: hod's values are equal to `llc`'s, or `<optimized
+  out>` where `llc` has one (the session class `value-range`). The one
+  exception is `__range1`. `llc` writes `DW_AT_const_value 0` from the
+  first of two records at the same point and prints a null reference,
+  while hod uses the later record and prints the array;
+- every home slot is written before its range starts and not rewritten
+  inside it. Where hod's code reuses an argument's slot (`guarded`'s
+  `n`), the variable has no range there;
+- each `DW_AT_call_return_pc` is the address after its call, to the
+  callee its `DW_AT_call_origin` names;
+- the second range of the split block is its landing pad, whose IR
+  location is in that block's scope.
+
+Tests: `xtask/src/debug/trees.rs` module `optimized_units` (the
+classes on a reduced unit of those shapes, and each case they do not
+cover: a declared variable, a module without value records, a function
+with a frame pointer, hod's own single expression, another attribute
+differing, an extra DIE with a location, a DIE of `llc`'s hod lacks, a
+relocation beyond the lists, `rnglists_base` without a list beyond
+`llc`'s). Evidence: `spec/landed/dwarf/WP-260.md`.
 
 ## 7. Speed and memory
 

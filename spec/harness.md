@@ -3682,7 +3682,9 @@ compared on x86-64, masked on AArch64), and the relocations of
 `.debug_info` as a sorted multiset of (kind, symbol). Each module is
 SAME (with its DIE count), PERMITTED (the §6.7 classes named: `sret`,
 `byval`, `realigned frame`, `split pubnames`, `(a) fallthrough inlined`,
-`(b) is.constant block`, `llc 19 blocks`), DIFFERS (the first
+`(b) is.constant block`, `llc 19 blocks`; `spec/dwarf.md` §6.30's
+`declared value` and §6.37's `value records`, `no frame pointer`,
+`unit range lists`), DIFFERS (the first
 difference; `-v` the whole of it), DECLINED or FAILED. `-j` at most 4.
 Exit status 1 when a module differs or fails. The evidence of a package;
 not a gate step.

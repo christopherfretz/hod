@@ -10,8 +10,8 @@ is `llc -O0 -fast-isel=0 -relocation-model=pic` for x86-64
 
 | | |
 |---|---|
-| date | 2026-11-15 15:09 to 15:15 EST (WP-257b, the candidate: "At the candidate" below); the sections after it 2026-11-15 (WP-244); WP-136's sections 2026-11-13 |
-| hod | "At the candidate": `C` = `e98267c0`, its frozen release binary `hod-e98267c0` (sha256 `e076c68e7c988cdbe504a8f97e2521feabdc94341f1418cf3baf70a485b9cbdc`, `hod version 0.0.0`); the sections after it: `e7e473af` (wave 25: `main` at `56a4695f` with kiln's pin at 1.2.0, wild and WP-238 part 1), release build; WP-136's sections: branch `wp/136-x64-debug` (on `main` at `73865eb`), debug build |
+| date | 2026-11-15 16:07 to 16:13 EST (WP-257c, the candidate: "At the candidate" below); the sections after it 2026-11-15 (WP-244); WP-136's sections 2026-11-13 |
+| hod | "At the candidate": `C` = `cd6ef6bc`, its frozen release binary `hod-cd6ef6bc` (sha256 `80138ec1411506d5b4048f1eac49e8b377f9eeedb21e70ae43e3c81ab094929c`, `hod version 0.0.0`); the sections after it: `e7e473af` (wave 25: `main` at `56a4695f` with kiln's pin at 1.2.0, wild and WP-238 part 1), release build; WP-136's sections: branch `wp/136-x64-debug` (on `main` at `73865eb`), debug build |
 | kiln | 1.2.0 at `8f93304ee`; corpus-x64 captured with it |
 | LLVM | 22.1.8 and 19.1.7 (`llc`, `llvm-dwarfdump`, clang), Debian packages |
 | debuggers | gdb-multiarch 16.3; lldb 19.1.7 (`gdb-remote`); `lldb-22` is not installed |
@@ -21,18 +21,20 @@ is `llc -O0 -fast-isel=0 -relocation-model=pic` for x86-64
 
 ## At the candidate
 
-`C` = `e98267c0`, kiln `K` = `8f93304ee`, the frozen binary above, every
-command with `HOD_REQUIRE_TOOLS=1 -j 3 --hod hod-e98267c0`, 2026-11-15
-15:09 to 15:15 EST (WP-257b). The sections after this one are WP-244's
+`C` = `cd6ef6bc`, kiln `K` = `8f93304ee`, the frozen binary above, every
+command with `HOD_REQUIRE_TOOLS=1 -j 3 --hod hod-cd6ef6bc`, 2026-11-15
+16:07 to 16:13 EST (WP-257c). The sections after this one are WP-244's
 at `e7e473af`.
 
 | command | result | exit | wall |
 |---|---|---|---|
-| `cargo xtask debug run --target x86_64` | 937 results: 896 PASS, 8 XFAIL, 33 SKIP (what the stub cannot do, below), 0 FAIL, 0 XPASS, 0 ERROR; 1712 sessions; lines: same 1761, hod only 1 (`selector-split` 1), `llc` only 18 (P1 18), **0 unclassified** | 0 | 3:58 |
-| `cargo xtask debug verify --target x86_64 .build/corpus-x64` | 18 `-g` modules: 18 built, 18 clean, 0 declined, 0 hod failures | 0 | 0:15 |
-| `cargo xtask debug trees .build/corpus-x64` | 18 `-g` modules: 16 same (1722 DIEs), 2 permitted (`lifetime-markers-O2-g-fpic-run.cpp`, LLVM 22 and 19: `unit range lists, no frame pointer, value records`, an `-O2` unit, classified by WP-260), 0 differ, 0 declined, 0 failed | 0 | 0:13 |
+| `cargo xtask debug run --target x86_64` | 937 results: 896 PASS, 8 XFAIL, 33 SKIP (what the stub cannot do, below), 0 FAIL, 0 XPASS, 0 ERROR; 1712 sessions; lines: same 1761, hod only 1 (`selector-split` 1), `llc` only 18 (P1 18), **0 unclassified** | 0 | 4:13 |
+| `cargo xtask debug verify --target x86_64 .build/corpus-x64` | 18 `-g` modules: 18 built, 18 clean, 0 declined, 0 hod failures | 0 | 0:14 |
+| `cargo xtask debug trees .build/corpus-x64` | 18 `-g` modules: 16 same (1722 DIEs), 2 permitted (`lifetime-markers-O2-g-fpic-run.cpp`, LLVM 22 and 19: `unit range lists, no frame pointer, value records`, an `-O2` unit, classified by WP-260), 0 differ, 0 declined, 0 failed | 0 | 0:15 |
 
-At the previous candidate `02fe2d02` (WP-257, 06:21 to 06:29 EST) the
+At the previous candidate `e98267c0` (WP-257b, `hod-e98267c0`, 15:09 to
+15:15 EST) every count above was the same. At the candidate before it,
+`02fe2d02` (WP-257, 06:21 to 06:29 EST), the
 same `debug run` and `debug verify` counts; `debug trees` had the `-O2`
 unit's 2 as differences, exit 1 (before WP-260).
 

@@ -6,13 +6,20 @@ for one commit of hod, and what to change when the owner accepts it. The
 checklist with the evidence on `main` today is
 [`docs/status/release.md`](status/release.md).
 
-**1.0 is** (the owner's definition, 2026-11-14): real projects with no
+**1.0 is** (the owner's definition, 2026-11-14, with the decisions of
+2026-11-15): the real projects of "the 1.0 set" (section 5) with no
 fallback whose tests equal the kiln + `llc` control; libc++ strict on both
 targets at the candidate commit; the fuzzing budget with no open findings;
-wild in the linker matrix; the status pages regenerated; the version bump.
+the linker matrix with its three required linkers, GNU ld (bfd), lld and
+mold; the status pages regenerated; the version bump. kiln's pin for 1.0
+is `8f93304ee` (kiln 1.2.0) and does not move before the release.
 **1.0 is not** conditional on the benchmark gate and the performance work,
-the in-process bridge (both `docs/ROADMAP.md` M5, after 1.0), or the 32-bit
-x86 target.
+the in-process bridge (both `docs/ROADMAP.md` M5, after 1.0), the 32-bit
+x86 target, or wild: wild stays an optional linker of the test matrix,
+used where it is installed (`linkers::WILD_REQUIRED` stays false), with
+its exceptions listed on the harness side (`hod_testutil::linkers::EXCEPTIONS`,
+the debugger layer's XLINK outcome); hod's code generators and object
+writer take no workaround for it.
 
 **Nobody bumps the version or makes a tag without the owner's explicit
 word.** Everything below up to "The version" only measures.
@@ -36,9 +43,10 @@ word.** Everything below up to "The version" only measures.
 4. Tools: the reference environment is `spec/harness.md` "CI" rule 2
    (Debian 13; LLVM 19 and 22, binutils, lld, mold, gdb, gdb-multiarch,
    lldb-19, `qemu-user`, csmith, the other architecture's cross
-   toolchain) plus wild once `docs/BACKLOG.md` WP-239 has landed. Record
-   each linker's version (`ld.bfd --version`, `ld.lld --version`,
-   `mold --version`, `wild --version`) and the debuggers'
+   toolchain), and wild 0.11.0 from the provisioning script (optional,
+   section 2). Record each linker's version (`ld.bfd --version`,
+   `ld.lld --version`, `mold --version`, and `wild --version` when it is
+   installed) and the debuggers'
    (`gdb --version`, `lldb-19 --version`): `docs/VALIDATION.md`
    "Linker matrix" asks that status reports record them.
 
@@ -49,12 +57,46 @@ uses at most `-j 4`; real-project builds take the lanes' job pool
 (`MAKEFLAGS=--jobserver-auth=fifo:/run/hod/lanes.fifo`, set by
 `scripts/oss/oss-run.sh`).
 
+## The candidate's order of work
+
+Times are as measured where a record has them, on the shared AArch64
+host; "not measured" where none has.
+
+1. **Freeze** (section 0): choose `C`, check `K` = `8f93304ee`.
+2. **One release build** of `C`, copied out of the build directory (its
+   sha256 recorded); every step below uses that copy. A few minutes.
+3. **Then in parallel**, each within its own job limit:
+   - the full gate, `HOD_REQUIRE_TOOLS=1 cargo xtask ci` (1.2): no whole
+     run timed; the quick gate's part 90 to 125 min, then
+     `corpus-aarch64` 45:21 and `corpus-x86_64` 56:06 (WP-251), the
+     debug steps' `debug run` 4:24 and 1:50 (WP-244), the full `irdiff`
+     steps not measured;
+   - the fuzz budget (section 6),
+     `cargo xtask fuzz --budget --seed 200001 -j 4 --hod <frozen hod> --out <dir>`:
+     4 h 44 min for the first run, resumable;
+   - libc++ strict on both targets (4.3, 4.4; 4.6 and 4.7 for `-g`):
+     4241 to 5826 s on AArch64 at `-j 3`, about 11,400 s for x86-64
+     under qemu; with the baselines 4.1 and 4.2 only if `K` or the suite
+     moved since they were measured;
+   - the hosted native sweep (4.5): about 14 min of wall time;
+   - the hosted lanes (1.3) on `C`: the `test x64` job 17 min (natively,
+     Xeon 6975P-C) to 20 min 40 s (EPYC 9V74, two programs under SDE);
+   - the real projects by the rule of section 5: the strict builds and
+     tests of the 1.0 set's rows in its order (LLVM and Clang, DuckDB,
+     gRPC, Boost, abseil, then the rest), controls reused where `K` and
+     the revision are unchanged; per row not measured as a whole, LLVM
+     and Clang hours per tree.
+4. **The pages** (section 7), each from its runs at `C`, and
+   `docs/status/release.md` with every row's state.
+5. **The version bump** (section 8), only on the owner's word, and the
+   gates of section 1 on the bump commit.
+
 ## 1. The gates with every tool required
 
 | | command | where | time | result | pass means |
 |---|---|---|---|---|---|
 | 1.1 quick gate | `source scripts/env.sh && HOD_REQUIRE_TOOLS=1 cargo xtask ci --quick` | AArch64 development host (x86-64 seeds under `qemu-x86_64`) | 90 to 125 min under load (mostly compiling the test binaries) | the log; no page | the log ends `ci: ok` and the exit status is 0 |
-| 1.2 full gate | `source scripts/env.sh && HOD_REQUIRE_TOOLS=1 cargo xtask ci` | the same host; it adds `irdiff --witness` with LLVM 22 and 19, `irdiff --hybrid`, `irdiff --target x86_64` with LLVM 22 and 19, the whole-corpus `roundtrip` (10 to 20 min alone), then `debug-x86_64`, `debug-aarch64` (every debugger test of that target, then `debug verify` of its corpus: 3.3, 3.4 without `debug kiln` and `debug trees`) and `corpus-aarch64`, `corpus-x86_64` (3.1, 3.2 with the workspace's hod) | not yet timed (`docs/status/release.md`: no full gate is recorded); at least the quick gate plus two hours (the corpus steps 45 and 56 min at `-j 4`, `spec/landed/harness/WP-251.md`) | the log; no page | `ci: ok`, exit status 0 |
+| 1.2 full gate | `source scripts/env.sh && HOD_REQUIRE_TOOLS=1 cargo xtask ci` | the same host; it adds `irdiff --witness` with LLVM 22 and 19, `irdiff --hybrid`, `irdiff --target x86_64` with LLVM 22 and 19, the whole-corpus `roundtrip` (10 to 20 min alone), then `debug-x86_64`, `debug-aarch64` (every debugger test of that target, then `debug verify` of its corpus: 3.3, 3.4 without `debug kiln` and `debug trees`) and `corpus-aarch64`, `corpus-x86_64` (3.1, 3.2 with the workspace's hod) | no whole run timed yet; at least the quick gate plus two hours: measured steps `corpus-aarch64` 45:21 and `corpus-x86_64` 56:06 at `-j 4` (`spec/landed/harness/WP-251.md`), the `debug run` part of `debug-aarch64` 4:24 and of `debug-x86_64` 1:50 (`spec/landed/harness/WP-244.md`); `roundtrip` 10 to 20 min; the full `irdiff` steps not measured alone (the gate prints each step's wall time at its end) | the log; no page | `ci: ok`, exit status 0 |
 | 1.3 hosted lanes | push `C` (it is on `main`) or open a pull request: `.github/workflows/ci.yml` calls `ci-lane.yml` on `ubuntu-24.04-arm` and `ubuntu-24.04` | GitHub Actions, both architectures natively, the other one under qemu | jobs in parallel, each `test` part about 15 min (`spec/harness.md` "CI" rule 5); a job is cut at 45 min | the run's page; `test x64`'s job summary has the AVX-512 block (`scripts/avx512-summary.sh`) | the fan-in jobs `check` and `check-x86_64` both succeed, on one run of `C` without a re-run; record the run id and whether the x86-64 runner had AVX-512 (the summary says what executed) |
 
 The hosted lanes run the quick gate's steps (`xtask::ci::HOSTED_STEPS`)
@@ -68,19 +110,23 @@ AArch64 host only.
 GNU ld (`bfd`), lld and mold are found by `hod_testutil` and are required
 under `HOD_REQUIRE_TOOLS=1`: the gates of section 1 link every linking
 test and every `irdiff` program with all three (the gate's log names them:
-`linkers bfd lld mold`). wild is the fourth (WP-239): once it lands, the
-same gates name four linkers, and a follow-up makes wild required
-(`linkers::WILD_REQUIRED` in `hod_testutil`); until then a missing wild is a
-note, not a failure, and the condition is not met. **Pass:** the gate logs
-of 1.1 and 1.2 name every one of the four linkers, and nothing is skipped
-for a missing linker.
+`linkers bfd lld mold`). wild (WP-239, 0.11.0) is a fourth, optional
+linker: where it is installed the same tests link with it too and the log
+names four linkers; a missing wild is a note, never a failure
+(`linkers::WILD_REQUIRED` in `hod_testutil` is false and stays so). A case
+wild cannot pass is listed in `hod_testutil::linkers::EXCEPTIONS` or, in
+the debugger layer, reported as XLINK (`docs/VALIDATION.md` "Linker
+matrix"); hod's code generators and object writer take no workaround for
+it. wild is not a condition of 1.0. **Pass:** the gate logs of 1.1 and
+1.2 name bfd, lld and mold, and nothing is skipped for a missing required
+linker.
 
 ## 3. Kiln's corpus through hod (L6) and debug information (L7)
 
 | | command | target | time | page | pass means |
 |---|---|---|---|---|---|
-| 3.1 L6 strict | `cargo xtask corpus verify --strict -j 3 --hod <frozen hod>` | AArch64, native | about the hybrid verify's (1291 to 1366 s per LLVM major on x86-64 under qemu, `docs/status/corpus-x64.md`) | `<build>/corpus/verify-llvm<N>-strict.tsv`; summary into `docs/status/release.md` | exit status 0: no FAIL, no XPASS, no ERROR, every entry's expectation met with every linker; the only results that are not PASS are the rows of `docs/status/corpus-expected.tsv` for the target, listed as EXPECTED or UNDEFINED in the summary, and no row of it is stale |
-| 3.2 L6 strict, x86-64 | `cargo xtask corpus verify --target x86_64 --strict -j 3 --hod <frozen hod>` | x86-64 under `qemu-x86_64` (baseline CPU) | about 1300 s per LLVM major | `<build>/corpus/verify-x86_64-llvm<N>-strict.tsv`; then 4.3 fills `docs/status/reasons-x64.md` "What the built modules do" | as 3.1 |
+| 3.1 L6 strict | `cargo xtask corpus verify --strict -j 3 --hod <frozen hod>` | AArch64, native | 1,242 s (LLVM 22) and 1,451 s (LLVM 19) at `-j 4`, 45:21 for the gate step (`spec/landed/harness/WP-251.md`) | `<build>/corpus/verify-llvm<N>-strict.tsv`; summary into `docs/status/release.md` | exit status 0: no FAIL, no XPASS, no ERROR, every entry's expectation met with every linker; the only results that are not PASS are the rows of `docs/status/corpus-expected.tsv` for the target, listed as EXPECTED or UNDEFINED in the summary, and no row of it is stale |
+| 3.2 L6 strict, x86-64 | `cargo xtask corpus verify --target x86_64 --strict -j 3 --hod <frozen hod>` | x86-64 under `qemu-x86_64` (baseline CPU) | 1,969 s (LLVM 22) and 1,352 s (LLVM 19) at `-j 4`, 56:06 for the gate step (WP-251) | `<build>/corpus/verify-x86_64-llvm<N>-strict.tsv`; then 4.3 fills `docs/status/reasons-x64.md` "What the built modules do" | as 3.1 |
 | 3.3 L7 AArch64 | `cargo xtask debug` (sessions), `cargo xtask debug kiln`, `cargo xtask debug verify` | AArch64, native | minutes each | `docs/status/debug.md` (rewritten for `C`, `K`) | no FAIL, no XPASS, no crash, no stale `xfail`; kiln's debugger tests all pass; `--verify` clean for every object hod builds and nothing declined; line tables equal up to `spec/dwarf.md` §5.7; the `-g` corpus modules pass strict under every linker |
 | 3.4 L7 x86-64 | `cargo xtask debug --target x86_64`, `cargo xtask debug trees` over the `-g` modules, `cargo xtask debug verify --target x86_64` | x86-64 under qemu's gdb stub | 1:18 for the sessions at `-j 4` (`docs/status/debug-x64.md`) | `docs/status/debug-x64.md` | as 3.3; SKIPs only for what the stub cannot do (`debug-x64.md` "What qemu's gdb stub cannot do") |
 
@@ -119,23 +165,64 @@ development host's and are needed while 4.5 has no `-g` mode.
 
 | | command | target | time | page | pass means |
 |---|---|---|---|---|---|
-| 5.1 the lane | `source scripts/env.sh && scripts/oss/oss-run.sh <project>...` (each project of `scripts/oss/projects.toml`, both flavours `O0` and `O0g`, the three modes), then `python3 scripts/oss/oss-report.py status --out docs/status/oss.md` | AArch64, native | not recorded per project (three builds of each flavour, one at a time); build trees are pruned after each | `docs/status/oss.md` | every row: `fell back` 0, `not offered` 0, strict build `ok`, every object `hod` in "Strict builds", `against the control` `same` (or better), at `C` and `K` |
-| 5.2 the lane, x86-64 | `scripts/oss/oss-run.sh <project>... --target x86_64`, then `python3 scripts/oss/oss-report.py --target x86_64 census --out <findings>/X64-CENSUS.md` | x86-64, cross-built, tests under qemu | as 5.1 and more | today only `spec/landed/harness/WP-191.md`; the release needs it in `docs/status/` | as 5.1; a test that runs an x86-64 program outside ctest fails in the control too and is compared, not counted |
+| 5.1 the lane | `source scripts/env.sh && scripts/oss/oss-run.sh <project>...` (each project of the 1.0 set below, both flavours `O0` and `O0g`, the three modes), then the page's command in section 7 | AArch64, native | per project, in the lanes' notes (three builds of each flavour, one at a time); build trees are pruned after each | `docs/status/oss.md` | every row: `fell back` 0, `not offered` 0, strict build `ok`, every object `hod` in "Strict builds", `against the control` `same` (or better), its `hod` and `kiln` cells naming the commits it was measured at |
+| 5.2 the lane, x86-64 | `scripts/oss/oss-run.sh <project>... --target x86_64` (a new hod: `--modes strict --strict`, the control kept), then the page's command in section 7 | x86-64, cross-built, tests under qemu | as 5.1 and more | `docs/status/oss-x64.md` | as 5.1; a test that runs an x86-64 program outside ctest fails in the control too and is compared, not counted |
 | 5.3 hosted | `.github/workflows/oss.yml` by hand (inputs: kiln's commit, the rows) or on an `oss/**` branch | both runners natively | per row | the run's artifacts | as 5.1, on both runners natively |
 | 5.4 LLVM and Clang | `scripts/oss/llvm/` (native: `configure.sh`, `build.sh`, `strict.sh`, `unittests.sh`, `lit.sh`, `census-file.sh`) and `scripts/oss/llvm-x64/` (cross) | AArch64 native; x86-64 cross under qemu | hours per tree; about 21 GB of disk for a pair | `docs/status/oss-llvm.md` | every TU offered to hod and built by it in the strict build, and the tests identical per test with the kiln + `llc` control |
 
-The project set is kiln's (`kiln/scripts/oss/projects.toml`, rows copied
-unchanged into `scripts/oss/projects.toml`); `docs/status/release.md`
-lists which rows have a measurement.
+**The 1.0 set.** 1.0's real projects are the ones the lanes have measured
+up to the candidate, not every row of kiln's `projects.toml`: a project
+is in the set for a target and flavour when it has a row on
+`docs/status/oss.md`, `docs/status/oss-x64.md` or `docs/status/oss-llvm.md`
+at the freeze. Measured by 2026-11-15 (on the pages of `5e2abc5e`):
+
+| project | AArch64, native | x86-64, cross under qemu |
+|---|---|---|
+| fmt, googletest, abseil, protobuf, spdlog, yaml_cpp, glog, leveldb, cli11, doctest | `O0`, `O0g` | `O0`, `O0g` |
+| re2 | `O0`, `O0g` | `O0` (`O0g` running) |
+| benchmark, catch2, nlohmann_json, simdjson, magic_enum, tl_expected, zlib, zstd | `O0`, `O0g` | - |
+| mold | `O0`, `O0g` | - |
+| gRPC | `O0` (`O0g` running) | - |
+| DuckDB | `O0`, `O0g` | - |
+| highway, Eigen | - | `O0` |
+| range_v3, cereal, ctre, entt | - | `O0`, `O0g` |
+| Boost (`boost_tmpl`) | - | `O0` (`O0g` running) |
+| LLVM 19.1.7 and Clang (`oss-llvm.md`) | native | cross |
+
+After 1.0: every other row of `scripts/oss/projects.toml` (highway_avx2,
+simdjson_haswell, capnproto, and the rows measured once whose reports the
+lane did not keep, so that no page has their row: flatbuffers, rocksdb,
+cmake, opencv; each enters the set if it is measured again before the
+freeze), and every row of kiln's `projects.toml` that hod's has not
+(`docs/status/release.md` lists them).
+
+**The rule for a row at the candidate.** The candidate's re-measurement
+has about 16 hours on one shared host, which does not hold every row of
+the set, so:
+
+1. A row's page cells name the hod commit and the kiln commit it was
+   measured at (`hod`, `kiln`; the generator takes them from the reports
+   and from `scripts/oss/provenance-<target>.tsv`).
+2. A row measured at an earlier hod than the candidate says so (the page
+   is generated with `--candidate C`: its `at the candidate` cell is
+   `no: measured before the candidate`); it is never presented as
+   measured at the candidate.
+3. The candidate re-runs the strict build and tests (`--modes strict
+   --strict`) of as many rows as fit, in this order: LLVM and Clang,
+   DuckDB, gRPC, Boost, abseil, then the rest.
+4. A control (kiln + `llc`) is reused when kiln's pin and the project's
+   revision are unchanged: it does not depend on hod.
 
 ## 6. Random programs (L10)
 
-The budget (seeds per target, profile, mode and LLVM major, with fresh
-seed ranges for each candidate) and the one command that runs it are
-WP-241's to define in `docs/VALIDATION.md` "Random programs (L10)"; until
-then the unit is `cargo xtask fuzz --seed <S> --count <M> --target <T>
-[--llvm 19] [--profile <P>] [--mix | --debug] -j 4` per cell. Run with
-the frozen hod on both targets and both LLVM majors. **Page:**
+The budget (seeds per target, profile, mode and LLVM major) is
+`docs/VALIDATION.md` "Random programs (L10)", "The budget" (WP-241); the
+one command, with the frozen hod and fresh seeds:
+`cargo xtask fuzz --budget --seed 200001 -j 4 --hod <frozen hod> --out <dir>`
+(62 slices, 26,250 seeds; the first run took 4 h 44 min, `fuzz.md`; it
+is resumable). Its harness is of `64b45de6` (WP-249) or later, which sets
+apart the three classes of the first run on their own evidence
+(`ub-float-cast`, `selector-split`, `llc19-int128-last-register`). **Page:**
 `docs/status/fuzz.md`, rewritten for `C`. **Pass:** the budget's run on
 `C` has no finding, and every finding of earlier runs is closed (fixed with
 a seed test, or recorded as not hod's with its evidence).
@@ -150,11 +237,13 @@ does not depend on them) and its numbers are of runs at `C`.
 | `support.md` | `HOD_BLESS=1 cargo test -q -p hod_ir --test classify_support_doc`; the test fails while the page differs from `crates/hod_ir/src/classify/matrix.rs`, so a gated commit has it current |
 | `corpus.md`, `corpus-x64-census.md` | `cargo xtask corpus census` and `cargo xtask corpus census --target x86_64` (generated; they change only when the corpus is captured again, that is, with `K`) |
 | `corpus-x64.md`, `corpus-x64-differences.tsv` | hand-written record of the x86-64 capture (WP-139) and its later recaptures; rewrite when the corpus is recaptured |
-| `reasons.md`, `reasons-x64.md` | `cargo xtask corpus reasons --hod <frozen hod> -j 3 --report docs/status/reasons.md`, and with `--target x86_64 --report docs/status/reasons-x64.md` after 3.2 |
+| `reasons.md`, `reasons-x64.md` | `cargo xtask corpus reasons --hod <frozen hod> -j 3 --report docs/status/reasons.md`, and with `--target x86_64 --report docs/status/reasons-x64.md` after 3.2; stale until then (measured at `9f410277`: they still name refusals built since, such as `cc:win64cc`, `intrinsic:llvm.aarch64.ldxr.p0` and `x64:inline-asm`) |
 | `debug.md`, `debug-x64.md` | section 3 |
 | `libcxx-baseline.md`, `libcxx-baseline-x64.md` | 4.1, 4.2 (only when `K` or the suite moved) |
 | `libcxx-hod.md`, `libcxx-hod-x64.md`, `libcxx-hod-debug.md`, `libcxx-hod-debug-x64.md` | 4.3 to 4.7 |
-| `oss.md`, `oss-llvm.md` | section 5 |
+| `oss.md` | after section 5.1, from the hod worktree: `source scripts/env.sh && B=/Volumes/AgentWork/hod-helper/.build && python3 -I scripts/oss/oss-report.py status --root $B/oss --root $B/oss3 --root $B/oss4 --provenance scripts/oss/provenance-aarch64.tsv --candidate C --out docs/status/oss.md` (one `--root` per native lane root; the newest report of a build wins) |
+| `oss-x64.md` | after section 5.2: `source scripts/env.sh && B=/Volumes/AgentWork/hod-helper/.build && python3 -I scripts/oss/oss-report.py --target x86_64 status --root $B/oss --root $B/oss2 --root $B/oss5 --provenance scripts/oss/provenance-x86_64.tsv --candidate C --out docs/status/oss-x64.md` |
+| `oss-llvm.md` | section 5.4, by hand from the LLVM lane's records |
 | `fuzz.md` | section 6 |
 | `perf.md` | not a 1.0 condition: stays as last measured (`docs/VALIDATION.md` "Release candidate") |
 | `release.md` | the checklist: each row's state moved to `met at C` with its page |

@@ -133,7 +133,11 @@ impl Target for X86 {
 
     fn lower<'a>(&self, cx: &mut FnCx<'a, Self>, inst: Inst<'a>) -> CgResult<()> {
         match cx.fold_action(inst) {
-            FoldAction::Emit => {}
+            // An `invoke` the fold turns into a call, or one that loses
+            // its normal edge, is still an `invoke` here: `call::check`
+            // refuses every one as `x86:eh` until I10 gives the target
+            // unwind tables and honours the two actions.
+            FoldAction::Emit | FoldAction::Call(_) | FoldAction::NoNormal => {}
             FoldAction::Drop => return Ok(()),
             FoldAction::Jump(target) => return control::br(cx, target),
             FoldAction::Unreachable => return control::unreachable(cx),

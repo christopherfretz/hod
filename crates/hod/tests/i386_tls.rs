@@ -6,8 +6,12 @@
 //! a barrier. Every link by GNU ld, lld and mold (which relax initial exec
 //! to local exec where the variable is the program's), every run under
 //! `qemu-i386` equal to `llc`'s (19 and 22), hod's objects also under
-//! `hod_cg::Stress::ALL`. The dynamic models (a shared library's default)
-//! are refused as `x86:tls:dynamic` (`spec/codegen-x86.md`).
+//! `hod_cg::Stress::ALL`. The dynamic models (a shared library's default):
+//! `tls.c` and `other.c` `-fPIC` in general and local dynamic, as a
+//! shared library and the PIE that uses it, and both in one PIE (the
+//! linkers relax general and local dynamic there); `dl.c` and
+//! `operand.ll` (thread-local symbols as plain operands) as a shared
+//! object `dl_driver.c` loads with `dlopen` from five threads.
 //!
 //! A missing tool is skipped with a note, unless `HOD_REQUIRE_TOOLS=1`.
 
@@ -15,9 +19,9 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use hod::{CompileError, Options, OutputKind, Unsupported};
+use hod::{CompileError, Options, OutputKind};
 use hod_testutil::target::Target;
-use hod_testutil::{LLVM_MAJORS, Scratch, linkers, tools_required};
+use hod_testutil::{DEFAULT_TIMEOUT, LLVM_MAJORS, Scratch, linkers, run_with, tools_required};
 
 mod i386_support;
 use i386_support::{
@@ -165,10 +169,10 @@ fn every_model_runs_in_programs_as_llc_s() {
 }
 
 /// `other.c` as a shared library in the initial-exec model, `tls.c` as
-/// the PIE that loads it; the library's default model (general dynamic)
-/// is refused by name.
+/// the PIE that loads it (whose initial-exec access to `other_tls`, a
+/// variable of the library, no linker can relax).
 #[test]
-fn a_shared_library_in_initial_exec_runs_and_dynamic_models_are_refused() {
+fn a_shared_library_in_initial_exec_runs() {
     let Some(tools) = tools() else { return };
     let scratch = Scratch::new("i386-tls-so");
     let mut runs = 0;
@@ -197,23 +201,115 @@ fn a_shared_library_in_initial_exec_runs_and_dynamic_models_are_refused() {
             all_equal(&results, &format!("shared {major} ({})", linker.0));
             runs += 1;
         }
-        for model in ["global-dynamic", "local-dynamic"] {
-            let flags = ["-fPIC", &format!("-ftls-model={model}")];
-            let ll = clang_module(
-                &scratch,
-                &clang,
-                &data("other.c"),
-                &flags,
-                &format!("dyn-{major}-{model}"),
-            );
-            let result = hod_object(&std::fs::read(&ll).unwrap(), true);
-            let Err(CompileError::Unsupported(Unsupported { construct, .. })) = &result else {
-                panic!("{model}: {result:?}");
-            };
-            assert_eq!(construct.name(), "x86:tls:dynamic", "{model}");
-        }
     }
     eprintln!("i386 TLS shared library: {runs} runs equal llc's");
+}
+
+/// The models of `tls.c` and `other.c` and whether `other.c` is a shared
+/// library: local dynamic for `tls.c` only where `other_tls` is in the
+/// same output (no linker resolves `R_386_TLS_LDO_32` against another
+/// module's variable).
+const DYNAMIC_CASES: [(&str, &str, bool); 4] = [
+    ("global-dynamic", "global-dynamic", true),
+    ("global-dynamic", "local-dynamic", true),
+    ("global-dynamic", "global-dynamic", false),
+    ("local-dynamic", "local-dynamic", false),
+];
+
+/// General and local dynamic: `tls.c` and `other.c` `-fPIC` in a dynamic
+/// model, `other.c` as a shared library used by `tls.c` as a PIE, and
+/// both objects in one PIE (where the linkers relax the dynamic
+/// sequences to initial or local exec).
+#[test]
+fn dynamic_models_run_in_shared_libraries_and_pies() {
+    let Some(tools) = tools() else { return };
+    let scratch = Scratch::new("i386-tls-dyn");
+    let mut runs = 0;
+    for major in LLVM_MAJORS {
+        let (Some(clang), Some(llc)) = (llvm_tool(major, "clang"), llvm_tool(major, "llc")) else {
+            continue;
+        };
+        let built = |source: &str, model: &str| {
+            let label = format!("{source}-{major}-{model}");
+            let flags = ["-fPIC", &format!("-ftls-model={model}")];
+            let ll = clang_module(&scratch, &clang, &data(source), &flags, &label);
+            objects(&scratch, &llc, &ll, true, &label)
+        };
+        for (main_model, other_model, shared) in DYNAMIC_CASES {
+            let label = format!("{major}-{main_model}-{other_model}");
+            let mains = built("tls.c", main_model);
+            let others = built("other.c", other_model);
+            for linker in &tools.linkers {
+                let mut results = Vec::new();
+                for (who, (m, o)) in WHO.iter().zip(mains.iter().zip(&others)) {
+                    let tag = format!("{label}-{who}-{}-{shared}", linker.0);
+                    let exe = scratch.join(format!("dyn-{tag}"));
+                    if shared {
+                        let lib = scratch.join(format!("libother-dyn-{tag}.so"));
+                        tools.link(&scratch, linker, &["-shared"], &[o], &lib);
+                        tools.link(&scratch, linker, &["-pie"], &[m, &lib], &exe);
+                    } else {
+                        tools.link(&scratch, linker, &["-pie"], &[m, o], &exe);
+                    }
+                    results.push(run(&tools.qemu, &exe));
+                }
+                let out = String::from_utf8_lossy(&results[0].1).into_owned();
+                assert_eq!(results[0].0, Some(16), "{out}");
+                all_equal(&results, &format!("{label} shared {shared} ({})", linker.0));
+                runs += 1;
+            }
+        }
+    }
+    eprintln!("i386 dynamic TLS: {runs} program runs equal llc's");
+}
+
+/// `dl.c` (general dynamic, then local dynamic) and `operand.ll` as one
+/// shared object, loaded with `dlopen` by `dl_driver.c` (a PIE) and
+/// checked from five threads kept alive together; each library by `llc`,
+/// hod and hod under `Stress::ALL`, linked by each linker.
+#[test]
+fn dlopen_of_dynamic_models_runs() {
+    let Some(tools) = tools() else { return };
+    let scratch = Scratch::new("i386-tls-dl");
+    let driver_o = scratch.join("dl_driver.o");
+    let mut compile = Command::new(&tools.gcc);
+    compile.args(["-c", "-O0", "-fPIE", "-pthread"]).arg(data("dl_driver.c")).arg("-o");
+    checked("gcc dl_driver.c", compile.arg(&driver_o));
+    let mut runs = 0;
+    for major in LLVM_MAJORS {
+        let (Some(clang), Some(llc)) = (llvm_tool(major, "clang"), llvm_tool(major, "llc")) else {
+            continue;
+        };
+        let ops = objects(&scratch, &llc, &data("operand.ll"), true, &format!("operand-{major}"));
+        for model in ["global-dynamic", "local-dynamic"] {
+            let label = format!("{major}-{model}");
+            let flags = ["-fPIC", &format!("-ftls-model={model}")];
+            let dl = clang_module(&scratch, &clang, &data("dl.c"), &flags, &format!("dl-{label}"));
+            let dls = objects(&scratch, &llc, &dl, true, &format!("dl-{label}"));
+            for linker in &tools.linkers {
+                let exe = scratch.join(format!("dl-driver-{label}-{}", linker.0));
+                tools.link(&scratch, linker, &["-pie"], &[&driver_o], &exe);
+                for (who, (d, o)) in WHO.iter().zip(dls.iter().zip(&ops)) {
+                    let tag = format!("{label}-{who}-{}", linker.0);
+                    let lib = scratch.join(format!("libdl-{tag}.so"));
+                    tools.link(&scratch, linker, &["-shared"], &[d, o], &lib);
+                    let target = Target::I686;
+                    let mut command = Command::new(&tools.qemu);
+                    command.args(target.emulator_args(&target.sysroot())).arg(&exe).arg(&lib);
+                    let ran = run_with(&mut command, &[], DEFAULT_TIMEOUT);
+                    let out = ran.stdout_text();
+                    assert!(
+                        ran.status.and_then(|s| s.code()) == Some(0) && out.contains("checked"),
+                        "{tag}: {:?}\n{out}{}",
+                        ran.status,
+                        ran.stderr_text()
+                    );
+                    runs += 1;
+                }
+            }
+        }
+    }
+    eprintln!("i386 TLS dlopen: {runs} libraries loaded and checked");
 }
 
 /// `llvm.thread.pointer` is `mov rd, gs:[0]`; `threadlocal.address` of a

@@ -127,7 +127,26 @@ const VARIANTS: [(&str, &[&str], bool); 3] = [
 /// The C++ programs, each with its clang flags.
 const PROGRAMS: [(&str, &[&str]); 2] = [("basic.cpp", &["-std=c++14"]), ("terminate.cpp", &[])];
 
-/// §12: the programs and `live.ll`, every variant, every linker.
+/// `eh/callconv.ll` with its functions at `cpu`.
+fn callconv_at(scratch: &Scratch, cpu: &str) -> PathBuf {
+    let text = std::fs::read_to_string(data("callconv.ll")).unwrap();
+    let plain = "attributes #0 = { noinline }";
+    assert!(text.contains(plain));
+    let at = format!("attributes #0 = {{ noinline \"target-cpu\"=\"{cpu}\" }}");
+    scratch.write(&format!("callconv-{cpu}.ll"), text.replace(plain, &at).as_bytes())
+}
+
+/// What `eh/callconv.ll` prints (checked on `llc`'s run, so that the
+/// shapes are what they claim): per `%v`, `calls`' result (negative where
+/// a callee threw, the callee by its number), then `x87_live` (0: both
+/// quotients infinite, the products rounded before the `invoke`; 16 at
+/// `%v` = 4, the pad) and `x87_pad` (19 at `%v` = 5: both quotients
+/// finite, computed at 80 bits within the pad).
+const CALLCONV_OUTPUT: &str = "0: 1009 0 0\n1: -1114 0 0\n2: -1228 0 0\n3: -1342 0 0\n\
+                               4: 1553 16 0\n5: 1754 0 19\n";
+
+/// §12: the programs, `live.ll` and `callconv.ll`, every variant, every
+/// linker.
 #[test]
 fn exceptions_run_as_llc_s() {
     let Some(tools) = tools() else { return };
@@ -149,6 +168,11 @@ fn exceptions_run_as_llc_s() {
         }
         modules.push((format!("live-{major}-static"), data("live.ll"), false));
         modules.push((format!("live-{major}-pie"), data("live.ll"), true));
+        let cmov = callconv_at(&scratch, "pentiumpro");
+        for (variant, ll) in [("generic", data("callconv.ll")), ("cmov", cmov)] {
+            modules.push((format!("callconv-{major}-{variant}-static"), ll.clone(), false));
+            modules.push((format!("callconv-{major}-{variant}-pie"), ll, true));
+        }
         for (label, ll, pic) in &modules {
             let objects = objects(&scratch, &llc, ll, *pic, label);
             for linker in &tools.linkers {
@@ -160,6 +184,13 @@ fn exceptions_run_as_llc_s() {
                     results.push((*who, run(&tools.qemu, &exe)));
                 }
                 all_equal(&results, &format!("{label} ({})", linker.0));
+                if label.starts_with("callconv") {
+                    assert_eq!(
+                        String::from_utf8_lossy(&results[0].1.1),
+                        CALLCONV_OUTPUT,
+                        "{label}: llc's run"
+                    );
+                }
                 runs += 1;
             }
         }
@@ -331,4 +362,306 @@ fn unwind_tables_verify_and_decode_as_llc_s() {
         }
     }
     eprintln!("i386 EH: {compared} objects' tables verify and decode as llc's");
+}
+
+/// An `invoke` of an `x86_stdcallcc` or `x86_fastcallcc` callee (callee
+/// pop) is refused by the convention's name, as a `call` of one is
+/// (`spec/abi-x86.md`); `callconv.ll` runs the callee pops hod has: an
+/// `sret` pointer.
+#[test]
+fn invoke_of_stdcall_and_fastcall_is_refused_by_name() {
+    for cc in ["x86_stdcallcc", "x86_fastcallcc"] {
+        let text = format!(
+            "target triple = \"{}\"\n\
+             declare i32 @__gxx_personality_v0(...)\n\
+             declare {cc} void @s(i32)\n\
+             define void @f() personality ptr @__gxx_personality_v0 {{\n\
+             \x20 invoke {cc} void @s(i32 1) to label %ok unwind label %pad\n\
+             ok:\n  ret void\n\
+             pad:\n  %lp = landingpad {{ ptr, i32 }} cleanup\n\
+             \x20 resume {{ ptr, i32 }} %lp\n}}\n",
+            i386_support::TRIPLE
+        );
+        let options = hod::Options {
+            output_kind: hod::OutputKind::Object,
+            triple: Some(i386_support::TRIPLE.into()),
+            ..hod::Options::default()
+        };
+        let err = hod::compile(text.as_bytes(), &options).expect_err("refused");
+        assert!(err.to_string().contains(&format!("cc:{cc}")), "{cc}: {err}");
+    }
+}
+
+/// A section header of a little-endian ELF32 object.
+#[derive(Clone, Copy)]
+struct Shdr {
+    name: u32,
+    kind: u32,
+    offset: usize,
+    size: usize,
+    info: u32,
+}
+
+/// The parts of an ELF32 relocatable object the LSDA test reads.
+struct Elf<'a> {
+    data: &'a [u8],
+    sections: Vec<Shdr>,
+    /// Each symbol: name, value, section index, whether `STT_SECTION`.
+    symbols: Vec<(String, u32, u16, bool)>,
+}
+
+fn le32(data: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes(data[at..at + 4].try_into().unwrap())
+}
+
+fn le16(data: &[u8], at: usize) -> u16 {
+    u16::from_le_bytes(data[at..at + 2].try_into().unwrap())
+}
+
+fn cstr(data: &[u8], at: usize) -> String {
+    let end = data[at..].iter().position(|&b| b == 0).unwrap();
+    String::from_utf8_lossy(&data[at..at + end]).into_owned()
+}
+
+impl<'a> Elf<'a> {
+    fn parse(data: &'a [u8]) -> Self {
+        assert_eq!(&data[..6], b"\x7fELF\x01\x01", "an ELF32 little-endian object");
+        let shoff = le32(data, 0x20) as usize;
+        let count = usize::from(le16(data, 0x30));
+        let sections: Vec<Shdr> = (0..count)
+            .map(|i| {
+                let h = shoff + 40 * i;
+                Shdr {
+                    name: le32(data, h),
+                    kind: le32(data, h + 4),
+                    offset: le32(data, h + 16) as usize,
+                    size: le32(data, h + 20) as usize,
+                    info: le32(data, h + 28),
+                }
+            })
+            .collect();
+        let mut elf = Elf { data, sections, symbols: Vec::new() };
+        let (symtab, strtab) = {
+            let i = elf.sections.iter().position(|s| s.kind == 2).unwrap();
+            let h = shoff + 40 * i;
+            (elf.sections[i], elf.sections[le32(data, h + 24) as usize])
+        };
+        for k in 0..symtab.size / 16 {
+            let e = symtab.offset + 16 * k;
+            let name = cstr(data, strtab.offset + le32(data, e) as usize);
+            let section = data[e + 12] & 0xf == 3;
+            elf.symbols.push((name, le32(data, e + 4), le16(data, e + 14), section));
+        }
+        elf
+    }
+
+    fn name(&self, index: usize) -> String {
+        let shstrndx = usize::from(le16(self.data, 0x32));
+        cstr(self.data, self.sections[shstrndx].offset + self.sections[index].name as usize)
+    }
+
+    fn bytes(&self, index: usize) -> &'a [u8] {
+        let s = self.sections[index];
+        &self.data[s.offset..s.offset + s.size]
+    }
+
+    /// The `SHT_REL` entries applying to section `index`: offset,
+    /// symbol, implicit addend.
+    fn rels(&self, index: usize) -> Vec<(usize, usize, u32)> {
+        let mut out = Vec::new();
+        for s in self.sections.iter().filter(|s| s.kind == 9 && s.info as usize == index) {
+            for k in 0..s.size / 8 {
+                let offset = le32(self.data, s.offset + 8 * k) as usize;
+                let sym = (le32(self.data, s.offset + 8 * k + 4) >> 8) as usize;
+                out.push((offset, sym, le32(self.bytes(index), offset)));
+            }
+        }
+        out.sort_unstable();
+        out
+    }
+
+    /// What the 4-byte field at `offset` of section `index` points to: a
+    /// named symbol, or through a local slot (a section symbol plus the
+    /// implicit addend) the symbol of the slot's own relocation;
+    /// `DW.ref.` stripped; `null` for an unrelocated zero.
+    fn target(&self, index: usize, offset: usize) -> String {
+        let Some(&(_, sym, addend)) = self.rels(index).iter().find(|r| r.0 == offset) else {
+            assert_eq!(le32(self.bytes(index), offset), 0, "an unrelocated type entry");
+            return "null".to_owned();
+        };
+        let (name, value, shndx, section) = &self.symbols[sym];
+        if *section || name.is_empty() {
+            return self.target(usize::from(*shndx), (value + addend) as usize);
+        }
+        name.strip_prefix("DW.ref.").unwrap_or(name).to_owned()
+    }
+}
+
+fn uleb(data: &[u8], at: &mut usize) -> u64 {
+    let (mut value, mut shift) = (0u64, 0);
+    loop {
+        let byte = data[*at];
+        *at += 1;
+        value |= u64::from(byte & 0x7f) << shift;
+        shift += 7;
+        if byte & 0x80 == 0 {
+            return value;
+        }
+    }
+}
+
+fn sleb(data: &[u8], at: &mut usize) -> i64 {
+    let (mut value, mut shift) = (0i64, 0);
+    loop {
+        let byte = data[*at];
+        *at += 1;
+        value |= i64::from(byte & 0x7f) << shift;
+        shift += 7;
+        if byte & 0x80 == 0 {
+            if shift < 64 && byte & 0x40 != 0 {
+                value |= -1 << shift;
+            }
+            return value;
+        }
+    }
+}
+
+/// One call site of an LSDA: whether it has a landing pad, and the
+/// action chain. Not which pad: where several `invoke`s unwind to one IR
+/// pad, `llc` gives them one landing address and hod one per `invoke`
+/// (measured on `basic.cpp`), so pad identity is compared by the runs.
+type Site = (bool, Vec<String>);
+
+/// Every LSDA of `object` in FDE order, decoded: the encodings, the call
+/// sites (consecutive equal ones merged: where `llc` and hod place the
+/// calls differs, what each range does may not) and the type table as
+/// the catch clauses name it. Asserts that the ranges are ordered and
+/// disjoint.
+fn lsdas(object: &[u8]) -> Vec<(String, Vec<Site>)> {
+    let elf = Elf::parse(object);
+    let eh = (0..elf.sections.len()).find(|&i| elf.name(i) == ".eh_frame").unwrap();
+    let mut out = Vec::new();
+    for (_, sym, addend) in elf.rels(eh) {
+        let (_, value, shndx, _) = elf.symbols[sym];
+        let index = usize::from(shndx);
+        if !elf.name(index).starts_with(".gcc_except_table") {
+            continue;
+        }
+        let data = elf.bytes(index);
+        let mut at = (value + addend) as usize;
+        let (lpstart, ttype) = (data[at], data[at + 1]);
+        at += 2;
+        let ttype_base = if ttype == 0xff {
+            None
+        } else {
+            let off = uleb(data, &mut at) as usize;
+            Some(at + off)
+        };
+        let cs = data[at];
+        at += 1;
+        let cs_len = uleb(data, &mut at) as usize;
+        let actions = at + cs_len;
+        let mut sites: Vec<Site> = Vec::new();
+        let mut end = 0;
+        while at < actions {
+            let (start, len, pad, action) = (
+                uleb(data, &mut at),
+                uleb(data, &mut at),
+                uleb(data, &mut at),
+                uleb(data, &mut at),
+            );
+            assert!(start >= end, "call-site ranges out of order or overlapping");
+            end = start + len;
+            let pad = pad != 0;
+            let mut chain = Vec::new();
+            let mut next = action as usize;
+            while next != 0 {
+                let mut a = actions + next - 1;
+                let filter = sleb(data, &mut a);
+                let link = a;
+                let disp = sleb(data, &mut a);
+                chain.push(match filter {
+                    0 => "cleanup".to_owned(),
+                    f if f > 0 => {
+                        let base = ttype_base.expect("a catch without a type table");
+                        format!("catch {}", elf.target(index, base - 4 * f as usize))
+                    }
+                    f => {
+                        let base = ttype_base.expect("a filter without a type table");
+                        let mut p = base + (-f - 1) as usize;
+                        let mut types = Vec::new();
+                        loop {
+                            let t = uleb(data, &mut p) as usize;
+                            if t == 0 {
+                                break;
+                            }
+                            types.push(elf.target(index, base - 4 * t));
+                        }
+                        format!("filter [{}]", types.join(", "))
+                    }
+                });
+                next =
+                    if disp == 0 { 0 } else { (link as i64 + disp - actions as i64 + 1) as usize };
+            }
+            if sites.last() != Some(&(pad, chain.clone())) {
+                sites.push((pad, chain));
+            }
+        }
+        out.push((format!("lpstart {lpstart:#x} ttype {ttype:#x} cs {cs:#x}"), sites));
+    }
+    out
+}
+
+/// §12: the LSDAs of hod's objects decode as `llc`'s (static and PIC:
+/// hod writes `llc`'s PIC encodings in every model, so the static
+/// objects are compared after decoding, as the PIC ones are).
+#[test]
+fn lsdas_decode_as_llc_s() {
+    let mut compared = 0;
+    let mut tables = 0;
+    // The kinds of clause `llc`'s tables have: each must be decoded.
+    let mut clauses: BTreeMap<String, usize> = BTreeMap::new();
+    for major in LLVM_MAJORS {
+        let scratch = Scratch::new("i386-eh-lsda");
+        let (Some(clang), Some(llc)) = (llvm_tool(major, "clang"), llvm_tool(major, "llc")) else {
+            assert!(!tools_required(), "LLVM {major} missing (HOD_REQUIRE_TOOLS=1)");
+            continue;
+        };
+        let basic = clang_module(&scratch, &clang, &data("basic.cpp"), &["-std=c++14"], "basic");
+        let modules =
+            [("basic", basic), ("live", data("live.ll")), ("callconv", data("callconv.ll"))];
+        for (label, ll) in modules {
+            for pic in [false, true] {
+                let objects = objects(&scratch, &llc, &ll, pic, &format!("{label}-{major}-{pic}"));
+                let read = |p: &Path| lsdas(&std::fs::read(p).unwrap());
+                let theirs = read(&objects[0].1);
+                assert!(!theirs.is_empty(), "{label}: llc wrote no LSDA");
+                for (_, sites) in &theirs {
+                    for (_, chain) in sites {
+                        for action in chain {
+                            let kind = action.split(' ').next().unwrap().to_owned();
+                            *clauses.entry(kind).or_insert(0) += 1;
+                        }
+                    }
+                }
+                for (who, object) in &objects[1..] {
+                    let ours = read(object);
+                    assert_eq!(ours.len(), theirs.len(), "{label} {who} pic={pic}: LSDA count");
+                    for (k, (o, t)) in ours.iter().zip(&theirs).enumerate() {
+                        // The encodings are `llc`'s PIC ones in every model.
+                        if pic {
+                            assert_eq!(o.0, t.0, "{label} {who}: LSDA {k} encodings");
+                        }
+                        assert_eq!(o.1, t.1, "{label} {who} pic={pic}: LSDA {k} call sites");
+                    }
+                    tables += ours.len();
+                }
+                compared += 1;
+            }
+        }
+    }
+    for kind in ["catch", "cleanup", "filter"] {
+        assert!(clauses.contains_key(kind) || !tools_required(), "no {kind} clause: {clauses:?}");
+    }
+    eprintln!("i386 EH: {compared} module builds, {tables} LSDAs decode as llc's ({clauses:?})");
 }

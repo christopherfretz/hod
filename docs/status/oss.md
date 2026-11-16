@@ -6,8 +6,8 @@ Host: aarch64; target: aarch64.
 
 | project | flavour | TUs | objects | built by hod | fell back | not offered | hybrid build | strict build | tests llc | tests hod | tests strict | against the control | hod | kiln |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| duckdb | O0 | 1901 | 1901 | 1900 | 1 | 0 | ok | ok | 4614/4629 | 4614/4629 | 4615/4629 | hod: 1 better; strict: 1 better; note 1 | `hod-02fe2d02`, `hod-3b14f8ff` | `21b9110a4`, `8f93304ee` |
-| duckdb | O0g | 1901 | 1901 | 1901 | 0 | 0 | ok | ok | 4614/4629 | 4614/4629 | 4614/4629 | hod: 1 worse (test/sql/index/art/scan/test_random_uuid.test); hod: 1 better | `hod-02fe2d02`, `hod-56a4695f` | `8f93304ee` |
+| duckdb | O0 | 1901 | 1901 | 1900 | 1 | 0 | ok | ok | 4614/4629 | 4614/4629 | 4615/4629 | hod: 1 better; strict: 1 better; note 1 | `hod-3b14f8ff`, `hod-cd6ef6bc` | `21b9110a4`, `8f93304ee` |
+| duckdb | O0g | 1901 | 1901 | 1901 | 0 | 0 | ok | ok | 4614/4629 | 4614/4629 | 4615/4629 | hod: 1 worse (test/sql/index/art/scan/test_random_uuid.test); hod: 1 better; strict: 1 better | `hod-56a4695f`, `hod-e98267c0` | `8f93304ee` |
 
 Notes:
 
@@ -26,4 +26,4 @@ Notes:
 | project | flavour | objects | hod | declined | failed | llvm | build | tests | refusals (modules) |
 |---|---|---|---|---|---|---|---|---|---|
 | duckdb | O0 | 1901 | 1901 | 0 | 0 | 0 | ok | 4615/4629 | - |
-| duckdb | O0g | 1901 | 1901 | 0 | 0 | 0 | ok | 4614/4629 | - |
+| duckdb | O0g | 1901 | 1901 | 0 | 0 | 0 | ok | 4615/4629 | - |

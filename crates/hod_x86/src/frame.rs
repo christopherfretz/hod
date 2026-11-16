@@ -42,8 +42,9 @@ use crate::target::X86;
 /// The callee-saved registers, in push order.
 pub const SAVED: [Reg; 3] = [Reg::Rbx, Reg::Rsi, Reg::Rdi];
 
-/// A tail exit (`musttail`; a `tail` call is an ordinary call): design
-/// 0008's I6.
+/// The one `musttail` shape [`end`]'s tail exits cannot take
+/// (`abi::check_call`, `spec/abi-x86.md` §8.5): stack arguments together
+/// with an argument in `ecx`, which the copy into the incoming area uses.
 pub const MUSTTAIL: &str = "x86:abi:musttail";
 
 /// The largest `FRAME`.
@@ -117,11 +118,8 @@ pub fn begin(cx: &mut FnCx<'_, X86>) -> CgResult<()> {
 /// local accesses, then emits the epilogue.
 ///
 /// # Errors
-/// `limit:frame-size`; [`MUSTTAIL`]; an encoding error of the function.
+/// `limit:frame-size`; an encoding error of the function.
 pub fn end(cx: &mut FnCx<'_, X86>) -> CgResult<()> {
-    if cx.tail_exit_count() != 0 {
-        return unsupported(MUSTTAIL);
-    }
     let frame = final_size(cx.frame_size())?;
     let below = 12 + frame;
     let at = cx.state.frame.frame_imm as usize;
@@ -137,20 +135,67 @@ pub fn end(cx: &mut FnCx<'_, X86>) -> CgResult<()> {
     } else if pop != 0 {
         common::load_gpr(cx, Reg::Rax, FrameRef::Incoming(0), 4);
     }
+    teardown(cx);
+    if pop == 0 {
+        put(cx, mc::ret());
+    } else {
+        put(cx, mc::ret_imm(pop as u16));
+    }
+    // `spec/abi-x86.md` §8.5: a `musttail` exit. The call sequence wrote
+    // the stack arguments over the incoming ones and the register
+    // arguments in place; the callee has this function's signature, so
+    // it pops what this function would have popped.
+    for index in 0..cx.tail_exit_count() {
+        let exit = cx.tail_exit(index);
+        cx.bind(exit.label)?;
+        // The exit comes after another exit sequence: the body's rule
+        // again; the saved registers' rows never changed.
+        cx.cfi(CfiOp::DefCfa { reg: DWARF_EBP, offset: INCOMING_BASE });
+        teardown(cx);
+        cx.tail_branch_here(index, dwarf);
+        match exit.target {
+            CallTarget::Sym(sym) => {
+                let inst = mc::jmp_near(0);
+                let Some(site) = Mode::X86.admit(inst).ok().and_then(|i| i.site()) else {
+                    return cx.bug("a jump without a relocatable field");
+                };
+                let at = cx.offset();
+                put(cx, inst);
+                let kind = RelocKind::I386(call_reloc(cx, sym));
+                cx.reloc(at + site.offset as u32, kind, sym, site.addend);
+            }
+            CallTarget::Reg(callee) => put(cx, mc::jmp_r(gp(callee))),
+        }
+        cx.tail_branch_ends_here(index);
+    }
+    bias_local_sites(cx, -i64::from(below))?;
+    cx.set_frame_desc(FrameDesc { frame_size: below, frame_base: DWARF_EBP });
+    take_admit_error(cx)
+}
+
+/// The frame's teardown before a `ret` or a tail jump: `lea esp, [ebp -
+/// 12]`, the saved registers and `ebp` popped. Writes no argument or
+/// result register.
+fn teardown(cx: &mut FnCx<'_, X86>) {
     put(cx, mc::lea(Size::D, ESP, Mem::base(EBP, -12)));
     for reg in SAVED.into_iter().rev() {
         put(cx, mc::pop_r(reg));
     }
     put(cx, mc::pop_r(EBP));
     cx.cfi(CfiOp::DefCfa { reg: DWARF_ESP, offset: 4 });
-    if pop == 0 {
-        put(cx, mc::ret());
-    } else {
-        put(cx, mc::ret_imm(pop as u16));
+}
+
+/// The relocation of a call or tail jump to `sym`: `R_386_PLT32` for a
+/// callee that may be in another module, `R_386_PC32` for one in this
+/// output (as `llc` writes them in the static model).
+fn call_reloc(cx: &FnCx<'_, X86>, sym: SymRef) -> I386Reloc {
+    match sym {
+        SymRef::Module(id) => match hod_cg::call_access(cx.module, id) {
+            hod_cg::CallAccess::Direct => I386Reloc::Pc32,
+            hod_cg::CallAccess::Plt => I386Reloc::Plt32,
+        },
+        _ => I386Reloc::Plt32,
     }
-    bias_local_sites(cx, -i64::from(below))?;
-    cx.set_frame_desc(FrameDesc { frame_size: below, frame_base: DWARF_EBP });
-    take_admit_error(cx)
 }
 
 /// `Target::frame_base_offset`: from `ebp`.
@@ -213,13 +258,7 @@ pub fn emit_call(cx: &mut FnCx<'_, X86>, target: CallTarget, callee_pop: u32) ->
 fn call_instruction(cx: &mut FnCx<'_, X86>, target: CallTarget) -> CgResult<()> {
     match target {
         CallTarget::Sym(sym) => {
-            let kind = match sym {
-                SymRef::Module(id) => match hod_cg::call_access(cx.module, id) {
-                    hod_cg::CallAccess::Direct => I386Reloc::Pc32,
-                    hod_cg::CallAccess::Plt => I386Reloc::Plt32,
-                },
-                _ => I386Reloc::Plt32,
-            };
+            let kind = call_reloc(cx, sym);
             let inst = mc::call(0);
             let Some(site) = Mode::X86.admit(inst).ok().and_then(|i| i.site()) else {
                 return cx.bug("a call without a relocatable field");

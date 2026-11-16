@@ -663,3 +663,367 @@ fn the_abi_grid_runs_as_llc_s() {
     }
     eprintln!("i386 ABI grid: {} signatures, {runs} runs, both directions each", sigs.len());
 }
+
+/// The fixed rows' hod module: `spec/abi-x86.md` §5.1 (a dropped x87
+/// result is popped), §9.1 (a variadic call), §5.2 (results in memory,
+/// dropped and used), §6.4 (`byref`), §8.5 (`musttail`, a million deep:
+/// a call that is not a tail call overflows `qemu-i386`'s 8 MiB stack),
+/// §8.1 (an indirect `inreg` call in `eax`).
+const FIXED_HOD: &str = r"
+declare double @rd()
+declare x86_fp80 @rt()
+declare i32 @chkv(i32, ...)
+declare { i32, i32, i32, i32 } @rbig(i32)
+declare { i64, i64 } @rpair64()
+declare void @mark(i32)
+declare i32 @cb(ptr byref(%S))
+declare void @cfill(ptr sret(%S), i32)
+declare i32 @lo64(i64)
+@irp = external global ptr
+
+define double @drops() {
+  %d0 = call double @rd()
+  %d1 = call double @rd()
+  %d2 = call double @rd()
+  %d3 = call double @rd()
+  %d4 = call double @rd()
+  %d5 = call double @rd()
+  %d6 = call double @rd()
+  %d7 = call double @rd()
+  %d8 = call double @rd()
+  %d9 = call double @rd()
+  %t = call x86_fp80 @rt()
+  %r = call double @rd()
+  ret double %r
+}
+
+define i32 @hv(double %x, i64 %y) {
+  %r = call i32 (i32, ...) @chkv(i32 4, i32 7, double %x, i64 %y, i32 -3)
+  ret i32 %r
+}
+
+define i32 @hm() {
+  %d = call { i32, i32, i32, i32 } @rbig(i32 1)
+  call void @mark(i32 200)
+  %p = call { i64, i64 } @rpair64()
+  call void @mark(i32 201)
+  ret i32 1005
+}
+
+define i32 @hb(ptr byref(%S) %p) {
+  %r = call i32 @cb(ptr byref(%S) %p)
+  ret i32 %r
+}
+
+define i32 @loop(i32 %n, i32 %acc, i64 %x) {
+  %z = icmp eq i32 %n, 0
+  br i1 %z, label %done, label %more
+more:
+  %n1 = sub i32 %n, 1
+  %a1 = add i32 %acc, %n
+  %r = musttail call i32 @loop(i32 %n1, i32 %a1, i64 %x)
+  ret i32 %r
+done:
+  %t = call i32 @lo64(i64 %x)
+  %s = add i32 %acc, %t
+  ret i32 %s
+}
+
+define void @fill(ptr sret(%S) %p, i32 %n) {
+  %z = icmp eq i32 %n, 0
+  br i1 %z, label %base, label %more
+base:
+  musttail call void @cfill(ptr sret(%S) %p, i32 77)
+  ret void
+more:
+  %n1 = sub i32 %n, 1
+  musttail call void @fill(ptr sret(%S) %p, i32 %n1)
+  ret void
+}
+
+define i32 @ind(ptr %f, i32 %n) {
+  %z = icmp eq i32 %n, 0
+  br i1 %z, label %base, label %more
+base:
+  %g = load ptr, ptr @irp
+  %b = call i32 %g(i32 inreg 5)
+  ret i32 %b
+more:
+  %n1 = sub i32 %n, 1
+  %r = musttail call i32 %f(ptr %f, i32 %n1)
+  ret i32 %r
+}
+
+define i32 @irm(i32 inreg %n, i32 inreg %a, i32 %s) {
+  %z = icmp eq i32 %n, 0
+  br i1 %z, label %done, label %more
+more:
+  %n1 = sub i32 %n, 1
+  %a1 = add i32 %a, %n
+  %r = musttail call i32 @irm(i32 inreg %n1, i32 inreg %a1, i32 %s)
+  ret i32 %r
+done:
+  %t = add i32 %a, %s
+  ret i32 %t
+}
+
+define fastcc i32 @fc(i32 %n, i32 %a) {
+  %z = icmp eq i32 %n, 0
+  br i1 %z, label %done, label %more
+more:
+  %n1 = sub i32 %n, 1
+  %a1 = add i32 %a, 1
+  %r = musttail call fastcc i32 @fc(i32 %n1, i32 %a1)
+  ret i32 %r
+done:
+  ret i32 %a
+}
+";
+
+/// The fixed rows' `llc` module: the callees and `main`, which checks
+/// every hod function's result (`fail 300 j`: row `j`).
+const FIXED_LLC: &str = r#"
+@okfmt = private constant [4 x i8] c"ok\0A\00"
+@fmt = private constant [12 x i8] c"fail %d %d\0A\00"
+@gs = global %S { i32 11, i8 2, i16 3 }
+@irp = global ptr @ir1
+declare i32 @printf(ptr, ...)
+declare void @exit(i32) noreturn
+declare ptr @llvm.addressofreturnaddress.p0()
+declare void @llvm.va_start(ptr)
+declare void @llvm.va_end(ptr)
+
+define void @fail(i32 %k, i32 %j) noreturn {
+  %r = call i32 (ptr, ...) @printf(ptr @fmt, i32 %k, i32 %j)
+  call void @exit(i32 1)
+  unreachable
+}
+
+define void @expect(i32 %got, i32 %want, i32 %j) {
+  %c = icmp ne i32 %got, %want
+  br i1 %c, label %f, label %o
+f:
+  call void @fail(i32 300, i32 %j)
+  unreachable
+o:
+  ret void
+}
+
+define void @mark(i32 %k) {
+  %a = call ptr @llvm.addressofreturnaddress.p0()
+  %i = ptrtoint ptr %a to i32
+  %m = and i32 %i, 15
+  call void @expect(i32 %m, i32 12, i32 %k)
+  ret void
+}
+
+define double @rd() {
+  ret double 1.5
+}
+
+define x86_fp80 @rt() {
+  ret x86_fp80 0xK3FFFC000000000000000
+}
+
+define i32 @chkv(i32 %n, ...) {
+  call void @mark(i32 10)
+  %ap = alloca ptr
+  call void @llvm.va_start(ptr %ap)
+  %a = va_arg ptr %ap, i32
+  %b = va_arg ptr %ap, double
+  %c = va_arg ptr %ap, i64
+  %d = va_arg ptr %ap, i32
+  call void @llvm.va_end(ptr %ap)
+  call void @expect(i32 %n, i32 4, i32 11)
+  call void @expect(i32 %a, i32 7, i32 12)
+  %bi = fptosi double %b to i32
+  %bh = fmul double %b, 2.0
+  %bhi = fptosi double %bh to i32
+  call void @expect(i32 %bhi, i32 5, i32 13)
+  %cl = trunc i64 %c to i32
+  %ch64 = lshr i64 %c, 32
+  %ch = trunc i64 %ch64 to i32
+  call void @expect(i32 %cl, i32 7, i32 14)
+  call void @expect(i32 %ch, i32 5, i32 15)
+  call void @expect(i32 %d, i32 -3, i32 16)
+  ret i32 99
+}
+
+define { i32, i32, i32, i32 } @rbig(i32 %k) {
+  call void @mark(i32 20)
+  %k1 = add i32 %k, 1
+  %k2 = add i32 %k, 2
+  %k3 = add i32 %k, 3
+  %a = insertvalue { i32, i32, i32, i32 } undef, i32 %k, 0
+  %b = insertvalue { i32, i32, i32, i32 } %a, i32 %k1, 1
+  %c = insertvalue { i32, i32, i32, i32 } %b, i32 %k2, 2
+  %d = insertvalue { i32, i32, i32, i32 } %c, i32 %k3, 3
+  ret { i32, i32, i32, i32 } %d
+}
+
+define { i64, i64 } @rpair64() {
+  ret { i64, i64 } { i64 1, i64 1000 }
+}
+
+define i32 @cb(ptr byref(%S) %p) {
+  %a = load i32, ptr %p
+  %bp = getelementptr inbounds i8, ptr %p, i32 4
+  %b = load i8, ptr %bp
+  %cp = getelementptr inbounds i8, ptr %p, i32 6
+  %c = load i16, ptr %cp
+  %bw = zext i8 %b to i32
+  %cw = zext i16 %c to i32
+  %s = add i32 %a, %bw
+  %t = add i32 %s, %cw
+  ret i32 %t
+}
+
+define void @cfill(ptr sret(%S) %p, i32 %k) {
+  store i32 %k, ptr %p
+  ret void
+}
+
+define i32 @lo64(i64 %x) {
+  %h = lshr i64 %x, 32
+  %s = add i64 %x, %h
+  %t = trunc i64 %s to i32
+  ret i32 %t
+}
+
+define i32 @ir1(i32 inreg %v) {
+  %r = add i32 %v, 100
+  ret i32 %r
+}
+
+declare double @drops()
+declare i32 @hv(double, i64)
+declare i32 @hm()
+declare i32 @hb(ptr byref(%S))
+declare i32 @loop(i32, i32, i64)
+declare void @fill(ptr sret(%S), i32)
+declare i32 @ind(ptr, i32)
+declare i32 @irm(i32 inreg, i32 inreg, i32)
+declare fastcc i32 @fc(i32, i32)
+
+define i32 @main() {
+  %d = call double @drops()
+  %d2 = fmul double %d, 2.0
+  %di = fptosi double %d2 to i32
+  call void @expect(i32 %di, i32 3, i32 1)
+  %v = call i32 @hv(double 2.5, i64 21474836487)
+  call void @expect(i32 %v, i32 99, i32 2)
+  %m = call i32 @hm()
+  call void @expect(i32 %m, i32 1005, i32 3)
+  %b = call i32 @hb(ptr byref(%S) @gs)
+  call void @expect(i32 %b, i32 16, i32 4)
+  %l = call i32 @loop(i32 1000000, i32 0, i64 21474836487)
+  call void @expect(i32 %l, i32 1784293676, i32 5)
+  %o = alloca %S
+  call void @fill(ptr sret(%S) %o, i32 1000000)
+  call void @mark(i32 6)
+  %f = load i32, ptr %o
+  call void @expect(i32 %f, i32 77, i32 7)
+  %i = call i32 @ind(ptr @ind, i32 1000000)
+  call void @expect(i32 %i, i32 105, i32 8)
+  %r = call i32 @irm(i32 inreg 1000000, i32 inreg 0, i32 9)
+  call void @expect(i32 %r, i32 1784293673, i32 9)
+  %c = call fastcc i32 @fc(i32 1000000, i32 0)
+  call void @expect(i32 %c, i32 1000000, i32 10)
+  %p = call i32 (ptr, ...) @printf(ptr @okfmt)
+  ret i32 0
+}
+"#;
+
+/// The fixed rows, hod plain and under `Stress::ALL` against `llc` 19
+/// and 22.
+#[test]
+fn the_fixed_rows_run_as_llc_s() {
+    let target = Target::I686;
+    let (Some(gcc), Some(qemu)) = (tool(&target.c_driver()), tool(&target.emulator())) else {
+        return;
+    };
+    // Every hod function is `nounwind` (exceptions are `x86:eh`).
+    let hod_ll = format!("{PRELUDE}{}", FIXED_HOD.replace(") {\n", ") nounwind {\n"));
+    let llc_ll = format!("{PRELUDE}{FIXED_LLC}");
+    let scratch = Scratch::new("i386-abi-fixed");
+    let llc_path = scratch.write("fixed-llc.ll", &llc_ll);
+    let options = Options {
+        output_kind: OutputKind::Object,
+        triple: Some(TRIPLE.into()),
+        ..Options::default()
+    };
+    let plain = hod::compile(hod_ll.as_bytes(), &options).unwrap_or_else(|e| panic!("hod: {e}"));
+    let plain = scratch.write("fixed-hod.o", plain);
+    let stress = scratch.write("fixed-stress.o", stressed_object(hod_ll.as_bytes()));
+    let mut runs = 0;
+    for major in LLVM_MAJORS {
+        let Some(llc) = llvm_tool(major, "llc") else { continue };
+        let peer = llc_object(&scratch, &llc, &llc_path, &[], &format!("fixed-llc{major}"));
+        // The tail jumps' `R_386_PLT32` through each linker.
+        let lld = llvm_tool(22, "ld.lld");
+        let mold = tool("mold");
+        let linkers = [("bfd", None), ("lld", lld.as_ref()), ("mold", mold.as_ref())];
+        for (who, object) in [("hod", &plain), ("stress", &stress)] {
+            for (linker, path) in linkers {
+                if linker != "bfd" && path.is_none() {
+                    continue;
+                }
+                let exe = scratch.join(format!("fixed-{who}-{major}-{linker}"));
+                let mut command = Command::new(&gcc);
+                // gcc finds `ld.lld` in a `-B` directory; `mold` on the path.
+                if let Some(dir) = path.and_then(|p| p.parent()).filter(|_| linker == "lld") {
+                    command.arg(format!("-B{}", dir.display()));
+                }
+                if linker != "bfd" {
+                    command.arg(format!("-fuse-ld={linker}"));
+                }
+                command.arg("-no-pie").arg(&peer).arg(object).arg("-o").arg(&exe);
+                let what = format!("the fixed rows ({who}, llc {major}, {linker})");
+                checked(&format!("link of {what}"), &mut command);
+                let (status, out) = run(&qemu, &exe);
+                assert_eq!(
+                    (status, String::from_utf8_lossy(&out).into_owned()),
+                    (Some(0), "ok\n".to_string()),
+                    "{what}: `fail 300 j` names main's check j"
+                );
+                runs += 1;
+            }
+        }
+    }
+    eprintln!("i386 ABI fixed rows: {runs} runs");
+}
+
+/// The refusal of `body` by hod, as text.
+fn refusal(body: &str) -> String {
+    let options = Options {
+        output_kind: OutputKind::Object,
+        triple: Some(TRIPLE.into()),
+        ..Options::default()
+    };
+    let body = body.replace(") {\n", ") nounwind {\n");
+    match hod::compile(format!("{PRELUDE}{body}").as_bytes(), &options) {
+        Ok(_) => String::from("compiled"),
+        Err(e) => e.to_string(),
+    }
+}
+
+/// §8.1, §8.5: the two call shapes the call sequence cannot place, each
+/// refused by its own name.
+#[test]
+fn call_shapes_refused_by_name() {
+    let edx = "define i32 @f(ptr %p) {
+  %r = call i32 %p(i32 inreg 1, i32 inreg 2)
+  ret i32 %r
+}";
+    assert!(refusal(edx).contains("x86:abi:indirect-edx"), "{}", refusal(edx));
+    let eax = "define i32 @f(ptr %p) {
+  %r = call i32 %p(i32 inreg 1, i32 2)
+  ret i32 %r
+}";
+    assert_eq!(refusal(eax), "compiled");
+    let ecx = "define fastcc i32 @f(i32 %a, i32 %b, i32 %c) {
+  %r = musttail call fastcc i32 @f(i32 %a, i32 %b, i32 %c)
+  ret i32 %r
+}";
+    assert!(refusal(ecx).contains("x86:abi:musttail"), "{}", refusal(ecx));
+}

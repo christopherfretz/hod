@@ -83,19 +83,27 @@ const RET: [PReg; 3] = [EAX, EDX, ECX];
 const MAX_LEAVES: usize = 16;
 
 /// The ABI's checks of a call before the call sequence runs
-/// (`call::check`). An indirect call: the callee's address travels in
-/// `edx` (`RegInfo::callee`), so an argument that the signature puts in
-/// `edx` is refused as [`INDIRECT_EDX`] (`spec/abi-x86.md` §8.2). Only a
-/// call through a value with `fastcc` or an `inreg` parameter can put one
-/// there; the others are not assigned twice.
+/// (`call::check`, `spec/abi-x86.md` §8.1, §8.5):
+///
+/// - An indirect call: the callee's address travels in `edx`
+///   (`RegInfo::callee`), so an argument that the signature puts in
+///   `edx` is refused as [`INDIRECT_EDX`].
+/// - A `musttail` call with stack arguments: the call sequence copies
+///   them over the incoming ones after the register arguments are
+///   placed, through `ecx`, so an argument in `ecx` is refused as
+///   `x86:abi:musttail`.
+///
+/// Only a call with `fastcc`, an `inreg` or a `nest` parameter puts
+/// anything in a register; the others are not assigned twice. A
+/// signature `assign` refuses is left to the call sequence, which refuses
+/// it by its own name.
 ///
 /// # Errors
 /// [`INDIRECT_EDX`], `x86:abi:musttail`.
 pub fn check_call(cx: &FnCx<'_, X86>, site: &CallSite<'_>) -> CgResult<()> {
-    if site.tail() == TailKind::MustTail {
-        return common::unsupported(crate::frame::MUSTTAIL);
-    }
-    if matches!(site.callee_value().kind(), ValueKind::Sym(_)) {
+    let musttail = site.tail() == TailKind::MustTail;
+    let indirect = !matches!(site.callee_value().kind(), ValueKind::Sym(_));
+    if !musttail && !indirect {
         return Ok(());
     }
     let types = cx.types();
@@ -106,25 +114,35 @@ pub fn check_call(cx: &FnCx<'_, X86>, site: &CallSite<'_>) -> CgResult<()> {
         // §6.5: a variadic call passes nothing in registers.
         return Ok(());
     }
-    let inreg = (0..params.len()).any(|i| site.arg_attrs(i).has(ParamAttrs::INREG));
-    if site.cc() != CallConv::FAST && !inreg {
+    let mut attrs = Vec::new();
+    for index in 0..params.len() {
+        let Ok(a) = hod_ir::call_arg_attrs(cx.module, site, index) else { return Ok(()) };
+        attrs.push(a);
+    }
+    let in_reg = attrs.iter().any(|a| a.has(ParamAttrs::INREG) || a.has(ParamAttrs::NEST));
+    if site.cc() != CallConv::FAST && !in_reg {
         return Ok(());
     }
-    let attrs: Vec<ParamAttrs> = (0..params.len()).map(|i| site.arg_attrs(i)).collect();
+    let Ok(ret_attrs) = hod_ir::call_ret_attrs(cx.module, site) else { return Ok(()) };
     let sig = Sig {
         cc: site.cc(),
         ret,
-        ret_attrs: site.ret_attrs(),
+        ret_attrs,
         params,
         param_attrs: &attrs,
         fixed: params.len() as u32,
         variadic,
     };
     let mut asg = Assignment::default();
-    // A signature `assign` refuses is refused by the call sequence.
-    if assign(types, &sig, &mut asg).is_ok() && asg.args.iter().any(|p| p.place == Place::Reg(EDX))
-    {
+    if assign(types, &sig, &mut asg).is_err() {
+        return Ok(());
+    }
+    let uses = |reg| asg.args.iter().any(|p| p.place == Place::Reg(reg));
+    if indirect && uses(EDX) {
         return common::unsupported(INDIRECT_EDX);
+    }
+    if musttail && asg.stack_size != 0 && uses(ECX) {
+        return common::unsupported(crate::frame::MUSTTAIL);
     }
     Ok(())
 }

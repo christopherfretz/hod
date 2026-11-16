@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use hod_mc_x64::Inst;
+use hod_mc_x64::{Inst, Mode, ModeError};
 use hod_testutil::{LLVM_MAJORS, Scratch, run, tools_required};
 
 use crate::table::base_mnemonics;
@@ -61,16 +61,46 @@ fn base_name(name: &'static str) -> &'static str {
     name.strip_prefix("try_").unwrap_or(name)
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Batch {
     cases: Vec<Case>,
     rejections: Vec<Rejection>,
+    /// The mode every pushed instruction goes through
+    /// ([`Mode::admit`]), and the `llvm-mc` triple it is checked at.
+    mode: Mode,
+    /// The instructions [`Mode::admit`] refused, by refusal: each one's
+    /// assembly text is a rejection `llvm-mc` must confirm.
+    refused: BTreeMap<&'static str, usize>,
+}
+
+impl Default for Batch {
+    fn default() -> Self {
+        Self::for_mode(Mode::X64)
+    }
 }
 
 /// `(encodings, rejections)` per constructor.
 pub type Counts = BTreeMap<&'static str, (usize, usize)>;
 
 impl Batch {
+    /// An empty batch whose instructions go through `mode`.
+    pub fn for_mode(mode: Mode) -> Self {
+        Self { cases: Vec::new(), rejections: Vec::new(), mode, refused: BTreeMap::new() }
+    }
+
+    pub fn mode(&self) -> Mode {
+        self.mode
+    }
+
+    /// The refusals of [`Mode::admit`] so far, by name.
+    pub fn refused(&self) -> &BTreeMap<&'static str, usize> {
+        &self.refused
+    }
+
+    /// Adds the instruction as the batch's mode encodes it. In 32-bit
+    /// mode the text is translated ([`crate::text::to_i386`]); an
+    /// instruction the mode refuses becomes a rejection of the original
+    /// text, which `llvm-mc` must refuse at the 32-bit triple too.
     pub fn push(
         &mut self,
         name: &'static str,
@@ -79,7 +109,25 @@ impl Batch {
         asm: String,
     ) {
         let inst = inst.into_inst(&asm);
-        self.push_bytes(name, inst.bytes().to_vec(), mnemonic, asm);
+        match self.mode.admit(inst) {
+            Ok(inst) if self.mode == Mode::X86 => {
+                let mnemonic = mnemonic.map(|m| crate::text::to_i386(&m));
+                self.push_bytes(name, inst.bytes().to_vec(), mnemonic, crate::text::to_i386(&asm));
+            }
+            Ok(inst) => self.push_bytes(name, inst.bytes().to_vec(), mnemonic, asm),
+            Err(e) => self.refuse(name, e, asm),
+        }
+    }
+
+    /// Records that the mode refused `asm`'s instruction with `e`.
+    pub fn refuse(&mut self, name: &'static str, e: ModeError, asm: String) {
+        *self.refused.entry(e.name()).or_default() += 1;
+        // `llvm-mc -triple=i686` accepts `cvtsi2sd xmm, qword ptr [..]` and
+        // drops the size: it writes the 32-bit source form. hod refuses the
+        // 64-bit source, so this refusal has no text LLVM must refuse.
+        let lenient = base_name(name) == "cvtsi2s_rm" && asm.contains("qword ptr");
+        let asm = (!lenient).then_some(asm);
+        self.rejections.push(Rejection { name: base_name(name), asm });
     }
 
     /// A case from raw bytes: the harness's own tests use it.
@@ -142,7 +190,7 @@ impl Batch {
     /// panics with a report of every disagreement. Skips (after a note)
     /// when LLVM's tools are missing and not required.
     pub fn check(self, label: &str) {
-        for tools in Tools::all() {
+        for tools in Tools::all_in(self.mode) {
             let (mismatches, report) = self.examine(&tools);
             assert!(
                 mismatches == 0,
@@ -151,11 +199,14 @@ impl Batch {
             );
             let with_asm = self.rejections.iter().filter(|r| r.asm.is_some()).count();
             println!(
-                "l1 {label} (LLVM {}): {} encodings equal llvm-mc's and disassemble as \
-                 intended; {} rejections, {with_asm} of them confirmed by llvm-mc",
+                "l1 {label} (LLVM {}, {}): {} encodings equal llvm-mc's and disassemble as \
+                 intended; {} rejections, {with_asm} of them confirmed by llvm-mc; mode \
+                 refusals {:?}",
                 tools.major,
+                tools.triple,
                 self.cases.len(),
                 self.rejections.len(),
+                self.refused,
             );
         }
     }
@@ -173,9 +224,18 @@ pub struct Tools {
     objdump: PathBuf,
     nm: PathBuf,
     scratch: Scratch,
+    /// The `llvm-mc` triple: `x86_64-unknown-linux-gnu`, or
+    /// `i686-unknown-linux-gnu` for [`Mode::X86`].
+    pub triple: &'static str,
 }
 
-const TRIPLE: &str = "--triple=x86_64-unknown-linux-gnu";
+/// The `llvm-mc` triple of a mode.
+pub const fn triple(mode: Mode) -> &'static str {
+    match mode {
+        Mode::X64 => "x86_64-unknown-linux-gnu",
+        Mode::X86 => "i686-unknown-linux-gnu",
+    }
+}
 
 /// The first line of every source the harness assembles.
 const HEADER: &str = ".intel_syntax noprefix\n";
@@ -195,20 +255,32 @@ fn versioned(name: &str, major: u32) -> Option<PathBuf> {
 impl Tools {
     /// The tools of `major`, if all four are installed.
     pub fn of(major: u32) -> Option<Self> {
+        Self::of_in(major, Mode::X64)
+    }
+
+    /// The tools of `major`, assembling at `mode`'s triple.
+    pub fn of_in(major: u32, mode: Mode) -> Option<Self> {
+        let stem = if mode == Mode::X64 { "mc-x64" } else { "mc-x86" };
         Some(Self {
             major,
             mc: versioned("llvm-mc", major)?,
             objcopy: versioned("llvm-objcopy", major)?,
             objdump: versioned("llvm-objdump", major)?,
             nm: versioned("llvm-nm", major)?,
-            scratch: Scratch::new(&format!("mc-x64-{major}")),
+            scratch: Scratch::new(&format!("{stem}-{major}")),
+            triple: triple(mode),
         })
     }
 
     /// Every installed major, newest first. Empty, after a note, when none
     /// is installed; a failure then if tools are required.
     pub fn all() -> Vec<Self> {
-        let found: Vec<Self> = LLVM_MAJORS.iter().filter_map(|&m| Self::of(m)).collect();
+        Self::all_in(Mode::X64)
+    }
+
+    /// [`Tools::all`] at `mode`'s triple.
+    pub fn all_in(mode: Mode) -> Vec<Self> {
+        let found: Vec<Self> = LLVM_MAJORS.iter().filter_map(|&m| Self::of_in(m, mode)).collect();
         if found.is_empty() {
             assert!(!tools_required(), "no LLVM {LLVM_MAJORS:?} tools found (HOD_REQUIRE_TOOLS=1)");
             eprintln!("note: LLVM's tools not found; skipping the tool-backed part of this test");
@@ -234,16 +306,21 @@ impl Tools {
     pub fn assemble_object(&self, stem: &str, source: &str) -> Result<PathBuf, String> {
         let src = self.scratch.write(&format!("{stem}.s"), format!("{HEADER}{source}"));
         let obj = self.scratch.join(format!("{stem}.o"));
-        let outcome = run(
-            &self.mc,
-            [
-                TRIPLE.as_ref(),
-                "-filetype=obj".as_ref(),
-                "-o".as_ref(),
-                obj.as_os_str(),
-                src.as_os_str(),
-            ],
-        );
+        let triple = format!("--triple={}", self.triple);
+        let mut args: Vec<&std::ffi::OsStr> = vec![
+            triple.as_ref(),
+            "-filetype=obj".as_ref(),
+            "-o".as_ref(),
+            obj.as_os_str(),
+            src.as_os_str(),
+        ];
+        // LLVM's default i686 CPU lacks `NOPL` (`0F 1F`): `.nops` then
+        // writes one-byte `90`s only. The encoder's multi-byte `nop` forms
+        // are checked with the feature on (every P6 has it).
+        if self.triple.starts_with("i686") {
+            args.push("-mattr=+nopl".as_ref());
+        }
+        let outcome = run(&self.mc, args);
         assert!(!outcome.timed_out(), "llvm-mc timed out on {stem}.s: an oracle ERROR");
         if outcome.success() { Ok(obj) } else { Err(outcome.stderr_text()) }
     }
@@ -426,6 +503,9 @@ impl Tools {
                     next.unwrap_or(end) - offset,
                     case.bytes.len()
                 )),
+                Some(text) if self.triple.starts_with("i686") => {
+                    mnemonic_ok(case, &i386_alias(case, text))
+                }
                 Some(text) => mnemonic_ok(case, text),
             };
             if let Err(expected) = verdict {
@@ -480,6 +560,21 @@ impl Tools {
         }
         pending.len()
     }
+}
+
+/// The 64-bit mnemonic of a 32-bit disassembly, where they differ:
+/// `pushfd`/`popfd` are `pushfq`/`popfq`'s bytes, and `llvm-objdump` at
+/// `i686` (19 and 22) prints EVEX `vmovdqu64` as `vmovdqu32` although
+/// `llvm-mc` encodes `vmovdqu64` to the same bytes (`EVEX.W1`).
+fn i386_alias(case: &Case, text: &str) -> String {
+    let (first, rest) = text.split_once(' ').unwrap_or((text, ""));
+    let first = match first {
+        "pushfd" => "pushfq",
+        "popfd" => "popfq",
+        "vmovdqu32" if case.mnemonic.as_deref() == Some("vmovdqu64") => "vmovdqu64",
+        other => other,
+    };
+    if rest.is_empty() { first.to_string() } else { format!("{first} {rest}") }
 }
 
 /// Prefixes `llvm-objdump` prints on a line of their own.

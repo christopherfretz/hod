@@ -798,13 +798,16 @@ const fn mem_operand(out: &mut Inst, reg: u8, m: Mem, n: i32) {
         (Base::Rip, _) => {
             out.push(reg | 0b101);
             out.mark_site(Fixup::Rel32);
+            out.mark(crate::inst::FLAG_RIP);
             out.push_imm(disp as u32 as u64, 4);
         }
         (Base::None, index) => {
             out.push(reg | 0b100);
-            let sib = match index {
-                Some((i, s)) => (s as u8) << 6 | i.reg().low() << 3 | 0b101,
-                None => 0b00_100_101,
+            let sib = if let Some((i, s)) = index {
+                (s as u8) << 6 | i.reg().low() << 3 | 0b101
+            } else {
+                out.mark(crate::inst::FLAG_ABS);
+                0b00_100_101
             };
             out.push(sib);
             if m.is_abs32() {
@@ -1145,13 +1148,15 @@ pub const fn kmov_mk(size: Size, dst: Mem, src: K) -> Inst {
 /// the others a 32-bit one.
 #[inline]
 pub const fn kmov_kr(size: Size, dst: K, src: Reg) -> Inst {
-    vex(kop(kr_pw(size), 1, false, 0x92), dst.code(), 0, Rm::Reg(src))
+    let inst = vex(kop(kr_pw(size), 1, false, 0x92), dst.code(), 0, Rm::Reg(src));
+    if matches!(size, Size::Q) { inst.x64_only() } else { inst }
 }
 
 /// `KMOV{B,W,D,Q} r32/r64, k` (`0F 93 /r`): zero-extended.
 #[inline]
 pub const fn kmov_rk(size: Size, dst: Reg, src: K) -> Inst {
-    vex(kop(kr_pw(size), 1, false, 0x93), dst.code(), 0, kreg(src))
+    let inst = vex(kop(kr_pw(size), 1, false, 0x93), dst.code(), 0, kreg(src));
+    if matches!(size, Size::Q) { inst.x64_only() } else { inst }
 }
 
 /// The three-operand opmask operations `op dst, a, b` (`VEX.L1`, `a` in

@@ -8,7 +8,7 @@ so the whole API is plain functions on small `Copy` values.
 This document covers the base integer instruction set, the scalar
 SSE/SSE2 floating point and the packed SSE2 forms an `-O0` code generator
 needs, in 64-bit mode, and the fixed forms of the thread-local storage
-accesses. The oracle and the crate assume the x86-64 baseline (which
+accesses; "32-bit mode" says how the same constructors serve `i386`. The oracle and the crate assume the x86-64 baseline (which
 includes SSE2 and `CMPXCHG8B`) plus the instructions named below that need
 a CPUID feature (`LZCNT`, `TZCNT` (BMI1), `POPCNT`, `CMPXCHG16B`,
 `ENDBR64`, `RDTSCP`); the crate does not check features, the code
@@ -1008,6 +1008,93 @@ destination equal to its index refused, the first confirmed by
 `llvm-mc`). As for `vex-gathers`, the VSIB text has no size keyword
 (LLVM 22 prints an element's, 19 the register's).
 
+## 32-bit mode
+
+`Mode` (`src/mode.rs`, WP-285, design 0008 section 1.3) is the processor
+mode a code buffer emits for: `Mode::X64`, or `Mode::X86`, 32-bit
+protected mode with 32-bit default operand and address sizes (`i386` to
+`i686` Linux). The constructors are unchanged and encode for 64-bit mode;
+the buffer carries its `Mode` and passes each instruction through
+`Mode::admit(inst) -> Result<Inst, ModeError>`. `Mode::X64` returns the
+instruction unchanged, so the 64-bit API and bytes are those of every
+other section.
+
+**Writing a 32-bit instruction.** The operands are the registers 0-7 at
+sizes `B` (`al`..`bl` only), `W` and `D`, `xmm0`-`xmm7`, `ymm0`-`ymm7`,
+`zmm0`-`zmm7`, `k0`-`k7`; an address register is named by its 64-bit
+`Reg` (`Mem::base(Reg::Rbx, 8)` is `[ebx + 8]`: the 64-bit bytes without
+`67` are the 32-bit bytes); an absolute address is `Mem::abs`. Where
+64-bit mode's default operand size is 64 bits, the same constructor is
+the 32-bit instruction: `push_r`/`pop_r`/`push_m`/`pop_m`/`push_i`/
+`push_i32` (`push eax`, `push dword ptr [..]`), `call_r`/`call_m`/
+`jmp_r`/`jmp_m`, `ret`, `ret_imm`, `leave`, `pushfq`/`popfq` (`pushfd`/
+`popfd`), `rdpid_r`, `umonitor_r`.
+
+**Refused**, in this order, by a stable `ModeError::name()`:
+
+| refusal | name | what |
+|---|---|---|
+| `X64Only` | `x86-mode:x86-64-only` | `rdfsbase`/`rdgsbase`/`wrfsbase`/`wrgsbase` at any size; the VEX `W1` forms with a 64-bit general register: `kmov_kr`/`kmov_rk` at `Q`, `bmi_rrr` at `Q` |
+| `RipRelative` | `x86-mode:rip-relative` | a `Mem::rip` operand (`ModRM mod=00 r/m=101` is an absolute `disp32` in 32-bit mode) |
+| `OperandSize64` | `x86-mode:operand-size-64` | a REX prefix with `W`: every `Size::Q` form, `movsxd`, `cdqe`, `cqo`, `movabs_ri`, `mov_ri32s`, `cmpxchg16b_m`, `rep_movs`/`rep_stos` at `Q`, `crc32` to a 64-bit register, `cvtsi2s`/`cvtts2si`/`cvts2si`/`movd_xr`/`movd_rx` at `Q`, the x86-64 TLS sequences |
+| `ExtendedRegister` | `x86-mode:extended-register` | any other REX prefix (`r8`-`r15`, `xmm8`-`xmm15`, `spl`/`bpl`/`sil`/`dil`), and a VEX or EVEX prefix with an inverted register bit clear (`R`, `X`, `B`, `R'`, `V'`, `vvvv[3]`: a register 8-31 in any field), and a blend's fourth register (`imm8[7:4]`) above 7 |
+
+The REX test reads the bytes (a byte `40`-`4F` after the legacy prefixes:
+no 64-bit opcode is one), so the constructors that lay out their bytes by
+hand (`crc32_rr`, `rep_movs`) are covered as well as the common layout
+routine's `has_rex`. 16-bit addressing is never written (below).
+
+**Rewritten** to the bytes `llvm-mc -triple=i686` writes:
+
+- **`67`** (32-bit addressing in 64-bit mode, written only by `ud1_eax`)
+  is removed: 32-bit addressing is the default, and `67` would select
+  16-bit addressing. `ud1_eax(5)` is `0F B9 40 05`.
+- **Absolute addresses**: the 64-bit form `ModRM.r/m=100`, `SIB=25`
+  (`[disp32]` with neither base nor index) loses its `SIB` byte:
+  `ModRM.r/m=101`, then `disp32` (`mov ecx, [0x10]` is `8B 0D 10 00 00
+  00`). Every instruction with a memory operand, legacy, x87, SSE, VEX or
+  EVEX. An index without a base (`Mem::index`) keeps its `SIB`.
+- **`moffs`**: after that rewrite, `mov` between `al`/`ax`/`eax` and an
+  absolute address (`8A`/`8B`/`88`/`89`, `ModRM` `05`) is `A0`/`A1`/`A2`/
+  `A3` and the 32-bit address, after any segment and `66` prefix:
+  `mov eax, gs:[x@NTPOFF]` is `65 A1` and the field. No other register,
+  no other opcode.
+- **`inc`/`dec` of a 16- or 32-bit register** (`FF /0`, `FF /1`, `mod=11`)
+  is `40+r`/`48+r` (`66 40+r` for `W`); the byte forms keep `FE`.
+- **`xchg eax, eax`** is `90` (64-bit mode needs `87 C0`, which clears the
+  upper half).
+
+The site (`Inst::site`) keeps its kind and follows its bytes: its offset
+is reduced by the bytes removed before it, and a PC-relative addend is
+again `-(len - offset)`. The lock position follows too, so `lock` may be
+applied before or after `admit`.
+
+**Relocations.** The encoder's `Fixup` names the field, not the
+relocation: in 32-bit mode a `Rel32` field (a branch, a call) takes
+`R_386_PC32` or `R_386_PLT32`, an `Abs32`/`Abs32U` field (a `with_abs32`
+displacement, the immediate of `mov_ri32` or `push_i32`) `R_386_32`,
+`R_386_GOTOFF`, `R_386_GOT32X`, `R_386_TLS_LE`, ...; there is no 32-bit
+store of a relocatable immediate (`mov_mi32s` is `Q` only, refused);
+`Rel8` is a short branch's resolved distance; `Abs64` does not occur
+(`movabs_ri` is refused). `i386` objects are `SHT_REL`: the addend
+`Site::addend` (`-4` from the end of a call or branch, 0 for an absolute
+field) is written into the field, which is `inst.with_disp(site.addend)`.
+
+**Not in 32-bit mode.** 16-bit addressing; the instructions that exist
+only in 32-bit mode (`pusha`, `push es`, `aaa`, `les`, `into`, ...);
+`endbr32` (llvm-mc 19 and 22 accept `endbr64` at `i686`, and the
+encoder's `endbr64` is admitted, but a CET-marked `i386` function wants
+`endbr32`, which is not provided). `syscall` is admitted: `llvm-mc` encodes
+it at `i686` (`0F 05`), although Linux on `i386` enters the kernel through
+`int 0x80` or the vDSO, never `syscall`.
+
+**Padding.** LLVM's default `i686` CPU has no `NOPL` (`0F 1F`): `.nops`
+at `-triple=i686` refuses a size above 1 (`llc`'s padding at that CPU is
+not measured here). `nop(n)` for `n > 1` (`66 90`, `0F 1F ..`) is
+admitted (every P6 has `NOPL`), and the L1 checks it with
+`-mattr=+nopl`, under which `llvm-mc` writes the 64-bit sequences; a back
+end that pads like LLVM at the default CPU uses `nop(1)`.
+
 ## Not provided
 
 By decision of the scope so far: the high-byte registers `ah`..`bh`; the
@@ -1154,6 +1241,31 @@ rewritten into other bytes (lld 22, mold 2.37: into a load without the
 - LLVM accepts a RIP-relative or symbolic displacement together with a
   symbolic immediate (two relocations); `mov_mi32s` refuses a memory
   operand that is a field; tested by hod alone.
+- At `-triple=i686` (19 and 22), `llvm-mc` accepts `cvtsi2sd xmm0, qword
+  ptr [..]` and writes the 32-bit source form (`F2 0F 2A`, no `W`); hod's
+  `Q` form is refused as `x86-mode:operand-size-64`, and that refusal has
+  no text LLVM refuses.
+- At `-triple=i686`, `llvm-objdump` prints EVEX `vmovdqu64` (`W1`) as
+  `vmovdqu32`, although `llvm-mc` encodes `vmovdqu64` to the same bytes;
+  the 32-bit reverse check accepts the alias. `pushfq`/`popfq`'s bytes
+  print as `pushfd`/`popfd`.
+
+**32-bit mode** (WP-285). Every sweep runs a second time as
+`tests/l1/main.rs`'s `i386::<test>`: the batch passes each instruction
+through `Mode::X86`; an admitted one is checked as above at
+`--triple=i686-unknown-linux-gnu -mattr=+nopl` with its text translated
+(`tests/l1/text.rs` `to_i386`: `rax`..`rdi` to `eax`..`edi`, `qword ptr`
+to `dword ptr` for `push`/`pop`/`call`/`jmp`, `pushfq`/`popfq` to
+`pushfd`/`popfd`), and a refused one's original text is a rejection
+`llvm-mc` must refuse at that triple ("register %r8 is only available in
+64-bit mode", ...). The checked forms' rejections keep their 64-bit text.
+`tests/l1/i386_forms.rs` sweeps the rewritten forms (every register and
+size of `inc`/`dec`, the absolute addresses and `moffs` moves with each
+segment, the stack and indirect branches, `ud1`, every 32-bit-addressable
+memory form as an absolute field) and checks the sites of 18 `i386`
+references (`R_386_PC32`, `PLT32`, `32`, `GOTOFF`, `GOT32X`, `TLS_LE`)
+against `llvm-mc -filetype=obj`: offset, type, and the implicit addend in
+the field. `src/mode.rs`'s unit tests name each refusal.
 
 Every encoding the crate produces is the one LLVM's assembler produces for
 the same text, at both majors; there is no choice where they differ.

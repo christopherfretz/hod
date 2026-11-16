@@ -329,7 +329,13 @@ impl Session {
             Ok(object)
         };
         match self.guarded(object) {
-            Ok(object) => Ok((object, self.report)),
+            // The module and the bodies go with the object, freed after it
+            // (`ObjectFile`).
+            Ok(mut object) => {
+                let Session { module, bodies, report, .. } = self;
+                object.1 = Some((module, bodies));
+                Ok((object, report))
+            }
             Err(error) => Err((error, self.report)),
         }
     }

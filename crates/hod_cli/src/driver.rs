@@ -41,12 +41,17 @@ pub type Compile<'a> = &'a dyn Fn(
 
 /// What a compile answers: the object to write.
 #[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "not boxed: a heap block of its size, at the end of a compile, costs glibc a \
+              consolidation of every small free chunk (WP-312)"
+)]
 pub enum Output {
     /// The file's bytes: a stand-in's answer, in tests.
     #[cfg(test)]
     Bytes(Vec<u8>),
     /// hod's object, written from its sections' own buffers.
-    Object(Box<hod::ObjectFile>),
+    Object(hod::ObjectFile),
 }
 
 /// `hod::compile_object`, the binary's code generator.
@@ -59,8 +64,7 @@ pub fn compile_hod(
     settings: &hod::Settings,
     report: &mut Report,
 ) -> Result<Output, CompileError> {
-    hod::compile_object(input, options, settings, report)
-        .map(|object| Output::Object(object.into()))
+    hod::compile_object(input, options, settings, report).map(Output::Object)
 }
 
 /// The process's standard streams.
@@ -295,7 +299,7 @@ impl Job<'_, '_> {
             self.record.reasons = Some(report.reasons);
         }
 
-        let error = match compiled.map(|object| write_output(&output, &object, self.io.stdout)) {
+        let error = match compiled.map(|object| write_output(&output, object, self.io.stdout)) {
             Ok(Ok(())) => {
                 self.phases.end("write");
                 self.record.outcome = Outcome::Hod;
@@ -532,8 +536,16 @@ enum Unwritten {
 /// Writes the object to standard output (`-`) or to the file `name`,
 /// created or truncated once the object is known to be writable; a
 /// failure part way leaves what was written (`spec/cli.md` "Driver").
-fn write_output(name: &OsStr, object: &Output, stdout: &mut dyn Write) -> Result<(), Unwritten> {
-    let write = |out: &mut dyn Write| match object {
+///
+/// Once written, the object (with the module and bodies it keeps) is not
+/// freed: what is left of the invocation is the coverage line, and the
+/// process's memory goes back whole when it exits. Freeing it chunk by
+/// chunk cost glibc more than writing it: 1.4 M instructions on a module
+/// of 3300 functions, mostly consolidating small free chunks
+/// (`spec/landed/object/WP-312.md`). An object not written is freed, so
+/// that a fallback does not run beside it.
+fn write_output(name: &OsStr, object: Output, stdout: &mut dyn Write) -> Result<(), Unwritten> {
+    let write = |out: &mut dyn Write| match &object {
         #[cfg(test)]
         Output::Bytes(bytes) => Ok(out.write_all(bytes)),
         Output::Object(object) => object.write_to(out).map(|written| written.map(drop)),
@@ -549,7 +561,10 @@ fn write_output(name: &OsStr, object: &Output, stdout: &mut dyn Write) -> Result
         }
     };
     match written {
-        Ok(Ok(())) => Ok(()),
+        Ok(Ok(())) => {
+            std::mem::forget(object);
+            Ok(())
+        }
         Ok(Err(e)) => Err(Unwritten::Io(format!("cannot write {what}: {e}"))),
         Err(panic) => Err(Unwritten::Panic(panic)),
     }

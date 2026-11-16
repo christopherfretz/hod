@@ -798,7 +798,11 @@ struct Buffered<'a, W: Write> {
 
 const BUFFER_SIZE: usize = 64 * 1024;
 
-impl<W: Write> Buffered<'_, W> {
+impl<'a, W: Write> Buffered<'a, W> {
+    fn new(out: &'a mut W) -> Self {
+        Buffered { out, buffer: Vec::with_capacity(BUFFER_SIZE), position: 0 }
+    }
+
     fn flush_buffer(&mut self) -> std::io::Result<()> {
         self.out.write_all(&self.buffer)?;
         self.buffer.clear();
@@ -1363,7 +1367,7 @@ fn emit_vec(obj: &Object, layout: &Layout) -> Result<Vec<u8>, Error> {
 
 /// [`write`] of a checked layout.
 fn emit_write<W: Write>(obj: &Object, layout: &Layout, out: &mut W) -> std::io::Result<u64> {
-    let mut sink = Buffered { out, buffer: Vec::with_capacity(BUFFER_SIZE), position: 0 };
+    let mut sink = Buffered::new(out);
     emit(obj, layout, &mut sink)?;
     sink.flush_buffer()?;
     Ok(layout.file_size)

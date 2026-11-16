@@ -636,8 +636,20 @@ pub fn generate_with(
 /// (`spec/cli.md` "The facade"): what [`crate::compile_object`] answers,
 /// so that the caller writes the file from the sections' own buffers,
 /// never holding a second copy of the whole object.
+///
+/// It also keeps the compile's module and bodies, freed after the object
+/// when it is dropped, in the order they were freed when the object was
+/// copied out first. Freed before the object is written, the many small
+/// chunks of the module made glibc consolidate on the large frees of the
+/// sections after: 2.6 M instructions on a module of 5000 functions
+/// (`spec/landed/object/WP-312.md`). A caller that exits after writing
+/// need not drop it at all (the `hod` binary does not).
 #[derive(Debug)]
-pub struct ObjectFile(hod_obj::elf::Prepared);
+pub struct ObjectFile(
+    hod_obj::elf::Prepared,
+    #[allow(dead_code, reason = "held only to be dropped after the object")]
+    pub(crate)  Option<(Module, Vec<Body>)>,
+);
 
 impl ObjectFile {
     /// The size of the file in bytes.
@@ -748,7 +760,7 @@ pub(crate) fn generate_object(
     if let Some((path, dwo)) = dwo {
         write_dwo(dwo, arch, path, cg.debug_compression)?;
     }
-    Ok(ObjectFile(object))
+    Ok(ObjectFile(object, None))
 }
 
 #[cfg(test)]

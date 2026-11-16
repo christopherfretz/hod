@@ -76,8 +76,10 @@ pub trait ThreadTokens: Send + Sync + Debug {
 - `compile_object` (WP-312) is `compile_releasing` that answers the
   object unwritten: an `ObjectFile`, which passed the ELF writer's
   checks (`hod_obj::elf::prepare`, `spec/object.md` "ELF writer") and
-  whose `.dwo` file, if any, is written; the module and its bodies are
-  freed when it returns. Its answers, refusals and report are those of
+  whose `.dwo` file, if any, is written; it keeps the module and its
+  bodies, freed after the object when it is dropped (freed before the
+  object is written, they cost glibc a consolidation of their small
+  chunks on the sections' frees after it, measured in WP-312). Its answers, refusals and report are those of
   `compile_releasing`. `write_to` writes the file front to back into
   `out` straight from the sections' buffers (pieces under 64 KiB
   batched), never holding the whole file a second time, and does not
@@ -854,7 +856,9 @@ coverage line with outcome `error` and the reason given.
    `hod`, exit status 0. The file is created (or truncated) only once the
    compile has answered an object that passed the writer's checks, and
    is written with `ObjectFile::write_to` from the sections' buffers;
-   standard output is flushed after. An output that fails part way keeps
+   standard output is flushed after. A written object is not freed (the
+   process exits after the coverage line; freeing cost more instructions
+   than writing); one that failed to write is, before any fallback. An output that fails part way keeps
    what it was given (no file is removed), as before WP-312. A panic of
    hod's while writing (`internal-panic`) is answered as in step 9.
 9. On `Unsupported`, `MalformedInput`, `InvalidOptions` or `Internal`: run the fallback

@@ -1201,6 +1201,7 @@ impl<'a> Symbol<'a> {
     }
 
     /// What the symbol is.
+    #[inline]
     pub fn kind(&self) -> SymbolKind<'a> {
         let entry = self.entry;
         match entry.kind {

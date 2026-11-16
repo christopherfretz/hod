@@ -88,6 +88,7 @@ pub fn check_functions(module: &Module, bodies: &[Body]) -> Result<(), (usize, &
         return Ok(());
     }
     let mut seen: Vec<(u32, usize)> = Vec::with_capacity(bodies.len());
+    let mut last_unit = None;
     for (i, body) in bodies.iter().enumerate() {
         let SymbolKind::Function { subprogram: Some(sp_id), .. } =
             module.symbol(body.symbol()).kind()
@@ -95,7 +96,7 @@ pub fn check_functions(module: &Module, bodies: &[Body]) -> Result<(), (usize, &
             continue;
         };
         let DiNode::Subprogram(sp) = debug.node(sp_id) else { continue };
-        if !full_debug_unit(debug, &sp) {
+        if !full_debug_unit(debug, &sp, &mut last_unit) {
             continue;
         }
         check_subprogram(&sp).map_err(|name| (i, name))?;
@@ -113,10 +114,24 @@ pub fn check_functions(module: &Module, bodies: &[Body]) -> Result<(), (usize, &
 }
 
 /// Whether `sp`'s unit is one of the module's and writes DIEs for it.
-fn full_debug_unit(debug: &DebugInfo, sp: &DiSubprogram<'_>) -> bool {
+/// `last` keeps the answer for the last unit asked about (WP-308: the
+/// functions of a module are nearly always of one unit, whose node is
+/// not decoded again for each).
+fn full_debug_unit(
+    debug: &DebugInfo,
+    sp: &DiSubprogram<'_>,
+    last: &mut Option<(DiId, bool)>,
+) -> bool {
     let Some(unit) = sp.unit else { return false };
-    debug.compile_units().contains(&unit)
-        && matches!(debug.node(unit), DiNode::CompileUnit(cu) if cu.emission_kind == EmissionKind::FullDebug)
+    if let Some((u, full)) = *last
+        && u == unit
+    {
+        return full;
+    }
+    let full = debug.compile_units().contains(&unit)
+        && matches!(debug.node(unit), DiNode::CompileUnit(cu) if cu.emission_kind == EmissionKind::FullDebug);
+    *last = Some((unit, full));
+    full
 }
 
 /// `UnitPlan::subprogram_parent`'s refusals of the subprogram itself.

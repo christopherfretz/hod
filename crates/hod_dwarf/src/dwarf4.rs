@@ -44,7 +44,7 @@
 
 use hod_ir::Module;
 use hod_obj::elf::{SHF_MERGE, SHF_STRINGS, SHT_PROGBITS};
-use hod_obj::{Arch, Object, SectionId, SectionKind, SymbolId};
+use hod_obj::{Machine, Object, SectionId, SectionKind, SymbolId};
 
 use crate::Error;
 use crate::abbrev::{BASES, CODE_END, Children, FAMILIES, Slot, at, fam, form, option_bits, tag};
@@ -135,8 +135,8 @@ impl UnitPlan<'_> {
 
     /// An empty line program for the unit's line table (its files are
     /// counted from 1 in DWARF 4).
-    pub fn line_program(&self, arch: Arch) -> LineProgram {
-        LineProgram::for_version(arch, self.version)
+    pub fn line_program(&self, machine: impl Into<Machine>) -> LineProgram {
+        LineProgram::for_version(machine, self.version)
     }
 }
 
@@ -846,6 +846,7 @@ fn scratch_writer<'a>(dies: usize) -> Writer<'a> {
         split: false,
         tls_addrs: Vec::new(),
         base_type_dies: Vec::new(),
+        addr_size: 8, // i386 is refused (`split::write_unit_dies`)
     }
 }
 
@@ -928,7 +929,7 @@ fn emit_sections(
     abbrev: Vec<u8>,
     strings: Vec<u8>,
 ) -> Result<Dwarf4Sections, Error> {
-    let target = crate::target::for_arch(obj.arch());
+    let target = crate::target::for_machine(obj.machine());
     let locs = if out.locs.is_empty() {
         None
     } else {

@@ -30,7 +30,7 @@ use hod_dwarf::{
     has_dies, write_debug_line_units,
 };
 use hod_ir::{DebugInfo, DiId, DiKind, DiNode, EmissionKind, Module, SymId, SymbolKind};
-use hod_obj::{Arch, Binding, Object, SectionId, SymbolId};
+use hod_obj::{Binding, Machine, Object, SectionId, SymbolId};
 
 use super::unsupported;
 use crate::error::DEBUG_FRAME_PLACE;
@@ -143,7 +143,7 @@ impl<'m> DebugLines<'m> {
     /// describe.
     pub(super) fn new(
         module: &'m Module,
-        arch: Arch,
+        machine: Machine,
         split: hod_dwarf::SplitDwarf,
     ) -> CgResult<Option<Box<DebugLines<'m>>>> {
         let debug = &module.debug;
@@ -164,7 +164,7 @@ impl<'m> DebugLines<'m> {
             let mut globals = cu.globals.to_vec();
             globals.sort_unstable();
             let dies = has_dies(cu.emission_kind);
-            let program = plan.line_program(arch); // WP-114: DWARF 4 (`spec/dwarf.md` §6.20)
+            let program = plan.line_program(machine); // WP-114: DWARF 4 (`spec/dwarf.md` §6.20)
             units.push(Unit { plan, program, code: Vec::new(), globals, dies });
         }
         if units.is_empty() {
@@ -521,10 +521,11 @@ fn stub_rows(rows: &mut Vec<Row>, scope: SourceLoc, entries: [u32; 3], ready: [u
 /// Whether the location of global `sym` names its own symbol whatever
 /// its binding: a thread-local variable on x86-64, whose location is its
 /// offset in the TLS block (WP-136, `spec/dwarf.md` §6.17), relocated by
-/// `R_X86_64_DTPOFF64` against the symbol as `llc` writes it. AArch64's
-/// `llc` writes no location for one.
+/// `R_X86_64_DTPOFF64` against the symbol as `llc` writes it (on i386
+/// `R_386_TLS_LDO_32`, WP-314). AArch64's `llc` writes no location for
+/// one.
 pub(super) fn tls_by_symbol(module: &Module, sym: SymId) -> bool {
-    module.target().arch() == hod_ir::Arch::X86_64
+    matches!(module.target().arch(), hod_ir::Arch::X86_64 | hod_ir::Arch::I386)
         && module.symbol(sym).tls() != hod_ir::TlsModel::None
 }
 

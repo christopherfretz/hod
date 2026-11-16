@@ -177,7 +177,8 @@ their values).
 | `x86:aggregate` | since WP-315 (§13.2) only an aggregate argument of more than 16 leaves (`abi.rs`'s `MAX_LEAVES`) and an aggregate without a layout | — |
 | `x86:frame-depth` | `llvm.frameaddress`/`returnaddress` deeper than 256 frames (§13.5) | — |
 | `x86:eh:landingpad`, `x86:eh:landingpad-clause`, `x86:eh:resume`, `x86:eh:typeid` | a `landingpad` or `resume` of a type other than `{ ptr, i32 }`; a clause that is not a symbol, `null` or an array of them; `llvm.eh.typeid.for` of a non-symbol (§14; `x86:eh` itself removed by WP-314) | — |
-| `x86:debug-info` | a module with debug information (`hod_cg`'s emitter) | I10 |
+| `debug:dwarf-4-i386` | a DWARF 4 unit (`Dwarf Version` 4 or less) on i386 (`hod_dwarf` `split.rs`, §15; `x86:debug-info` removed by WP-314) | — (needs `dwarf4.rs` at address size 4: the unit header's address size, `.debug_ranges` and `.debug_loc` with 4-byte address pairs, `DW_OP_addr` with a 4-byte operand and `R_386_32`) |
+| `debug:split-dwarf-i386` | split DWARF (`-gsplit-dwarf`) on i386 (`hod_dwarf` `split.rs`, §15) | — (needs `split.rs` at address size 4: the skeleton's and the `.dwo` unit's headers, the object's `.debug_addr` of 4-byte entries, and the `.dwo` output path through the driver) |
 | `x86:cf-protection` | `cf-protection-*` module flags (`hod_cg`'s `.note.gnu.property`) | — |
 | `x86:atomic:no-cx8` | an 8-byte atomic operation on a CPU without `cmpxchg8b` (§12.2) | — |
 | `x86:atomic:libatomic` | an atomic access of another size than 1, 2, 4, 8 bytes or below its natural alignment (§12.2) | — |
@@ -930,3 +931,45 @@ removed in front of the back end. `eh.typeid.for` is §14's.
   through the relocations. Which pad is not compared: where several
   `invoke`s unwind to one IR pad, `llc` has one landing address and hod
   one per `invoke`.
+
+## 15. Debug information (WP-314, design 0008 I10)
+
+hod writes `spec/dwarf.md`'s DWARF 5 sections on i386 as on the 64-bit
+targets, at address size 4: the unit headers, `.debug_addr`, the
+`.debug_rnglists` and `.debug_loclists` headers and every address are 4
+bytes, each relocated by `R_386_32` (`hod_dwarf::target::I386`, chosen
+by the object's `Machine`). The frame base is `DW_OP_reg5 EBP`; a
+variable or a parameter is described in its home (`DW_OP_fbreg`, the
+parameters in hod's slots, `spec/dwarf.md` §6.17), a `byval` argument
+through the pointer hod saved. A thread-local variable is
+`DW_OP_const4u` with `R_386_TLS_LDO_32`, then
+`DW_OP_GNU_push_tls_address`, as `llc` writes it.
+
+- **Lines.** `spec/dwarf.md` §5 unchanged. The one epilogue is at the
+  function's end (`spec/codegen.md` §4), so after a landing pad laid out
+  last its row is a statement (`spec/dwarf.md` §5.2, §5.4) where `llc`'s epilogue row,
+  in the `ret`'s block, is not.
+- **Location lists** (IR at `-O1`, `#dbg_value` records). The DWARF
+  stack is 32 bits wide: a range whose value expression pushes a value
+  wider than 4 bytes (an `i64`, a `double`), an address read from a
+  home, or a `DIArgList` gets no entry (`<optimized out>`); a home with
+  the empty expression is a memory location of any size; a 4-byte home
+  with a value expression is read with `DW_OP_deref_size 4`
+  (`loclists.rs` `fits_i386`). `llc` writes 64-bit stack values there,
+  which gdb prints truncated (WP-314's record).
+- **Call sites.** `emit_call` reports the return address right after
+  the `call`, before `esp` is moved back over a popped `sret` pointer
+  (`spec/dwarf.md` §6.19).
+- **Unwind tables.** `.debug_frame` and `.eh_frame` as in §14.
+- **Refused** (§7): `debug:dwarf-4-i386`, `debug:split-dwarf-i386`.
+- **Tests** (`crates/hod/tests/i386_debug.rs`, programs in
+  `tests/data/i386/debug/`): `vals.c`, `tlsg.c`, `eh.cpp` by clang 19 and
+  22 at `-O0 -g`, static and PIC: hod's objects verify, their unwind
+  tables decode, the DIE trees equal `llc`'s under §6.4 and §6.17, the
+  epilogue rows follow the rule above and the other statement rows
+  equal `llc`'s. `opt.c` at `-O1`: verifies, has location lists, call
+  sites as many as `llc`'s, each after a `call`. The seed
+  `tests/ir/debug_info_locals.ll` runs in irdiff's i686 column. The
+  debugger sessions (gdb-multiarch under `qemu-i386 -g`) are in WP-314's
+  record; the debug lane has no i686 column yet (`xtask/src/debug.rs`
+  `NO_I686_LANE`).

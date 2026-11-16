@@ -35,6 +35,8 @@ refusal table of `spec/codegen-x86.md` §7) belong to WP-293's owner of
 | `agg.rs` (and `bytes.rs`, `bits::small`) | **I11** (WP-315) | aggregates in frame slots (`load`, `store`, `select`, `extractvalue`, `insertvalue`, constants, results in memory), the `*.with.overflow` intrinsics at 1 to 64 bits; in `bytes.rs` lengths of 33 to 64 bits and `llc`'s libc-call rule (`calls_libc`, the x87 barrier); in `bits.rs` the small intrinsics (`spec/codegen-x86.md` §13) | — | the `agg::owns` arm and the extract/insert arms of `Target::lower`, `materialize_mem`; `call::lower`'s overflow and small arms; `control::ret`; `x87::barrier`'s memory-intrinsic and aggregate-`select` arms | `x86:aggregate` (but arguments of more than 16 leaves), `x86:i64`, `x86:intrinsic` for the overflow family and the small intrinsics |
 | `eh.rs` | **I10** (WP-314) | `landingpad` (`eax`/`edx`), `resume`, `llvm.eh.typeid.for`, `extractvalue`/`insertvalue` of `{ ptr, i32 }` (its arms come before `agg`'s general ones; same layout); `invoke` is `hod_cg`'s call sequence, the tables `hod_eh::I386` (`spec/codegen-x86.md` §14) | — | `target.rs` arms, `call::lower`'s `eh.typeid.for` arm | `x86:eh` (removed; `x86:eh:<detail>` remain) |
 
-Outside the crate, `hod_cg` refuses `x86:debug-info` (`emit/mod.rs`,
-removed by I10 with the unwind tables in `emit/unwind.rs`) and
-`x86:cf-protection`.
+Debug information (I10, WP-314) is `hod_dwarf`'s at address size 4
+(`spec/codegen-x86.md` §15); the crate's part is `target.rs`'s
+`emit_call` reporting where a call returns. `hod_dwarf` refuses
+`debug:dwarf-4-i386` and `debug:split-dwarf-i386`; outside the crate,
+`hod_cg` refuses `x86:cf-protection` (`x86:debug-info` removed by I10).

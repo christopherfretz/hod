@@ -79,9 +79,6 @@ pub mod unsupported {
     /// An `!llvm.linker.options` entry that is not a pair of strings,
     /// which ELF `llc` refuses ("invalid llvm.linker.options").
     pub const LINKER_OPTION: &str = "module:linker-option-not-a-pair";
-    /// WP-293: a 32-bit x86 module with debug information (design 0008,
-    /// package I10).
-    pub const X86_DEBUG_INFO: &str = "x86:debug-info";
     /// WP-293: a 32-bit x86 module with `cf-protection-branch` or
     /// `cf-protection-return` (no `endbr32`, no ELF32 property note).
     pub const X86_CF_PROTECTION: &str = "x86:cf-protection";
@@ -420,12 +417,8 @@ impl<'m> ModuleEmitter<'m> {
             return Err(CgError::unsupported(unsupported::LINKER_OPTION));
         }
         emitter.declare()?;
-        emitter.debug = match machine.arch() {
-            Some(arch) => DebugLines::new(module, arch, emitter.options.split_dwarf)?,
-            // WP-293: no DWARF for i386 until design 0008's I10.
-            None if module.debug.compile_units().is_empty() => None,
-            None => return Err(CgError::unsupported(unsupported::X86_DEBUG_INFO)),
-        };
+        // WP-314: every machine, i386 too (`spec/codegen-x86.md` §15).
+        emitter.debug = DebugLines::new(module, machine, emitter.options.split_dwarf)?;
         // `.text` exists in every object `llc` writes.
         let text = emitter.arch().text_align();
         let mut name = std::mem::take(&mut emitter.name);

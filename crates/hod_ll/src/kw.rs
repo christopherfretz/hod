@@ -415,10 +415,44 @@ pub(crate) fn keyword_at(src: &[u8], start: usize, end: usize) -> Kw {
 #[cold]
 pub(crate) fn keyword(word: &[u8]) -> Kw {
     if word.len() > MAX_HASHED {
-        return TEXTS.iter().position(|&text| text == word).map_or(Kw::Other, |code| KWS[code]);
+        // Only the few long keywords are compared (debug metadata has
+        // many long words: `DW_TAG_structure_type`, `DIFlagPrototyped`).
+        return LONG
+            .iter()
+            .find(|&&code| TEXTS[code as usize] == word)
+            .map_or(Kw::Other, |&code| KWS[code as usize]);
     }
     by_key(key(word))
 }
+
+/// The number of keywords longer than [`MAX_HASHED`].
+const LONG_COUNT: usize = {
+    let mut count = 0;
+    let mut code = 1;
+    while code < TEXTS.len() {
+        if TEXTS[code].len() > MAX_HASHED {
+            count += 1;
+        }
+        code += 1;
+    }
+    count
+};
+
+/// The codes of the keywords longer than [`MAX_HASHED`], in code order;
+/// the table hashes the others.
+static LONG: [u8; LONG_COUNT] = {
+    let mut long = [0u8; LONG_COUNT];
+    let mut at = 0;
+    let mut code = 1;
+    while code < TEXTS.len() {
+        if TEXTS[code].len() > MAX_HASHED {
+            long[at] = code as u8;
+            at += 1;
+        }
+        code += 1;
+    }
+    long
+};
 
 /// The code of the word whose key is `key` (a key as [`key`] makes it:
 /// the word's bytes zero-padded to 16, as two little-endian words).
@@ -462,6 +496,10 @@ mod tests {
         let used = SLOTS.iter().filter(|&&code| code != 0).count();
         let hashed = TEXTS.iter().skip(1).filter(|text| text.len() <= MAX_HASHED).count();
         assert_eq!(used, hashed, "each hashed keyword has a slot of its own");
+        assert_eq!(LONG.len(), TEXTS.len() - 1 - hashed, "each long keyword is listed");
+        for word in [&b"DW_TAG_structure_type"[..], b"available_externallyy", b"local_unnamed_add"] {
+            assert_eq!(keyword(word), Kw::Other, "{}", String::from_utf8_lossy(word));
+        }
         assert!(TEXTS.windows(2).skip(1).all(|pair| pair[0] < pair[1]), "sorted, no repeats");
     }
 

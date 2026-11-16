@@ -97,14 +97,18 @@ fn runnable(major: u32, arch: Arch) -> usize {
 
 // spec/harness.md "Seed corpus": a test in one LLVM's dialect has its twin
 // in the other's, `<stem>-19.ll` and `<stem>-22.ll`, so that the "both
-// LLVMs" rule holds per dialect; and every `oracle-skip` is listed in
-// spec/harness.md "Oracle skips" by its path.
+// LLVMs" rule holds per dialect; every `oracle-skip` is listed in
+// spec/harness.md "Oracle skips" by its path, and every `kept-off` in
+// "Kept off a target".
 #[test]
 fn dialects_come_in_pairs_and_oracle_skips_are_listed() {
     let harness =
         std::fs::read_to_string(irdiff::workspace_root().join("spec/harness.md")).unwrap();
     let skips = harness.split("### Oracle skips").nth(1).expect("the section exists");
     let skips = skips.split("\n## ").next().unwrap();
+    let kept_off = harness.split("### Kept off a target").nth(1).expect("the section exists");
+    let kept_off = kept_off.split("\n### ").next().unwrap();
+    let mut listed = 0;
     let root = irdiff::workspace_root();
     for (path, expect) in corpus_directives() {
         let relative = path.strip_prefix(&root).unwrap().to_string_lossy().into_owned();
@@ -122,7 +126,28 @@ fn dialects_come_in_pairs_and_oracle_skips_are_listed() {
             let row = format!("| `{relative}` | {} | {} |", majors.join(", "), skip.reason);
             assert!(skips.contains(&row), "spec/harness.md \"Oracle skips\" has no row {row}");
         }
+        // "Kept off a target" (WP-302): listed one row each, and only the
+        // third target: a 64-bit target is never kept off.
+        for kept in &expect.kept_off {
+            use irdiff::directives::Cond;
+            let when: Vec<String> = kept.when.iter().map(Cond::to_string).collect();
+            let row = format!("| `{relative}` | {} | {} |", when.join(","), kept.reason);
+            assert!(kept_off.contains(&row), "spec/harness.md \"Kept off a target\" has no {row}");
+            listed += 1;
+            assert!(
+                kept.when.iter().all(|cond| !matches!(
+                    cond,
+                    Cond::Arch(irdiff::Arch::Aarch64 | irdiff::Arch::X86_64)
+                )),
+                "{relative}: only i686 is ever kept off"
+            );
+        }
     }
+    let rows = kept_off.lines().filter(|line| line.starts_with("| `tests/ir/")).count();
+    assert_eq!(
+        rows, listed,
+        "\"Kept off a target\" lists exactly the corpus's kept-off directives"
+    );
 }
 
 // spec/harness.md "Seed corpus": every test of `tests/ir/` is green with

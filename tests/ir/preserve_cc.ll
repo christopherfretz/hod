@@ -4,6 +4,8 @@
 ; across the calls, results of each class, a void callee, a recursive
 ; one, and one calling a `ccc` function.
 ;@ covers: spec/ir.md §8.6 calling conventions (preserve_mostcc, preserve_allcc); spec/codegen.md §5.6.23
+; llc 19 and 22 for i686 crash (SIGSEGV) in "Check CFA info and insert CFI instructions".
+;@ kept-off(i686): llc-crash
 ;@ stdout: most 13 -7 30 1
 ;@ stdout: all 2.5 -4 9 6
 ;@ stdout: rec 55 120

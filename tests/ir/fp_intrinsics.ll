@@ -6,6 +6,8 @@
 ; prints as "nan" whatever its sign and payload (the targets' default NaNs
 ; differ in sign). Expected values computed by a script, not a compiler.
 ;@ covers: spec/ir.md §5.5 intrinsics (sqrt, fabs, floor, ceil, trunc, rint, nearbyint, round, roundeven, minimum, maximum, minnum, maxnum, copysign, fma)
+; llc 19 and 22 for i686 abort: "Cannot select: i8 = setcc (i64 bitcast f64), 0, seteq".
+;@ kept-off(i686): llc-crash
 ;@ link: m
 ;@ stdout: double 2.5: 1.5811388300841898 2.5 2 3 2 2 2 3 2
 ;@ stdout: double -2.5: nan 2.5 -3 -2 -2 -2 -2 -3 -2

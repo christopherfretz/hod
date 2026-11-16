@@ -200,6 +200,19 @@ pub struct OracleSkip {
     pub reason: String,
 }
 
+/// The reason classes of `kept-off` (spec/harness.md "Kept off a
+/// target"), with what each means. A test is kept off a target only when
+/// the oracle itself (`llc` and that target's toolchain) cannot build or
+/// run it there, or its expectation is by construction another target's.
+pub const KEPT_OFF_REASONS: [(&str, &str); 6] = [
+    ("lp64-abi", "written for an LP64 C or C++ library ABI"),
+    ("va-list-abi", "passes a va_list the way only the 64-bit targets do"),
+    ("runtime-routine", "needs a runtime routine the target's libraries lack or cannot run"),
+    ("llc-crash", "the oracle's llc crashes or cannot select it"),
+    ("llc-abi", "the oracle's llc calls a C library routine of another type or ABI"),
+    ("x87-precision", "the oracle's x87 code keeps excess precision LLVM's semantics forbid"),
+];
+
 /// Everything the directives of one test say.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Expectations {
@@ -244,6 +257,9 @@ pub struct Expectations {
     /// CPU features the emulated runner's model gets for this test
     /// (`cpu`), without their `+`; the test is for one architecture.
     pub cpu: Vec<String>,
+    /// Where the test is kept off a target (`kept-off`): each names a
+    /// target, maybe an LLVM major, and a class of [`KEPT_OFF_REASONS`].
+    pub kept_off: Vec<Conditional>,
 }
 
 impl Default for Expectations {
@@ -267,6 +283,7 @@ impl Default for Expectations {
             dialect: None,
             oracle_skip: Vec::new(),
             cpu: Vec::new(),
+            kept_off: Vec::new(),
         }
     }
 }
@@ -295,6 +312,15 @@ impl Expectations {
             .iter()
             .find(|skip| skip.llvm.contains(&major))
             .map(|skip| skip.reason.as_str())
+    }
+
+    /// The reason class the test is kept off this target with this
+    /// oracle, if a `kept-off` directive applies: the first that does.
+    pub fn kept_off_reason(&self, arch: Arch, llvm: u32) -> Option<&str> {
+        self.kept_off
+            .iter()
+            .find(|directive| directive.applies(arch, llvm, None))
+            .map(|directive| directive.reason.as_str())
     }
 
     /// The reason hod must decline with here, if an `unsupported`
@@ -375,7 +401,12 @@ impl Expectations {
             let majors: Vec<String> = skip.llvm.iter().map(u32::to_string).collect();
             line(&format!("oracle-skip(llvm={})", majors.join(",")), &skip.reason);
         }
-        for (key, directives) in [("unsupported", &self.unsupported), ("xfail", &self.xfail)] {
+        let keyed = [
+            ("kept-off", &self.kept_off),
+            ("unsupported", &self.unsupported),
+            ("xfail", &self.xfail),
+        ];
+        for (key, directives) in keyed {
             for directive in directives {
                 let mut name = key.to_owned();
                 if !directive.when.is_empty() {
@@ -551,7 +582,7 @@ impl Parser {
             .ok_or_else(|| format!("malformed directive: expected ':' after '{key}'"))?;
         let value = value.strip_prefix(' ').unwrap_or(value);
 
-        let conditional = matches!(key, "xfail" | "unsupported" | "oracle-skip");
+        let conditional = matches!(key, "xfail" | "unsupported" | "oracle-skip" | "kept-off");
         let known = conditional
             || matches!(
                 key,
@@ -681,6 +712,26 @@ impl Parser {
                 }
                 found.xfail.push(Conditional { when, reason: reason.to_owned() });
             }
+            "kept-off" => {
+                let when = parse_conds(conds, false).map_err(|message| {
+                    message.replace("'unsupported' cannot", "'kept-off' cannot")
+                })?;
+                if !when.iter().any(|cond| matches!(cond, Cond::Arch(_))) {
+                    return Err("'kept-off' requires its target: \
+                                'kept-off(<target>[,llvm<N>]): <reason class>'"
+                        .to_owned());
+                }
+                let reason = value.trim();
+                if !KEPT_OFF_REASONS.iter().any(|(class, _)| *class == reason) {
+                    let classes: Vec<&str> =
+                        KEPT_OFF_REASONS.iter().map(|(class, _)| *class).collect();
+                    return Err(format!(
+                        "unknown 'kept-off' reason class '{reason}': expected one of {}",
+                        classes.join(", ")
+                    ));
+                }
+                found.kept_off.push(Conditional { when, reason: reason.to_owned() });
+            }
             "unsupported" => {
                 let when = parse_conds(conds, false)?;
                 let reason = value.trim();
@@ -752,7 +803,7 @@ fn parse_targets(value: &str) -> Result<Vec<Arch>, String> {
     let mut targets = Vec::new();
     for word in words(value) {
         let arch = Arch::from_name(word)
-            .ok_or_else(|| format!("unknown target '{word}': expected aarch64 or x86_64"))?;
+            .ok_or_else(|| format!("unknown target '{word}': expected aarch64, x86_64 or i686"))?;
         if targets.contains(&arch) {
             return Err(format!("target '{word}' is listed twice"));
         }
@@ -881,7 +932,7 @@ fn parse_conds(list: Option<&str>, linkers_allowed: bool) -> Result<Vec<Cond>, S
             Cond::Llvm(major)
         } else {
             return Err(format!(
-                "unknown condition '{item}': expected a target (aarch64, x86_64), \
+                "unknown condition '{item}': expected a target (aarch64, x86_64, i686), \
                  a linker (bfd, lld, mold, wild, mortar) or llvm<N>"
             ));
         };
@@ -1331,6 +1382,10 @@ mod tests {
                 OracleSkip { llvm: vec![22], reason: "and another".to_owned() },
             ],
             cpu: Vec::new(),
+            kept_off: vec![Conditional {
+                when: vec![Cond::Arch(Arch::I686), Cond::Llvm(19)],
+                reason: "llc-abi".to_owned(),
+            }],
         };
         let printed = all.to_directives();
         assert_eq!(
@@ -1339,6 +1394,7 @@ mod tests {
              ;@ llvm: 19 22+\n;@ input: pre-opt\n;@ link: m c++ no-pie allow-warnings\n\
              ;@ llc-args: -function-sections -debugger-tune=gdb\n\
              ;@ oracle-skip(llvm=19,22): the oracle crashes\n;@ oracle-skip(llvm=22): and another\n\
+             ;@ kept-off(i686,llvm19): llc-abi\n\
              ;@ unsupported(x86_64): codegen-not-implemented\n\
              ;@ xfail(wild,llvm19): why: it fails\n;@ xfail: everywhere\n;@ args: a b\n\
              ;@ stdin: in\n;@ exit: signal 11\n;@ stdout: out 1\n;@ stdout:\n;@ stdout: out 3\n\
@@ -1406,6 +1462,39 @@ mod tests {
             (";@ oracle-skip(llvm=19,x): why", "invalid LLVM major 'x'"),
             (";@ oracle-skip(llvm=19,19): why", "LLVM 19 is listed twice"),
             (";@ oracle-skip(llvm=22):  ", "'oracle-skip' requires a reason"),
+        ] {
+            let got = error(text);
+            assert!(got.contains(message), "{text:?}: {got}");
+        }
+    }
+
+    // spec/harness.md "Kept off a target": a target, maybe an LLVM major,
+    // and a reason class of the fixed list; the first that applies.
+    #[test]
+    fn kept_off() {
+        let found = ok(";@ kept-off(i686,llvm19): llc-abi\n;@ kept-off(i686): lp64-abi\n");
+        assert_eq!(found.kept_off_reason(Arch::I686, 19), Some("llc-abi"));
+        assert_eq!(found.kept_off_reason(Arch::I686, 22), Some("lp64-abi"));
+        assert_eq!(found.kept_off_reason(Arch::X86_64, 22), None);
+        assert_eq!(found.kept_off_reason(Arch::Aarch64, 19), None);
+        assert!(found.runs_on(Arch::I686), "kept off is not 'target'");
+        assert_eq!(
+            found.to_directives(),
+            ";@ kept-off(i686,llvm19): llc-abi\n;@ kept-off(i686): lp64-abi\n"
+        );
+        assert_eq!(ok(&found.to_directives()), found);
+        assert_eq!(Expectations::default().kept_off_reason(Arch::I686, 22), None);
+        for (class, meaning) in KEPT_OFF_REASONS {
+            assert!(!meaning.is_empty());
+            assert_eq!(ok(&format!(";@ kept-off(i386): {class}")).kept_off[0].reason, class);
+        }
+        for (text, message) in [
+            (";@ kept-off: lp64-abi", "'kept-off' requires its target"),
+            (";@ kept-off(llvm19): lp64-abi", "'kept-off' requires its target"),
+            (";@ kept-off(i686): 64-bit", "unknown 'kept-off' reason class '64-bit'"),
+            (";@ kept-off(i686):", "unknown 'kept-off' reason class ''"),
+            (";@ kept-off(i686,bfd): lp64-abi", "'kept-off' cannot depend on a linker"),
+            (";@ kept-off(i686,x86_64): lp64-abi", "a second condition of its kind"),
         ] {
             let got = error(text);
             assert!(got.contains(message), "{text:?}: {got}");

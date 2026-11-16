@@ -44,7 +44,8 @@ define void @inner() #0 {
   %v = load ptr, ptr %a
   %r0 = call ptr @llvm.returnaddress(i32 0)
   %c5 = icmp eq ptr %v, %r0
-  %g = getelementptr i8, ptr %f0, i64 8
+  ; One pointer above the frame record's saved frame pointer, on every target.
+  %g = getelementptr ptr, ptr %f0, i64 1
   %c6 = icmp eq ptr %a, %g
   %z5 = zext i1 %c5 to i32
   %z6 = zext i1 %c6 to i32

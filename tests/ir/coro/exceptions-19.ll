@@ -51,6 +51,7 @@
 ; }
 ;
 ;@ covers: spec/ir.md §5.5 intrinsics (coroutine bodies; spec/codegen.md §7.6)
+;@ kept-off(i686): lp64-abi
 ;@ input: pre-opt
 ;@ dialect: 19
 ;@ link: c++

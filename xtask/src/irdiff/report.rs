@@ -324,6 +324,7 @@ impl Report {
             self.elapsed.as_secs_f64()
         );
         text.push_str(&self.coverage_line());
+        text.push_str(&self.kept_off_line());
         if let Some(path) = &self.results_file {
             let _ = writeln!(text, "irdiff: results: {}", path.display());
         }
@@ -331,6 +332,37 @@ impl Report {
             let _ = writeln!(text, "irdiff: kept: {}", path.display());
         }
         text
+    }
+
+    /// The tests a `kept-off` directive kept off this run's target, by
+    /// reason class in the order first seen: `irdiff: kept off <target>:
+    /// <N> tests; <class>: <n>; ...`, or nothing when there are none.
+    fn kept_off_line(&self) -> String {
+        let prefix = format!("{} ", super::engine::KEPT_OFF);
+        let mut target = "";
+        let mut classes: Vec<(&str, usize)> = Vec::new();
+        for record in self.per_test().filter(|record| record.outcome == Outcome::Skip) {
+            let Some((arch, class)) =
+                record.detail.strip_prefix(&prefix).and_then(|rest| rest.split_once(": "))
+            else {
+                continue;
+            };
+            target = arch;
+            match classes.iter_mut().find(|(seen, _)| *seen == class) {
+                Some((_, count)) => *count += 1,
+                None => classes.push((class, 1)),
+            }
+        }
+        if classes.is_empty() {
+            return String::new();
+        }
+        let total: usize = classes.iter().map(|(_, count)| count).sum();
+        let mut line = format!("irdiff: {prefix}{target}: {total} tests");
+        for (class, count) in classes {
+            let _ = write!(line, "; {class}: {count}");
+        }
+        line.push('\n');
+        line
     }
 
     /// Coverage: how many of the objects hod was asked for it built
@@ -533,5 +565,35 @@ irdiff: kept: /b/run-1
         assert!(text.contains("irdiff: error: linker 'mold' not found (HOD_REQUIRE_TOOLS=1)\n"));
         assert!(text.contains("irdiff: 0 tests, 0 results: 0 PASS"));
         assert!(!text.contains("coverage"));
+        assert!(!text.contains("kept off"));
+    }
+
+    // spec/harness.md "Kept off a target", "Summary": the tests kept off
+    // the target are listed as SKIP and counted per reason class.
+    #[test]
+    fn kept_off_tests_are_counted_by_class() {
+        let kept = |test: &str, class: &str| Record {
+            built_by: BuiltBy::Nobody,
+            detail: format!("kept off i686: {class}"),
+            ..record(Outcome::Skip, test, None)
+        };
+        let run = report(vec![
+            kept("t/a.ll", "lp64-abi"),
+            record(Outcome::Pass, "t/b.ll", Some("bfd")),
+            kept("t/c.ll", "llc-crash"),
+            kept("t/d.ll", "lp64-abi"),
+            Record {
+                built_by: BuiltBy::Nobody,
+                detail: "requires target x86_64".to_owned(),
+                ..record(Outcome::Skip, "t/e.ll", None)
+            },
+        ]);
+        let text = run.summary(false);
+        assert!(text.contains("SKIP        t/a.ll: kept off i686: lp64-abi\n"), "{text}");
+        assert!(
+            text.contains("irdiff: kept off i686: 3 tests; lp64-abi: 2; llc-crash: 1\n"),
+            "{text}"
+        );
+        assert_eq!(run.exit_status(), 0);
     }
 }

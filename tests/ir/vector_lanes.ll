@@ -4,6 +4,8 @@
 ; vector forms of integer and floating-point intrinsics (a libm call per
 ; lane among them).
 ;@ covers: spec/ir.md §5.4 integer
+; half lanes: i686's libgcc `__truncsfhf2` uses SSE2 (LLVM 22), `__gnu_h2f_ieee` is missing (LLVM 19).
+;@ kept-off(i686): runtime-routine
 ;@ link: m
 ;@ stdout: div: 3 -3 2 1 | rem: 1 -1 0 2 | udiv: 33 1
 ;@ stdout: odd: 6 -6 25 | shr: 8 -2 64

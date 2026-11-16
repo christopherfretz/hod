@@ -355,6 +355,10 @@ impl Session {
             let detail = format!("in the LLVM {dialect} dialect (this run: {llvm})");
             return vec![self.record(test, None, (Outcome::Skip, None), detail)];
         }
+        if let Some(class) = expect.kept_off_reason(arch, llvm) {
+            let detail = format!("{KEPT_OFF} {}: {class}", arch.name());
+            return vec![self.record(test, None, (Outcome::Skip, None), detail)];
+        }
         let oracle_skip = expect.oracle_skip_reason(llvm).map(str::to_owned);
 
         let error = |failure: Failure, detail: String| {
@@ -962,6 +966,11 @@ impl Case<'_> {
 
 /// The `unsupported` reason that accepts whatever reason hod names.
 pub const ANY_REASON: &str = "*";
+
+/// How the detail of a SKIP by a `kept-off` directive starts:
+/// `kept off <target>: <reason class>` (spec/harness.md "Kept off a
+/// target"); the summary counts these records by class.
+pub const KEPT_OFF: &str = "kept off";
 
 /// Decides what a test needs after both compilers ran: `expected` is the
 /// reason of the `unsupported` directive that applies, if one does.

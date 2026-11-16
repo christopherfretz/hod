@@ -166,7 +166,7 @@ their values).
 
 | name | what | removed by |
 |---|---|---|
-| `x86:i64` | an integer of 33 to 64 bits where §8 does not take it | I6 (`abi.rs`: arguments, results); WP-306 (`switch` condition, `ptradd` index, intrinsics) |
+| `x86:i64` | an integer of 33 to 64 bits where §8 does not take it: since the i386 join C only an integer of 33 to 63 bits passed or returned by value (also a variadic argument), and an `i64` length of `memcpy`/`memmove`/`memset` | I6 (`abi.rs`: `i64` arguments, results); WP-306 (`switch` condition, `ptradd` index, intrinsics); the memory intrinsics' package |
 | `x86:i64:wide` | an integer wider than 64 bits (§8), also as a `switch` condition, a `ptradd` index and the result of an integer intrinsic of §8 | — |
 | `x86:float` | a floating-point value in a register where §11 takes none (arguments and results are I6's since the join) | — |
 | `x86:float:half`, `x86:float:bfloat`, `x86:float:fp128` | a value of those types | — |

@@ -845,7 +845,10 @@ fn wide_conversions_refused_by_name() {
         ),
         // `sitofp`/`uitofp` of 65 to 128 bits to `bfloat` compile since
         // WP-295 (`tests/wide_bfloat.rs`).
-        ("define bfloat @f(i129 %a) { %r = sitofp i129 %a to bfloat\n ret bfloat %r }", WIDE_FP_CAST),
+        (
+            "define bfloat @f(i129 %a) { %r = sitofp i129 %a to bfloat\n ret bfloat %r }",
+            WIDE_FP_CAST,
+        ),
         (
             "define void @f(ptr %p, bfloat %a) { %r = fptoui bfloat %a to i65\n store i65 %r, ptr %p\n ret void }",
             WIDE_FP_CAST,

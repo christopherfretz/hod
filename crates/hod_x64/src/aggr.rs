@@ -812,7 +812,8 @@ fn compare(
 ///
 /// # Errors
 /// [`WIDE_FP_CAST`] for a conversion between floating point and an
-/// integer wider than 128 bits or `bfloat`; [`CAST`] for
+/// integer wider than 128 bits, or from `bfloat` to one wider than 64;
+/// [`CAST`] for
 /// `addrspacecast` and what no rule covers; what the operand and the
 /// runtime call report.
 pub fn cast<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, arg: Value) -> CgResult<()> {
@@ -958,8 +959,9 @@ fn bitcast<'a>(
 /// `fptosi`, `fptoui`, `sitofp`, `uitofp` between a floating-point type
 /// and an integer of 65 to 128 bits: the calls `llc` makes
 /// (`fp_to_int_routine`, `int_to_fp_routine`: `__fix[uns]{hf,sf,df,tf}ti`,
-/// `__float[un]ti{hf,sf,df,tf}`). An operand narrower than 128 bits is
-/// extended into a 16-byte slot first.
+/// `__float[un]ti{hf,sf,df,tf}`); to `bfloat` inline, rounded once
+/// ([`wide_to_bfloat`]). An operand narrower than 128 bits is extended
+/// into a 16-byte slot first.
 fn fp_int_cast<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, arg: Value) -> CgResult<()> {
     let op = inst.opcode();
     let to_int = matches!(op, Opcode::FPToSI | Opcode::FPToUI);
@@ -1006,7 +1008,7 @@ fn fp_int_cast<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, arg: Value) -> CgResu
 /// The 128-bit integer at `src` converted to a `bfloat` in `xd`, rounded
 /// ONCE to nearest even (as `int_to_bfloat` in `float` does up to 64
 /// bits; `llc` calls `__floattisf` and `__truncsfbf2` and rounds twice,
-/// `spec/codegen.md` §5.6.14): the magnitude in `rdx:rax` (negated when
+/// `spec/codegen.md` §5.6.5): the magnitude in `rdx:rax` (negated when
 /// signed and negative); above 64 bits shifted right by one more than
 /// the index of the top bit of the high word, the dropped bits kept as a
 /// sticky last bit, so that 64 bits with the top one set remain; those
@@ -1014,7 +1016,12 @@ fn fp_int_cast<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, arg: Value) -> CgResu
 /// the magnitude is below `2^128`), the sign put back; then to `float`
 /// rounded to odd and to `bfloat`. Writes `rax`, `rcx`, `rdx`, `r10`,
 /// `r11`, `xmm14`, `xmm15` and the flags.
-fn wide_to_bfloat(cx: &mut FnCx<'_, X64>, src: FrameRef, signed: bool, xd: mc::Xmm) -> CgResult<()> {
+fn wide_to_bfloat(
+    cx: &mut FnCx<'_, X64>,
+    src: FrameRef,
+    signed: bool,
+    xd: mc::Xmm,
+) -> CgResult<()> {
     const RAX: Reg = Reg::Rax;
     const RCX: Reg = Reg::Rcx;
     const RDX: Reg = Reg::Rdx;

@@ -2701,8 +2701,26 @@ below.
   `__float[un]ti{hf,sf,df,tf}` (`fp_to_int_routine`,
   `int_to_fp_routine`), the integer extended to 128 bits in a slot
   first, for every width from 65 to 128 bits, not only `i128` (WP-144).
-  Wider integers, and `bfloat` with an integer wider than 64 bits, are
-  `x64:wide-fp-cast`; `addrspacecast` is `x64:mem-cast`.
+  `sitofp`/`uitofp` of 65 to 128 bits to `bfloat` (WP-295) are inline
+  and rounded ONCE to nearest even, as §5.6.7 rounds the narrower
+  integers: the operand extended to 128 bits, its magnitude in
+  `rdx:rax` (negated with `neg`/`adc`/`neg` when signed and negative);
+  a nonzero high word shifts the magnitude right by `b + 1` (`b` its
+  top bit's index, `bsr`; `shrd` by `b`, then by one with bit 64 put
+  in on top), every dropped bit or-ed into the last bit, leaving 64
+  bits with the top one set; those to `double` rounded to odd (§5.6.7's
+  sequence for 64 bits), `b + 1` added to the exponent field (exact:
+  the magnitude is below `2^128`), the sign put back, then to `float`
+  rounded to odd and to `bfloat` to nearest even. `llc` 22 and 19 (the
+  same calls in both) call `__floattisf`/`__floatuntisf` and then
+  `__truncsfbf2`, rounding twice: they differ from hod (and from
+  libgcc's `__floattibf`/`__floatuntibf`, which GCC calls and which
+  round once) where the `float` rounding lands on a `bfloat` tie, for
+  example `uitofp i128 (0x183 << 20) - 1` is `0x4dc2` from `llc` 22,
+  `0x4dc1` from hod and `__floatuntibf`. `llc` 22 for AArch64 aborts on
+  these conversions. `fptosi`/`fptoui` from `bfloat` to more than 64
+  bits, and integers wider than 128 bits, are `x64:wide-fp-cast`;
+  `addrspacecast` is `x64:mem-cast`.
 - **Aggregates**: as AArch64. `select` with a non-constant condition
   forms both addresses, `test` and `cmovz`, then copies once. A member
   of `half`, `bfloat`, `float`, `double` or `fp128` moves through
@@ -3529,7 +3547,9 @@ emulator (`crates/hod_x64/tests/leftovers.rs`):
 2. **Conversions with integers of 65 to 127 bits**: `aggr::fp_int_cast`
    extends to 128 bits and calls the `ti` routines (§5.6.5), as
    AArch64; wider, or `bfloat` with more than 64 bits, is
-   `x64:wide-fp-cast` (AArch64's `a64:wide-fp-cast`).
+   `x64:wide-fp-cast` (AArch64's `a64:wide-fp-cast`). WP-295 lowers
+   `sitofp`/`uitofp` of 65 to 128 bits to `bfloat` inline (§5.6.5);
+   the conversions from `bfloat` stay `x64:wide-fp-cast`.
 3. **The x86-64 irdiff corpus**: the seeds `aggregate.ll` and
    `tail_wide.ll` run; `varargs_callee.ll` spelled `llvm.va_copy.p0.p0`,
    which LLVM 19 and 22 themselves remangle to `llvm.va_copy.p0`, the

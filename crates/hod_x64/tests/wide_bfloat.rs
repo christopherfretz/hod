@@ -1,5 +1,5 @@
 //! `sitofp` / `uitofp` of integers of 65 to 128 bits to `bfloat` on
-//! x86-64 (WP-295, `spec/codegen.md` §5.6.14 (2)): inline, rounded once
+//! x86-64 (WP-295, `spec/codegen.md` §5.6.5): inline, rounded once
 //! to nearest even. Every case runs under the emulator against an exact
 //! model (single rounding); the cases where rounding to `float` first
 //! gives the same `bfloat` also against `llc -O0 -fast-isel=0` of LLVM
@@ -18,7 +18,6 @@
 mod linking;
 
 #[path = "common/float_gen.rs"]
-#[allow(dead_code, reason = "a shared helper: not every function is used here")]
 mod float_gen;
 
 use float_gen::{Check, Rng, Suite, T, check};
@@ -90,8 +89,11 @@ fn model<const BITS: u32, const SIGNED: bool>(args: &[u64]) -> u64 {
     once(args, BITS, SIGNED)
 }
 
+/// A model of a function's result from its arguments.
+type Model = fn(&[u64]) -> u64;
+
 /// The widths, with their models (signed, unsigned).
-const WIDTHS: [(u32, fn(&[u64]) -> u64, fn(&[u64]) -> u64); 4] = [
+const WIDTHS: [(u32, Model, Model); 4] = [
     (65, model::<65, true>, model::<65, false>),
     (96, model::<96, true>, model::<96, false>),
     (127, model::<127, true>, model::<127, false>),
@@ -145,7 +147,8 @@ fn wide_integers_to_bfloat_round_once() {
     let mut differ = 0;
     for (bits, signed_model, unsigned_model) in WIDTHS {
         let int = format!("i{bits}");
-        for (op, signed, model) in [("sitofp", true, signed_model), ("uitofp", false, unsigned_model)]
+        for (op, signed, model) in
+            [("sitofp", true, signed_model), ("uitofp", false, unsigned_model)]
         {
             let body = format!(
                 "  %wl = zext i64 %a0 to {int}\n  %wz = zext i64 %a1 to {int}\n  \
@@ -203,8 +206,11 @@ fn other_wide_bfloat_conversions_stay_refused() {
     ];
     for text in cases {
         let (module, bodies) = float_gen::parse(&format!("{}{text}", float_gen::ll_header()));
-        match hod_x64::compile_to_object(&module, &bodies, &float_gen::pic(hod_cg::Stress::default()))
-        {
+        match hod_x64::compile_to_object(
+            &module,
+            &bodies,
+            &float_gen::pic(hod_cg::Stress::default()),
+        ) {
             Err(hod_x64::ModuleError::Function { error, .. }) => {
                 assert_eq!(error, hod_cg::CgError::unsupported(WIDE_FP_CAST), "{text}");
             }

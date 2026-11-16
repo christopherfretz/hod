@@ -95,6 +95,22 @@ fn ignored(name: &str) -> bool {
         || name.starts_with(".rel")
 }
 
+/// hod's own unit, the one difference `spec/codegen.md` §9.7.5 permits:
+/// left out, and its section with it when it held nothing else (type
+/// `SHT_NULL`, which [`describe`] skips).
+fn leave_out_hods_unit(bytes: &[u8], s: &mut Section) {
+    if s.ty == 8 {
+        return;
+    }
+    let data = &bytes[s.offset..s.offset + s.size];
+    if let Some(at) = mason::hods_unit_start(s.name.as_bytes(), s.ty, u64::from(s.flags), data) {
+        s.size = at;
+        if at == 0 {
+            s.ty = 0;
+        }
+    }
+}
+
 fn describe(bytes: &[u8]) -> Described {
     assert_eq!(&bytes[..5], b"\x7fELF\x01", "an ELF32 object");
     let shoff = u32_at(bytes, 0x20) as usize;
@@ -125,19 +141,7 @@ fn describe(bytes: &[u8]) -> Described {
     let mut sections = raw;
     for (i, s) in sections.iter_mut().enumerate() {
         s.name = cstr(strtab + u32_at(bytes, header(i)) as usize);
-        // hod's own unit, the one difference `spec/codegen.md` §9.7.5
-        // permits: left out, and its section with it when it held
-        // nothing else (type `SHT_NULL`, skipped below).
-        if s.ty != 8 {
-            let data = &bytes[s.offset..s.offset + s.size];
-            let flags = u64::from(s.flags);
-            if let Some(at) = mason::hods_unit_start(s.name.as_bytes(), s.ty, flags, data) {
-                s.size = at;
-                if at == 0 {
-                    s.ty = 0;
-                }
-            }
-        }
+        leave_out_hods_unit(bytes, s);
     }
     let data = |s: &Section| -> &[u8] {
         if s.ty == 8 { &[] } else { &bytes[s.offset..s.offset + s.size] }

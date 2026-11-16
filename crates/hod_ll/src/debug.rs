@@ -28,34 +28,54 @@ use crate::lexer::Tok;
 use crate::meta::{MdKind, MdRef};
 use crate::parser::{Parser, ir};
 
-/// The fields LLVM's parser requires (`LLParser`'s `REQUIRED`), by
-/// kind; `DILocation`'s `scope` is checked where locations are read.
-const REQUIRED: &[(DiKind, &str)] = &[
-    (DiKind::File, "filename"),
-    (DiKind::File, "directory"),
-    (DiKind::Enumerator, "name"),
-    (DiKind::Enumerator, "value"),
-    (DiKind::DerivedType, "tag"),
-    (DiKind::DerivedType, "baseType"),
-    (DiKind::CompositeType, "tag"),
-    (DiKind::SubroutineType, "types"),
-    (DiKind::CompileUnit, "file"),
-    (DiKind::LexicalBlock, "scope"),
-    (DiKind::LexicalBlockFile, "scope"),
-    (DiKind::LexicalBlockFile, "discriminator"),
-    (DiKind::Namespace, "scope"),
-    (DiKind::TemplateTypeParameter, "type"),
-    (DiKind::TemplateValueParameter, "value"),
-    (DiKind::GlobalVariableExpression, "var"),
-    (DiKind::GlobalVariableExpression, "expr"),
-    (DiKind::LocalVariable, "scope"),
-    (DiKind::ImportedEntity, "tag"),
-    (DiKind::ImportedEntity, "scope"),
-    (DiKind::Label, "scope"),
-    (DiKind::Label, "name"),
-    (DiKind::Label, "file"),
-    (DiKind::Label, "line"),
-];
+/// The fields LLVM's parser requires of a node of `kind` (`LLParser`'s
+/// `REQUIRED`); `DILocation`'s `scope` is checked where locations are
+/// read.
+fn required(kind: DiKind) -> &'static [&'static str] {
+    match kind {
+        DiKind::File => &["filename", "directory"],
+        DiKind::Enumerator => &["name", "value"],
+        DiKind::DerivedType => &["tag", "baseType"],
+        DiKind::CompositeType => &["tag"],
+        DiKind::SubroutineType => &["types"],
+        DiKind::CompileUnit => &["file"],
+        DiKind::LexicalBlock | DiKind::Namespace | DiKind::LocalVariable => &["scope"],
+        DiKind::LexicalBlockFile => &["scope", "discriminator"],
+        DiKind::TemplateTypeParameter => &["type"],
+        DiKind::TemplateValueParameter => &["value"],
+        DiKind::GlobalVariableExpression => &["var", "expr"],
+        DiKind::ImportedEntity => &["tag", "scope"],
+        DiKind::Label => &["scope", "name", "file", "line"],
+        _ => &[],
+    }
+}
+
+/// The kind with a record in `hod_ir` that the metadata index found:
+/// `DiKind::named` of the same name, without comparing it again.
+fn record_kind(kind: MdKind) -> Option<DiKind> {
+    Some(match kind {
+        MdKind::GlobalVariableExpression => DiKind::GlobalVariableExpression,
+        MdKind::Subrange => DiKind::Subrange,
+        MdKind::Enumerator => DiKind::Enumerator,
+        MdKind::BasicType => DiKind::BasicType,
+        MdKind::DerivedType => DiKind::DerivedType,
+        MdKind::CompositeType => DiKind::CompositeType,
+        MdKind::SubroutineType => DiKind::SubroutineType,
+        MdKind::File => DiKind::File,
+        MdKind::CompileUnit => DiKind::CompileUnit,
+        MdKind::Subprogram => DiKind::Subprogram,
+        MdKind::LexicalBlock => DiKind::LexicalBlock,
+        MdKind::LexicalBlockFile => DiKind::LexicalBlockFile,
+        MdKind::Namespace => DiKind::Namespace,
+        MdKind::TemplateTypeParameter => DiKind::TemplateTypeParameter,
+        MdKind::TemplateValueParameter => DiKind::TemplateValueParameter,
+        MdKind::GlobalVariable => DiKind::GlobalVariable,
+        MdKind::LocalVariable => DiKind::LocalVariable,
+        MdKind::Label => DiKind::Label,
+        MdKind::ImportedEntity => DiKind::ImportedEntity,
+        _ => return None,
+    })
+}
 
 /// What a numbered metadata node became.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -100,11 +120,21 @@ enum Val {
     Expr(ExprId),
 }
 
+/// Which field a value read is for.
+#[derive(Clone, Copy, Debug)]
+enum Key {
+    /// The field at this position of the kind's record
+    /// ([`DiKind::fields`]), looked up once.
+    At(u8),
+    /// One of the older spellings of a subprogram's flags, set by name.
+    Name(&'static str),
+}
+
 /// The scratch storage of the node being built and of those written in
 /// place inside it.
 #[derive(Debug, Default)]
 pub(crate) struct DebugScratch {
-    fields: Vec<(&'static str, Val)>,
+    fields: Vec<(Key, Val)>,
     /// Field names that are not `'static`: a field of the record found by
     /// name in the kind's list.
     lists: Vec<DiId>,
@@ -266,8 +296,7 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
                 // A tuple named as a node is defined by `define_tuples`.
                 Handle::Node(_) if node.kind == MdKind::Tuple => {}
                 Handle::Node(id) => {
-                    let name = kind_name(self.src, node.span);
-                    let made = self.node_body(name, node.span, &mut scratch)?;
+                    let made = self.node_body(node.kind, node.span, &mut scratch)?;
                     let debug = &mut self.module.debug;
                     let result = made.define(debug, id, &scratch, self.src, node.distinct);
                     ir(node.span.start, result)?;
@@ -594,7 +623,7 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
         let lists = scratch.lists.len();
         let strs = scratch.strs.len();
         let src = self.src;
-        let made = self.node_body(kind_name(src, span), span, scratch)?;
+        let made = self.node_body(kind, span, scratch)?;
         let id = made.add(&mut self.module.debug, &scratch.fields[fields..], scratch, src);
         let id = ir(at, id)?;
         scratch.fields.truncate(fields);
@@ -609,30 +638,55 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
     /// its parentheses, `span`, into `scratch.fields`.
     fn node_body(
         &mut self,
-        name: &'a [u8],
+        md: MdKind,
         span: Span,
         scratch: &mut DebugScratch,
     ) -> PResult<Made<'a>> {
-        let mapping = di_kind(name);
-        let Some(kind) = DiKind::named(name).filter(|_| mapping == Some(DiMapping::Mapped)) else {
-            if mapping.is_none() {
+        // A kind with a record is mapped (`di_kind`), and the index has
+        // named it already; the text and the table are asked only about
+        // the others.
+        let Some(kind) = record_kind(md) else {
+            let name = kind_name(self.src, span);
+            if di_kind(name).is_none() {
                 let at = span.start - 2 - name.len() as u32;
                 return fail(LlErrorKind::Syntax, at, "expected metadata type");
             }
             return Ok(Made { kind: None, name, first: scratch.fields.len() });
         };
+        let name = kind.llvm_name().as_bytes();
         let first = scratch.fields.len();
         // The fields met, for LLVM's two rules: none twice, and the
-        // required ones present.
+        // required ones present. The record's fields by position (at most
+        // 32, `spec/ir.md` §6.2), the few others by name.
+        let mut met = 0u64;
         let mut seen: [&[u8]; 48] = [b""; 48];
         let mut count = 0;
+        // Where the next field is looked for first: LLVM writes them in
+        // the record's order.
+        let mut hint = 0;
         self.goto(span.start);
         while self.tok.start < span.end {
             let (field, at) = self.field_name()?;
-            if seen[..count].contains(&field) {
+            let index = kind.field_index(field, hint);
+            let again = match index {
+                Some(index) => met & (1 << index) != 0,
+                None => seen[..count].contains(&field),
+            };
+            if again {
                 let field = String::from_utf8_lossy(field);
                 let message = format!("field '{field}' cannot be specified more than once");
                 return fail(LlErrorKind::Syntax, at, message);
+            }
+            if let Some(index) = index {
+                met |= 1 << index;
+                hint = index + 1;
+                let shape = kind.field_shape_at(index);
+                let value = self.field_value(kind, shape, field, scratch)?;
+                scratch.fields.push((Key::At(index as u8), value));
+                if self.tok.start < span.end {
+                    self.expect(Tok::Comma, "expected ',' between fields")?;
+                }
+                continue;
             }
             if count < seen.len() {
                 seen[count] = field;
@@ -640,9 +694,9 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
             }
             match di_field(name, field) {
                 Some(DiMapping::Mapped) => {
-                    let value = self.field_value(kind, field, scratch)?;
-                    let key = static_field(kind, field);
-                    scratch.fields.push((key, value));
+                    // Not in the record: an older spelling, no shape.
+                    let value = self.field_value(kind, None, field, scratch)?;
+                    scratch.fields.push((Key::Name(older_spelling(field)), value));
                 }
                 Some(DiMapping::Dropped(_)) => {
                     self.skip_value()?;
@@ -660,8 +714,12 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
                 self.expect(Tok::Comma, "expected ',' between fields")?;
             }
         }
-        for &(required, field) in REQUIRED {
-            if required == kind && !seen[..count].contains(&field.as_bytes()) {
+        for &field in required(kind) {
+            let present = match kind.field_index(field.as_bytes(), 0) {
+                Some(index) => met & (1 << index) != 0,
+                None => seen[..count].contains(&field.as_bytes()),
+            };
+            if !present {
                 let message = format!("missing required field '{field}'");
                 return fail(LlErrorKind::Syntax, span.end, message);
             }
@@ -724,14 +782,15 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
         Ok(default)
     }
 
-    /// A field's value, read by what the field holds.
+    /// A field's value, read by what the field holds (`shape`, none for a
+    /// field that is not in the kind's record).
     fn field_value(
         &mut self,
         kind: DiKind,
+        shape: Option<DiShape>,
         field: &[u8],
         scratch: &mut DebugScratch,
     ) -> PResult<Val> {
-        let shape = kind.field_shape(field);
         let at = self.tok.start;
         let token = self.tok;
         let text = self.text();
@@ -746,7 +805,14 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
             }
             _ => {}
         }
-        let named = |text: &[u8]| named_code(shape, field, text);
+        // A word's code, looked up once (the `true`, `false` and `null`
+        // arms come first and never consult it).
+        let code = match token.kind {
+            Tok::Word if !matches!(text, b"true" | b"false" | b"null") => {
+                named_code(shape, field, text)
+            }
+            _ => None,
+        };
         let value = match token.kind {
             Tok::Str => {
                 let string = self.string(token);
@@ -780,9 +846,9 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
                 self.bump();
                 Val::Bool(text == b"true")
             }
-            Tok::Word if text != b"null" && named(text).is_some() => {
+            Tok::Word if code.is_some() => {
                 self.bump();
-                Val::UInt(named(text).unwrap_or(0))
+                Val::UInt(code.unwrap_or(0))
             }
             Tok::Word
                 if !matches!(shape, Some(DiShape::Node | DiShape::Bound))
@@ -1005,15 +1071,9 @@ fn named_code(shape: Option<DiShape>, field: &[u8], text: &[u8]) -> Option<u64> 
     code.map(u64::from)
 }
 
-/// The `'static` name of a field LLVM calls `field`: one of the kind's
-/// record fields, or one of the older spellings a subprogram takes.
-fn static_field(kind: DiKind, field: &[u8]) -> &'static str {
-    if field == b"tag" {
-        return "tag";
-    }
-    if let Some(&known) = kind.fields().iter().find(|known| known.as_bytes() == field) {
-        return known;
-    }
+/// The `'static` name of a mapped field LLVM calls `field` that is not
+/// in the kind's record: one of the older spellings a subprogram takes.
+fn older_spelling(field: &[u8]) -> &'static str {
     ["isLocal", "isDefinition", "isOptimized", "virtuality"]
         .into_iter()
         .find(|known| known.as_bytes() == field)
@@ -1032,11 +1092,16 @@ impl Made<'_> {
     /// The node, its fields set from `fields`.
     fn node<'s>(
         &'s self,
-        fields: &'s [(&'static str, Val)],
+        fields: &'s [(Key, Val)],
         scratch: &'s DebugScratch,
         src: &'s [u8],
     ) -> hod_ir::IrResult<DiNode<'s>> {
-        let values = fields.iter().map(|&(field, value)| {
+        // `kit::di_node`, with the record's fields set by position.
+        let Some(kind) = self.kind else {
+            return kit::di_node(None, self.name, []);
+        };
+        let mut node = DiNode::llvm_default(kind);
+        for &(key, value) in fields {
             let value = match value {
                 Val::UInt(value) => DiFieldValue::UInt(value),
                 Val::Int(value) => DiFieldValue::Int(value),
@@ -1051,9 +1116,12 @@ impl Made<'_> {
                 }
                 Val::Expr(id) => DiFieldValue::Expr(id),
             };
-            (field, value)
-        });
-        kit::di_node(self.kind, self.name, values)
+            match key {
+                Key::At(index) => node.set_at(usize::from(index), value)?,
+                Key::Name(field) => node.set(field.as_bytes(), value)?,
+            }
+        }
+        Ok(node)
     }
 
     fn define<L: Layering>(
@@ -1071,7 +1139,7 @@ impl Made<'_> {
     fn add<L: Layering>(
         &self,
         debug: &mut hod_ir::DebugInfo<L>,
-        fields: &[(&'static str, Val)],
+        fields: &[(Key, Val)],
         scratch: &DebugScratch,
         src: &[u8],
     ) -> hod_ir::IrResult<DiId> {
@@ -1084,5 +1152,33 @@ impl DebugMap {
     /// The handle of the node at `position` in the metadata index.
     pub(crate) fn handle(&self, position: usize) -> Handle {
         self.handles.get(position).copied().unwrap_or(Handle::None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// WP-290: the index's kind is the kind `DiKind::named` finds for
+    /// every kind with a record, and none for the others; every required
+    /// field has a position in its record.
+    #[test]
+    fn record_kinds_and_required_fields() {
+        for &kind in DiKind::ALL {
+            let name = kind.llvm_name().as_bytes();
+            let md = MdKind::from_name(name);
+            let expected = DiKind::named(name).filter(|_| name.starts_with(b"DI"));
+            assert_eq!(record_kind(md), expected, "{kind:?}");
+            for field in required(kind) {
+                assert!(kind.field_index(field.as_bytes(), 0).is_some(), "{kind:?}.{field}");
+            }
+        }
+        for name in
+            [&b"DIModule"[..], b"DILocation", b"DIStringType", b"DIFuture", b"GenericDINode"]
+        {
+            assert_eq!(record_kind(MdKind::from_name(name)), None);
+        }
+        assert_eq!(required(DiKind::Label), ["scope", "name", "file", "line"]);
+        assert!(required(DiKind::Subprogram).is_empty());
     }
 }

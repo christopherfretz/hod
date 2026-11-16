@@ -536,6 +536,7 @@ mod tests {
     };
     use super::*;
     use crate::ids::LocId;
+    use crate::intern::NoLayer;
     use crate::{DiLocation, IrErrorKind};
 
     fn int() -> DiNode<'static> {
@@ -587,7 +588,17 @@ mod tests {
             let extent = d.walk_refs(head, &mut cells);
             let by_cells: Vec<DiId> = cells.iter().map(|&cell| d.cells[cell as usize]).collect();
             let mut by_node = Vec::new();
-            d.node(DiId::new(raw)).refs(&mut |_, _, id| by_node.push(id));
+            d.node(DiId::new(raw)).refs(&mut |field, class, id| by_node.push((field, class, id)));
+            // WP-290: the walk `verify` makes over the stored cells.
+            let mut stored = Vec::new();
+            let all = d.cells.from(head.at as usize);
+            let mut dec = Dec::<NoLayer> { cells: &all[1..], strings: None };
+            let kind = DiKind::from_code(head.kind);
+            DiNode::stored_refs(kind, all[0].raw(), &mut dec, &mut |field, class, id| {
+                stored.push((field, class, id));
+            });
+            assert_eq!(stored, by_node, "node {raw}");
+            let by_node: Vec<DiId> = by_node.iter().map(|&(_, _, id)| id).collect();
             assert_eq!(by_cells, by_node, "node {raw}");
             // The walk ends where the node's cells end: at the next
             // node's, for nodes stored one after another.

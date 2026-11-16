@@ -520,7 +520,8 @@ entry sp -> +--------------------------------------+  = fp + FRAME   (CFA)
 - Incoming stack arguments are at `fp + FRAME + n`, which is not known
   while the body is emitted. A function that needs the address of the
   incoming area (it has stack-passed or `byval` arguments, or is variadic:
-  known from its signature before anything is emitted) keeps it in a
+  known from its signature before anything is emitted; or it calls
+  `llvm.sponentry` or `llvm.eh.dwarf.cfa`, §5.6.38) keeps it in a
   pointer slot, the **incoming base**: its prologue is preceded by
   `mov x16, sp` and followed by a store of `x16` to that slot.
   `FrameRef::Incoming(n)` is addressed through the slot.
@@ -5213,7 +5214,7 @@ their matrix rows (`spec/ir.md` §8).
 |---|---|---|
 | `llvm.frameaddress(n)` | `rbp` followed `n` times (§5.6.8) | `x29` followed `n` times (§5.5, WP-041) |
 | `llvm.returnaddress(n)` | `[frame(n) + 8]` | `[frame(n) + 8]`, `xpaclri` (§5.6.26) |
-| `llvm.eh.dwarf.cfa(k)` | `rbp + 16 + sext(k)`; `k` may be a variable | refused: `intrinsic:llvm.eh.dwarf.cfa` |
+| `llvm.eh.dwarf.cfa(k)` | `rbp + 16 + sext(k)`; `k` may be a variable | the incoming base (§5.5) `+ sext(k)`; `k` may be a variable (WP-294) |
 | `llvm.addressofreturnaddress` | `rbp + 8` | `x29 + 8` |
 | `llvm.sponentry` | refused: `intrinsic:llvm.sponentry` | the incoming base (§5.5), the CFA |
 | `llvm.eh.unwind.init` | saves `rbx`, `r12`..`r15` | saves `x19`..`x28`, `d8`..`d15` |
@@ -5224,12 +5225,24 @@ their matrix rows (`spec/ir.md` §8).
   (§5.2), the frame is never realigned, and a variadic function's
   register save area is in the local area. So `eh.dwarf.cfa(0)` is the
   caller's stack pointer before the call in every one of those frames.
-- **Why AArch64 refuses two.** `llc` 19 and 22 compute `eh.dwarf.cfa(k)`
-  as `x29 + k`, while the frame's row says the CFA is `x29 + 16`
-  (gcc's `__builtin_dwarf_cfa()` is the CFA; clang's is 16 below it).
-  `llc` emits nothing for `eh.return.i64`: the block falls through. A
-  lowering that follows `llc` would be wrong, and a right one has no
-  oracle. `llvm.sponentry` aborts `llc` on x86-64.
+- **`eh.dwarf.cfa` on AArch64 (WP-294): the CFA, not `llc`'s value.**
+  The CFA of a hod frame is the stack pointer at entry, `x29 + FRAME`
+  in the whole body (the frame record is at the bottom of the frame,
+  §5.5); `FRAME` is not known while the body is emitted, so a function
+  that calls `eh.dwarf.cfa` keeps the incoming base, as one that calls
+  `sponentry` does, and `eh.dwarf.cfa(k)` is that base plus `sext(k)`
+  (`ldr rd, [x29, #base]` then `add`/`sub` of a constant `k`; `ldr x16,
+  [x29, #base]` · `add rd, x16, wk, sxtw` for a variable one). Dynamic
+  allocation, over-aligned slots, a variadic save area, outgoing or
+  incoming stack arguments do not change it. `llc` 19 and 22 (every
+  selector) compute `x29 + k`, 16 below the CFA their own row
+  (`.cfi_def_cfa w29, 16`) states; GCC's `__builtin_dwarf_cfa()` and
+  libgcc's `_Unwind_GetCFA` give the CFA. hod gives the CFA: its value
+  is `llc`'s plus 16 in every frame shape (the tests check both).
+- **Why AArch64 refuses `eh.return.i64`.** `llc` 19 and 22 emit nothing
+  for it: the block falls through. A lowering that follows `llc` would
+  be wrong, and a right one has no oracle. `llvm.sponentry` aborts `llc`
+  on x86-64.
 - **`eh.unwind.init`.** The function saves every callee-saved register
   in its frame, with rows, and reloads them in each exit, so an unwinder
   can find and install them. x86-64 pushes the whole save set (§5.6.1).

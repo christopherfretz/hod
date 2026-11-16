@@ -378,7 +378,6 @@ const X86_SSE: &[TypeClass] = &[TypeClass::Int, TypeClass::Ptr, TypeClass::Vecto
 /// WP-147.
 const SJLJ_A64: &str = "`llc` for AArch64 compiles `setjmp` to 0 and `longjmp` to nothing; clang refuses the builtins there";
 /// WP-215 (`spec/codegen.md` §5.6.38).
-const DWARF_CFA_A64: &str = "`llc` 19 and 22 for AArch64 return the CFA less 16 (the frame pointer), not the CFA their own unwind tables and GCC define";
 const EH_RETURN_A64: &str =
     "`llc` 19 and 22 for AArch64 emit nothing for it: the code falls through into what follows";
 const SPONENTRY_X64: &str =
@@ -1988,9 +1987,9 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len() - INTRI
     ),
     row(
         "intrinsic:llvm.eh.dwarf.cfa",
-        never(DWARF_CFA_A64),
         on(&[TypeClass::Ptr, TypeClass::Int]),
-        "",
+        on(&[TypeClass::Ptr, TypeClass::Int]),
+        "the CFA of the frame's unwind rows plus the operand, as GCC computes it; on AArch64 16 above what `llc` 19 and 22 return (their frame pointer; WP-294)",
     ),
     row(
         "intrinsic:llvm.eh.return.i64",

@@ -1,6 +1,6 @@
 //! The frame as an unwinder sees it (`spec/codegen.md` §5.6.38,
-//! WP-215): `llvm.sponentry`, `llvm.addressofreturnaddress` and
-//! `llvm.eh.unwind.init`.
+//! WP-215, WP-294): `llvm.sponentry`, `llvm.eh.dwarf.cfa`,
+//! `llvm.addressofreturnaddress` and `llvm.eh.unwind.init`.
 //!
 //! - `llvm.sponentry` is the stack pointer at entry, which is the CFA
 //!   (§5.5): the function keeps an incoming base (`frame::begin`), and the
@@ -17,15 +17,24 @@
 //! stp d8, d9, [x29, #96]   .. stp d14, d15, [x29, #144]
 //! ```
 //!
-//! `llvm.eh.dwarf.cfa` and `llvm.eh.return.i64` are refused by
-//! `classify` on this target (`llc` miscompiles both).
+//! - `llvm.eh.dwarf.cfa(k)` (WP-294) is the incoming base plus
+//!   `sext(k)`: the CFA of the frame's own rows (`x29 + FRAME`), what
+//!   GCC's `__builtin_dwarf_cfa()` and libgcc's `_Unwind_GetCFA` give.
+//!   `llc` 19 and 22 return `x29 + k` instead, 16 below their own row's
+//!   CFA (`x29 + 16`); hod does not follow them. `k` may be a variable
+//!   (`add rd, x16, wk, sxtw`).
+//!
+//! `llvm.eh.return.i64` is refused by `classify` on this target (`llc`
+//! emits nothing for it).
 
 use hod_cg::{CfiOp, CgResult, FnCx, FrameRef};
 use hod_ir::{Inst, Intrinsic, Value};
 use hod_mc_a64 as mc;
-use hod_mc_a64::{Reg, Size, VPairSize, VReg};
+use hod_mc_a64::{Extend, Reg, Size, VPairSize, VReg};
 
-use crate::common::{FP, deferred_first, frame_address, put, unsupported, xr};
+use crate::common::{
+    Cursor, FP, X16, add_const, deferred_first, frame_address, put, unsupported, xr,
+};
 use crate::target::A64;
 
 /// `llvm.eh.unwind.init` in a `preserve_mostcc` or `preserve_allcc`
@@ -58,10 +67,12 @@ pub struct UnwindState {
     rows_at: u32,
 }
 
-/// Whether the body calls `llvm.sponentry` (it then keeps an incoming
-/// base, §5.5).
+/// Whether the body calls `llvm.sponentry` or `llvm.eh.dwarf.cfa` (it
+/// then keeps an incoming base, §5.5).
 pub fn needs_entry_sp(cx: &FnCx<'_, A64>) -> bool {
-    cx.body.calls().any(|site| site.intrinsic() == Some(Intrinsic::SpOnEntry))
+    cx.body
+        .calls()
+        .any(|site| matches!(site.intrinsic(), Some(Intrinsic::SpOnEntry | Intrinsic::EhDwarfCfa)))
 }
 
 /// The pairs of the area: each register pair's offset from `x29`, the
@@ -180,8 +191,30 @@ pub fn intrinsic<'a>(
             put(cx, mc::add_imm(Size::X, xr(rd).sp(), FP, 8));
             cx.finish(inst, rd)
         }
+        (I::EhDwarfCfa, &[offset]) => dwarf_cfa(cx, inst, offset),
         // The registers are saved by the prologue (`save`).
         (I::EhUnwindInit, []) => Ok(()),
         _ => cx.bug("a frame intrinsic this target does not lower"),
     }
+}
+
+/// `llvm.eh.dwarf.cfa(offset)`: the incoming base (the CFA) plus
+/// `sext(offset)`.
+fn dwarf_cfa<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, offset: Value) -> CgResult<()> {
+    if let Some(k) = crate::intrinsic::const_int(cx, offset) {
+        let k = i64::from(k as u32 as i32);
+        let rd = cx.def_reg(inst)?;
+        frame_address(cx, xr(rd), FrameRef::Incoming(0));
+        add_const(cx, xr(rd).sp(), xr(rd).sp(), k);
+        return cx.finish(inst, rd);
+    }
+    let o = xr(cx.use_reg(offset)?);
+    let rd = cx.def_reg(inst)?;
+    // The base in `x16` (no value lives there), so `rd` may be `o`.
+    let base = Cursor::frame(cx, FrameRef::Incoming(0), X16);
+    if base.off != 0 {
+        return cx.bug("the incoming base is not a register");
+    }
+    put(cx, mc::add_ext(Size::X, xr(rd).sp(), base.base, o.zr(), Extend::Sxtw, 0));
+    cx.finish(inst, rd)
 }

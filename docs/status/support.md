@@ -50,8 +50,8 @@ skipped (`docs/design/0007-avx512.md` §4.4).
 | `landingpad` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 1032 | 373 | 11 | 648 | 782 | 10 | 240 |
-| total | 1360 | 598 | 58 | 704 | 1009 | 61 | 290 |
+| `intrinsic` | 1032 | 374 | 11 | 647 | 782 | 10 | 240 |
+| total | 1360 | 599 | 58 | 703 | 1009 | 61 | 290 |
 
 ## `module`
 
@@ -553,7 +553,7 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.stackrestore` | supported | supported |  |
 | `intrinsic:llvm.frameaddress` | supported (int, ptr) | supported (int, ptr) |  |
 | `intrinsic:llvm.returnaddress` | supported (int, ptr) | supported (int, ptr) |  |
-| `intrinsic:llvm.eh.dwarf.cfa` | rejected | supported (int, ptr) | `llc` 19 and 22 for AArch64 return the CFA less 16 (the frame pointer), not the CFA their own unwind tables and GCC define |
+| `intrinsic:llvm.eh.dwarf.cfa` | supported (int, ptr) | supported (int, ptr) | the CFA of the frame's unwind rows plus the operand, as GCC computes it; on AArch64 16 above what `llc` 19 and 22 return (their frame pointer; WP-294) |
 | `intrinsic:llvm.eh.return.i64` | rejected | supported (int, ptr) | `llc` 19 and 22 for AArch64 emit nothing for it: the code falls through into what follows |
 | `intrinsic:llvm.eh.unwind.init` | supported | supported |  |
 | `intrinsic:llvm.sponentry` | supported (ptr) | rejected | x86_64: `llc` 19 and 22 for x86-64 abort in instruction selection; clang has no builtin for it there |

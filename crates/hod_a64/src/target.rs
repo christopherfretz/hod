@@ -157,6 +157,7 @@ fn lower_call<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, site: &CallSite<'a>) -
         }
         Some(
             which @ (Intrinsic::SpOnEntry
+            | Intrinsic::EhDwarfCfa
             | Intrinsic::EhUnwindInit
             | Intrinsic::AddressOfReturnAddress),
         ) => crate::unwind::intrinsic(cx, inst, which, site.args()),

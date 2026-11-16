@@ -798,9 +798,9 @@ movq %r15, %rbp
 ```
 
 The CFA input is `__builtin_dwarf_cfa()` (`llvm.eh.dwarf.cfa`), which
-hod does not lower (`intrinsic:llvm.eh.dwarf.cfa`, a follow-up); a
-function computing it otherwise (`llvm.frameaddress(0)` plus 16, as the
-tests do) is lowered in full.
+hod lowers on both targets (`spec/codegen.md` §5.6.38); a function
+computing it otherwise (`llvm.frameaddress(0)` plus 16, as the tests
+do) is lowered in full as well.
 
 **The directives** (`x64::assemble_with_cfi`; `x64::assemble` still
 refuses each as `asm:directive/<name>`): `.cfi_remember_state`,

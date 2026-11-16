@@ -188,7 +188,7 @@ pub fn ptr_add<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, add: &PtrAdd<'a>) -> 
     }
     let mut offset = add.offset as u32;
     for (index, scale) in add.indices() {
-        if cx.class_of(index) != hod_cg::Class::Gpr {
+        if cx.class_of(index) != hod_cg::Class::Gpr && !crate::int::index_ok(cx, index)? {
             return Err(crate::target::refusal_of(cx, crate::common::value_ty(cx, index)));
         }
         if let Some(c) = const_int(cx, index) {
@@ -204,7 +204,7 @@ pub fn ptr_add<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, add: &PtrAdd<'a>) -> 
             continue;
         }
         let bits = width(cx, index);
-        cx.put(index, crate::reg::EAX)?;
+        crate::int::put_index(cx, index, crate::reg::EAX)?;
         extend_to(cx, EAX, bits, Ext::Sign);
         let Some(eax) = EAX.index() else {
             return cx.bug("eax has no index form");

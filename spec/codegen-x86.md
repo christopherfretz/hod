@@ -77,6 +77,64 @@ byte), `movzx`. `select`: always a branch (`test al, 1`; `je`; `mov`).
 `freeze` is a copy. Casts among `Gpr` types: `trunc`, `ptrtoint`,
 `ptrtoaddr`, `bitcast` copy; `zext`, `inttoptr`, `sext` extend.
 
+### 4.1 Integer intrinsics (`bits`, WP-309)
+
+The integer intrinsics with a result of 1 to 32 bits (wider: §8), in
+the first operand's register; each operand is asked for once (a repeated
+operand shares its register), so at most three pool registers are
+pinned; the work registers are `eax`, `ecx`, `edx`. Every `cmov` of
+`hod_x64`'s shape is a branch, on every CPU. `popcnt`, `lzcnt`, `tzcnt`
+are never used (hod's feature model has `popcnt` but no `lzcnt`/`bmi`,
+and the back end reads no feature yet): the generic sequences below
+give the same results. `is_zero_poison` and `is_int_min_poison` are
+ignored (the defined result is computed). With `N` the width:
+
+- `bswap` (`N` = 16, 32; the verifier rejects other widths): `bswap`,
+  then `shr 32 - N`. `bitreverse`: `bswap` and the three mask-and-shift
+  swaps, then `shr 32 - N`. Both drop the unspecified bits.
+- `ctpop`: zero-extend, the SWAR sequence (`imul 0x01010101`, `shr 24`).
+- `ctlz`: `N` = 32: `bsr`; `jne`; `mov 63`; `xor 31`. `N` < 32: `shl 32 - N`,
+  `or` of bit `31 - N` (a zero counts `N`), `bsr`, `xor 31`.
+- `cttz`: `N` = 32: `bsf`; `jne`; `mov 32`. `N` < 32: `or` of bit `N`, `bsf`.
+- `abs`: sign-extend, `(x ^ s) - s` with `s = x >> 31` (the minimum maps to
+  itself).
+- `smax`, `smin`, `umax`, `umin`: both extended (sign or zero), `cmp`, a
+  branch over the copy of the second operand.
+- `sadd.sat`, `ssub.sat`, `uadd.sat`, `usub.sat`: `N` = 32: the operation's
+  own `OF` (the bound chosen from the first operand's sign before it) or
+  `CF`, a branch over the bound. `N` < 32: both extended, the exact 32-bit
+  result clamped to the width's bounds by compares and branches (`usub`:
+  negative means 0).
+- `sshl.sat`, `ushl.sat`: the amount zero-extended into `cl`, the value
+  moved to the top of the register (`shl 32 - N`), shifted left and back
+  (`sar`/`shr cl`); if that differs, the saturated value (all ones, or
+  `(x >> 31) ^ 0x7fffffff`); then `sar`/`shr 32 - N`. An amount of `N` or
+  more is poison.
+- `fshl`, `fshr`: a constant amount is taken modulo `N` (0: the first,
+  or second, operand unchanged); `N` = 32: `shld`/`shrd` (by `cl` for a
+  variable amount, which the instruction takes modulo 32). `N` < 32: the
+  second operand zero-extended in `eax`, the two halves shifted by `k`
+  and `N - k` and or-ed; a variable `k` is `c and (N - 1)` for a power of
+  two, else the remainder of a `div` by `N` (`c` zero-extended); `N` = 1
+  is the unchanged operand.
+- `scmp`, `ucmp` of operands of 1 to 32 bits: both extended, `cmp`,
+  `setg`/`seta` into `al`, `setl`/`setb` into `cl`, `sub al, cl`, `movsx`;
+  a result of 33 to 64 bits (class `Mem`) is stored as that word and its
+  sign. Operands wider than 32 bits stay `x86:intrinsic`.
+
+Where `llc` 19 and 22 (`-O0 -global-isel=0 -fast-isel=0`) branch inside
+these intrinsics (a basic-block label in the function; measured with
+`tests/data/i386/bits/gen.py --probe` and `tests/data/i386/i64_rest/branches.py`
+at `N` = 1, 7, 8, 16, 24, 31, 32): only at a CPU without `cmov`
+(`generic`): `ctlz` with `is_zero_poison` false at every `N` but 1;
+`cttz` with `is_zero_poison` false at 32 only (with it true, neither
+branches); `smax`, `smin`, `umax`, `umin` at every `N`
+but 1; `sadd.sat`, `uadd.sat`, `ssub.sat`, `usub.sat` at every `N` but 1
+(LLVM 22) or at every `N` (LLVM 19); `sshl.sat`, `ushl.sat` at every `N`
+but 1. With `cmov` (`pentium4`, `haswell`) none. `bswap`, `ctpop`,
+`bitreverse`, `abs`, `fshl`/`fshr` (constant or variable amount),
+`scmp`/`ucmp` never branch.
+
 ## 5. Memory (`mem`, `bytes`)
 
 An address is a stack slot's frame place, a symbol's absolute `disp32`
@@ -108,8 +166,8 @@ their values).
 
 | name | what | removed by |
 |---|---|---|
-| `x86:i64` | an integer of 33 to 64 bits where §8 does not take it: an argument or result passed by value, a `switch` condition (also wider), a `ptradd` index | I6 (`abi.rs`: arguments, results); — |
-| `x86:i64:wide` | an integer wider than 64 bits (§8) | — |
+| `x86:i64` | an integer of 33 to 64 bits where §8 does not take it | I6 (`abi.rs`: arguments, results); WP-306 (`switch` condition, `ptradd` index, intrinsics) |
+| `x86:i64:wide` | an integer wider than 64 bits (§8), also as a `switch` condition, a `ptradd` index and the result of an integer intrinsic of §8 | — |
 | `x86:float` | a floating-point value in a register where §11 takes none (arguments and results are I6's since the join) | — |
 | `x86:float:half`, `x86:float:bfloat`, `x86:float:fp128` | a value of those types | — |
 | `x86:float:sse` | a `float` operation with SSE, a `double` one with SSE2 (`llc` uses `xmm`) | I12 |
@@ -131,7 +189,7 @@ their values).
 | `x86:abi:musttail` | a `musttail` call with stack arguments and an argument in `ecx`; under PIC, one to another module's function with `eax`, `ecx` and `edx` all holding arguments (`spec/abi-x86.md` §8.5) | — |
 | `x86:varargs` | `va_start`, `va_copy`, `va_end`, `va_arg` | I11 |
 | `x86:dynamic-alloca` | a dynamic `alloca`, an over-aligned slot, `llvm.stacksave`/`stackrestore` | I11 |
-| `x86:intrinsic` | any other intrinsic | per family |
+| `x86:intrinsic` | any other intrinsic (the integer intrinsics of §4.1 and §8 are lowered; still refused: `scmp`/`ucmp` of operands wider than 32 bits, the `*.with.overflow` family, `eh.typeid.for`, `frameaddress`, `returnaddress`, `ubsantrap`, `ptrmask`, `is.constant`, `objectsize`, `clear_cache`, `readcyclecounter`, ...) | per family |
 | `x86:call` | a call with operand bundles, `callbr` | — |
 | `x86:blockaddress`, `x86:indirect-branch` | `blockaddress`, `indirectbr` | — |
 | `x86:stack-protector` | a function with a stack guard | — |
@@ -192,11 +250,72 @@ through `ecx`). Wider than 64 bits is refused as `x86:i64:wide`.
   `inttoptr` to a `Gpr` value load the low word. `load`/`store` move
   exactly the store size (5 to 8 bytes).
 
-Still refused as `x86:i64`: such an integer passed or returned by value
-(I6, `abi.rs`), a `switch` on one (or wider), a `ptradd` index of one.
-Intrinsics of these widths stay `x86:intrinsic`, as for every width: the
-`*.with.overflow` ones return the aggregate `{iN, i1}` (I11's
-`extractvalue`), and the bit counts and min/max are not lowered yet.
+- `switch` (WP-306): the low word in `eax`, the high word zero-extended
+  in `edx`; per case (its value masked to `N` bits) `cmp eax, lo`,
+  `jne` past it, `cmp edx, hi`, `je` the case's block; then the default.
+  A constant condition is a branch to its block.
+- `ptradd` index (WP-306): the low word of the slot, i.e. the index
+  truncated to the 32 bits of a pointer (as `llc`), then scaled as a
+  `Gpr` index (§5); a constant index adds its low 32 bits times the scale
+  to the offset.
+- Intrinsics (WP-306; `call::lower` sends those whose result is wide to
+  `int`), all in `eax`, `ecx`, `edx`, with a frame slot of its own where
+  a lowering needs more (`alloc_slot`, never reused):
+  - `ctpop`: the sum of each word's count (shifts, masks and a multiply;
+    the high word zero-extended); `ctlz`: `bsr` of the zero-extended
+    high word if it is not zero, else 32 plus that of the low word, 64
+    for zero, less `64 - N`; `cttz`: `bsf` of the low word if it is not
+    zero, else 32 plus that of the high word with bit `N - 32` set (so
+    `N` for zero; 64 for a zero `i64`). Both branch. `is_zero_poison` is
+    ignored (the defined result is computed).
+  - `bswap` (`N` a multiple of 16) and `bitreverse`: each word reversed
+    (`bswap`; then nibbles, pairs, bits) and the words exchanged, the
+    pair shifted right by `64 - N` (which drops the unspecified bits).
+  - `abs`: `(x ^ s) - s` over the halves, `s` the sign of the
+    sign-extended high word; the minimum maps to itself.
+  - `smax`, `smin`, `umax`, `umin`: the order compare of `icmp` (`sge`,
+    `sle`, `uge`, `ule`) and a copy of the chosen operand on each side
+    of a branch.
+  - `uadd.sat`, `usub.sat`: zero-extended `add`/`adc` (`sub`/`sbb`); the
+    bound (all ones, or 0) on a carry out of 64 bits, or for an add of
+    fewer bits when bit `N` of the sum is set. `sadd.sat`, `ssub.sat`: of
+    64 bits, on overflow the bound of the sign opposite to the wrapped
+    result's; of fewer, the operands sign-extended (no 64-bit overflow),
+    the bound when the high word differs from itself sign-extended from
+    `N - 32` bits. The bound of sign mask `s` is low `~s`, high
+    `s ^ (2^(N-33) - 1)`.
+  - `sshl.sat`, `ushl.sat` by `k < N` (more is poison): `x << (64 - N)`
+    kept in a slot, shifted left by `k` (into the result's slot, every
+    operand read) and back right (arithmetic or logical); if that
+    differs, the bound (of the sign, or all ones), else the shifted value
+    shifted right by `64 - N`.
+  - `fshl`, `fshr`: `B = b << (64 - N)` in a slot, the amount `k = c mod
+    N` (masked by 63 for `N = 64`, else two `div` by `N` of the
+    zero-extended amount, high word then low; a constant is reduced at
+    compile time), then the 64-bit funnel shift of `a:B` by `k`: three
+    words of `a:B` chosen by bit 5 of `k` (`test cl, 32` and a branch, or
+    at compile time) and two `shld`/`shrd` by `k mod 32`; `fshr`'s result
+    shifted right by `64 - N`. No libgcc call (`llc` calls `__umoddi3`
+    for a variable amount of a width that is no power of two; the result
+    is the same).
+  - Wider than 64 bits: `x86:i64:wide` (an odd width above 64 is refused
+    before, by the shared classifier, as `intrinsic:<name>/int-wide`).
+
+Still refused: such an integer passed or returned by value (`x86:i64`,
+I6, `abi.rs`). The `*.with.overflow` intrinsics of every width return
+the aggregate `{iN, i1}`: their call stays `x86:intrinsic` and their
+`extractvalue` `x86:aggregate` (I11). Every other intrinsic of these
+widths stays `x86:intrinsic`.
+
+Where `llc` 19 and 22 (`-O0 -global-isel=0 -fast-isel=0`) branch inside
+these intrinsics (a basic block label in the function; measured with
+`tests/data/i386/i64_rest/gen.py --probe` and `branches.py`): at
+`N` = 33, 48, 57, 64 and a CPU without `cmov` (`generic`), `ctlz` and
+`cttz` (both `is_zero_poison` values), `smax`, `smin`, `umax`, `umin`,
+`sadd.sat`, `uadd.sat`, `ssub.sat`, `usub.sat`, `sshl.sat`, `ushl.sat`,
+and `fshl`/`fshr` by a variable amount; with `cmov` (`i686`,
+`pentium4`) none. `bswap`, `ctpop`, `bitreverse`, `abs` and funnel
+shifts by a constant never branch. A `switch` is a terminator.
 
 ## 9. Position-independent code and TLS (`pic`, `tls`; WP-299, design 0008 I8)
 

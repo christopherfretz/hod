@@ -15,9 +15,9 @@
 
 ## Remaining, in order
 
-1. Evidence: `compare-binaries` base d9833483 against head over both
-   corpora: script `.build/target-wp-301/compare.sh`, log
-   `.build/target-wp-301/compare.log` (started; read the result).
+1. (done) `compare-binaries --corpus` base d9833483 against head:
+   AArch64 6752/6752 identical; x86-64 6682 identical, 4 identical
+   failures, 0 different, 0 changed-outcome.
 2. Evidence: `cargo xtask irdiff --target i686 --quick` before/after
    (counts per class and refusal name). Not run.
 3. (d) Module-level assembly for i386: `hod_asm::module` has only

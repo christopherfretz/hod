@@ -208,6 +208,20 @@ entry:
   call void @pint(ptr @n.f, i64 %gw64)
   %gd = extractvalue %big %g2, 1
   call void @pfp(ptr @n.g, double %gd)
+  ; a constant with an address as an `i64` (a member-function pointer)
+  %mp = alloca { i64, i64 }
+  store { i64, i64 } { i64 ptrtoint (ptr @marker to i64), i64 5 }, ptr %mp
+  %mpv = load { i64, i64 }, ptr %mp
+  %mp0 = extractvalue { i64, i64 } %mpv, 0
+  %mp1 = extractvalue { i64, i64 } %mpv, 1
+  %mpp = trunc i64 %mp0 to i32
+  %mpq = inttoptr i32 %mpp to ptr
+  %mpl = load i32, ptr %mpq
+  %mph = lshr i64 %mp0, 32
+  %mpl64 = zext i32 %mpl to i64
+  %mps = add i64 %mpl64, %mph
+  %mpt = add i64 %mps, %mp1
+  call void @pint(ptr @n.h, i64 %mpt)
   %d = call i32 @puts(ptr @done)
   ret i32 0
 }

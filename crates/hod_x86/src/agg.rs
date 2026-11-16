@@ -361,13 +361,19 @@ pub fn materialize_mem(cx: &mut FnCx<'_, X86>, dst: FrameRef, value: Value) -> C
         frame_inst(cx, dst.offset_by(at), |m| mc::mov_mi(s, m, imm));
     }
     for f in &fixups {
+        // An 8-byte address is a `ptrtoint` to `i64`: the 32-bit address
+        // zero-extended (as `llc`'s `zext`).
         let sym = match f.target {
             FixupTarget::Sym(sym) | FixupTarget::Plt(sym) if f.size == 4 => sym,
+            FixupTarget::Sym(sym) if f.size == 8 => sym,
             _ => return unsupported(crate::common::CONSTANT),
         };
         let at = field_offset(f.offset)?;
         sym_address(cx, ECX, sym, f.addend)?;
         store_gpr(cx, ECX, dst.offset_by(at), 4);
+        if f.size == 8 {
+            frame_inst(cx, dst.offset_by(at + 4), |m| mc::mov_mi(Size::D, m, 0));
+        }
     }
     Ok(())
 }

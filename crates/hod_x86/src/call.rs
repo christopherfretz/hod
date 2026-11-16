@@ -69,7 +69,10 @@ pub fn lower<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, site: &CallSite<'a>) ->
         }
         None => {
             check(cx, inst, site)?;
-            cx.call(inst)
+            crate::x87::call_result(cx, inst, true)?;
+            let done = cx.call(inst);
+            crate::x87::call_result(cx, inst, false)?;
+            done
         }
         Some(Intrinsic::Trap) => {
             cx.trap();

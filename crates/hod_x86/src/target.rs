@@ -242,7 +242,7 @@ impl Target for X86 {
             }
             InstKind::Switch(switch) => control::switch(cx, &switch),
             InstKind::IndirectBr { .. } => unsupported(control::INDIRECT_BRANCH),
-            InstKind::Ret { value } => control::ret(cx, value),
+            InstKind::Ret { value } => control::ret(cx, inst, value),
             InstKind::Unreachable => control::unreachable(cx),
             InstKind::Fence { .. } | InstKind::CmpXchg { .. } | InstKind::AtomicRmw { .. } => {
                 unsupported(mem::ATOMIC)
@@ -257,7 +257,7 @@ impl Target for X86 {
 
     fn load(&self, cx: &mut FnCx<'_, Self>, reg: PReg, src: FrameRef, bytes: u32) {
         if reg == abi::ST0 {
-            return abi::load_st0(cx, src, bytes);
+            return crate::x87::load_ret(cx, src, bytes);
         }
         // Only general registers hold values of this package.
         common::load_gpr(cx, gp(reg), src, bytes);
@@ -265,7 +265,7 @@ impl Target for X86 {
 
     fn store(&self, cx: &mut FnCx<'_, Self>, reg: PReg, dst: FrameRef, bytes: u32) {
         if reg == abi::ST0 {
-            return abi::store_st0(cx, dst, bytes);
+            return crate::x87::store_call_result(cx, dst, bytes);
         }
         common::store_gpr(cx, gp(reg), dst, bytes);
     }

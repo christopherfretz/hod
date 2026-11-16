@@ -210,6 +210,57 @@ pub struct Copies {
     live: Vec<(u32, FrameRef)>,
     /// The slots of earlier runs, free again.
     free: Vec<FrameRef>,
+    /// The call being lowered whose `float`/`double` result arrives in
+    /// `st0` at 80 bits ([`call_result`]).
+    call: Option<(u32, FrameRef)>,
+    /// The 80-bit copy that the `ret` being lowered returns ([`ret_copy`]).
+    ret: Option<FrameRef>,
+}
+
+/// Brackets the call sequence of `inst` ([`FnCx::call`]): a `float` or
+/// `double` result arrives in `st0` as the callee computed it, at 80 bits
+/// (`spec/abi-x86.md` §5.1), and `llc` keeps it there for the result's
+/// run (measured, 19 and 22: `calll third; fstpl` of its `fpext`). So a
+/// call result is a computed result: [`store_call_result`] keeps its
+/// copy, in the slot taken here (the call is a barrier: no copy of the
+/// last run is used by it). `on` false ends the bracket.
+///
+/// # Errors
+/// What allocating the copy's slot reports.
+pub fn call_result(cx: &mut FnCx<'_, X86>, inst: Inst<'_>, on: bool) -> CgResult<()> {
+    cx.state.x87.call = None;
+    let wide = matches!(cx.types().kind(inst.ty()), TypeKind::Float | TypeKind::Double);
+    if on && wide && !inst.uses().is_unused() {
+        cx.state.x87.call = copy_slot(cx, inst)?.map(|slot| (inst.id().raw(), slot));
+    }
+    Ok(())
+}
+
+/// The glue store of `st0` to `dst` (`Target::store`): first the 80-bit
+/// copy of the call result being stored, if [`call_result`] took a slot.
+pub fn store_call_result(cx: &mut FnCx<'_, X86>, dst: FrameRef, bytes: u32) {
+    if let Some((raw, slot)) = cx.state.x87.call.take() {
+        let inst = cx.body.inst(InstId::new(raw));
+        store_copy(cx, inst, slot);
+    }
+    crate::abi::store_st0(cx, dst, bytes);
+}
+
+/// Brackets the return of `value` by `ret` `inst`: `llc` returns a
+/// computed result of the block at 80 bits, the register it is in
+/// (measured: `fdivrp; retl`), so the glue load ([`load_ret`]) takes
+/// its copy. `on` false ends the bracket.
+pub fn ret_copy(cx: &mut FnCx<'_, X86>, inst: Inst<'_>, value: Value, on: bool) {
+    cx.state.x87.ret = if on { copy_for(cx, value, inst.id()) } else { None };
+}
+
+/// The glue load of `src` into `st0` (`Target::load`): the copy that
+/// [`ret_copy`] marked instead, if any.
+pub fn load_ret(cx: &mut FnCx<'_, X86>, src: FrameRef, bytes: u32) {
+    match cx.state.x87.ret.take() {
+        Some(copy) => fld(cx, Fp::F80, copy),
+        None => crate::abi::load_st0(cx, src, bytes),
+    }
 }
 
 fn inst_at<'a>(cx: &FnCx<'a, X86>, raw: u32) -> Option<Inst<'a>> {
@@ -383,12 +434,13 @@ fn folded(cx: &FnCx<'_, X86>, inst: Inst<'_>, depth: u32) -> bool {
         })
 }
 
-/// The barrier after instruction `at`.
+/// The barrier after instruction `at`; past it when it is a `ret`, which
+/// returns a result of the run at 80 bits ([`ret_copy`]).
 fn run_end(cx: &FnCx<'_, X86>, at: u32) -> u32 {
     let mut raw = at + 1;
     while let Some(q) = inst_at(cx, raw) {
         if barrier(cx, q) {
-            return raw;
+            return if matches!(q.kind(), InstKind::Ret { .. }) { raw + 1 } else { raw };
         }
         raw += 1;
     }
@@ -410,6 +462,15 @@ fn copy_for(cx: &FnCx<'_, X86>, v: Value, user: InstId) -> Option<FrameRef> {
 /// Stores the 80-bit copy of `st0` for computed result `inst` when an
 /// instruction of its run follows it.
 fn keep_copy(cx: &mut FnCx<'_, X86>, inst: Inst<'_>) -> CgResult<()> {
+    if let Some(slot) = copy_slot(cx, inst)? {
+        store_copy(cx, inst, slot);
+    }
+    Ok(())
+}
+
+/// The slot of computed result `inst`'s 80-bit copy, if an instruction
+/// of its run follows it (entering its run first).
+fn copy_slot(cx: &mut FnCx<'_, X86>, inst: Inst<'_>) -> CgResult<Option<FrameRef>> {
     let at = inst.id().raw();
     if at >= cx.state.x87.end {
         // A new run: the copies of the last one are dead.
@@ -420,16 +481,19 @@ fn keep_copy(cx: &mut FnCx<'_, X86>, inst: Inst<'_>) -> CgResult<()> {
         copies.end = end;
     }
     if cx.state.x87.end == at + 1 {
-        return Ok(());
+        return Ok(None);
     }
-    let slot = match cx.state.x87.free.pop() {
+    Ok(Some(match cx.state.x87.free.pop() {
         Some(slot) => slot,
         None => cx.alloc_slot(12, 4)?,
-    };
+    }))
+}
+
+/// Stores `st0` at 80 bits to `slot`, `inst`'s copy, keeping `st0`.
+fn store_copy(cx: &mut FnCx<'_, X86>, inst: Inst<'_>, slot: FrameRef) {
     put(cx, mc::fld_st(St::St0));
     fstp(cx, Fp::F80, slot);
-    cx.state.x87.live.push((at, slot));
-    Ok(())
+    cx.state.x87.live.push((inst.id().raw(), slot));
 }
 
 // ---- the stack and the frame ----

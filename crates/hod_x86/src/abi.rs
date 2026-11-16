@@ -18,6 +18,7 @@ use hod_cg::abi::{AbiUnsupported, Assignment, Part, PartKind, Place, RetMemory, 
 use hod_cg::{CgResult, FnCx, FrameRef, PReg};
 use hod_ir::{
     CallConv, CallSite, ParamAttrs, ParamMem, TailKind, TypeId, TypeKind, TypeTable, ValueKind,
+    X86Features,
 };
 use hod_mc_x64 as mc;
 use hod_mc_x64::X87Size;
@@ -134,7 +135,7 @@ pub fn check_call(cx: &FnCx<'_, X86>, site: &CallSite<'_>) -> CgResult<()> {
         variadic,
     };
     let mut asg = Assignment::default();
-    if assign(types, &sig, &mut asg).is_err() {
+    if assign_for(types, &sig, &mut asg, cx.target.features()).is_err() {
         return Ok(());
     }
     let uses = |reg| asg.args.iter().any(|p| p.place == Place::Reg(reg));
@@ -327,8 +328,22 @@ pub fn assign(
     sig: &Sig<'_>,
     out: &mut Assignment,
 ) -> Result<(), AbiUnsupported> {
+    assign_for(types, sig, out, X86Features::NONE)
+}
+
+/// [`assign`] in a function of the feature set `features` (which places
+/// a `half`: `sse::half_place`).
+///
+/// # Errors
+/// As [`assign`].
+pub fn assign_for(
+    types: &TypeTable,
+    sig: &Sig<'_>,
+    out: &mut Assignment,
+    features: X86Features,
+) -> Result<(), AbiUnsupported> {
     out.clear();
-    match assign_into(types, sig, out) {
+    match assign_into(types, sig, out, features) {
         Ok(()) => {
             out.callee_pop = callee_pop(out);
             Ok(())
@@ -343,13 +358,18 @@ pub fn assign(
 /// The body of [`assign`]: the arguments in order (§3), after the
 /// result (§5).
 #[allow(clippy::too_many_lines, reason = "one walk over the parameters, rule by rule")]
-fn assign_into(types: &TypeTable, sig: &Sig<'_>, out: &mut Assignment) -> Result<(), &'static str> {
+fn assign_into(
+    types: &TypeTable,
+    sig: &Sig<'_>,
+    out: &mut Assignment,
+    features: X86Features,
+) -> Result<(), &'static str> {
     let conv = match sig.cc {
         CallConv::C | CallConv::COLD => Conv::C,
         CallConv::FAST if !sig.variadic => Conv::Fast,
         _ => return Err(CC),
     };
-    let mut at = assign_ret(types, sig, conv, out)?;
+    let mut at = assign_ret(types, sig, conv, out, features)?;
     let mut regs =
         Regs { list: if conv == Conv::Fast { &FASTCC } else { &INREG }, next: 0, taken: 0 };
     for (index, &ty) in sig.params.iter().enumerate() {
@@ -405,6 +425,13 @@ fn assign_into(types: &TypeTable, sig: &Sig<'_>, out: &mut Assignment) -> Result
             });
             continue;
         }
+        if matches!(types.kind(ty), TypeKind::Half) {
+            crate::sse::half_place(features, inreg || conv == Conv::Fast, false)?;
+            at = at.checked_add(4).ok_or(hod_cg::abi::SIZE_LIMIT)?;
+            let place = Place::Stack(at - 4);
+            out.args.push(Part { arg, kind: PartKind::Value, offset: 0, size: 2, place });
+            continue;
+        }
         if matches!(types.kind(ty), TypeKind::Int(128) | TypeKind::Fp128) {
             return Err(WIDE_ARG);
         }
@@ -457,6 +484,7 @@ fn assign_ret(
     sig: &Sig<'_>,
     conv: Conv,
     out: &mut Assignment,
+    features: X86Features,
 ) -> Result<u32, &'static str> {
     if sig.ret == TypeId::VOID {
         return Ok(0);
@@ -468,6 +496,18 @@ fn assign_ret(
         || !matches!(attrs.mem(), ParamMem::None | ParamMem::ElementType)
     {
         return Err(ATTR);
+    }
+    if matches!(types.kind(sig.ret), TypeKind::Half) {
+        if let Some(reg) = crate::sse::half_place(features, conv == Conv::Fast, true)? {
+            out.ret.push(Part {
+                arg: 0,
+                kind: PartKind::Value,
+                offset: 0,
+                size: 2,
+                place: Place::Reg(reg),
+            });
+        }
+        return Ok(0);
     }
     let mut leaves = Leaves::new();
     let in_memory = match types.kind(sig.ret) {

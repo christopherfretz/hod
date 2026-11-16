@@ -17,7 +17,10 @@ use hod_cg::{
     CallEmit, CgError, CgResult, Class, FixupKind, FnCx, FrameDesc, FrameRef, Label, PReg, RegInfo,
     RegSet, Target,
 };
-use hod_ir::{Inst, InstKind, Opcode, ParamAttrs, TypeId, TypeTable, Value};
+use hod_ir::{
+    Body, FnStr, Inst, InstKind, Module, Opcode, ParamAttrs, SymbolKind, TypeId, TypeTable, Value,
+    X86Features,
+};
 use hod_mc_x64 as mc;
 use hod_mc_x64::Size;
 
@@ -42,11 +45,13 @@ pub const STACK_PROTECTOR: &str = "x86:stack-protector";
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct X86 {
     cpu: Option<&'static str>,
+    /// The features of the function being compiled (`for_function`).
+    features: Option<X86Features>,
 }
 
 /// The target without `-mcpu`.
 #[allow(non_upper_case_globals, reason = "the value of the former unit struct, kept by name")]
-pub const X86: X86 = X86 { cpu: None };
+pub const X86: X86 = X86 { cpu: None, features: None };
 
 impl X86 {
     /// The target for a compile with `-mcpu` `cpu`: a name of
@@ -57,7 +62,7 @@ impl X86 {
         let known = cpu.and_then(|cpu| {
             hod_ir::I386_CPUS.iter().find(|&&(name, _)| name == cpu).map(|&(name, _)| name)
         });
-        X86 { cpu: known }
+        X86 { cpu: known, features: None }
     }
 
     /// The `-mcpu` CPU, if any.
@@ -65,6 +70,19 @@ impl X86 {
     pub const fn cpu(&self) -> Option<&'static str> {
         self.cpu
     }
+
+    /// The feature set of the function being compiled (its `target-cpu`
+    /// and `target-features`, `-mcpu` as the fallback); of `-mcpu` alone
+    /// outside a function.
+    #[must_use]
+    pub fn features(&self) -> X86Features {
+        self.features.unwrap_or_else(|| feature_set(None, None, self.cpu))
+    }
+}
+
+/// `X86Features::of_function`, an unknown name as no feature.
+fn feature_set(cpu: Option<&str>, features: Option<&str>, mcpu: Option<&str>) -> X86Features {
+    X86Features::of_function(cpu, features, mcpu, &[]).unwrap_or(X86Features::NONE)
 }
 
 /// What the target remembers about the function being compiled.
@@ -147,7 +165,17 @@ impl Target for X86 {
         sig: &Sig<'_>,
         out: &mut Assignment,
     ) -> Result<(), AbiUnsupported> {
-        abi::assign(types, sig, out)
+        abi::assign_for(types, sig, out, self.features())
+    }
+
+    fn for_function(&self, module: &Module, body: &Body) -> Option<Self> {
+        let SymbolKind::Function { attrs, .. } = module.symbol(body.symbol()).kind() else {
+            return None;
+        };
+        let attrs = module.fn_attrs(attrs);
+        let text = |what| attrs.string(what).and_then(|s| std::str::from_utf8(s).ok());
+        let features = feature_set(text(FnStr::TargetCpu), text(FnStr::TargetFeatures), self.cpu);
+        Some(X86 { cpu: self.cpu, features: Some(features) })
     }
 
     fn begin_function(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()> {
@@ -262,6 +290,9 @@ impl Target for X86 {
         if reg == abi::ST0 {
             return crate::x87::load_ret(cx, src, bytes);
         }
+        if reg == xmm(0) {
+            return crate::sse::load_xmm0(cx, src);
+        }
         // Only general registers hold values of this package.
         common::load_gpr(cx, gp(reg), src, bytes);
     }
@@ -269,6 +300,9 @@ impl Target for X86 {
     fn store(&self, cx: &mut FnCx<'_, Self>, reg: PReg, dst: FrameRef, bytes: u32) {
         if reg == abi::ST0 {
             return crate::x87::store_call_result(cx, dst, bytes);
+        }
+        if reg == xmm(0) {
+            return crate::sse::store_xmm0(cx, dst);
         }
         common::store_gpr(cx, gp(reg), dst, bytes);
     }
@@ -313,7 +347,7 @@ impl Target for X86 {
         if int::is_wide(cx, value) {
             return int::materialize_mem(cx, dst, value);
         }
-        if crate::sse::is_sse(cx, common::value_ty(cx, value)) {
+        if crate::sse::is_sse_or_half(cx, common::value_ty(cx, value)) {
             return crate::sse::materialize_mem(cx, dst, value);
         }
         // Floating point; any other type is refused by its family there.

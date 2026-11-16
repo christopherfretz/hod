@@ -169,7 +169,9 @@ their values).
 | `x86:i64` | an integer of 33 to 64 bits where §8 does not take it: since the i386 join C only an integer of 33 to 63 bits passed or returned by value (also a variadic argument), and an `i64` length of `memcpy`/`memmove`/`memset` | I6 (`abi.rs`: `i64` arguments, results); WP-306 (`switch` condition, `ptradd` index, intrinsics); the memory intrinsics' package |
 | `x86:i64:wide` | an integer wider than 64 bits (§8), also as a `switch` condition, a `ptradd` index and the result of an integer intrinsic of §8 | — |
 | `x86:float` | a floating-point value in a register where §11 takes none (arguments and results are I6's since the join) | — |
-| `x86:float:half`, `x86:float:bfloat`, `x86:float:fp128` | a value of those types | — |
+| `x86:float:half` | a `half` value in a function without SSE2; a `half` parameter or result of `fastcc` or `inreg` (§12) | — |
+| `x86:float:half:intrinsic` | an intrinsic on `half` (§12) | — |
+| `x86:float:bfloat`, `x86:float:fp128` | a value of those types | — |
 | `x86:float:i64-cast` | a conversion between a floating type and an integer of 33 to 63 or more than 64 bits (§11; `fptoui` to `i64` is lowered since the i386 join C) | — |
 | `x86:float:intrinsic` | a floating-point intrinsic §11 does not lower | — |
 | `x86:float:cast` | a `bitcast` of a floating value, another cast not in §11 | — |
@@ -740,9 +742,44 @@ every x87 operand, and `x87::cast` (`fpext`/`fptrunc` between
 rounds `x` through `float`). Without SSE no view exists and neither
 function changes its code.
 
-**Remains refused.** `half`, `bfloat` (`x86:float:half`,
-`x86:float:bfloat`: with SSE2 `llc` returns them in `xmm0`, which the
-ABI does not have yet), `fp128` (`x86:float:fp128`: libgcc calls with a
+**`half` with SSE2** (WP-317 third session; measured `llc` 19 and 22,
+`-O0`, `pentium4`, identical but for `fneg`). The function's feature
+set reaches the target through `Target::for_function` (`X86::features`).
+A `half` argument takes a 4-byte stack slot (its two bytes at the
+start); a result is returned in `xmm0` (`abi::assign_for` asks
+`sse::half_place`; glue `load` is `movzx eax` + `movd xmm0`, glue
+`store` `movd eax` + a 16-bit store). A `half` value lives in a 2-byte
+home (class `Mem`). Every operation is `llc`'s libgcc sequence, all
+calls through `pic::emit_call`: each operand widened by `__extendhfsf2`
+(exact, result in `st0`), the `float` operation (`adds`..`divs`,
+`ucomiss` for `fcmp`, `fmodf` for `frem`), and `__truncsfhf2`, whose
+result is read from `xmm0`. `fpext` stores the widened value at the
+result's width (exact for `float`, `double`, `x86_fp80`); `fptrunc`
+passes its operand at the operand's width to `__truncsfhf2` /
+`__truncdfhf2` / `__truncxfhf2` (one rounding; a view of an SSE call
+result is `x` rounded to the operand's type, as `llc` folds no rounding
+into a conversion to `half`). `sitofp`/`uitofp` produce the `float`
+that the `float` conversion would (`cvtsi2ss`; an unsigned `i32` and
+an `i64` by `fild`, the unsigned `i64` with `llc`'s `2^64` addition)
+and narrow it; `fptosi`/`fptoui` widen and truncate with `cvttss2si`
+(every `half` in the result's range converts exactly; an `i64` result
+is sign-extended). `load`, `store`, `freeze`, `select` (the address
+`cmov`), `bitcast` to and from `i16` are 16-bit copies. `fneg` flips bit
+15 (LLVM 22; LLVM 19 widens, negates and narrows, which differs only
+for a signalling NaN: tests use no signalling NaN). The libgcc calls
+are calls, but with SSE2 §11 keeps no 80-bit copy (`float` and
+`double` are SSE values), so they need no `x87::barrier` entry; a
+view of an SSE call result reaches across them as across any call.
+Refused: `half` in a function without SSE2 (`x86:float:half`: `llc`
+returns it in `ax` there and reads `ax` after `__truncsfhf2`, but
+libgcc's routine writes only `xmm0`, an SSE2 `movd`), a `half`
+parameter or result of `fastcc` or `inreg` (`x86:float:half`), and
+the `half` intrinsics (`x86:float:half:intrinsic`).
+
+**Remains refused.** `bfloat` (`x86:float:bfloat`: `llc` 19 aborts on
+part of its operations, "Unsupported library call operation" and
+"soft promote", and errors on its return without SSE: no oracle),
+`fp128` (`x86:float:fp128`: libgcc calls with a
 hidden result pointer, and LLVM 19 and 22 align its arguments
 differently), vectors and vector operands (`x86:vector`), other
 intrinsics (`x86:float:intrinsic`).

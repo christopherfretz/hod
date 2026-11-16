@@ -94,8 +94,21 @@ fn runs(
     extra: &[&Path],
     name: &str,
 ) -> [String; 2] {
+    runs_with(tools, scratch, llc, text, extra, &[], name)
+}
+
+/// [`runs`] with `flags` for `llc`.
+fn runs_with(
+    tools: &Tools,
+    scratch: &Scratch,
+    llc: &Path,
+    text: &str,
+    extra: &[&Path],
+    flags: &[&str],
+    name: &str,
+) -> [String; 2] {
     let ll = scratch.write(&format!("{name}.ll"), text.as_bytes());
-    let llc_o = llc_object(scratch, llc, &ll, &[], &format!("{name}-llc"));
+    let llc_o = llc_object(scratch, llc, &ll, flags, &format!("{name}-llc"));
     let [hod_o, stress_o] = hod_objects(scratch, text, name);
     let outs = [&llc_o, &hod_o, &stress_o].map(|o| {
         let mut objects = vec![o.as_path()];
@@ -599,14 +612,13 @@ fn fold_runs(cpus: &[&str], p3_x87: bool) {
 }
 
 #[test]
-fn half_bfloat_fp128_and_vectors_stay_refused_with_sse2() {
+fn bfloat_fp128_and_vectors_stay_refused_with_sse2() {
     let options = Options {
         output_kind: OutputKind::Object,
         triple: Some(TRIPLE.into()),
         ..Options::default()
     };
     for (ty, name) in [
-        ("half", "x86:float:half"),
         ("bfloat", "x86:float:bfloat"),
         ("fp128", "x86:float:fp128"),
         ("<4 x float>", "x86:vector"),
@@ -620,4 +632,324 @@ fn half_bfloat_fp128_and_vectors_stay_refused_with_sse2() {
         let err = hod::compile(text.as_bytes(), &options).expect_err(ty);
         assert!(err.to_string().contains(name), "{ty}: {err}");
     }
+}
+
+// ---- `half` (with SSE2) ----
+
+/// `half` operands (bits): zeros, subnormals, normals, the largest
+/// finite, infinities, a quiet NaN (`fneg` of a signalling NaN differs
+/// between LLVM 19 and 22: none is used).
+const HALVES: [u16; 14] = [
+    0x0000, 0x8000, 0x0001, 0x03ff, 0x0400, 0x3c00, 0x3c01, 0xbc00, 0x3555, 0x7bff, 0x7c00, 0xfc00,
+    0x7e00, 0x4248,
+];
+
+/// `float` operands of `fptrunc` (bits): ties, overflow, underflow.
+const HALF_FLOATS: [u32; 12] = [
+    0x3f80_0000,
+    0x3f80_1000,
+    0x3f80_3000,
+    0x3f80_1001,
+    0x477f_f000,
+    0x477f_efff,
+    0x3300_0000,
+    0x3300_0001,
+    0x33c0_0000,
+    0x7fc0_0000,
+    0x8000_0000,
+    0xc049_0fdb,
+];
+
+/// `double` operands of `fptrunc` (bits); `1 + 2^-11 + 2^-40` rounds up
+/// directly and to even through `float`.
+const HALF_DOUBLES: [u64; 8] = [
+    0x3ff0_0200_0000_0000,
+    0x3ff0_0200_0000_1000,
+    0x40ef_fe00_0000_0000,
+    0x3e70_0000_0000_0000,
+    0x3e68_0000_0000_0000,
+    0x3e68_0000_0000_0001,
+    0x7ff8_0000_0000_0000,
+    0xc009_21fb_5444_2d18,
+];
+
+/// A module of `half` operations at `pentium4` whose `main` prints every
+/// result's bits; `pic` adds the `PIC Level` flag.
+fn half_module(pic: bool) -> String {
+    #![allow(
+        clippy::many_single_char_names,
+        clippy::too_many_lines,
+        reason = "one generator of IR temporaries, operation by operation"
+    )]
+    let mut m = format!("target triple = \"{TRIPLE}\"\ndeclare i32 @printf(ptr, ...)\n");
+    let list = |v: Vec<String>| v.join(", ");
+    writeln!(
+        m,
+        "@hv = global [{} x i16] [{}]\n@fv = global [{} x i32] [{}]\n@dv = global [{} x i64] [{}]",
+        HALVES.len(),
+        list(HALVES.iter().map(|h| format!("i16 {}", *h as i16)).collect()),
+        HALF_FLOATS.len(),
+        list(HALF_FLOATS.iter().map(|f| format!("i32 {}", *f as i32)).collect()),
+        HALF_DOUBLES.len(),
+        list(HALF_DOUBLES.iter().map(|d| format!("i64 {}", *d as i64)).collect()),
+    )
+    .unwrap();
+    m.push_str(
+        "@fh = private constant [12 x i8] c\"%s %d %04x\\0A\\00\"\n\
+         @fi = private constant [10 x i8] c\"%s %d %d\\0A\\00\"\n\
+         @fl = private constant [12 x i8] c\"%s %d %lld\\0A\\00\"\n\
+         @fa = private constant [10 x i8] c\"%s %d %a\\0A\\00\"\n",
+    );
+    let mut names = String::new();
+    let mut main = String::from("define i32 @main() #0 {\n");
+    let mut n = 0;
+    // One printed line: `ty`-typed value `v` with format `fmt`.
+    let mut line = |main: &mut String, name: &str, k: usize, fmt: &str, ty: &str, v: &str| {
+        n += 1;
+        writeln!(names, "@s{n} = private constant [{}x i8] c\"{name}\\00\"", name.len() + 1)
+            .unwrap();
+        writeln!(main, "  call i32 (ptr, ...) @printf(ptr {fmt}, ptr @s{n}, i32 {k}, {ty} {v})")
+            .unwrap();
+    };
+    let mut t = 0;
+    let mut tmp = || {
+        t += 1;
+        format!("%t{t}")
+    };
+    // `%h` = half `k` of `@hv`; prints a half result's bits.
+    let half_at = |main: &mut String, tmp: &mut dyn FnMut() -> String, k: usize| {
+        let (p, h) = (tmp(), tmp());
+        writeln!(main, "  {p} = getelementptr i16, ptr @hv, i32 {k}\n  {h} = load half, ptr {p}")
+            .unwrap();
+        h
+    };
+    let bits = |main: &mut String, tmp: &mut dyn FnMut() -> String, h: &str| {
+        let (b, z) = (tmp(), tmp());
+        writeln!(main, "  {b} = bitcast half {h} to i16\n  {z} = zext i16 {b} to i32").unwrap();
+        z
+    };
+    for op in ["fadd", "fsub", "fmul", "fdiv", "frem"] {
+        writeln!(
+            m,
+            "define half @{op}(half %a, half %b) #0 {{\n  %r = {op} half %a, %b\n  ret half %r\n}}"
+        )
+        .unwrap();
+        for i in [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 12] {
+            for j in [0, 2, 3, 5, 6, 8, 9, 10, 12] {
+                let a = half_at(&mut main, &mut tmp, i);
+                let b = half_at(&mut main, &mut tmp, j);
+                let r = tmp();
+                writeln!(main, "  {r} = call half @{op}(half {a}, half {b})").unwrap();
+                let z = bits(&mut main, &mut tmp, &r);
+                line(&mut main, op, i * 16 + j, "@fh", "i32", &z);
+            }
+        }
+    }
+    for pred in ["olt", "oeq", "ueq", "une", "uno", "oge"] {
+        writeln!(
+            m,
+            "define i32 @c{pred}(half %a, half %b) #0 {{\n  %c = fcmp {pred} half %a, %b\n  \
+             %z = zext i1 %c to i32\n  ret i32 %z\n}}"
+        )
+        .unwrap();
+        for i in [0, 1, 5, 7, 10, 12] {
+            for j in [0, 1, 5, 7, 10, 12] {
+                let a = half_at(&mut main, &mut tmp, i);
+                let b = half_at(&mut main, &mut tmp, j);
+                let r = tmp();
+                writeln!(main, "  {r} = call i32 @c{pred}(half {a}, half {b})").unwrap();
+                line(&mut main, pred, i * 16 + j, "@fi", "i32", &r);
+            }
+        }
+    }
+    m.push_str(
+        "define float @extf(half %a) #0 {\n  %e = fpext half %a to float\n  ret float %e\n}\n\
+         define double @extd(half %a) #0 {\n  %e = fpext half %a to double\n  ret double %e\n}\n\
+         define x86_fp80 @extx(half %a) #0 {\n  %e = fpext half %a to x86_fp80\n  ret x86_fp80 %e\n}\n\
+         define half @neg(half %a) #0 {\n  %n = fneg half %a\n  ret half %n\n}\n\
+         define half @sel(i32 %c, half %a, half %b) #0 {\n  %t = trunc i32 %c to i1\n  \
+         %s = select i1 %t, half %a, half %b\n  ret half %s\n}\n\
+         define void @copy(ptr %d, ptr %s) #0 {\n  %h = load half, ptr %s\n  %f = freeze half %h\n  \
+         store half %f, ptr %d\n  ret void\n}\n\
+         define half @mix(i32 %i, half %a, double %d, half %b) #0 {\n  %s = fadd half %a, %b\n  \
+         %c = fptrunc double %d to half\n  %t = fmul half %s, %c\n  ret half %t\n}\n\
+         define half @konst(half %a) #0 {\n  %s = fadd half %a, 0xH3C00\n  ret half %s\n}\n",
+    );
+    for k in 0..HALVES.len() {
+        let a = half_at(&mut main, &mut tmp, k);
+        for (f, ty) in [("extf", "float"), ("extd", "double"), ("extx", "x86_fp80")] {
+            let (r, d) = (tmp(), tmp());
+            writeln!(main, "  {r} = call {ty} @{f}(half {a})").unwrap();
+            let conv = if ty == "x86_fp80" { "fptrunc" } else { "fpext" };
+            if ty == "double" {
+                line(&mut main, f, k, "@fa", "double", &r);
+            } else {
+                writeln!(main, "  {d} = {conv} {ty} {r} to double").unwrap();
+                line(&mut main, f, k, "@fa", "double", &d);
+            }
+        }
+        for f in ["neg", "konst"] {
+            let r = tmp();
+            writeln!(main, "  {r} = call half @{f}(half {a})").unwrap();
+            let z = bits(&mut main, &mut tmp, &r);
+            line(&mut main, f, k, "@fh", "i32", &z);
+        }
+        let b = half_at(&mut main, &mut tmp, (k + 5) % HALVES.len());
+        for c in [0, 1] {
+            let r = tmp();
+            writeln!(main, "  {r} = call half @sel(i32 {c}, half {a}, half {b})").unwrap();
+            let z = bits(&mut main, &mut tmp, &r);
+            line(&mut main, "sel", k * 2 + c, "@fh", "i32", &z);
+        }
+        let (p, d, h) = (tmp(), tmp(), tmp());
+        writeln!(
+            main,
+            "  {d} = alloca half\n  {p} = getelementptr i16, ptr @hv, i32 {k}\n  \
+             call void @copy(ptr {d}, ptr {p})\n  {h} = load half, ptr {d}"
+        )
+        .unwrap();
+        let z = bits(&mut main, &mut tmp, &h);
+        line(&mut main, "copy", k, "@fh", "i32", &z);
+        let r = tmp();
+        writeln!(main, "  {r} = call half @mix(i32 7, half {a}, double 0.5, half {b})").unwrap();
+        let z = bits(&mut main, &mut tmp, &r);
+        line(&mut main, "mix", k, "@fh", "i32", &z);
+    }
+    m.push_str(
+        "define half @trf(float %a) #0 {\n  %t = fptrunc float %a to half\n  ret half %t\n}\n\
+         define half @trd(double %a) #0 {\n  %t = fptrunc double %a to half\n  ret half %t\n}\n\
+         define half @trx(x86_fp80 %a) #0 {\n  %t = fptrunc x86_fp80 %a to half\n  ret half %t\n}\n",
+    );
+    for k in 0..HALF_FLOATS.len() {
+        let (p, f, r) = (tmp(), tmp(), tmp());
+        writeln!(
+            main,
+            "  {p} = getelementptr i32, ptr @fv, i32 {k}\n  {f} = load float, ptr {p}\n  \
+             {r} = call half @trf(float {f})"
+        )
+        .unwrap();
+        let z = bits(&mut main, &mut tmp, &r);
+        line(&mut main, "trf", k, "@fh", "i32", &z);
+    }
+    for k in 0..HALF_DOUBLES.len() {
+        let (p, f, r, e, x, q) = (tmp(), tmp(), tmp(), tmp(), tmp(), tmp());
+        writeln!(
+            main,
+            "  {p} = getelementptr i64, ptr @dv, i32 {k}\n  {f} = load double, ptr {p}\n  \
+             {r} = call half @trd(double {f})\n  {e} = fpext double {f} to x86_fp80\n  \
+             {x} = fadd x86_fp80 {e}, 0xK3FC38000000000000000\n  {q} = call half @trx(x86_fp80 {x})"
+        )
+        .unwrap();
+        let z = bits(&mut main, &mut tmp, &r);
+        line(&mut main, "trd", k, "@fh", "i32", &z);
+        let z = bits(&mut main, &mut tmp, &q);
+        line(&mut main, "trx", k, "@fh", "i32", &z);
+    }
+    for (op, ty, fmt, ks) in [
+        ("fptosi", "i32", "@fi", &[0usize, 5, 7, 8, 9, 13, 2][..]),
+        ("fptoui", "i32", "@fi", &[0, 5, 8, 9, 13, 2][..]),
+        ("fptosi", "i64", "@fl", &[0, 5, 7, 9, 13][..]),
+        ("fptoui", "i64", "@fl", &[0, 5, 9, 13][..]),
+        ("fptosi", "i8", "@fi", &[0, 5, 7, 13][..]),
+    ] {
+        let f = format!("{op}{ty}");
+        writeln!(
+            m,
+            "define {ty} @{f}(half %a) #0 {{\n  %r = {op} half %a to {ty}\n  ret {ty} %r\n}}"
+        )
+        .unwrap();
+        for &k in ks {
+            let a = half_at(&mut main, &mut tmp, k);
+            let (r, w) = (tmp(), tmp());
+            writeln!(main, "  {r} = call {ty} @{f}(half {a})").unwrap();
+            if ty == "i8" {
+                writeln!(main, "  {w} = sext i8 {r} to i32").unwrap();
+                line(&mut main, &f, k, fmt, "i32", &w);
+            } else {
+                line(&mut main, &f, k, fmt, ty, &r);
+            }
+        }
+    }
+    let ints: [i64; 10] = [0, 1, -1, 2049, 2051, 65519, 65520, 0x7fff_ffff, -0x8000_0000, 7];
+    for (op, ty) in [
+        ("sitofp", "i32"),
+        ("uitofp", "i32"),
+        ("sitofp", "i64"),
+        ("uitofp", "i64"),
+        ("uitofp", "i16"),
+    ] {
+        let f = format!("{op}{ty}");
+        writeln!(
+            m,
+            "define half @{f}({ty} %a) #0 {{\n  %r = {op} {ty} %a to half\n  ret half %r\n}}"
+        )
+        .unwrap();
+        let wide: [i64; 3] = [i64::MIN + 1, 70000, 4097];
+        for (k, v) in ints.iter().chain(if ty == "i64" { &wide[..] } else { &[] }).enumerate() {
+            let v = match ty {
+                "i32" => i64::from(*v as i32),
+                "i16" => i64::from(*v as i16),
+                _ => *v,
+            };
+            let r = tmp();
+            writeln!(main, "  {r} = call half @{f}({ty} {v})").unwrap();
+            let z = bits(&mut main, &mut tmp, &r);
+            line(&mut main, &f, k, "@fh", "i32", &z);
+        }
+    }
+    main.push_str("  ret i32 0\n}\n");
+    m.push_str(&names);
+    m.push_str(&main);
+    m.push_str("attributes #0 = { nounwind \"target-cpu\"=\"pentium4\" }\n");
+    if pic {
+        m.push_str("!llvm.module.flags = !{!0}\n!0 = !{i32 8, !\"PIC Level\", i32 2}\n");
+    }
+    m
+}
+
+#[test]
+fn half_runs_as_llc_s() {
+    let Some(tools) = tools() else { return };
+    let scratch = Scratch::new("i386-sse-half");
+    let mut lines = 0;
+    for major in LLVM_MAJORS {
+        let Some(llc) = llvm_tool(major, "llc") else { continue };
+        for pic in [false, true] {
+            let name = format!("half-{major}-{pic}");
+            let flags: &[&str] = if pic { &["-relocation-model=pic"] } else { &[] };
+            let text = half_module(pic);
+            let [want, got] = runs_with(&tools, &scratch, &llc, &text, &[], flags, &name);
+            assert!(want == got, "{name}: {}", first_difference(&want, &got));
+            lines += got.lines().count();
+        }
+    }
+    eprintln!("i386 sse half: {lines} printed lines equal llc's");
+}
+
+/// `half` compiles with SSE2 and is refused by name without it, and its
+/// intrinsics with it.
+#[test]
+fn half_without_sse2_and_half_intrinsics_are_refused() {
+    let options = Options {
+        output_kind: OutputKind::Object,
+        triple: Some(TRIPLE.into()),
+        ..Options::default()
+    };
+    let module = |cpu: &str, body: &str| {
+        format!(
+            "target triple = \"{TRIPLE}\"\ndeclare half @llvm.fabs.f16(half)\n\
+             define void @f(ptr %p) #0 {{\n  %x = load half, ptr %p\n  {body}\n\
+             \x20 store half %y, ptr %p\n  ret void\n}}\n\
+             attributes #0 = {{ nounwind \"target-cpu\"=\"{cpu}\" }}\n"
+        )
+    };
+    let add = "%y = fadd half %x, %x";
+    hod::compile(module("pentium4", add).as_bytes(), &options).expect("half with SSE2");
+    for cpu in ["generic", "pentium3"] {
+        let err = hod::compile(module(cpu, add).as_bytes(), &options).expect_err(cpu);
+        assert!(err.to_string().contains("x86:float:half"), "{cpu}: {err}");
+    }
+    let fabs = "%y = call half @llvm.fabs.f16(half %x)";
+    let err = hod::compile(module("pentium4", fabs).as_bytes(), &options).expect_err("fabs");
+    assert!(err.to_string().contains("x86:float:half:intrinsic"), "{err}");
 }

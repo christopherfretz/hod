@@ -25,10 +25,10 @@
 //! in `st0`).
 
 use hod_cg::sym::{FpOp, FpType, fp_routine};
-use hod_cg::{CallTarget, CgError, CgResult, FnCx, FrameRef, RuntimeFn, SymRef};
+use hod_cg::{CallTarget, CgError, CgResult, FnCx, FrameRef, PReg, RuntimeFn, SymRef};
 use hod_ir::{
-    Arch, Const, FloatPredicate, FnStr, Inst, InstId, InstKind, Intrinsic, MemFlags, Opcode, RmwOp,
-    SymbolKind, TypeId, TypeKind, Value, ValueKind, X86Features,
+    Arch, Const, FloatPredicate, Inst, InstId, InstKind, Intrinsic, MemFlags, Opcode, RmwOp,
+    TypeId, TypeKind, Value, ValueKind, X86Features,
 };
 use hod_mc_x64 as mc;
 use hod_mc_x64::{Cond, FpCmp, FpSize, Mem, Reg, Size, St, X87Size, Xmm};
@@ -87,14 +87,7 @@ impl Sse {
 /// rule as `x87`'s): its `target-cpu`, else `-mcpu`, else `generic`;
 /// then its `target-features`.
 fn features(cx: &FnCx<'_, X86>) -> X86Features {
-    let mcpu = cx.target.cpu();
-    let SymbolKind::Function { attrs, .. } = cx.module.symbol(cx.body.symbol()).kind() else {
-        return X86Features::of_function(None, None, mcpu, &[]).unwrap_or(X86Features::NONE);
-    };
-    let attrs = cx.module.fn_attrs(attrs);
-    let text = |what| attrs.string(what).and_then(|s| std::str::from_utf8(s).ok());
-    X86Features::of_function(text(FnStr::TargetCpu), text(FnStr::TargetFeatures), mcpu, &[])
-        .unwrap_or(X86Features::NONE)
+    cx.target.features()
 }
 
 /// The SSE type of `ty` in this function, if it is one.
@@ -127,6 +120,9 @@ fn sse(cx: &FnCx<'_, X86>, ty: TypeId) -> CgResult<Sse> {
 /// Whether `inst` is this module's: an SSE value as its result or an
 /// operand. The one dispatch test of `target.rs`, before `x87`'s.
 pub fn owns(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
+    if half_inst(cx, inst) {
+        return true;
+    }
     match inst.kind() {
         InstKind::Binary { .. }
         | InstKind::Unary { .. }
@@ -204,7 +200,8 @@ fn copy_of<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, v: Value, bytes: u32) -> 
 /// # Errors
 /// A constant that is no floating constant.
 pub fn materialize_mem(cx: &mut FnCx<'_, X86>, dst: FrameRef, value: Value) -> CgResult<()> {
-    let s = sse(cx, value_ty(cx, value))?;
+    let half = is_half(cx, value_ty(cx, value));
+    let s = if half { Sse::S } else { sse(cx, value_ty(cx, value))? };
     let ValueKind::Const(id) = value.kind() else {
         return cx.bug("materialize_mem of something that is no constant");
     };
@@ -213,6 +210,10 @@ pub fn materialize_mem(cx: &mut FnCx<'_, X86>, dst: FrameRef, value: Value) -> C
         Const::Zero(_) | Const::Undef(_) | Const::Poison(_) => 0,
         _ => return unsupported(crate::common::CONSTANT),
     };
+    if half {
+        frame_inst(cx, dst, |m| mc::mov_mi(Size::W, m, i64::from(bits as u16 as i16)));
+        return Ok(());
+    }
     write_bits(cx, dst, s.bytes(), bits);
     Ok(())
 }
@@ -366,16 +367,31 @@ fn fcmp<'a>(
     if !matches!(cx.types().kind(inst.ty()), TypeKind::Int(1)) {
         return unsupported(crate::target::VECTOR);
     }
-    let s = sse(cx, value_ty(cx, lhs))?;
+    let half = is_half(cx, value_ty(cx, lhs));
+    let s = if half { Sse::S } else { sse(cx, value_ty(cx, lhs))? };
     let (swap, cond) = conditions(pred);
     let (x, y) = if swap { (rhs, lhs) } else { (lhs, rhs) };
-    let yp = cx.use_mem(y)?;
-    get(cx, s, X, x)?;
+    // A `half` pair: both widened (`[esp+4]`, `[esp+8]`) as `llc`.
+    let yp = if half {
+        widen_pair(cx, x, y)?;
+        put(cx, mc::movs_rm(FpSize::S, X, sp(4)));
+        None
+    } else {
+        let yp = cx.use_mem(y)?;
+        get(cx, s, X, x)?;
+        Some(yp)
+    };
     let rd = cx.def_reg(inst)?;
     if matches!(pred, FloatPredicate::True | FloatPredicate::False) {
         put(cx, mc::cmp_rr(Size::D, EAX, EAX));
-    } else {
+    } else if let Some(yp) = yp {
         frame_inst(cx, yp, |m| mc::ucomis_rm(s.fp(), X, m));
+    } else {
+        put(cx, mc::ucomis_rm(FpSize::S, X, sp(8)));
+    }
+    if half {
+        // `lea` keeps the flags.
+        above(cx, 16);
     }
     match cond {
         FpCond::One(c) => put(cx, mc::setcc_r(c, EAX)),
@@ -400,12 +416,14 @@ fn select<'a>(
     if_true: Value,
     if_false: Value,
 ) -> CgResult<()> {
-    let s = sse(cx, inst.ty())?;
+    let half = is_half(cx, inst.ty());
+    let s = if half { Sse::S } else { sse(cx, inst.ty())? };
+    let bytes = if half { 2 } else { s.bytes() };
     if cx.types().int_bits(value_ty(cx, cond)) != Some(1) {
         return unsupported(crate::target::VECTOR);
     }
     if let Some(c) = const_int(cx, cond) {
-        return copy_of(cx, inst, if c & 1 != 0 { if_true } else { if_false }, s.bytes());
+        return copy_of(cx, inst, if c & 1 != 0 { if_true } else { if_false }, bytes);
     }
     let t = cx.use_mem(if_true)?;
     let f = cx.use_mem(if_false)?;
@@ -414,6 +432,12 @@ fn select<'a>(
     frame_address(cx, ECX, t);
     frame_address(cx, EDX, f);
     put(cx, mc::cmovcc_rr(Cond::Ne, Size::D, EDX, ECX));
+    if half {
+        put(cx, mc::movzx_rm(Size::D, EAX, Size::W, Mem::base(EDX, 0)));
+        let r = cx.def_mem(inst)?;
+        frame_inst(cx, r, |m| mc::mov_mr(Size::W, m, EAX));
+        return Ok(());
+    }
     put(cx, mc::movs_rm(s.fp(), X, Mem::base(EDX, 0)));
     set(cx, inst, s, X)
 }
@@ -1061,6 +1085,330 @@ pub fn ret_view(cx: &FnCx<'_, X86>, value: Value, user: Inst<'_>) -> Option<Fram
     view(cx, value, user.id().raw(), VIEW_DEPTH)
 }
 
+// ---- `half` (with SSE2; spec §12 "`half`") ----
+
+/// A `half` intrinsic (`fabs`, `copysign`, libm, ...).
+pub const HALF_INTRINSIC: &str = "x86:float:half:intrinsic";
+
+fn is_half(cx: &FnCx<'_, X86>, ty: TypeId) -> bool {
+    matches!(cx.types().kind(ty), TypeKind::Half)
+}
+
+/// Whether `ty` is an SSE type or a `half` with SSE2: a value whose
+/// constant this module writes (`Target::materialize_mem`).
+pub fn is_sse_or_half(cx: &FnCx<'_, X86>, ty: TypeId) -> bool {
+    is_sse(cx, ty) || (is_half(cx, ty) && features(cx).has(X86Features::SSE2))
+}
+
+/// The place of a `half` at the boundary (`abi::assign_for`, measured
+/// `llc` 19 and 22): an argument in a 4-byte stack slot (`None`), a
+/// result in `xmm0`. Refused without SSE2 (`llc` returns it in `ax`
+/// there, and libgcc's `__truncsfhf2` writes only `xmm0`) and for
+/// `fastcc` / `inreg` (`odd`).
+///
+/// # Errors
+/// [`crate::x87::HALF`].
+pub fn half_place(
+    features: X86Features,
+    odd: bool,
+    ret: bool,
+) -> Result<Option<PReg>, &'static str> {
+    if odd || !features.has(X86Features::SSE2) {
+        return Err(crate::x87::HALF);
+    }
+    Ok(ret.then(|| crate::reg::xmm(0)))
+}
+
+/// Glue `load` of a `half` result into `xmm0` (`movzx`, `movd`).
+pub fn load_xmm0(cx: &mut FnCx<'_, X86>, src: FrameRef) {
+    frame_inst(cx, src, |m| mc::movzx_rm(Size::D, EAX, Size::W, m));
+    put(cx, mc::movd_xr(Size::D, Xmm::Xmm0, EAX));
+}
+
+/// Glue `store` of a `half` call result from `xmm0` (`movd`, 16 bits).
+pub fn store_xmm0(cx: &mut FnCx<'_, X86>, dst: FrameRef) {
+    put(cx, mc::movd_rx(Size::D, EAX, Xmm::Xmm0));
+    frame_inst(cx, dst, |m| mc::mov_mr(Size::W, m, EAX));
+}
+
+/// Whether `inst` has a `half` result or operand in a function with
+/// SSE2 (then it is this module's).
+fn half_inst(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
+    let h = |v: Value| is_half(cx, value_ty(cx, v));
+    let any = match inst.kind() {
+        InstKind::Binary { .. }
+        | InstKind::Unary { .. }
+        | InstKind::Load { .. }
+        | InstKind::Select { .. } => is_half(cx, inst.ty()),
+        InstKind::Cast { arg } => is_half(cx, inst.ty()) || h(arg),
+        InstKind::FCmp { lhs, .. } => h(lhs),
+        InstKind::Store { value, .. } => h(value),
+        InstKind::Call(site) => {
+            site.intrinsic().is_some()
+                && (is_half(cx, inst.ty()) || site.args().iter().any(|&a| h(a)))
+        }
+        _ => false,
+    };
+    any && features(cx).has(X86Features::SSE2)
+}
+
+/// A call of libgcc's `func` with its arguments at `[esp]`, through
+/// `pic::emit_call` (a call: §11 keeps no copy with SSE2).
+fn runtime_call(cx: &mut FnCx<'_, X86>, func: RuntimeFn) -> CgResult<()> {
+    let at = cx.offset();
+    crate::pic::emit_call(cx, CallTarget::Sym(SymRef::Runtime(func)), 0)?;
+    let len = cx.offset() - at;
+    cx.record_call_site(at, len);
+    Ok(())
+}
+
+/// The `half` at `place` widened by `__extendhfsf2` (exact) into `st0`;
+/// the 16-byte area below the stack pointer is taken.
+fn widen(cx: &mut FnCx<'_, X86>, place: FrameRef) -> CgResult<()> {
+    frame_inst(cx, place, |m| mc::movzx_rm(Size::D, ECX, Size::W, m));
+    put(cx, mc::mov_mr(Size::D, sp(0), ECX));
+    runtime_call(cx, RuntimeFn::ExtendHfSf2)
+}
+
+/// `func` (`__trunc{s,d,x}fhf2`) of the value at `[esp]`, the area given
+/// back, and its `xmm0` stored to `inst`'s home.
+fn narrow<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, func: RuntimeFn) -> CgResult<()> {
+    runtime_call(cx, func)?;
+    put(cx, mc::movd_rx(Size::D, EAX, Xmm::Xmm0));
+    above(cx, 16);
+    let inst = cx.body.inst(inst.id());
+    let r = cx.def_mem(inst)?;
+    frame_inst(cx, r, |m| mc::mov_mr(Size::W, m, EAX));
+    Ok(())
+}
+
+/// Both `half` operands widened to `float` at `[esp+4]` and `[esp+8]`
+/// (the area stays taken).
+fn widen_pair(cx: &mut FnCx<'_, X86>, a: Value, b: Value) -> CgResult<()> {
+    let (pa, pb) = (cx.use_mem(a)?, cx.use_mem(b)?);
+    below(cx, 16);
+    widen(cx, pa)?;
+    put(cx, mc::fstp_m(X87Size::S, sp(4)));
+    widen(cx, pb)?;
+    put(cx, mc::fstp_m(X87Size::S, sp(8)));
+    Ok(())
+}
+
+/// `half` arithmetic as `llc`: both operands widened, the `float`
+/// operation (`frem`: `fmodf`), `__truncsfhf2`.
+fn half_binary<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, lhs: Value, rhs: Value) -> CgResult<()> {
+    let op: fn(FpSize, Xmm, Mem) -> mc::Inst = match inst.opcode() {
+        Opcode::FAdd => mc::adds_rm,
+        Opcode::FSub => mc::subs_rm,
+        Opcode::FMul => mc::muls_rm,
+        Opcode::FDiv => mc::divs_rm,
+        Opcode::FRem => mc::movs_rm,
+        _ => return cx.bug("an integer opcode on a floating type"),
+    };
+    widen_pair(cx, lhs, rhs)?;
+    if inst.opcode() == Opcode::FRem {
+        put(cx, mc::movs_rm(FpSize::S, X, sp(4)));
+        put(cx, mc::movs_mr(FpSize::S, sp(0), X));
+        put(cx, mc::movs_rm(FpSize::S, X, sp(8)));
+        put(cx, mc::movs_mr(FpSize::S, sp(4), X));
+        runtime_call(cx, routine(FpOp::Rem, Sse::S)?)?;
+        put(cx, mc::fstp_m(X87Size::S, sp(0)));
+    } else {
+        put(cx, mc::movs_rm(FpSize::S, X, sp(4)));
+        put(cx, op(FpSize::S, X, sp(8)));
+        put(cx, mc::movs_mr(FpSize::S, sp(0), X));
+    }
+    narrow(cx, inst, RuntimeFn::TruncSfHf2)
+}
+
+/// A copy of `v`'s two bytes to `inst`'s home through `eax`; `fneg`
+/// flips bit 15 (LLVM 22; LLVM 19 converts through `float`, which only
+/// differs for a signalling NaN).
+fn half_unary<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, arg: Value) -> CgResult<()> {
+    copy_of(cx, inst, arg, 2)?;
+    if inst.opcode() == Opcode::FNeg {
+        let r = cx.def_mem(inst)?;
+        frame_inst(cx, r.offset_by(1), |m| mc::xor_mi(Size::B, m, -0x80));
+    }
+    Ok(())
+}
+
+/// A scratch register that is not the base of `at`.
+fn scratch(at: At) -> Reg {
+    if matches!(at, At::Reg(r) if r == ECX) { EAX } else { ECX }
+}
+
+fn half_load<'a>(
+    cx: &mut FnCx<'a, X86>,
+    inst: Inst<'a>,
+    ptr: Value,
+    mem: MemFlags,
+) -> CgResult<()> {
+    check(mem)?;
+    let at = address(cx, ptr)?;
+    access(cx, at, |m| mc::movzx_rm(Size::D, EAX, Size::W, m))?;
+    let r = cx.def_mem(inst)?;
+    frame_inst(cx, r, |m| mc::mov_mr(Size::W, m, EAX));
+    Ok(())
+}
+
+fn half_store(cx: &mut FnCx<'_, X86>, value: Value, ptr: Value, mem: MemFlags) -> CgResult<()> {
+    check(mem)?;
+    let src = cx.use_mem(value)?;
+    let at = address(cx, ptr)?;
+    let r = scratch(at);
+    frame_inst(cx, src, |m| mc::movzx_rm(Size::D, r, Size::W, m));
+    access(cx, at, |m| mc::mov_mr(Size::W, m, r))
+}
+
+/// Conversions of a `half` (measured, 19 = 22): `fpext` is
+/// `__extendhfsf2` stored at the result's width (exact); `fptrunc` passes
+/// its operand at the operand's width to `__trunc{s,d,x}fhf2` (a view of
+/// an SSE call result: `x` rounded to the operand's type, `llc` folds
+/// no rounding into a conversion to `half`); integers go through
+/// `float` as `llc` (`cvtsi2ss`; an unsigned `i32` and an `i64` by
+/// `fild`, one rounding to `float`; to an integer `cvttss2si`, which
+/// every `half` in range of the result gives exactly); `bitcast` to and
+/// from `i16` is a copy.
+fn half_cast<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, arg: Value) -> CgResult<()> {
+    let (from, to) = (value_ty(cx, arg), inst.ty());
+    match inst.opcode() {
+        Opcode::FPExt => {
+            let size = x87_of(cx, to)?;
+            let src = cx.use_mem(arg)?;
+            below(cx, 16);
+            widen(cx, src)?;
+            above(cx, 16);
+            let r = cx.def_mem(inst)?;
+            frame_inst(cx, r, |m| mc::fstp_m(size, m));
+            Ok(())
+        }
+        Opcode::FPTrunc => {
+            let (func, bytes) = match cx.types().kind(from) {
+                TypeKind::Float => (RuntimeFn::TruncSfHf2, 4),
+                TypeKind::Double => (RuntimeFn::TruncDfHf2, 8),
+                TypeKind::X86Fp80 => (RuntimeFn::TruncXfHf2, 10),
+                _ => return unsupported(crate::x87::HALF),
+            };
+            let slot = if cx.state.sse.live.is_empty() {
+                None
+            } else {
+                view(cx, arg, inst.id().raw(), VIEW_DEPTH)
+            };
+            let src = if slot.is_none() { Some(cx.use_mem(arg)?) } else { None };
+            below(cx, 16);
+            match (slot, src) {
+                (Some(slot), _) => {
+                    frame_inst(cx, slot, |m| mc::fld_m(X87Size::T, m));
+                    put(cx, mc::fstp_m(x87_of(cx, from)?, sp(0)));
+                }
+                (None, Some(src)) => copy_frame(cx, FrameRef::Outgoing(0), src, bytes),
+                (None, None) => return cx.bug("an fptrunc without an operand"),
+            }
+            narrow(cx, inst, func)
+        }
+        Opcode::SIToFP | Opcode::UIToFP => half_from_int(cx, inst, arg),
+        Opcode::FPToSI | Opcode::FPToUI => {
+            let bits = match cx.types().int_bits(to) {
+                Some(bits) if bits <= 32 || bits == 64 => bits,
+                Some(_) => return unsupported(I64_CAST),
+                None => return unsupported(crate::target::VECTOR),
+            };
+            let src = cx.use_mem(arg)?;
+            below(cx, 16);
+            widen(cx, src)?;
+            put(cx, mc::fstp_m(X87Size::S, sp(4)));
+            put(cx, mc::cvtts2si_rm(Size::D, EAX, FpSize::S, sp(4)));
+            above(cx, 16);
+            if bits == 64 {
+                let r = cx.def_mem(inst)?;
+                frame_inst(cx, r, |m| mc::mov_mr(Size::D, m, EAX));
+                put(cx, mc::mov_rr(Size::D, EDX, EAX));
+                put(cx, mc::sar_ri(Size::D, EDX, 31));
+                frame_inst(cx, r.offset_by(4), |m| mc::mov_mr(Size::D, m, EDX));
+                return Ok(());
+            }
+            let rd = cx.def_reg(inst)?;
+            put(cx, mc::mov_rr(Size::D, gp(rd), EAX));
+            cx.finish(inst, rd)
+        }
+        Opcode::BitCast if cx.types().int_bits(from) == Some(16) => {
+            let r = cx.use_reg(arg)?;
+            let dst = cx.def_mem(inst)?;
+            frame_inst(cx, dst, |m| mc::mov_mr(Size::W, m, gp(r)));
+            Ok(())
+        }
+        Opcode::BitCast if cx.types().int_bits(to) == Some(16) => {
+            let src = cx.use_mem(arg)?;
+            let rd = cx.def_reg(inst)?;
+            frame_inst(cx, src, |m| mc::movzx_rm(Size::D, gp(rd), Size::W, m));
+            cx.finish(inst, rd)
+        }
+        Opcode::BitCast
+            if matches!(cx.types().kind(from), TypeKind::Vector { .. })
+                || matches!(cx.types().kind(to), TypeKind::Vector { .. }) =>
+        {
+            unsupported(crate::target::VECTOR)
+        }
+        _ => unsupported(CAST),
+    }
+}
+
+/// `sitofp`/`uitofp` to `half`: the `float` `from_int` would give, at
+/// `[esp]`, then `__truncsfhf2`.
+fn half_from_int<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, arg: Value) -> CgResult<()> {
+    let signed = inst.opcode() == Opcode::SIToFP;
+    let bits = match cx.types().int_bits(value_ty(cx, arg)) {
+        Some(bits) if bits <= 32 || bits == 64 => bits,
+        Some(_) => return unsupported(I64_CAST),
+        None => return unsupported(crate::target::VECTOR),
+    };
+    if bits == 64 {
+        let slot = cx.use_mem(arg)?;
+        below(cx, 16);
+        frame_inst(cx, slot, |m| mc::fild_m(Size::Q, m));
+        if !signed {
+            frame_inst(cx, slot.offset_by(4), |m| mc::mov_rm(Size::D, ECX, m));
+            put(cx, mc::sar_ri(Size::D, ECX, 31));
+            put(cx, mc::and_ri(Size::D, ECX, 0x5F80_0000));
+            put(cx, mc::mov_mr(Size::D, sp(4), ECX));
+            put(cx, mc::fld_m(X87Size::S, sp(4)));
+            put(cx, mc::faddp(St::St1));
+        }
+        put(cx, mc::fstp_m(X87Size::S, sp(0)));
+        return narrow(cx, inst, RuntimeFn::TruncSfHf2);
+    }
+    let r = cx.use_reg(arg)?;
+    put(cx, mc::mov_rr(Size::D, ECX, gp(r)));
+    let ext = if signed { crate::alu::Ext::Sign } else { crate::alu::Ext::Zero };
+    crate::alu::extend_to(cx, ECX, bits, ext);
+    below(cx, 16);
+    if !signed && bits == 32 {
+        put(cx, mc::mov_mr(Size::D, sp(8), ECX));
+        word(cx, 12, 0);
+        put(cx, mc::fild_m(Size::Q, sp(8)));
+        put(cx, mc::fstp_m(X87Size::S, sp(0)));
+    } else {
+        put(cx, mc::cvtsi2s_rr(FpSize::S, X, Size::D, ECX));
+        put(cx, mc::movs_mr(FpSize::S, sp(0), X));
+    }
+    narrow(cx, inst, RuntimeFn::TruncSfHf2)
+}
+
+/// The lowering of an instruction [`half_inst`] says is this module's.
+fn half<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>) -> CgResult<()> {
+    match inst.kind() {
+        InstKind::Binary { lhs, rhs } => half_binary(cx, inst, lhs, rhs),
+        InstKind::Unary { arg } => half_unary(cx, inst, arg),
+        InstKind::Load { ptr, mem } => half_load(cx, inst, ptr, mem),
+        InstKind::Store { value, ptr, mem } => half_store(cx, value, ptr, mem),
+        InstKind::Select { cond, if_true, if_false } => select(cx, inst, cond, if_true, if_false),
+        InstKind::Cast { arg } => half_cast(cx, inst, arg),
+        InstKind::FCmp { pred, lhs, rhs } => fcmp(cx, inst, pred, lhs, rhs),
+        _ => unsupported(HALF_INTRINSIC),
+    }
+}
+
 // ---- the dispatch ----
 
 /// The lowering of an instruction [`owns`] says is this module's.
@@ -1068,6 +1416,9 @@ pub fn ret_view(cx: &FnCx<'_, X86>, value: Value, user: Inst<'_>) -> Option<Fram
 /// # Errors
 /// The refusals of this module; what the operands report.
 pub fn lower<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>) -> CgResult<()> {
+    if half_inst(cx, inst) {
+        return half(cx, inst);
+    }
     match inst.kind() {
         InstKind::Binary { lhs, rhs } => binary(cx, inst, lhs, rhs),
         InstKind::Unary { arg } => unary(cx, inst, arg),

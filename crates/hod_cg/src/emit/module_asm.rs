@@ -96,7 +96,7 @@ fn reloc_kind(kind: AsmReloc, arch: hod_ir::Arch) -> RelocKind {
     match arch {
         hod_ir::Arch::X86_64 => {}
         hod_ir::Arch::I386 => return i386_reloc_kind(kind).into(),
-        _ => return a64_reloc_kind(kind).into(),
+        hod_ir::Arch::Aarch64 => return a64_reloc_kind(kind).into(),
     }
     let k = match kind {
         AsmReloc::X64(X::Pc32) => X64Reloc::Pc32,
@@ -222,7 +222,7 @@ impl ModuleEmitter<'_> {
         match arch {
             hod_ir::Arch::X86_64 => asm::assemble_module_x64(text, &mut code),
             hod_ir::Arch::I386 => asm::assemble_module_x86(text, &mut code),
-            _ => asm::assemble_module(text, Features::BASE, &mut code),
+            hod_ir::Arch::Aarch64 => asm::assemble_module(text, Features::BASE, &mut code),
         }
         .map_err(|r| refused(r.0))?;
         if arch == hod_ir::Arch::I386 {

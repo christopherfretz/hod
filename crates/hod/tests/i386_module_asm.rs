@@ -134,7 +134,10 @@ fn describe(bytes: &[u8]) -> Described {
         if ignored(&s.name) {
             continue;
         }
-        let hex: String = data(s).iter().map(|b| format!("{b:02x}")).collect();
+        let hex = data(s).iter().fold(String::new(), |mut hex, b| {
+            let _ = write!(hex, "{b:02x}");
+            hex
+        });
         out.sections.push(format!(
             "section {} type {} flags {:#x} align {} entsize {} size {} bytes {hex}",
             s.name, s.ty, s.flags, s.align, s.entsize, s.size
@@ -427,8 +430,18 @@ fn module_assembly_programs_run_as_llc_s() {
                         let tag = format!("{label}-{shape}-{who}-{}", linker.0);
                         let exe = scratch.join(&tag);
                         match *shape {
-                            "exe" => tools.link(&scratch, linker, &["-no-pie"], &[&driver, object], &exe),
-                            "pie" => tools.link(&scratch, linker, &["-pie"], &[&driver, object], &exe),
+                            "exe" => {
+                                tools.link(
+                                    &scratch,
+                                    linker,
+                                    &["-no-pie"],
+                                    &[&driver, object],
+                                    &exe,
+                                );
+                            }
+                            "pie" => {
+                                tools.link(&scratch, linker, &["-pie"], &[&driver, object], &exe);
+                            }
                             _ => {
                                 let lib = scratch.join(format!("lib{tag}.so"));
                                 tools.link(&scratch, linker, &["-shared"], &[object], &lib);
@@ -439,7 +452,12 @@ fn module_assembly_programs_run_as_llc_s() {
                         programs_built += 1;
                     }
                     let (_, reference) = &results[0];
-                    assert_eq!(reference.0, Some(0), "{label} {shape} ({}): llc's status", linker.0);
+                    assert_eq!(
+                        reference.0,
+                        Some(0),
+                        "{label} {shape} ({}): llc's status",
+                        linker.0
+                    );
                     assert!(!reference.1.is_empty(), "{label} {shape}: llc's output");
                     for (who, result) in &results[1..] {
                         assert_eq!(
@@ -456,5 +474,7 @@ fn module_assembly_programs_run_as_llc_s() {
             }
         }
     }
-    eprintln!("i386 module asm: {programs_built} programs linked and run, {runs} hod runs equal llc's");
+    eprintln!(
+        "i386 module asm: {programs_built} programs linked and run, {runs} hod runs equal llc's"
+    );
 }

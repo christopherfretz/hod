@@ -437,12 +437,11 @@ pub(crate) fn module_instruction<'a>(
         bytes.truncate(start);
         *pending = saved;
     };
-    let field = match crate::x64::instruction_in(mnemonic, &new.text, pending, bytes, Mode::X86) {
-        Ok(Stmt::Bytes(field)) => field,
-        _ => {
-            restore(bytes, pending);
-            return Err(err);
-        }
+    let Ok(Stmt::Bytes(field)) =
+        crate::x64::instruction_in(mnemonic, &new.text, pending, bytes, Mode::X86)
+    else {
+        restore(bytes, pending);
+        return Err(err);
     };
     let inst = &bytes[first(bytes)..];
     let field = match (new.imm, field) {

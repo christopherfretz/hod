@@ -18,7 +18,20 @@ Goals:
 - **Debuggable output.** DWARF that gdb and lldb consume, and objects that
   GNU ld, lld, mold and wild link.
 
-Status: bootstrapping. Nothing here is usable yet.
+Status: 1.0.0. hod compiles what kiln emits at `-O0`, with or without `-g`,
+for x86-64 and AArch64 Linux (ELF), and its objects link with GNU ld, lld
+and mold. For this release the libc++ test suite, LLVM and Clang, and a set
+of open-source C and C++ projects (24 built natively on AArch64, 34 built
+for x86-64) were built with every translation unit that reaches a back end
+compiled by hod and none handed back to LLVM, and their tests gave the
+results of kiln's LLVM back end.
+[`docs/status/release.md`](docs/status/release.md) is the checklist: each
+condition, its evidence, the commit it was measured at, and the stated
+exceptions. What hod accepts is in
+[`docs/status/support.md`](docs/status/support.md); where its output differs
+from LLVM's by design is in `spec/`. hod does not optimize: for an optimized
+build, or one with coverage, a sanitizer or LTO, kiln uses its LLVM back
+end.
 
 ## License
 

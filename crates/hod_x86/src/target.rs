@@ -284,7 +284,7 @@ impl Target for X86 {
     }
 
     fn emit_call(&self, cx: &mut FnCx<'_, Self>, call: &CallEmit) -> CgResult<()> {
-        frame::emit_call(cx, call.target)
+        frame::emit_call(cx, call.target, call.callee_pop)
     }
 
     fn dynamic_slot(

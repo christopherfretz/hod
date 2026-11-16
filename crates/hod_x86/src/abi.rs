@@ -14,11 +14,11 @@
 //! `fp128`, through a hidden pointer that the callee pops, as it pops a
 //! stack `sret` pointer ([`callee_pop`]).
 
-use std::cell::Cell;
-
 use hod_cg::abi::{AbiUnsupported, Assignment, Part, PartKind, Place, RetMemory, Sig};
-use hod_cg::{FnCx, FrameRef, PReg};
-use hod_ir::{CallConv, ParamAttrs, ParamMem, TypeId, TypeKind, TypeTable};
+use hod_cg::{CgResult, FnCx, FrameRef, PReg};
+use hod_ir::{
+    CallConv, CallSite, ParamAttrs, ParamMem, TailKind, TypeId, TypeKind, TypeTable, ValueKind,
+};
 use hod_mc_x64 as mc;
 use hod_mc_x64::X87Size;
 
@@ -82,25 +82,51 @@ const RET: [PReg; 3] = [EAX, EDX, ECX];
 /// The most leaves an IR aggregate argument or result may have.
 const MAX_LEAVES: usize = 16;
 
-/// What the last signature [`assign`] answered asks of the call
-/// instruction (`frame::emit_call`): the call sequence assigns a call's
-/// signature right before it emits the call, with no other assignment in
-/// between.
-#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
-pub struct CallFacts {
-    /// The bytes the callee pops on return ([`callee_pop`]).
-    pub pop: u32,
-    /// Whether an argument travels in `edx`.
-    pub edx: bool,
-}
-
-thread_local! {
-    static LAST: Cell<CallFacts> = const { Cell::new(CallFacts { pop: 0, edx: false }) };
-}
-
-/// What the signature last assigned on this thread asks of its call.
-pub fn last_call() -> CallFacts {
-    LAST.with(Cell::get)
+/// The ABI's checks of a call before the call sequence runs
+/// (`call::check`). An indirect call: the callee's address travels in
+/// `edx` (`RegInfo::callee`), so an argument that the signature puts in
+/// `edx` is refused as [`INDIRECT_EDX`] (`spec/abi-x86.md` §8.2). Only a
+/// call through a value with `fastcc` or an `inreg` parameter can put one
+/// there; the others are not assigned twice.
+///
+/// # Errors
+/// [`INDIRECT_EDX`], `x86:abi:musttail`.
+pub fn check_call(cx: &FnCx<'_, X86>, site: &CallSite<'_>) -> CgResult<()> {
+    if site.tail() == TailKind::MustTail {
+        return common::unsupported(crate::frame::MUSTTAIL);
+    }
+    if matches!(site.callee_value().kind(), ValueKind::Sym(_)) {
+        return Ok(());
+    }
+    let types = cx.types();
+    let TypeKind::Function { ret, params, variadic } = types.kind(site.fn_type()) else {
+        return Ok(());
+    };
+    if variadic {
+        // §6.5: a variadic call passes nothing in registers.
+        return Ok(());
+    }
+    let inreg = (0..params.len()).any(|i| site.arg_attrs(i).has(ParamAttrs::INREG));
+    if site.cc() != CallConv::FAST && !inreg {
+        return Ok(());
+    }
+    let attrs: Vec<ParamAttrs> = (0..params.len()).map(|i| site.arg_attrs(i)).collect();
+    let sig = Sig {
+        cc: site.cc(),
+        ret,
+        ret_attrs: site.ret_attrs(),
+        params,
+        param_attrs: &attrs,
+        fixed: params.len() as u32,
+        variadic,
+    };
+    let mut asg = Assignment::default();
+    // A signature `assign` refuses is refused by the call sequence.
+    if assign(types, &sig, &mut asg).is_ok() && asg.args.iter().any(|p| p.place == Place::Reg(EDX))
+    {
+        return common::unsupported(INDIRECT_EDX);
+    }
+    Ok(())
 }
 
 /// The bytes a callee of `asg` pops with `ret $n`: 4 for a hidden result
@@ -285,8 +311,7 @@ pub fn assign(
     out.clear();
     match assign_into(types, sig, out) {
         Ok(()) => {
-            let edx = out.args.iter().any(|p| p.place == Place::Reg(EDX));
-            LAST.with(|last| last.set(CallFacts { pop: callee_pop(out), edx }));
+            out.callee_pop = callee_pop(out);
             Ok(())
         }
         Err(name) => {
@@ -538,15 +563,17 @@ mod tests {
                 (3, 0, 4, s(4))
             ]
         );
-        assert!(last_call().edx);
+        assert_eq!(asg.callee_pop, 0);
         let sret = ParamAttrs::NONE.with_mem(ParamMem::Sret, TypeId::I32).unwrap();
         let ptr = TypeId::PTR;
         assign(&types, &sig(CallConv::C, TypeId::VOID, &[ptr], &[sret]), &mut asg).unwrap();
-        assert_eq!(callee_pop(&asg), 4);
-        assert_eq!(last_call(), CallFacts { pop: 4, edx: false });
+        assert_eq!(asg.callee_pop, 4);
         let both = sret.with(ParamAttrs::INREG).unwrap();
         assign(&types, &sig(CallConv::C, TypeId::VOID, &[ptr], &[both]), &mut asg).unwrap();
-        assert_eq!(callee_pop(&asg), 0);
+        assert_eq!(asg.callee_pop, 0);
+        // A result in memory: the hidden pointer is popped too.
+        assign(&types, &sig(CallConv::C, TypeId::I128, &[], &[]), &mut asg).unwrap();
+        assert_eq!(asg.callee_pop, 4);
     }
 
     #[test]

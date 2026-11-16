@@ -193,20 +193,18 @@ pub fn dynamic_slot(
 /// The call instruction (`Target::emit_call`): `call rel32` with
 /// `R_386_PLT32` for a callee that may be in another module and
 /// `R_386_PC32` for one in this output (as `llc` writes them in the
-/// static model), or `call edx`.
+/// static model), or `call edx`. `callee_pop` is
+/// `CallEmit::callee_pop`, the bytes the callee removed
+/// (`abi::callee_pop`): `esp` is moved back by them, so that the call
+/// sequence frees the whole area it reserved.
 ///
 /// # Errors
 /// `Internal` only for an encoder without a relocatable field.
-pub fn emit_call(cx: &mut FnCx<'_, X86>, target: CallTarget) -> CgResult<()> {
-    // The call's own signature is the last one assigned (`abi::last_call`).
-    let facts = abi::last_call();
-    if facts.edx && matches!(target, CallTarget::Reg(_)) {
-        return unsupported(abi::INDIRECT_EDX);
-    }
+pub fn emit_call(cx: &mut FnCx<'_, X86>, target: CallTarget, callee_pop: u32) -> CgResult<()> {
     call_instruction(cx, target)?;
     // `spec/abi-x86.md` §8.1: the callee popped its hidden pointer.
-    if facts.pop != 0 {
-        adjust_sp(cx, -i64::from(facts.pop));
+    if callee_pop != 0 {
+        adjust_sp(cx, -i64::from(callee_pop));
     }
     Ok(())
 }

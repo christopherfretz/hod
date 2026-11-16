@@ -8,7 +8,7 @@
 //! that may unwind made by a function that may unwind.
 
 use hod_cg::{CgResult, FnCx};
-use hod_ir::{CallSite, FnAttrs, Inst, Intrinsic, Module, SymId, SymbolKind, TailKind, ValueKind};
+use hod_ir::{CallSite, FnAttrs, Inst, Intrinsic, Module, SymId, SymbolKind, ValueKind};
 
 use crate::common::unsupported;
 use crate::target::X86;
@@ -55,10 +55,7 @@ pub fn check(cx: &FnCx<'_, X86>, inst: Inst<'_>, site: &CallSite<'_>) -> CgResul
     if inst.opcode() == hod_ir::Opcode::CallBr || site.bundle_count() != 0 {
         return unsupported(CALL);
     }
-    if site.tail() == TailKind::MustTail {
-        return unsupported(crate::frame::MUSTTAIL);
-    }
-    Ok(())
+    crate::abi::check_call(cx, site)
 }
 
 /// The `call` arm of the dispatch.

@@ -160,6 +160,10 @@ pub struct Assignment {
     /// How many vector registers the arguments use, for a convention that
     /// passes that count to a variadic callee (x86-64's `al`).
     pub vector_regs_used: u8,
+    /// The bytes the callee removes from the stack when it returns, for
+    /// a convention where it does (i386's `ret $4` after a hidden or
+    /// `sret` pointer on the stack); 0 elsewhere.
+    pub callee_pop: u32,
 }
 
 impl Assignment {
@@ -172,6 +176,7 @@ impl Assignment {
         self.stack_size = 0;
         self.va = VaInfo::default();
         self.vector_regs_used = 0;
+        self.callee_pop = 0;
     }
 }
 

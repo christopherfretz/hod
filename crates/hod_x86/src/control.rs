@@ -10,7 +10,7 @@ use hod_mc_x64 as mc;
 use hod_mc_x64::{Cond, Size};
 
 use crate::alu::{Ext, ext_const, extend_to};
-use crate::common::{branch, branch_cond, const_int, gp, put, unsupported, width};
+use crate::common::{branch, branch_cond, const_int, gp, put, width};
 use crate::target::X86;
 
 /// `blockaddress`.
@@ -113,7 +113,8 @@ pub fn switch<'a>(cx: &mut FnCx<'a, X86>, switch: &Switch<'a>) -> CgResult<()> {
 pub fn ret(cx: &mut FnCx<'_, X86>, inst: Inst<'_>, value: Option<Value>) -> CgResult<()> {
     if let Some(value) = value {
         if cx.fn_assignment().ret_memory.is_some() {
-            return unsupported(crate::target::AGGREGATE);
+            crate::agg::ret_memory(cx, value)?;
+            return if cx.ret_falls_through() { Ok(()) } else { branch(cx, cx.epilogue()) };
         }
         // A result of the run returns at 80 bits (`x87::ret_copy`).
         crate::x87::ret_copy(cx, inst, value, true);

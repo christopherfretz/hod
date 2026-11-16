@@ -185,6 +185,7 @@ impl Target for X86 {
                 crate::atomic::extract(cx, inst, agg, offset)
             }
             _ if crate::x87::owns(cx, inst) => crate::x87::lower(cx, inst),
+            _ if crate::agg::owns(cx, inst) => crate::agg::lower(cx, inst),
             InstKind::Binary { lhs, rhs } if gpr => alu::binary(cx, inst, lhs, rhs),
             InstKind::Binary { lhs, rhs } if int::is_wide(cx, inst.result()) => {
                 int::binary(cx, inst, lhs, rhs)
@@ -236,7 +237,12 @@ impl Target for X86 {
                 crate::dynstack::alloca(cx, inst, count, elem_size, align)
             }
             InstKind::PtrAdd(add) => mem::ptr_add(cx, inst, &add),
-            InstKind::ExtractValue { .. } | InstKind::InsertValue { .. } => unsupported(AGGREGATE),
+            InstKind::ExtractValue { agg, offset } => {
+                crate::agg::extract_value(cx, inst, agg, offset)
+            }
+            InstKind::InsertValue { agg, value, offset } => {
+                crate::agg::insert_value(cx, inst, agg, value, offset)
+            }
             InstKind::Select { cond, if_true, if_false } if gpr => {
                 alu::select(cx, inst, cond, if_true, if_false)
             }
@@ -321,6 +327,9 @@ impl Target for X86 {
     ) -> CgResult<()> {
         if int::is_wide(cx, value) {
             return int::materialize_mem(cx, dst, value);
+        }
+        if crate::agg::is_aggregate(cx, common::value_ty(cx, value)) {
+            return crate::agg::materialize_mem(cx, dst, value);
         }
         // Floating point; any other type is refused by its family there.
         crate::x87::materialize_mem(cx, dst, value)

@@ -96,13 +96,10 @@ pub fn begin(cx: &mut FnCx<'_, X86>) -> CgResult<()> {
     cx.state.frame.frame_imm = cx.offset() + sub.bytes().len() as u32 - 4;
     put(cx, sub);
     // `spec/abi-x86.md` §5.2: a function that writes its result through
-    // a hidden pointer is design 0008's I11 (`aggr`); §6.1: an `inreg
-    // sret` pointer is kept for the return, before any argument
-    // register is read.
+    // a hidden pointer finds it in the first stack argument (`agg`);
+    // §6.1: an `inreg sret` pointer is kept for the return, before any
+    // argument register is read.
     let asg = cx.fn_assignment();
-    if asg.ret_memory.is_some() {
-        return unsupported(crate::target::AGGREGATE);
-    }
     let inreg_sret = asg.sret_returned_in.is_some()
         && asg.args.first().is_some_and(|p| p.arg == 0 && p.place == Place::Reg(crate::reg::EAX));
     cx.state.frame.sret_slot = None;

@@ -189,8 +189,7 @@ fn narrow_intrinsics_compile() {
 
 /// `scmp`/`ucmp` of operands of 33 to 64 bits compile since the i386 join
 /// C (`int.rs`, run by `i386_i64_rest.rs`), of wider ones are
-/// `x86:i64:wide`; what stays refused: the overflow intrinsics, whose
-/// `{i32, i1}` result is read with `extractvalue` (`x86:aggregate`).
+/// `x86:i64:wide`; the overflow intrinsics, refused until WP-315, compile.
 #[test]
 fn what_stays_refused() {
     let wide = "define i8 @f(ptr %p) {\n  %a = load i64, ptr %p\n  \
@@ -204,9 +203,6 @@ fn what_stays_refused() {
                     %r = call {i32, i1} @llvm.sadd.with.overflow.i32(i32 %a, i32 %a)\n  \
                     %v = extractvalue {i32, i1} %r, 0\n  ret i32 %v\n}\n\
                     declare {i32, i1} @llvm.sadd.with.overflow.i32(i32, i32)";
-    let error = refusal(overflow).unwrap_or_else(|| panic!("compiled:\n{overflow}"));
-    assert!(
-        error.contains("x86:aggregate") || error.contains("x86:intrinsic"),
-        "{overflow}\n{error}"
-    );
+    // Since WP-315 (`i386_agg.rs`) the overflow intrinsics compile.
+    assert_eq!(refusal(overflow), None, "{overflow}");
 }

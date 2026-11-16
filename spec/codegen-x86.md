@@ -143,10 +143,10 @@ An address is a stack slot's frame place, a symbol's absolute `disp32`
 base in a register, adds each index sign-extended and scaled (`lea` for
 scales 1, 2, 4, 8, else `imul`) and the constant offset, modulo 2^32. A
 static `alloca` is a stack slot of the generic layout.
-`llvm.memcpy`/`memmove`/`memset` (and `.inline`) with a length of at most
-32 bits are `rep movsb`/`rep stosb`, saving `esi`/`edi` around them;
-`memmove` copies backward (`std` ... `cld`) when the destination is above
-the source.
+`llvm.memcpy`/`memmove`/`memset` (and `.inline`) are `rep movsb`/`rep
+stosb`, saving `esi`/`edi` around them; `memmove` copies backward (`std`
+... `cld`) when the destination is above the source. A length of 33 to 64
+bits is its low word (WP-315, §13.1).
 
 ## 6. Control flow and calls (`control`, `call`, `abi`, `frame`)
 
@@ -166,7 +166,7 @@ their values).
 
 | name | what | removed by |
 |---|---|---|
-| `x86:i64` | an integer of 33 to 64 bits where §8 does not take it: since the i386 join C only an integer of 33 to 63 bits passed or returned by value (also a variadic argument), and an `i64` length of `memcpy`/`memmove`/`memset` | I6 (`abi.rs`: `i64` arguments, results); WP-306 (`switch` condition, `ptradd` index, intrinsics); the memory intrinsics' package |
+| `x86:i64` | not reachable since WP-315 (§13.4): every integer of 33 to 64 bits is taken by §8, `abi.rs` or §13 | I6, WP-306, WP-315 |
 | `x86:i64:wide` | an integer wider than 64 bits (§8), also as a `switch` condition, a `ptradd` index and the result of an integer intrinsic of §8 | — |
 | `x86:float` | a floating-point value in a register where §11 takes none (arguments and results are I6's since the join) | — |
 | `x86:float:half`, `x86:float:bfloat`, `x86:float:fp128` | a value of those types | — |
@@ -175,7 +175,8 @@ their values).
 | `x86:float:intrinsic` | a floating-point intrinsic §11 does not lower | — |
 | `x86:float:cast` | a `bitcast` of a floating value, another cast not in §11 | — |
 | `x86:vector` | a vector value, a vector `ptradd`, the element operations | I12 |
-| `x86:aggregate` | an aggregate value, `extractvalue`, `insertvalue`, a result in memory | I11 |
+| `x86:aggregate` | since WP-315 (§13.2) only an aggregate argument of more than 16 leaves (`abi.rs`'s `MAX_LEAVES`) and an aggregate without a layout | — |
+| `x86:frame-depth` | `llvm.frameaddress`/`returnaddress` deeper than 256 frames (§13.5) | — |
 | `x86:eh` | `invoke`, `landingpad`, `resume`; a call that may unwind in a function that may unwind (no unwind tables) | I10 |
 | `x86:debug-info` | a module with debug information (`hod_cg`'s emitter) | I10 |
 | `x86:cf-protection` | `cf-protection-*` module flags (`hod_cg`'s `.note.gnu.property`) | — |
@@ -194,7 +195,7 @@ their values).
 | `x86:varargs` | `va_start` outside a variadic function (§12.1) | — |
 | `x86:varargs:va-arg-type` | `va_arg` of an aggregate, a vector, an integer wider than 64 bits (§12.1) | — |
 | `x86:probe-stack` | a function with `"probe-stack"="inline-asm"` (§12.3) | — |
-| `x86:intrinsic` | any other intrinsic (the integer intrinsics of §4.1 and §8 are lowered; still refused: the `*.with.overflow` family, `eh.typeid.for`, `frameaddress`, `returnaddress`, `ubsantrap`, `ptrmask`, `is.constant`, `objectsize`, `clear_cache`, `readcyclecounter`, ...) | per family |
+| `x86:intrinsic` | any other intrinsic (the integer intrinsics of §4.1 and §8 are lowered; the overflow and small intrinsics of §13 are lowered; still refused: `eh.typeid.for`, ...) | per family |
 | `x86:call` | a call with operand bundles, `callbr` | — |
 | `x86:blockaddress`, `x86:indirect-branch` | `blockaddress`, `indirectbr` | — |
 | `x86:stack-protector` | a function with a stack guard | — |
@@ -312,11 +313,8 @@ through `ecx`). Wider than 64 bits is refused as `x86:i64:wide`.
   sign-extended for a result wider than 32 bits. No branch. Operands or
   a result wider than 64 bits: `x86:i64:wide`.
 
-Still refused: such an integer of 33 to 63 bits passed or returned by
-value (`x86:i64`, `abi.rs`; `i64` itself is I6's). The `*.with.overflow` intrinsics of every width return
-the aggregate `{iN, i1}`: their call stays `x86:intrinsic` and their
-`extractvalue` `x86:aggregate` (I11). Every other intrinsic of these
-widths stays `x86:intrinsic`.
+Since WP-315 an integer of 33 to 63 bits passed or returned by value and
+the `*.with.overflow` intrinsics of every width are lowered (§13).
 
 Where `llc` 19 and 22 (`-O0 -global-isel=0 -fast-isel=0`) branch inside
 these intrinsics (a basic block label in the function; measured with
@@ -508,12 +506,13 @@ before the next instruction that ends the registers' life, in any
 number, order and distance; a use after one, or in another block, reads
 it rounded to its type (`llc`'s fast allocator spills it).
 The instructions that end it (*barriers*): the terminator; a call; an
-`llvm.memcpy`/`memmove` of more than 32 or a variable number of bytes
-and an `llvm.memset` of more than 64 (shorter ones are written inline);
+`llvm.memcpy`/`memmove`/`memset` that `llc` makes a libc call (§13.1;
+the others are written inline);
 `frem` and the libm intrinsics (calls); an integer division wider than
 32 bits (`__divdi3` and kin); without `cmov`, a `select` on a variable
 condition unless its type is `i1` or it chooses between two integer
-constants (`llc` branches: the block splits); without `cmov`, an
+constants (`llc` branches: the block splits; for an aggregate, §13.2);
+without `cmov`, an
 `fptoui` to `i64` (see "Conversions") and the integer intrinsics below. *Integer intrinsics* (measured with `llc` 19
 and 22 at widths 1 to 64, CPU `generic`; with `cmov`, `i686`,
 `pentiumpro`, `pentium4`, none branches), at a result of `N` bits:
@@ -736,3 +735,108 @@ ordered loads and stores (8 bytes included), `va_start`, `va_copy`,
 an x87 result and its use, `float` and `double`, `generic` and
 `pentiumpro`, plain and under `Stress::ALL`) are in
 `crates/hod/tests/i386_atomic.rs`.
+
+## 13. Memory intrinsics, aggregates, overflow and small intrinsics (`bytes`, `agg`, `bits`; WP-315, design 0008 I11)
+
+### 13.1 Memory intrinsics
+
+`llvm.memcpy`/`memmove`/`memset` and their `.inline` forms take a length
+of `i32` or of 33 to 64 bits; a wider length is its low 32 bits (`llc`'s
+`size_t` is 32 bits), so `2^32 + k` copies `k` bytes. The volatile flag
+and the alignments do not change hod's code (`rep movsb`/`stosb`, §5);
+they choose `llc`'s, which decides where the x87 registers' life ends
+(§11). `bytes::calls_libc` is `llc`'s rule, measured with `llc` 19 and 22
+at CPU `generic` and `i686` (identical; a CPU with SSE is not measured)
+over lengths 0 to 140, 200, 255 to 257, 1000 and `2^32 + 8`, alignments
+1 to 16, volatile or not, and checked by `the_libc_call_rule_is_llc_s`:
+
+- the length is a constant `n` of at most 64 bits judged on its full
+  value, else (variable) a call;
+- inline as stores of 4, then 2, then 1 bytes: with overlap allowed
+  (`memcpy`/`memset`, not volatile) `ceil(n / 4)` stores, else
+  `n / 4 + [0, 1, 1, 2][n % 4]`; at most 8 stores for `memcpy`/`memmove`,
+  16 for `memset`;
+- past that, `memcpy`/`memset` with an alignment of at least 4 (the
+  smaller of the pointers' `align` attributes; nothing else is consulted)
+  and `n <= 128`: `rep movs`/`rep stos`, no call;
+- otherwise a call (every `memmove` past its stores). The `.inline`
+  forms never call.
+
+### 13.2 Aggregates
+
+A struct or array value is a `Mem` value: a frame slot of its store size
+(at most `frame::MAX_FRAME`, else `hod_cg::LIMIT_FRAME_SIZE`). `load`
+and `store` copy through `eax` (the address) and `ecx` in pieces of 4,
+2 and 1 bytes; an ordered (atomic) access reaches `atomic` first
+(§12.2: an aggregate is `x86:atomic:type`). The result of `cmpxchg` is
+such a value (§12.2: the value at 0, the flag at the second field's
+offset), so every lowering here reads it.
+`extractvalue` of a `Gpr` member loads it, of any other member copies it;
+`insertvalue` copies the aggregate, then writes the member (a `Gpr` value
+zero-extended to its store size, an integer of 33 to 64 bits by halves,
+other members copied; an `undef` member is not written). `phi` is
+`hod_cg`'s frame copy. `select` takes `lea` of each arm, `test`/`jne`,
+and copies from `[eax]`. A constant aggregate is written from its
+flattened bytes (a 4-byte symbol address through `common::sym_address`;
+another relocated constant is `x86:constant`); a `zeroinitializer` above
+64 bytes is `rep stosb`. Arguments and results follow `abi.rs`'s
+classification unchanged: a result in memory is written through the
+hidden pointer `Incoming(0)`, which `eax` returns. Zero-sized members and
+types are no bytes. Members: `i1` to `i64` of any width, `ptr`, `float`,
+`double`, `x86_fp80`, nested structs and arrays. Refused: vectors,
+`half`, `bfloat`, `fp128` and integers above 64 bits as members (by
+their family), an aggregate argument of more than 16 leaves
+(`x86:aggregate`).
+
+x87 barrier (measured with `llc` 19 and 22, `generic` and `i686`):
+`select` of an aggregate branches without `cmov` like a scalar one,
+`{i1}` included, except between two constants or of a zero-sized type;
+with `cmov` none branches. An aggregate `load`/`store` never calls (up
+to 1600 bytes measured).
+
+### 13.3 Overflow intrinsics
+
+`llvm.{s,u}{add,sub,mul}.with.overflow` at every width 1 to 64 return
+`{iN, i1}` in a slot (the integer zero-extended to its store size, the
+flag a byte at the second member's offset). At most 32 bits: the
+operands sign- or zero-extended to 32 bits in `eax`/`ecx`, the
+operation, and the flag from the processor's flags at `N = 32`, else
+(the exact result in `eax`) unsigned: a bit at `N` or above set, signed:
+`eax` is not its own extension from `N` bits. 33 to 64 bits, addition
+and subtraction: the high words extended, `add`/`adc` (`sub`/`sbb`), the
+flags of the high word at 64 bits, else the same test on the high word;
+multiplication forms the 128-bit product of
+the two 64-bit values extended from `N` bits (four `mul`s, a 32-byte
+slot, the signed correction by masked subtraction) and overflows when it
+differs from its extension from `N` bits. No call (no `__mulodi4`) and
+no branch, as `llc` 19 and 22 at every width, `generic` and `i686`: not
+an x87 barrier.
+
+### 13.4 Integers of 33 to 63 bits by value
+
+`abi.rs` gives an integer of 33 to 64 bits two leaves (4 bytes and the
+rest), so it is passed, returned (`edx:eax`) and passed to a variadic
+callee as `llc` does. With this, `x86:i64` is not reachable: every other
+use of such an integer is §8's.
+
+### 13.5 Small intrinsics (`bits::small`)
+
+None has a call or branch in `llc` 19 or 22 (`generic`, `i686`), so none
+is an x87 barrier.
+
+| intrinsic | code |
+|---|---|
+| `ubsantrap(k)` | `ud1 eax, [eax + k]` |
+| `debugtrap` | `int3` |
+| `x86.sse2.pause` | `pause` |
+| `frameaddress(d)` | `ebp`, then `d` loads of the saved `ebp` (`d` > 256: `x86:frame-depth`) |
+| `returnaddress(d)` | the same walk, then the word at `+4` |
+| `addressofreturnaddress` | `lea [ebp + 4]` |
+| `objectsize` | `hod_cg::const_fold::object_size`: -1, or 0 with `min` (`llc` evaluates known objects; the gap is the shared fold's) |
+| `is.constant` | 1 for a manifest constant (`hod_cg::const_fold::is_manifest`), else 0 |
+| `ptrmask` | `and` |
+| `readcyclecounter` | `rdtsc` into the `i64`'s slot |
+| `prefetch`, `clear_cache` | nothing |
+
+`expect*`, `assume`, `lifetime.*`, `invariant.*` and the other hints are
+removed in front of the back end. `eh.typeid.for` stays `x86:intrinsic`.

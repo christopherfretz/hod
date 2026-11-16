@@ -38,14 +38,10 @@ double mixed(int a, long long b, float c, double d, long double e, char f) {
     return a + (double)b / 7.0 + c + d * e + f;
 }
 static long long __attribute__((regparm(3))) rp(int a, long long b, int c) { return a + b * c; }
-/* Fields assigned one by one: an initializer zeroes the padding with an
- * `i64`-length memset, still refused `x86:i64` (the memory intrinsics'
- * package; checked in the i386 join C). */
+/* The initializer zeroes the padding with an `i64`-length memset
+ * (WP-315). */
 static struct s3 make(int k) {
-    struct s3 r;
-    r.a = k;
-    r.b = (char)(k + 1);
-    r.c = (short)(k + 2);
+    struct s3 r = { k, (char)(k + 1), (short)(k + 2) };
     return r;
 }
 static double take(struct s3 s, long long w, double d) { return s.a + s.b + s.c + w + d; }

@@ -94,11 +94,17 @@ pub fn lower<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, site: &CallSite<'a>) ->
         Some(which @ (Intrinsic::ThreadLocalAddress | Intrinsic::ThreadPointer)) => {
             crate::tls::intrinsic(cx, inst, which, site.args())
         }
+        Some(which) if crate::agg::is_overflow(which) => {
+            crate::agg::overflow(cx, inst, which, site.args())
+        }
         Some(which) if crate::int::is_intrinsic(cx, inst, which) => {
             crate::int::intrinsic(cx, inst, which, site.args())
         }
         Some(which) if crate::bits::is_intrinsic(cx, inst, which, site.args()) => {
             crate::bits::intrinsic(cx, inst, which, site.args())
+        }
+        Some(which) if crate::bits::is_small(which) => {
+            crate::bits::small(cx, inst, which, site.args())
         }
         Some(_) => unsupported(INTRINSIC),
     }

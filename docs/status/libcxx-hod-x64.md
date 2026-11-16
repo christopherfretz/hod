@@ -1,5 +1,36 @@
 # libc++ test suite on x86-64 through hod (hybrid)
 
+## At the candidate cd6ef6bc (WP-233, 2026-11-15, strict, no `-g`)
+
+The 1.0 release candidate, hod `main` at `cd6ef6bc` (release binary,
+sha256 `80138ec1411506d5b4048f1eac49e8b377f9eeedb21e70ae43e3c81ab094929c`),
+with kiln 1.2.0 at `8f93304ee`, strict (no fallback) under `qemu-x86_64`
+in 20 shards, 2026-11-15 15:57 to 18:41 EST, compared shard by shard with
+the same recorded control as the `02fe2d02` section below (same command
+and settings).
+
+| | recorded control (kiln + `llc`) | **strict at `cd6ef6bc`** |
+|---|---|---|
+| total | 9,247 | 9,247 |
+| pass | 8,607 | **8,608** |
+| fail | 5 | 5 |
+| xfail | 45 | 45 |
+| xpass | 3 | 3 |
+| unsupported | 585 | 585 |
+| timeout | 2 | 1 |
+| wall time, `-j 4` (sum of 20 shards) | 8,328 s | 9,516 s |
+| `oom_kill` | 1 before and after every shard | the same |
+| modules by hod | - | 7,226 of 7,226, 0 fallback (hod 287.7 s summed over modules) |
+
+**Result: strict equals the control**, with the same counts as at
+`02fe2d02`. The one changed outcome is again the control's compile
+timeout on `std/containers/unord/unord.multimap/local_iterators.pass.cpp`.
+The ten `std/strings/basic.string` tests that the intermediate candidate
+`e98267c0` refused (`intrinsic:const-fold-nounwind-invoke`: `at`,
+`index`, `shrink_to_fit.explicit_instantiation`, `iter_alloc`,
+`size_char_alloc`, `string_erase/iter`, `iter_iter`, `pop_back`,
+`size_size`, `string.accessors/data`) all pass at `cd6ef6bc`.
+
 ## At the candidate 02fe2d02 (WP-233, 2026-11-15, strict, no `-g`)
 
 The 1.0 release candidate, hod `main` at `02fe2d02` (release binary,

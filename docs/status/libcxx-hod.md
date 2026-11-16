@@ -1,5 +1,36 @@
 # libc++ test suite through hod (hybrid and strict)
 
+## At the candidate cd6ef6bc (WP-233, 2026-11-15, strict, no `-g`)
+
+The 1.0 release candidate, hod `main` at `cd6ef6bc` (release binary,
+sha256 `80138ec1411506d5b4048f1eac49e8b377f9eeedb21e70ae43e3c81ab094929c`),
+with kiln 1.2.0 at `8f93304ee`, strict against the same recorded control
+as the `02fe2d02` section below, with the same command and settings.
+
+| | recorded control (kiln + `llc`) | **strict at `cd6ef6bc`** |
+|---|---|---|
+| date (EST) | 2026-11-15 04:25 to 05:35 | 2026-11-15 18:41 to 20:47 |
+| total | 9,247 | 9,247 |
+| pass | 8,608 | 8,607 |
+| fail | 4 | 4 |
+| xfail | 46 | 46 |
+| xpass | 2 | 2 |
+| unsupported | 585 | 585 |
+| timeout | 2 | 3 |
+| wall time, `-j 3` | 4,241 s | 7,538 s (a heavier host load) |
+| `oom_kill` | 1 before, 1 after | 1 before, 1 after |
+| modules by hod | - | 7,226 of 7,226, 0 fallback (hod 254.1 s summed over modules) |
+
+**Result: strict equals the control.** The one changed outcome is
+`ifstream.members/buffered_reads.pass.cpp` (PASS in the control, TIMEOUT
+at the 20 s limit in strict), the load-dependent test described below;
+alone at `-j 1` and 120 s it passes with hod (42.8 s).
+`lost_wakeup.pass.cpp` and `offset_range.pass.cpp` time out in both
+modes. The ten `std/strings/basic.string` tests that the intermediate
+candidate `e98267c0` refused (`intrinsic:const-fold-nounwind-invoke`)
+all pass. The failures (the four filesystem tests) and the XPASSes are
+the same in both modes.
+
 ## At the candidate 02fe2d02 (WP-233, 2026-11-15, strict, no `-g`)
 
 The 1.0 release candidate, hod `main` at `02fe2d02` (release binary,

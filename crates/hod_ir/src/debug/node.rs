@@ -20,8 +20,9 @@ use crate::debug::names::{
 };
 use crate::error::{IrErrorKind, IrResult, err};
 use crate::ids::{ConstId, DiId};
-use crate::intern::Layering;
+use crate::intern::{Layering, NoLayer};
 use crate::strings::{StrId, StrPool};
+use std::marker::PhantomData;
 
 impl DiId {
     /// "No node": a null element of a node list, such as the `void`
@@ -186,7 +187,7 @@ fn dangling(id: DiId) -> IrResult<()> {
 
 /// Where a node's fields are read from: the words after the record's
 /// mask, consumed from the front. Past the end every word reads as 0.
-pub(crate) struct Dec<'m, L: Layering = crate::intern::NoLayer> {
+pub(crate) struct Dec<'m, L: Layering = NoLayer> {
     pub(crate) cells: &'m [DiId],
     pub(crate) strings: Option<&'m StrPool<L>>,
 }
@@ -210,6 +211,9 @@ impl<L: Layering> Dec<'_, L> {
     }
 }
 
+/// [`Field::CELLS`] of a list: its length cell, then that many cells.
+pub(crate) const LIST_CELLS: u8 = u8::MAX;
+
 /// A field type: how it is stored, and how it is made from a
 /// [`DiFieldValue`].
 pub(crate) trait Field<'a>: Copy {
@@ -223,6 +227,9 @@ pub(crate) trait Field<'a>: Copy {
     fn assign(value: DiFieldValue<'a>) -> Option<Self>;
     /// What kind of value the field holds.
     const SHAPE: DiShape;
+    /// The cells a stored value takes; [`LIST_CELLS`] for a list (its
+    /// length, then that many cells).
+    const CELLS: u8 = 1;
     /// The value, for a field that is [`Field::present`].
     fn out(&self) -> DiFieldOut<'a>;
     /// Calls `visit` for every node the value names.
@@ -277,6 +284,7 @@ number_field!(u16, u32);
 
 impl<'a> Field<'a> for u64 {
     const SHAPE: DiShape = DiShape::UInt;
+    const CELLS: u8 = 2;
     #[inline]
     fn out(&self) -> DiFieldOut<'a> {
         DiFieldOut::UInt(*self)
@@ -308,6 +316,7 @@ impl<'a> Field<'a> for u64 {
 
 impl<'a> Field<'a> for i64 {
     const SHAPE: DiShape = DiShape::Int;
+    const CELLS: u8 = 2;
     #[inline]
     fn out(&self) -> DiFieldOut<'a> {
         DiFieldOut::Int(*self)
@@ -342,6 +351,8 @@ impl<'a> Field<'a> for i64 {
 
 impl<'a> Field<'a> for bool {
     const SHAPE: DiShape = DiShape::Bool;
+    /// A `bool` is its bit in the mask.
+    const CELLS: u8 = 0;
     #[inline]
     fn out(&self) -> DiFieldOut<'a> {
         DiFieldOut::Bool(*self)
@@ -485,6 +496,7 @@ impl<'a> Field<'a> for Option<DiId> {
 
 impl<'a> Field<'a> for &'a [DiId] {
     const SHAPE: DiShape = DiShape::List;
+    const CELLS: u8 = LIST_CELLS;
     #[inline]
     fn out(&self) -> DiFieldOut<'a> {
         DiFieldOut::List(self)
@@ -606,6 +618,8 @@ impl<'a> Field<'a> for ConstId {
 
 impl<'a> Field<'a> for DiBound {
     const SHAPE: DiShape = DiShape::Bound;
+    /// The bound's kind, then its value's two words.
+    const CELLS: u8 = 3;
     #[inline]
     fn out(&self) -> DiFieldOut<'a> {
         DiFieldOut::Bound(*self)
@@ -746,6 +760,73 @@ pub(crate) mod class {
         SUBPROGRAM | of(DiKind::LexicalBlock) | of(DiKind::LexicalBlockFile);
     /// LLVM's `DIScope`.
     pub(crate) const SCOPE: u32 = LOCAL_SCOPE | UNIT | FILE | of(DiKind::Namespace) | TYPE;
+}
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// A kind's record ([`DiSubprogram`], ...): what
+/// [`crate::DebugInfo::view`] reads a node as. Implemented by the records
+/// of this module only.
+pub trait DiRecord: sealed::Sealed {
+    /// The record's kind.
+    const KIND: DiKind;
+}
+
+/// One stored node of the record `R`'s kind, its fields read one at a
+/// time from the store (`spec/ir.md` §6.2): a method per field, named and
+/// typed as the record's, that reads that field's cells and no other
+/// field's. From [`crate::DebugInfo::view`]; what
+/// [`crate::DebugInfo::node`] gives, without decoding every field.
+pub struct DiView<'a, R, L: Layering = NoLayer> {
+    pub(crate) tag: u16,
+    /// The node's mask.
+    pub(crate) mask: u32,
+    /// The cells after the mask.
+    pub(crate) cells: &'a [DiId],
+    pub(crate) strings: Option<&'a StrPool<L>>,
+    pub(crate) record: PhantomData<fn() -> R>,
+}
+
+impl<R, L: Layering> Clone for DiView<'_, R, L> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<R, L: Layering> Copy for DiView<'_, R, L> {}
+
+impl<R, L: Layering> std::fmt::Debug for DiView<'_, R, L> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiView").field("tag", &self.tag).field("mask", &self.mask).finish()
+    }
+}
+
+impl<'a, R, L: Layering> DiView<'a, R, L> {
+    /// The field at mask bit `bit` of a record whose fields take `cells`
+    /// ([`Field::CELLS`] each): its default when it is not stored, else
+    /// its value, read after the stored fields before it are stepped
+    /// over.
+    #[inline]
+    fn field<F: Field<'a>>(&self, bit: u32, cells: &[u8]) -> F {
+        let at = 1u32 << bit;
+        if self.mask & at == 0 {
+            return F::absent();
+        }
+        let mut before = self.mask & (at - 1);
+        let mut start = 0usize;
+        while before != 0 {
+            let field = before.trailing_zeros() as usize;
+            before &= before - 1;
+            start += match cells.get(field).copied().unwrap_or(0) {
+                LIST_CELLS => 1 + self.cells.get(start).map_or(0, |len| len.raw() as usize),
+                n => usize::from(n),
+            };
+        }
+        let mut dec = Dec { cells: self.cells.get(start..).unwrap_or(&[]), strings: self.strings };
+        F::get(&mut dec)
+    }
 }
 
 macro_rules! nodes {
@@ -989,7 +1070,46 @@ macro_rules! nodes {
                         bit <<= 1;
                     )*
                 }
+
+                /// [`Field::CELLS`] of each field, in the mask's order.
+                const CELLS: &'static [u8] = &[$(<$fty as Field<'a>>::CELLS,)*];
+
+                /// Whether every field of `view` reads as this record's.
+                #[cfg(test)]
+                fn agrees<L: Layering>(&self, view: &DiView<'a, Self, L>) -> bool {
+                    true $(&& nodes!(@second $tag, self.tag == view.tag()))?
+                        $(&& self.$field == view.$field())*
+                }
             }
+
+            impl $(<$lt>)? sealed::Sealed for $name $(<$lt>)? {}
+
+            impl $(<$lt>)? DiRecord for $name $(<$lt>)? {
+                const KIND: DiKind = DiKind::$variant;
+            }
+
+            const _: () = {
+                /// Each field's bit in the mask.
+                #[allow(non_camel_case_types, dead_code, reason = "one variant per field, named as the field")]
+                enum Bit { $($field,)* }
+
+                impl<'a, L: Layering> DiView<'a, $name $(<$lt>)?, L> {
+                    $(
+                        #[doc = concat!("`tag:`, as [`", stringify!($name), "::tag`].")]
+                        #[inline]
+                        pub fn tag(&self) -> u16 {
+                            nodes!(@second $tag, self.tag)
+                        }
+                    )?
+                    $(
+                        #[doc = concat!("`", $fllvm, ":`, as [`", stringify!($name), "::", stringify!($field), "`], read without the other fields.")]
+                        #[inline]
+                        pub fn $field(&self) -> $fty {
+                            self.field::<$fty>(Bit::$field as u32, <$name>::CELLS)
+                        }
+                    )*
+                }
+            };
         )*
 
         /// A debug node (§6.2): what a producer defines and a consumer
@@ -1056,6 +1176,19 @@ macro_rules! nodes {
                 match self {
                     DiNode::Undefined => {}
                     $( DiNode::$variant(node) => node.each(visit), )*
+                }
+            }
+
+            /// Whether node `id` of `debug`, read through
+            /// [`crate::DebugInfo::view`], reads as this node, field by
+            /// field.
+            #[cfg(test)]
+            pub(crate) fn agrees_with_view(&self, debug: &crate::DebugInfo, id: DiId) -> bool {
+                match self {
+                    DiNode::Undefined => true,
+                    $( DiNode::$variant(node) => {
+                        debug.view::<$name>(id).is_some_and(|view| node.agrees(&view))
+                    } )*
                 }
             }
 
@@ -1671,6 +1804,62 @@ mod tests {
         }
         // The older spellings of a subprogram's flags have no position.
         assert_eq!(DiKind::Subprogram.field_index(b"isDefinition", 0), None);
+    }
+
+    /// §6.2 (WP-311): a view reads every field as `node` decodes it, for
+    /// any set of stored fields (lists of several lengths before the
+    /// field read included); a view of another kind, or of an id that is
+    /// not a node, is `None`.
+    #[test]
+    fn views_read_fields_as_nodes_do() {
+        let mut d = crate::DebugInfo::default();
+        let file = d.add(&DiFile { filename: b"t", ..Default::default() }.into()).unwrap();
+        let expr = d.expr(&[crate::DiOp::Deref]).unwrap();
+        let lists = [vec![file], vec![file, DiId::NONE, file], vec![DiId::NONE; 5]];
+        let mut seed = 0x2545_f491_u32;
+        let mut checked = 0;
+        for &kind in DiKind::ALL {
+            if kind == DiKind::Constant {
+                continue;
+            }
+            let fields = kind.fields();
+            for round in 0..96 {
+                let mut node = DiNode::new(kind);
+                for field in fields {
+                    seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                    // Round 0 sets every field it can; later rounds about half.
+                    if round > 0 && seed >> 31 == 0 {
+                        continue;
+                    }
+                    let list = &lists[(seed >> 8) as usize % lists.len()];
+                    let values = [
+                        DiFieldValue::Str(b"text"),
+                        DiFieldValue::UInt(u64::from(seed >> 16) + 1),
+                        DiFieldValue::UInt(0xfedc_ba98_7654_3210),
+                        DiFieldValue::Int(-5),
+                        DiFieldValue::Bool(true),
+                        DiFieldValue::Node(Some(file)),
+                        DiFieldValue::List(list),
+                        DiFieldValue::Expr(expr),
+                    ];
+                    let start = (seed >> 4) as usize % values.len();
+                    for value in values.iter().cycle().skip(start).take(values.len()) {
+                        if node.set(field.as_bytes(), *value).is_ok() {
+                            break;
+                        }
+                    }
+                }
+                let id = d.add_distinct(&node).unwrap();
+                assert!(node.agrees_with_view(&d, id), "{kind:?}: {node:?}");
+                checked += 1;
+            }
+            let id = d.add_distinct(&DiNode::new(kind)).unwrap();
+            assert!(DiNode::new(kind).agrees_with_view(&d, id), "{kind:?}");
+        }
+        assert!(checked > 2000);
+        assert!(d.view::<DiSubprogram>(file).is_none());
+        assert!(d.view::<DiFile>(file).is_some());
+        assert!(d.view::<DiFile>(DiId::new(u32::MAX - 1)).is_none());
     }
 
     /// §6.2: kinds have stable codes, LLVM names and field lists.

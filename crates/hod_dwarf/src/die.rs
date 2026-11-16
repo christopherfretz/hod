@@ -4,8 +4,8 @@
 //! `.debug_rnglists`.
 
 use hod_ir::{
-    ChecksumKind, ConstPool, DebugInfo, DiCompileUnit, DiFile, DiId, DiKind, DiNode, EmissionKind,
-    ExprId, Module, TypeTable,
+    ChecksumKind, ConstPool, DebugInfo, DiCompileUnit, DiFile, DiId, DiKind, DiNode, DiRecord,
+    DiView, EmissionKind, ExprId, Module, TypeTable,
 };
 use hod_obj::elf::{SHF_MERGE, SHF_STRINGS, SHT_PROGBITS};
 use hod_obj::{Object, SectionId, SectionKind, SymbolId};
@@ -419,6 +419,17 @@ impl<'a> UnitPlan<'a> {
             return Err(bad(from, field));
         }
         Ok(self.debug.node(id))
+    }
+
+    /// Node `id` as a record of `R`'s kind, its fields read one at a time
+    /// (WP-311); `bad(from, field)` when it is not a node of that kind.
+    pub(crate) fn view_of<R: DiRecord>(
+        &self,
+        from: DiId,
+        field: &'static str,
+        id: DiId,
+    ) -> Result<DiView<'a, R>, Error> {
+        self.debug.view::<R>(id).ok_or(bad(from, field))
     }
 
     fn discover_global(&mut self, gve: DiId, chain: &mut Vec<DiId>) -> Result<(), Error> {
@@ -1126,12 +1137,28 @@ impl<'a> Writer<'a> {
         let d = plan.dies[die as usize];
         self.offsets[die as usize] =
             u32::try_from(self.info.len() - self.unit_start).map_err(|_| Error::TooLarge)?;
+        // WP-311: the DIEs whose writers read their node themselves, before
+        // the node is decoded for the others.
+        match d.kind {
+            Kind::TemplateParam => return self.template_param_die(plan, d.node, children),
+            Kind::Imported => return self.imported_die(plan, d.node),
+            Kind::LocalParam | Kind::LocalVar | Kind::Block | Kind::Label => {
+                return self.local_die(plan, die, d.kind, d.node);
+            }
+            Kind::AbstractSubprogram
+            | Kind::AbstractParam
+            | Kind::AbstractVar
+            | Kind::AbstractLabel
+            | Kind::AbstractBlock
+            | Kind::Inlined => return self.inline_die(plan, die, d.kind, d.node, children),
+            Kind::CallSite => return self.call_site_die(plan, die), // WP-113: §6.19
+            Kind::Unit => unreachable!("the unit DIE is written by `unit`"),
+            _ => {}
+        }
         match (d.kind, plan.debug.node(d.node)) {
             (Kind::Variable, DiNode::GlobalVariable(v)) if plan.scope_dies.var(die).is_some() => {
                 self.scope_variable_die(plan, die, d.node, &v, children)?;
             }
-            (Kind::TemplateParam, _) => self.template_param_die(plan, d.node, children)?,
-            (Kind::Imported, _) => self.imported_die(plan, d.node)?,
             (Kind::Variable, DiNode::GlobalVariable(v)) => {
                 let file = match v.file {
                     Some(f) if v.line != 0 => Some(plan.file_index(f).ok_or(bad(d.node, "file"))?),
@@ -1179,20 +1206,6 @@ impl<'a> Writer<'a> {
             (Kind::Subprogram, DiNode::Subprogram(sp)) => {
                 self.subprogram_die(plan, die, d.node, &sp, children)?;
             }
-            (Kind::LocalParam | Kind::LocalVar | Kind::Block | Kind::Label, _) => {
-                self.local_die(plan, die, d.kind, d.node)?;
-            }
-            (
-                Kind::AbstractSubprogram
-                | Kind::AbstractParam
-                | Kind::AbstractVar
-                | Kind::AbstractLabel
-                | Kind::AbstractBlock
-                | Kind::Inlined,
-                _,
-            ) => self.inline_die(plan, die, d.kind, d.node, children)?,
-            (Kind::CallSite, _) => self.call_site_die(plan, die)?, // WP-113: §6.19
-            (Kind::Unit, _) => unreachable!("the unit DIE is written by `unit`"),
             (_, node) => self.type_die(plan, die, d, node, children)?,
         }
         Ok(())

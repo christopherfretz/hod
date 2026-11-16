@@ -21,7 +21,7 @@
 //! at its `DW_AT_call_pc`.
 
 use hod_dwarf::{CallOrigin, CallSiteInput};
-use hod_ir::{DiFlags, DiId, DiNode, LocId, Module, SymId, SymbolKind};
+use hod_ir::{DiFlags, DiId, DiSubprogram, LocId, Module, SymId, SymbolKind};
 
 use crate::call::Callee;
 use crate::cx::FnCx;
@@ -78,8 +78,7 @@ impl<T: Target> FnCx<'_, T> {
         else {
             return false;
         };
-        matches!(self.module.debug.node(sp),
-            DiNode::Subprogram(s) if s.flags.0 & DiFlags::ALL_CALLS_DESCRIBED.0 != 0)
+        all_calls_described(self.module, sp)
     }
 
     /// Arms the row of a call of `callee` through `target`, before the
@@ -221,6 +220,15 @@ impl<T: Target> FnCx<'_, T> {
     }
 }
 
+/// Whether subprogram `sp` has `DIFlagAllCallsDescribed`: its `flags`
+/// alone read from the store (WP-311).
+fn all_calls_described(module: &Module, sp: DiId) -> bool {
+    module
+        .debug
+        .view::<DiSubprogram>(sp)
+        .is_some_and(|s| s.flags().0 & DiFlags::ALL_CALLS_DESCRIBED.0 != 0)
+}
+
 /// The bridge (`emit::lines`): the call sites `hod_dwarf` writes for the
 /// rows `rows` of the function of subprogram `sp`, into `out`. A call of
 /// a function without a subprogram, or of what is no function (an
@@ -239,9 +247,7 @@ pub(crate) fn call_inputs(
     out: &mut Vec<CallSiteInput>,
 ) -> CgResult<()> {
     out.clear();
-    let describes = matches!(module.debug.node(sp),
-        DiNode::Subprogram(s) if s.flags.0 & DiFlags::ALL_CALLS_DESCRIBED.0 != 0);
-    if !describes {
+    if !all_calls_described(module, sp) {
         return Ok(());
     }
     // WP-150: version 4 (no flag is version 4, `spec/dwarf.md` §6.20)

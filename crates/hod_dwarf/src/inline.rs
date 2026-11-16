@@ -19,7 +19,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use hod_ir::{DiFlags, DiId, DiKind, DiNode, LocId, Module, SpFlags, SymbolKind};
+use hod_ir::{DiFlags, DiId, DiKind, DiLocalVariable, DiNode, LocId, Module, SpFlags, SymbolKind};
 
 use crate::Error;
 use crate::abbrev::{code, fam};
@@ -655,11 +655,11 @@ impl UnitPlan<'_> {
     pub(crate) fn finish_entities(&mut self) -> Result<(), Error> {
         for i in 0..self.inline.entities.len() {
             let d = self.dies[self.inline.entities[i] as usize];
-            if let (Kind::LocalParam | Kind::LocalVar, DiNode::LocalVariable(v)) =
-                (d.kind, self.debug.node(d.node))
+            if matches!(d.kind, Kind::LocalParam | Kind::LocalVar)
+                && let Some(v) = self.debug.view::<DiLocalVariable>(d.node)
                 && self.inline.die(d.node).is_none()
             {
-                self.reference_type(d.node, "type", v.ty.unwrap_or(DiId::NONE))?;
+                self.reference_type(d.node, "type", v.ty().unwrap_or(DiId::NONE))?;
             }
         }
         Ok(())

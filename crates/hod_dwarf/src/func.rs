@@ -14,7 +14,8 @@
 //! the writer needs is three side tables sorted by DIE.
 
 use hod_ir::{
-    DiFlags, DiId, DiKind, DiLocation, DiNode, DiOp, DiSubprogram, ExprId, LocId, SpFlags,
+    DiFlags, DiId, DiKind, DiLocalVariable, DiLocation, DiNode, DiOp, DiSubprogram,
+    DiSubroutineType, ExprId, LocId, SpFlags,
 };
 
 use crate::Error;
@@ -491,10 +492,8 @@ impl<'a> UnitPlan<'a> {
     /// Whether a subprogram's type ends in a null parameter type.
     fn variadic(&self, of: DiId, sp: &DiSubprogram<'_>) -> Result<bool, Error> {
         let Some(ty) = sp.ty else { return Ok(false) };
-        let DiNode::SubroutineType(t) = self.node_of(of, "type", ty)? else {
-            return Err(bad(of, "type"));
-        };
-        Ok(t.types.len() > 1 && t.types.last() == Some(&DiId::NONE))
+        let types = self.view_of::<DiSubroutineType>(of, "type", ty)?.types();
+        Ok(types.len() > 1 && types.last() == Some(&DiId::NONE))
     }
 
     /// The return type of a subprogram, `None` for `void` or no type.
@@ -504,10 +503,8 @@ impl<'a> UnitPlan<'a> {
         sp: &DiSubprogram<'_>,
     ) -> Result<Option<DiId>, Error> {
         let Some(ty) = sp.ty else { return Ok(None) };
-        let DiNode::SubroutineType(t) = self.node_of(of, "type", ty)? else {
-            return Err(bad(of, "type"));
-        };
-        Ok(t.types.first().copied().filter(|&t| t != DiId::NONE))
+        let types = self.view_of::<DiSubroutineType>(of, "type", ty)?.types();
+        Ok(types.first().copied().filter(|&t| t != DiId::NONE))
     }
 
     /// `llc`'s `endFunctionImpl`: the scopes and entities, the abstract
@@ -836,8 +833,8 @@ impl<'a> UnitPlan<'a> {
             };
             if class == 0
                 && !inlined
-                && let DiNode::LocalVariable(n) = self.debug.node(v.node)
-                && has(n.flags, DiFlags::OBJECT_POINTER)
+                && let Some(n) = self.debug.view::<DiLocalVariable>(v.node)
+                && has(n.flags(), DiFlags::OBJECT_POINTER)
             {
                 let fd = &mut self.funcs[func as usize];
                 if fd.object_pointer != NONE {
@@ -1137,7 +1134,7 @@ impl<'a> Writer<'a> {
         kind: Kind,
         node: DiId,
         what: LocalWhat,
-        v: &hod_ir::DiLocalVariable<'a>,
+        v: &DiLocalVariable<'a>,
     ) -> Result<(), Error> {
         let b = u32::from;
         // WP-162: a location list (§6.23), or none.

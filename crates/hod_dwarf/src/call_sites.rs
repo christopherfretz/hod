@@ -30,7 +30,7 @@
 //! ([`CallSiteInput`]); a return address that is not exact is worse than
 //! none, so whatever is not known exactly is refused by name.
 
-use hod_ir::{DiFlags, DiId, DiKind, DiNode, DiSubprogram, SpFlags};
+use hod_ir::{DiFlags, DiId, DiKind, DiNode, DiSubprogram, DiSubroutineType, SpFlags};
 
 use crate::Error;
 use crate::abbrev::{code, fam};
@@ -163,34 +163,36 @@ pub(crate) const fn family(base: usize, calls: bool) -> usize {
 /// [`fam::SUBPROGRAM_DECL`] with the flag.
 pub(crate) fn c_declaration(plan: &UnitPlan<'_>, die: u32) -> Option<(usize, u32)> {
     let b = u32::from;
-    let DiNode::Subprogram(sp) = plan.debug.node(plan.dies[die as usize].node) else {
+    // WP-311: the unit's language first (a C++ unit has no such
+    // declaration), then the subprogram's fields one at a time.
+    if !crate::func::is_c(plan.cu.language) {
         return None;
-    };
+    }
+    let sp = plan.debug.view::<DiSubprogram>(plan.dies[die as usize].node)?;
     let only = DiFlags::PROTOTYPED.0 | DiFlags::NO_RETURN.0;
-    let c = crate::func::is_c(plan.cu.language);
     let sp_only = SpFlags::LOCAL_TO_UNIT.0 | SpFlags::OPTIMIZED.0;
-    if !c
-        || !sp.flags.contains(DiFlags::PROTOTYPED)
-        || sp.flags.0 & !only != 0
-        || sp.sp_flags.0 & !sp_only != 0
-        || sp.name.is_empty()
+    let (flags, sp_flags) = (sp.flags(), sp.sp_flags());
+    if !flags.contains(DiFlags::PROTOTYPED)
+        || flags.0 & !only != 0
+        || sp_flags.0 & !sp_only != 0
+        || sp.name().is_empty()
     {
         return None;
     }
-    let ty = match sp.ty.map(|t| plan.debug.node(t)) {
-        Some(DiNode::SubroutineType(s)) => {
-            if s.cc != 0 && s.cc != 1 {
+    let ty = match sp.ty().and_then(|t| plan.debug.view::<DiSubroutineType>(t)) {
+        Some(s) => {
+            if s.cc() != 0 && s.cc() != 1 {
                 return None;
             }
-            s.types.first().is_some_and(|&t| t != DiId::NONE)
+            s.types().first().is_some_and(|&t| t != DiId::NONE)
         }
-        _ => false,
+        None => false,
     };
-    let mask = b(!sp.linkage_name.is_empty())
-        | b(sp.line != 0) << 1
+    let mask = b(!sp.linkage_name().is_empty())
+        | b(sp.line() != 0) << 1
         | b(ty) << 2
-        | b(!sp.sp_flags.contains(SpFlags::LOCAL_TO_UNIT)) << 3
-        | b(sp.flags.contains(DiFlags::NO_RETURN)) << 4;
+        | b(!sp_flags.contains(SpFlags::LOCAL_TO_UNIT)) << 3
+        | b(flags.contains(DiFlags::NO_RETURN)) << 4;
     Some((fam::SUBPROGRAM_DECL_C, mask))
 }
 

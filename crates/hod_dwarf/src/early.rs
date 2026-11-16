@@ -15,8 +15,8 @@
 //! unit, stays refused as [`LOCAL_TYPE_SCOPE`].
 
 use hod_ir::{
-    Body, DebugInfo, DiId, DiKind, DiNode, DiSubprogram, EmissionKind, ExprId, Module, SpFlags,
-    SymbolKind, Value, ValueKind,
+    Body, DebugInfo, DiId, DiImportedEntity, DiKind, DiLocalVariable, DiNode, DiSubprogram,
+    EmissionKind, ExprId, Module, SpFlags, SymbolKind, Value, ValueKind,
 };
 
 use crate::Error;
@@ -170,11 +170,11 @@ fn check_variable(debug: &DebugInfo, var: DiId, expr: ExprId) -> Result<(), &'st
     if debug.find_kind(var) != Some(DiKind::LocalVariable) {
         return Ok(());
     }
-    let DiNode::LocalVariable(n) = debug.node(var) else { return Ok(()) };
-    if n.ty.is_none() {
+    let Some(n) = debug.view::<DiLocalVariable>(var) else { return Ok(()) };
+    if n.ty().is_none() {
         return Err("debug:variable-without-type");
     }
-    if n.align != 0 && (n.arg != 0 || n.name.is_empty()) {
+    if n.align() != 0 && (n.arg() != 0 || n.name().is_empty()) {
         return Err("debug:variable-alignment");
     }
     check_declare_expr(debug, expr)
@@ -195,14 +195,15 @@ fn check_imports(
         if debug.find_kind(n) != Some(DiKind::ImportedEntity) {
             continue;
         }
-        let DiNode::ImportedEntity(e) = debug.node(n) else { continue };
-        let Some(scope) = e.scope else { return Err(IMPORT_SCOPE) };
+        let Some(e) = debug.view::<DiImportedEntity>(n) else { continue };
+        let Some(scope) = e.scope() else { return Err(IMPORT_SCOPE) };
         if scope == sp_id {
-            let named_module = e.tag == tag::IMPORTED_MODULE && !e.name.is_empty();
-            if !matches!(e.tag, tag::IMPORTED_MODULE | tag::IMPORTED_DECLARATION)
-                || !e.elements.is_empty()
+            let e_tag = e.tag();
+            let named_module = e_tag == tag::IMPORTED_MODULE && !e.name().is_empty();
+            if !matches!(e_tag, tag::IMPORTED_MODULE | tag::IMPORTED_DECLARATION)
+                || !e.elements().is_empty()
                 || named_module
-                || (e.line != 0 && e.file.is_none())
+                || (e.line() != 0 && e.file().is_none())
             {
                 return Err(IMPORT);
             }

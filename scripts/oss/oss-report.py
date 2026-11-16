@@ -866,7 +866,9 @@ def main():
     hosts = sorted({r.get("host", "") for r in reps.values()} - {""})
     if hosts:
         intro += ["", f"Host: {', '.join(hosts)}; target: {TARGET}" + (
-            " (cross-built, tests under qemu-x86_64)." if TARGET != "aarch64" else ".")]
+            " (cross-built). x86-64 programs a build or test starts itself run through"
+            " the host's x86-64 translation, ctest's own test programs under qemu-x86_64."
+            if TARGET != "aarch64" else ".")]
     if a.cmd == "status":
         title = "Real projects through kiln and hod" + ("" if TARGET == "aarch64" else f", {TARGET}")
         write(page(reps, title, intro), a.out)

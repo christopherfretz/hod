@@ -318,9 +318,23 @@ program under `qemu-x86_64 -L /usr/x86_64-linux-gnu`
 emulate-tests` also puts the emulator before the test commands CMake
 leaves alone: a program named by path, a `cmake -P` test's
 `-D<var>=<program>`, and CTestCustom.cmake's pre- and post-test
-commands). A program a test starts by itself still runs without the
-emulator and fails, in the control too. The trees, findings and census
-are the cross lane's own:
+commands). A program that a build step or a test starts by itself
+(protoc and its plugins, a death test re-running `/proc/self/exe`, a
+python harness) gets no emulator. The host kernel's x86-64 translation
+runs it instead. For that, every x86-64 link of the lane, in the
+control and in hod's builds alike, names the system root's loader as
+interpreter and puts its libraries on the run path
+(`-Wl,--dynamic-linker=/usr/x86_64-linux-gnu/lib/ld-linux-x86-64.so.2
+-Wl,-rpath,/usr/x86_64-linux-gnu/lib`, through
+`CMAKE_EXE_LINKER_FLAGS`/`CMAKE_SHARED_LINKER_FLAGS`). These are link
+flags only: no compile sees them, and the objects are the same with and
+without them. `HOD_OSS_X64_INTERP=0` turns this off. So there are two
+emulators: ctest's own test programs run under qemu, and
+self-started programs run under the host's translation. The two differ
+(AVX-512, some system calls), so when a self-started program fails in
+the strict build but not in the control, it is rerun under qemu before
+the difference is called hod's. The trees, findings and census are the
+cross lane's own:
 
 ```
 scripts/oss/oss-run.sh fmt googletest abseil re2 --target x86_64
@@ -333,11 +347,7 @@ Trees under `oss/x64-build/` and `oss/x64-install/`, findings under
 reduced by `scripts/oss/oss-reduce.py` while hod still refuses it with
 that reason). A strict build is judged per object by the `backend` field
 of kiln's statistics log (the census page's "Strict builds"), not by the
-build's exit status. A test that runs an x86-64
-program itself rather than through ctest (a death test re-executing
-`/proc/self/exe`, a python test script) fails in all three builds alike
-under qemu: the comparison with the control still holds, the absolute
-pass count does not.
+build's exit status.
 
 ### Linker matrix
 

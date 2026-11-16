@@ -51,7 +51,9 @@
 # a project that includes CTest) are times $HOD_OSS_X64_TEST_SLOWDOWN
 # (default 4), the test step's address-space cap is
 # $HOD_OSS_X64_TEST_VMEM_KB (default 16 GB: a guest thread is a host
-# thread of qemu's), and the trees are <root>/x64-build/ and <root>/x64-install/ (the sources
+# thread of qemu's), programs are linked to run outside qemu as well (the
+# system root's loader as interpreter, its libraries on the run path; see
+# HOD_OSS_X64_INTERP below), and the trees are <root>/x64-build/ and <root>/x64-install/ (the sources
 # are shared).
 #
 # Environment (source scripts/env.sh first; make draws from the
@@ -119,6 +121,18 @@ case "$TARGET" in
       "-DCMAKE_CROSSCOMPILING_EMULATOR=$X64_QEMU;-L;$X64_SYSROOT"
       "-DCMAKE_FIND_ROOT_PATH=$X64_SYSROOT" -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER
       -DDART_TESTING_TIMEOUT=$((1500 * ${HOD_OSS_X64_TEST_SLOWDOWN:-4})))
+    # A program a build step or a test starts itself (protoc and its
+    # plugins, a death test re-running /proc/self/exe, a python harness)
+    # does not get the emulator: the host kernel's x86-64 handler runs it
+    # and looks for /lib64/ld-linux-x86-64.so.2, which the host does not
+    # have. Every program and library is linked with the system root's
+    # loader as its interpreter and the system root's libraries on its
+    # run path, so those run as they are, in the control and in hod's
+    # builds alike. HOD_OSS_X64_INTERP=0 leaves the link as kiln makes it.
+    if [ "${HOD_OSS_X64_INTERP:-1}" != 0 ]; then
+      XCONF+=("-DCMAKE_EXE_LINKER_FLAGS=-Wl,--dynamic-linker=$X64_SYSROOT/lib/ld-linux-x86-64.so.2 -Wl,-rpath,$X64_SYSROOT/lib"
+        "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-rpath,$X64_SYSROOT/lib")
+    fi
     export HOD_OSS_TARGET_TRIPLE="$X64_TRIPLE" KILN_OSS_LINK_VMEM_KB="${KILN_OSS_LINK_VMEM_KB:-16000000}" ;;
   *) echo "oss-build: --target must be aarch64 or x86_64" >&2; exit 2 ;;
 esac

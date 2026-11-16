@@ -649,11 +649,15 @@ says, unchanged. `x86_fp80` is always §11's; at SSE without SSE2
 
 **Homes, ABI, glue.** SSE values are class `Mem` as on the x87 (4 or 8
 bytes): arguments on the stack, `phi`s, and `float`/`double` returns
-and call results through `st0` are §11's glue. A call result of an SSE
-type is stored by `fstp` at its type's width, which every SSE use
-reads; §11 also keeps its 80-bit copy for its run, which only an
-`fpext`/`fptrunc` reads (below). A return loads the home (`fld`), as
-`llc` writes `movsd` to a stack slot and `fldl`.
+and call results through `st0` are §11's glue. This departs from
+design 0008's `Fpr` row on purpose: hod does not aim at fast code, a
+value in memory needs no `xmm` glue for arguments, returns, `phi`s or
+spills (the x87 path already has all of it), and `class_of` has only
+the types, not the function's features. A call result of an SSE type
+is stored by `fstp` at its type's width, which every SSE use reads;
+an `fpext`, `fptrunc` or `ret` may read its 80-bit value instead
+("The 80-bit value of a call result" below). A return loads the home
+(`fld`), as `llc` writes `movsd` to a stack slot and `fldl`.
 
 **Operations.** The first operand is loaded into `xmm6`
 (`movss`/`movsd`), the operation takes the second from its home, the
@@ -672,15 +676,10 @@ immediates (§11; no constant pool, no relocation under PIC).
 
 **Conversions.** `fpext`/`fptrunc` (between `float`, `double`,
 `x86_fp80`, at least one an SSE type): `fld` of the operand's 80-bit
-copy for this use if §11 keeps one, else of its home, and `fstp` to
-the result's home (one rounding). Two operands have a copy, as in
-`llc`: a call result of an SSE type (`llc` takes it out of `st0` as an
-exact `fp_round` that its DAG folds into the `fpext`/`fptrunc`: the
-80-bit register is stored at the result's width), and at SSE without
-SSE2 a computed `double` (an x87 value, which `llc` rounds to `float`
-directly). Known divergence: `llc`'s fold holds for the whole block,
-§11's copy for its run, so a call between a call result and its
-`fpext` makes hod read the rounded home. `sitofp` of at most 32 bits: `cvtsi2s` of the
+value for this use (below), or its §11 copy (at SSE without SSE2 a
+computed `double`, an x87 value that `llc` rounds to `float`
+directly), else its home, and `fstp` to the result's home (one
+rounding). `sitofp` of at most 32 bits: `cvtsi2s` of the
 extended value; `uitofp` of an `i32`: `fild` of 64 bits with a zero
 high word and `fstp` (one rounding, as `llc`'s `2^52` sequence).
 `fptosi` to at most 32 bits: `cvtts2si` (a narrower result is its low
@@ -701,6 +700,41 @@ copied to the outgoing area at their width, the result stored from
 construct of this section is lowered by `llc` with a branch or a call
 that §11 does not already list (`frem` and the libm intrinsics are
 calls there for every type).
+
+**The 80-bit value of a call result** (measured, `llc` 19 and 22
+identical, `-O0`, `pentium4` and `pentium3`). `llc` takes a call result
+of an SSE type out of `st0` as an exact `fp_round` of the 80-bit
+register `x`, and the DAG of the call's block folds that node into
+some uses. A *view* is a value `llc` still has as `x`: the call result;
+an `fpext` of a view; an `fptrunc` of an `fpext` of a view `w` back to
+`w`'s type. A view reaches the uses in the call's block up to an
+`atomicrmw` that `AtomicExpand` turns into a loop (an `and`/`or`/`xor`
+whose result is used, any operation wider than 32 bits, the floating
+operations, `nand`, `min`/`max` and the rest; `xchg`, `add`, `sub` of
+at most 32 bits, an unused `and`/`or`/`xor` and `cmpxchg` stay one
+instruction), and across everything else: calls, libm calls, `memcpy`,
+a `select` that `llc` lowers with a branch (`llc` spills `x` at 80
+bits, `fstpt`/`fldt`). Within the reach:
+- `fpext` of a view to `U`: `x` rounded to `U` (`x` for `x86_fp80`);
+- `fptrunc` of a view: `x` rounded to the result type once;
+  `fptrunc (fpext w)` of a view `w` to `w`'s type is `w`; to another
+  type it is `x` rounded to `w`'s type and converted, unless every use
+  of the result is a store (then `x` rounded once: `llc` folds the
+  store);
+- `ret` of a view returns `x` itself.
+Every other use (arithmetic, `fcmp`, `store`, an argument, `freeze`,
+`fneg`, a use in another block or past the reach) reads the home, the
+value rounded to its type. hod (`sse::Views`): at the call
+(`x87::call_result`) a result of an SSE type that an `fpext`, `fptrunc`
+or `ret` in its reach reads gets a 12-byte slot, stored at 80 bits
+before the glue store (`x87::store_call_result`); `fp_cast` and
+`x87::ret_copy` read the slot for a view; `x87` keeps no §11 copy of
+such a result. Not modelled: `llc`'s bit-test form of an `atomicrmw
+or`/`and` (one instruction) counts as a loop. Divergence (WP-317's
+FINDING, an ignored test): at `pentium3` an `fpext` of a `float` call
+result to `double` is an x87 value that `llc` keeps as `x` for every
+x87 use in the block (`faddp` of `x`); hod's x87 operations read its
+home, rounded to `double`.
 
 **Remains refused.** `half`, `bfloat` (`x86:float:half`,
 `x86:float:bfloat`: with SSE2 `llc` returns them in `xmm0`, which the

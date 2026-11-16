@@ -931,8 +931,7 @@ fn splits_block(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
     let ty = value_ty(cx, value);
     let types = cx.types();
     let narrow = match types.kind(ty) {
-        TypeKind::Float => true,
-        TypeKind::Ptr { .. } => true,
+        TypeKind::Float | TypeKind::Ptr { .. } => true,
         _ => types.int_bits(ty).is_some_and(|b| b <= 32),
     };
     let one = match op {

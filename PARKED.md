@@ -1,57 +1,69 @@
-# WP-317 (design 0008 I12) parked after session 1
+# WP-317 (design 0008 I12) parked after session 2
 
 Branch `wp/317-i386-sse2`, worktree `.worktrees/wp-317`, build dir
-`/Volumes/AgentWork/hod-helper/.build/target-wp-317`.
+`/Volumes/AgentWork/hod-helper/.build/target-wp-317`. Base of the group
+`31400b11`.
 
 ## Done
 
-- Step A: measured, written first in `spec/landed/codegen/WP-317.md`.
-- Step B (scalar SSE): `crates/hod_x86/src/sse.rs`; dispatch in
-  `target.rs` (`lower` arm `sse::owns` before `x87::owns`; the
-  `materialize_mem` test). `x87.rs` and `abi.rs` unchanged. Spec
-  `spec/codegen-x86.md` §12 appended, §7 row `x86:float:sse` removed.
-  Tests `crates/hod/tests/i386_sse.rs` (+ `data/i386/sse/`).
-- Design decision: SSE values stay class `Mem` (no `Fpr` values on this
-  target); every operation goes through `xmm6` (`xmm4`, `xmm5` for
-  `minnum`/`maxnum`). The x87 glue (args, `st0` returns and call
-  results) is reused unchanged. `fpext`/`fptrunc` read §11's 80-bit copy
-  through `x87::ret_copy`/`load_ret` (call results of SSE type, `double`
-  at `pentium3`): llc's DAG folds an exact `fp_round` of a call result.
+- Session 1: Step A (measurements, `spec/landed/codegen/WP-317.md`),
+  Step B scalar SSE (`crates/hod_x86/src/sse.rs`, §12).
+- Session 2: cherry-pick `d297f410`; evidence (record); the fold of a
+  call result's 80-bit value (`sse::Views`, §12), test
+  `call_result_folds_run_as_llc_s`; FINDING at `pentium3` (record, top
+  of the second-session section; ignored test).
+- Supervisor decisions in force: SSE values are class `Mem` through
+  `xmm6`; a per-function feature field on `X86` with
+  `Target::for_function` is AUTHORIZED (not yet added: see 1.).
 
 ## Remaining, in order
 
-1. `half`/`bfloat` with SSE2 (Step A: `__extendhfsf2` result in `st0`,
-   `__truncsfhf2`/`__truncsfbf2` result in `xmm0`; a `half` return in
-   `xmm0`). Needs: `abi.rs` to return `half` in `xmm0` for SSE2
-   functions (a function of `sse.rs` that `abi::assign` calls at one
-   point; `assign` has no function context, so the `X86` value must
-   carry the feature set: `Target::for_function` exists in `hod_cg` for
-   exactly this, `X86` has only `cpu` today: adding a field is
-   `target.rs`'s, ask the supervisor), plus `Target::load`/`store` of
-   `xmm0` in `target.rs`.
-2. Step C (vectors), as the brief says. Same `for_function` question for
-   the vector ABI (`xmm0`-`xmm2` arguments only with SSE).
-   Proposal: vectors stay class `Mem` like scalars (the 64-bit back
-   end's lane code as the model, operations through `xmm6`/`xmm7`), and
-   `abi.rs` gets the `xmm` places from a function of `sse.rs`.
-3. Evidence gathered in session 1: all 15 `i386*` test binaries of `-p
-   hod` pass with `HOD_REQUIRE_TOOLS=1`; `i386_sse`: ops 24 runs, x87
-   `arith.c` 12, fcmp 12, shapes 270 lines, mixed 6, all equal `llc`;
-   x87 shapes unchanged (288 equal `llc`, 72 equal the model);
-   `cargo test -p hod_x86 -p hod_cg -p hod_mc_x64` green; fmt clean;
-   clippy clean except `crates/hod/tests/i386_module_asm.rs:367`
-   (`too_many_lines`, file unchanged from base: not this package's).
-   The irdiff harness has no tier-wide CPU flag (only the per-seed
-   `;@ llc-args: -mcpu=` directive).
-   Evidence not yet gathered: irdiff i686 full tier (`cargo xtask irdiff
-   --target i686 --llvm 22` and `--llvm 19`) before/after; compare-binaries
-   against `31400b11` (base built into
-   `/Volumes/AgentWork/hod-helper/.build/target-wp-317-base`).
+1. `half`/`bfloat` (step 4 of session 2's brief), measured, not built.
+   Probes in `/Volumes/AgentWork/hod-helper/.build/target-wp-317/probe/half/`
+   (`h.ll`, `b.ll` per CPU; `llc-22 -O0 -global-isel=0 -fast-isel=0
+   -mtriple=i686-unknown-linux-gnu h-pentium4.ll -o -`). Facts:
+   - `half`, every CPU, 19 and 22: argument on the stack (2 bytes of a
+     4-byte slot); every operation `__extendhfsf2` (result in `st0`,
+     stored `fstps`), the `float` operation, `__truncsfhf2`
+     (`__truncdfhf2` from `double`); `fpext half -> double` is
+     `__extendhfsf2` then the `float` widening; `-> x86_fp80` is
+     `__extendhfxf2` at `pentium4` with 22 (check 19 and libgcc).
+   - Return: with SSE2 in `xmm0` (`pextrw $0, %xmm0`), and
+     `__truncsfhf2`'s result in `xmm0`; WITHOUT SSE2 (`generic`,
+     `pentium3`) in `ax` (`movzwl %ax`), i.e. like `i16`. So `half` at
+     `generic` is "simple" (the brief: follow `llc`).
+   - `fneg half`: llc 19 extends/negates/truncates (NaN quieting by
+     libgcc), llc 22 flips bit 15 only: test with values both agree on.
+   - `bfloat`: llc 19 aborts on parts of `b.ll` ("Unsupported library
+     call operation", "soft promote"); 22 compiles all; generic with 19
+     errors "SSE register return with SSE disabled". Measure per
+     operation which ones 19 accepts before promising anything.
+   Implementation: add `features: X86Features` to `X86`
+   (`crates/hod_x86/src/target.rs:43`), `for_function` as
+   `crates/hod_x64/src/target.rs:383` does (from `target-cpu` /
+   `target-features`, `-mcpu` as fallback; `sse::features` then reads
+   the field); `abi::assign` (`target.rs:148`) passes the features to
+   ONE `sse.rs` function that places a `half` return in `xmm0`; add
+   `Target::load`/`store` of `xmm0` (`movd`/`pinsrw`) in `target.rs`;
+   libgcc calls through `pic::emit_call`. Tests: edge values
+   (subnormals, inf, NaN, halfway), static and PIC, GNU ld.
+2. Step C, vectors: `x86:vector` stays refused until then. Facts for
+   it: no `abi.rs` hook exists yet (1. adds the first, the `half`
+   return); the feature set reaches `abi::assign` only through the
+   `X86` value (`for_function`). Proposal: vectors class `Mem` like
+   scalars (hod_x64's lane code as the model, operations through
+   `xmm6`/`xmm7`), `abi.rs` gets the `xmm0`-`xmm2` argument places and
+   the `xmm0` return from a function of `sse.rs`.
+3. Evidence after each: `cargo xtask irdiff --target i686 --llvm 22`
+   and `--llvm 19`; compare-binaries against `31400b11` (base build:
+   `git archive 31400b11 | tar -x -C <build dir>/base-src`, `cargo
+   build --release -p hod_cli` with `CARGO_TARGET_DIR=<build
+   dir>-base`); the x87 objects `cmp`
+   (`/Volumes/AgentWork/hod-helper/.build/target-wp-317/probe/x87cmp.sh
+   <worktree> <outdir>`: 112 objects, 0 must differ).
 
 ## Ruled out
 
-- `Class::Fpr` for SSE scalars: needs `class_of` per function (it has
-  only the types) and xmm glue for args/returns that the x87 path
-  already does through memory; no speed is gained that matters here.
-- A refusal of `fptrunc` of a computed `double` at `pentium3`: not
-  needed, the x87 copy is readable through `ret_copy`/`load_ret`.
+- `Class::Fpr` for SSE scalars (decision above).
+- Reading `w`'s home in `fptrunc (fpext w)`: homes of non-operands may be
+  reused; `sse` rounds `x` below the stack pointer instead.

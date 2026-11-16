@@ -135,16 +135,48 @@ mortar misbehaved where GNU ld, lld and mold behaved.
   --compress-debug-sections=zlib`) alike; the uncompressed objects of the
   same tests link and run with mortar.
 
+### The harness's runs with mortar (WP-310)
+
+Measured on the AArch64 development machine with commit `ea9b94f`
+(x86-64 programs under `qemu-x86_64`), `HOD_REQUIRE_TOOLS=1`, each run
+with `--linker bfd --linker mortar` (GNU ld is the default linker of the
+comparison), so both linkers' results come from the same objects.
+Every program mortar linked carried its signature (`mortar <digit>`).
+
+| run | target | GNU ld | mortar |
+|---|---|---|---|
+| `irdiff --llvm 22` (full `tests/ir` tier) | AArch64 | 92 PASS, 1 UNSUPPORTED | 92 PASS, 1 UNSUPPORTED |
+| `irdiff --llvm 22 --target x86_64` (full tier) | x86-64 | 94 PASS, 1 UNSUPPORTED | 94 PASS, 1 UNSUPPORTED |
+| `irdiff --llvm 22 --target i686 --tier quick` | i686 | not run here | not run: a usage error ("linker 'mortar' does not link i686 programs"); the harness links i686 programs dynamically, mortar links only `-static` for i386 (`EXCEPTIONS`, case `elf-i386`) |
+| `debug` (every test, front end, gdb and lldb) | AArch64 | 244 PASS, 4 XFAIL | 244 PASS, 4 XFAIL |
+| `debug --target x86_64` | x86-64 | 224 PASS, 2 XFAIL, 6 SKIP | 224 PASS, 2 XFAIL, 6 SKIP |
+| `roundtrip` (the corpus, LLVM 22 and 19) | AArch64 | 6468 entries as expected (each linked by both) | the same |
+| `corpus verify` (hybrid, LLVM 22 and 19) | AArch64 | 6468 PASS | 6468 PASS |
+| `corpus verify --target x86_64` | x86-64 | 6462 PASS, 2 SKIP (expected undefined) | 6462 PASS, 2 SKIP (the same) |
+| `fuzz --seed 310000 --count 300 --linker mortar` | AArch64 | (not compared) | 269 agree, 31 skipped (29 both timed out, 2 undefined float casts), 0 findings |
+| the same with `--target x86_64` | x86-64 | (not compared) | 269 agree, 31 skipped, 0 findings |
+
+The XFAILs and SKIPs are the same tests under both linkers (permitted
+differences of `llc`'s side; TLS under `qemu-user`'s gdb stub). Every
+result that GNU ld passes, mortar passes: no refusal, no failure without
+a named feature, no program that behaves otherwise, so no finding, no
+REFUSED cell and no exception row was added. `roundtrip`, `debug`,
+`irdiff`, `corpus verify` and `fuzz` link; `corpus capture`, `census`,
+`reasons`, `compare` and `fetch` link nothing. `roundtrip` has no
+`--target` (it runs the host's corpus).
+
+Harness gaps found and fixed (hod's side): `corpus verify` had no
+`--linker` (added, as `irdiff`'s); `fuzz --linker` did not check which
+linker signed its programs (now it does, as `irdiff`).
+
 ### Not yet run with mortar
 
-- The hosted lanes: no set-up builds mortar. Doing so would add, per
-  job, a checkout of mortar at the pinned commit and `cargo build
-  --release -p mortar` (about two minutes on the development machine,
-  no third-party crate in mortar's own crate graph), or one build per
-  architecture cached by commit, then `HOD_MORTAR` for every later step.
-- The harness's own runs through `xtask` (`irdiff`, `debug`,
-  `roundtrip`, `fuzz`, `corpus`) know mortar (`--linker mortar`,
-  signature `mortar <digit>`, `-Wl,--threads=1`) but were not run with it.
+- The hosted lanes: `.github/actions/mortar` builds the pinned commit
+  (WP-310) on both runners, unproven until a hosted run; until then
+  `MORTAR_REQUIRED` stays false. The x86-64 host's native runs with
+  mortar happen there first.
+- i686 through the harness: only `-static` links, which no i686 run of
+  the harness makes.
 - The libc++ shard and the real-project lanes.
 
 ## Not yet run with wild

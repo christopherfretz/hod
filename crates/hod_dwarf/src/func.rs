@@ -14,7 +14,8 @@
 //! the writer needs is three side tables sorted by DIE.
 
 use hod_ir::{
-    DiFlags, DiId, DiKind, DiLocation, DiNode, DiOp, DiSubprogram, ExprId, LocId, SpFlags,
+    DiFlags, DiId, DiKind, DiLocalVariable, DiLocation, DiNode, DiOp, DiSubprogram,
+    DiSubroutineType, ExprId, LocId, SpFlags,
 };
 
 use crate::Error;
@@ -442,7 +443,7 @@ impl<'a> UnitPlan<'a> {
         }
         self.fn_scratch = s;
         let result = result.and_then(|d| self.add_call_sites(sp_id, &sp, d, f.calls, f.code.size)); // WP-113: §6.19
-        self.record_entities(f, result.is_ok()); // WP-094: §6.13
+        self.record_entities(f, &sp, result.is_ok()); // WP-094: §6.13
         result.map(|_| ())
     }
 
@@ -491,10 +492,8 @@ impl<'a> UnitPlan<'a> {
     /// Whether a subprogram's type ends in a null parameter type.
     fn variadic(&self, of: DiId, sp: &DiSubprogram<'_>) -> Result<bool, Error> {
         let Some(ty) = sp.ty else { return Ok(false) };
-        let DiNode::SubroutineType(t) = self.node_of(of, "type", ty)? else {
-            return Err(bad(of, "type"));
-        };
-        Ok(t.types.len() > 1 && t.types.last() == Some(&DiId::NONE))
+        let types = self.view_of::<DiSubroutineType>(of, "type", ty)?.types();
+        Ok(types.len() > 1 && types.last() == Some(&DiId::NONE))
     }
 
     /// The return type of a subprogram, `None` for `void` or no type.
@@ -504,10 +503,8 @@ impl<'a> UnitPlan<'a> {
         sp: &DiSubprogram<'_>,
     ) -> Result<Option<DiId>, Error> {
         let Some(ty) = sp.ty else { return Ok(None) };
-        let DiNode::SubroutineType(t) = self.node_of(of, "type", ty)? else {
-            return Err(bad(of, "type"));
-        };
-        Ok(t.types.first().copied().filter(|&t| t != DiId::NONE))
+        let types = self.view_of::<DiSubroutineType>(of, "type", ty)?.types();
+        Ok(types.first().copied().filter(|&t| t != DiId::NONE))
     }
 
     /// `llc`'s `endFunctionImpl`: the scopes and entities, the abstract
@@ -532,7 +529,7 @@ impl<'a> UnitPlan<'a> {
         s.groups.clear();
         self.scope_ranges(f, s)?;
 
-        self.collect_entities(f, s)?;
+        self.collect_entities(f, sp, s)?;
         s.group();
         self.abstract_instances(&mut s.inl)?;
 
@@ -571,7 +568,12 @@ impl<'a> UnitPlan<'a> {
     }
 
     /// The function's variables and labels, by scope (§6.4).
-    fn collect_entities(&mut self, f: &FunctionInput<'_>, s: &mut FnScratch) -> Result<(), Error> {
+    fn collect_entities(
+        &mut self,
+        f: &FunctionInput<'_>,
+        sp: &DiSubprogram<'a>,
+        s: &mut FnScratch,
+    ) -> Result<(), Error> {
         let sp_id = f.subprogram;
         // A variable or label whose scope has no code is dropped, as
         // `llc` drops it.
@@ -675,7 +677,7 @@ impl<'a> UnitPlan<'a> {
             s.ents.push((index, class, key, row as u32));
             self.abstract_entity(&mut s.inl, v.node, scope, class, key);
         }
-        self.retained_vars(f, s)?;
+        self.retained_vars(f, sp, s)?;
         s.groups.seal();
         s.ents.sort_unstable();
         // `llc`'s `needToEmitLexicalScope`: a block is written when it
@@ -686,12 +688,10 @@ impl<'a> UnitPlan<'a> {
             }
         }
         // A block with an imported entity is written too (WP-094, §6.13).
-        if let DiNode::Subprogram(sp) = self.debug.node(sp_id) {
-            self.import_blocks(&sp, |b| match find(s, b, LocId::NONE) {
-                NONE => {}
-                i => s.scopes[i as usize].vars = true,
-            });
-        }
+        self.import_blocks(sp, |b| match find(s, b, LocId::NONE) {
+            NONE => {}
+            i => s.scopes[i as usize].vars = true,
+        });
 
         Ok(())
     }
@@ -833,8 +833,8 @@ impl<'a> UnitPlan<'a> {
             };
             if class == 0
                 && !inlined
-                && let DiNode::LocalVariable(n) = self.debug.node(v.node)
-                && has(n.flags, DiFlags::OBJECT_POINTER)
+                && let Some(n) = self.debug.view::<DiLocalVariable>(v.node)
+                && has(n.flags(), DiFlags::OBJECT_POINTER)
             {
                 let fd = &mut self.funcs[func as usize];
                 if fd.object_pointer != NONE {
@@ -1134,7 +1134,7 @@ impl<'a> Writer<'a> {
         kind: Kind,
         node: DiId,
         what: LocalWhat,
-        v: &hod_ir::DiLocalVariable<'a>,
+        v: &DiLocalVariable<'a>,
     ) -> Result<(), Error> {
         let b = u32::from;
         // WP-162: a location list (§6.23), or none.
@@ -1412,8 +1412,12 @@ impl UnitPlan<'_> {
     /// `__coro_frame` and declares it only on the frame pointer's `phi`,
     /// which `llc -O0` drops (`spec/codegen.md` §9.5). Labels and imports
     /// are left where they are.
-    fn retained_vars(&self, f: &FunctionInput<'_>, s: &mut FnScratch) -> Result<(), Error> {
-        let DiNode::Subprogram(sp) = self.debug.node(f.subprogram) else { return Ok(()) };
+    fn retained_vars(
+        &self,
+        f: &FunctionInput<'_>,
+        sp: &DiSubprogram<'_>,
+        s: &mut FnScratch,
+    ) -> Result<(), Error> {
         for &n in sp.retained_nodes {
             if self.debug.find_kind(n) != Some(DiKind::LocalVariable)
                 || f.vars.iter().any(|v| v.node == n)

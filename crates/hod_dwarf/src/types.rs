@@ -10,7 +10,10 @@
 //! (`slot`) before anything else, so a cycle through a pointer costs one
 //! lookup.
 
-use hod_ir::{Const, DiBound, DiFlags, DiId, DiKind, DiNode, SpFlags};
+use hod_ir::{
+    Const, DiBasicType, DiBound, DiCompositeType, DiDerivedType, DiFlags, DiId, DiKind, DiNode,
+    DiSubprogram, DiSubroutineType, SpFlags,
+};
 
 use crate::Error;
 use crate::abbrev::{code, fam, tag};
@@ -248,7 +251,7 @@ fn fixed_method_family(a: &MethodAttrs) -> Option<(usize, u32)> {
     None
 }
 
-impl UnitPlan<'_> {
+impl<'a> UnitPlan<'a> {
     /// The entry point of the type graph (§6.8): type `t`, which `from`'s
     /// field `field` names, has a DIE in this unit, made (with everything
     /// it reaches) if it is new; its index. Later packages call it for
@@ -282,10 +285,13 @@ impl UnitPlan<'_> {
                 Task::Create { node, want } => self.create(node, want, work)?,
                 Task::Template { parent, node } => self.template_task(parent, node, work)?,
                 Task::Construct { die, step } => {
-                    if !self.construct(die, step, work)?
-                        && let Some(o) = self.build.open.get_mut(die as usize)
-                    {
-                        *o = false;
+                    if !self.construct(die, step, work)? {
+                        if let Some(at) = self.constructing.iter().rposition(|e| e.0 == die) {
+                            self.constructing.remove(at);
+                        }
+                        if let Some(o) = self.build.open.get_mut(die as usize) {
+                            *o = false;
+                        }
                     }
                 }
             }
@@ -319,6 +325,7 @@ impl UnitPlan<'_> {
             }
         }
         self.build = Build::default();
+        self.constructing = Vec::new();
         Ok(())
     }
 
@@ -340,10 +347,11 @@ impl UnitPlan<'_> {
     }
 
     fn scope_field(&self, node: DiId) -> Option<DiId> {
-        match self.debug.node(node) {
-            DiNode::DerivedType(d) => d.scope,
-            DiNode::CompositeType(c) => c.scope,
-            DiNode::Subprogram(s) => s.scope,
+        let debug = self.debug;
+        match debug.kind(node) {
+            DiKind::DerivedType => debug.view::<DiDerivedType>(node)?.scope(),
+            DiKind::CompositeType => debug.view::<DiCompositeType>(node)?.scope(),
+            DiKind::Subprogram => debug.view::<DiSubprogram>(node)?.scope(),
             _ => None,
         }
     }
@@ -576,7 +584,7 @@ impl UnitPlan<'_> {
         Ok(())
     }
 
-    fn check_derived(&self, t: DiId, d: &hod_ir::DiDerivedType<'_>) -> Result<(), Error> {
+    fn check_derived(&self, t: DiId, d: &DiDerivedType<'_>) -> Result<(), Error> {
         if d.dwarf_address_space.is_some() {
             return Err(unsupported(t, "a pointer with an address space"));
         }
@@ -631,12 +639,7 @@ impl UnitPlan<'_> {
         Ok(())
     }
 
-    fn check_composite(
-        &self,
-        t: DiId,
-        kind: Kind,
-        c: &hod_ir::DiCompositeType<'_>,
-    ) -> Result<(), Error> {
+    fn check_composite(&self, t: DiId, kind: Kind, c: &DiCompositeType<'_>) -> Result<(), Error> {
         if c.runtime_lang != 0 {
             return Err(unsupported(t, "a composite type with a runtime language"));
         }
@@ -766,11 +769,31 @@ impl UnitPlan<'_> {
         }
     }
 
+    /// WP-308: the node of DIE `die` (node `node`, kind `kind`) under
+    /// construction and, for a member function, its signature's types:
+    /// decoded at the DIE's first step, kept until its last.
+    fn constructing_node(&mut self, die: u32, node: DiId, kind: Kind) -> (DiNode<'a>, &'a [DiId]) {
+        if let Some(&(_, decoded, types)) = self.constructing.iter().rev().find(|e| e.0 == die) {
+            return (decoded, types);
+        }
+        let decoded = self.debug.node(node);
+        let types = match (kind, decoded) {
+            (Kind::Method, DiNode::Subprogram(sp)) => {
+                let debug = self.debug;
+                sp.ty.and_then(|t| debug.view::<DiSubroutineType>(t)).map_or(&[][..], |s| s.types())
+            }
+            _ => &[],
+        };
+        self.constructing.push((die, decoded, types));
+        (decoded, types)
+    }
+
     /// Step `step` of DIE `die`'s construction; false when it is done.
     fn construct(&mut self, die: u32, step: u32, work: &mut Vec<Task>) -> Result<bool, Error> {
         let Die { node, kind, .. } = self.dies[die as usize];
         let ensure = |field, t: DiId| Task::Ensure { from: node, field, node: t, want: Want::Type };
-        match (kind, self.debug.node(node)) {
+        let (decoded, method_types) = self.constructing_node(die, node, kind);
+        match (kind, decoded) {
             (Kind::Derived, DiNode::DerivedType(d)) => match step {
                 0 => Self::then(work, die, 1, d.base_type.map(|b| ensure("baseType", b))),
                 1 if d.tag == tag::PTR_TO_MEMBER_TYPE => {
@@ -845,12 +868,8 @@ impl UnitPlan<'_> {
             (Kind::Subroutine, DiNode::SubroutineType(s)) => {
                 return self.signature(node, die, s.types, step, work);
             }
-            (Kind::Method, DiNode::Subprogram(sp)) => {
-                let types = match sp.ty.map(|t| self.debug.node(t)) {
-                    Some(DiNode::SubroutineType(s)) => s.types,
-                    _ => &[],
-                };
-                return self.signature(node, die, types, step, work);
+            (Kind::Method, DiNode::Subprogram(_)) => {
+                return self.signature(node, die, method_types, step, work);
             }
             (Kind::Member | Kind::Friend, DiNode::DerivedType(d)) => match step {
                 0 => Self::then(work, die, 1, d.base_type.map(|b| ensure("baseType", b))),
@@ -904,62 +923,67 @@ impl UnitPlan<'_> {
         if e == DiId::NONE {
             return Ok(None);
         }
-        let node = self.node_of(class, "elements", e)?;
+        // WP-311: the kind, then the few fields each kind of element needs.
+        let Some(kind) = self.debug.find_kind(e) else { return Err(bad(class, "elements")) };
         let ensure =
             |t: DiId| Task::Ensure { from: e, field: "baseType", node: t, want: Want::Type };
-        match node {
-            DiNode::Subprogram(_) => Ok(Some(Task::Ensure {
+        if kind == DiKind::Subprogram {
+            return Ok(Some(Task::Ensure {
                 from: class,
                 field: "elements",
                 node: e,
                 want: Want::Method,
-            })),
-            DiNode::DerivedType(d) if d.tag == tag::FRIEND => {
-                let base = d.base_type.ok_or(bad(e, "baseType"))?;
-                self.push_anon(e, die, Kind::Friend);
-                Ok(Some(ensure(base)))
-            }
-            DiNode::DerivedType(d) if has(d.flags, DiFlags::STATIC_MEMBER) => {
-                Ok(Some(Task::Ensure {
-                    from: class,
-                    field: "elements",
-                    node: e,
-                    want: Want::StaticMember,
-                }))
-            }
-            DiNode::DerivedType(d) if matches!(d.tag, tag::MEMBER | tag::INHERITANCE) => {
-                // `llc` ignores a member's scope; clang gives a vtable
-                // pointer the file.
-                if let Some(s) = d.scope
-                    && !self.debug.find_kind(s).is_some_and(|k| {
-                        is_type_kind(k) || matches!(k, DiKind::File | DiKind::CompileUnit)
-                    })
-                {
-                    return Err(Error::MemberOutsideType { node: e.raw() });
-                }
-                let base = d.base_type.ok_or(bad(e, "baseType"))?;
-                let bitfield = has(d.flags, DiFlags::BIT_FIELD);
-                if bitfield && d.size == 0 {
-                    return Err(Error::MissingSize { node: e.raw() });
-                }
-                if d.tag == tag::INHERITANCE
-                    && (!d.name.is_empty()
-                        || d.line != 0
-                        || bitfield
-                        || d.align >= 8
-                        || has(d.flags, DiFlags::ARTIFICIAL))
-                {
-                    return Err(unsupported(
-                        e,
-                        "an inheritance with a name, line, bit field, alignment or artificial flag",
-                    ));
-                }
-                self.push_anon(e, die, Kind::Member);
-                Ok(Some(ensure(base)))
-            }
-            DiNode::DerivedType(_) => Err(unsupported(e, "a class element of this tag")),
-            _ => Err(unsupported(e, "a class element of this kind")),
+            }));
         }
+        let Some(d) = self.debug.view::<DiDerivedType>(e) else {
+            return Err(unsupported(e, "a class element of this kind"));
+        };
+        let (d_tag, flags) = (d.tag(), d.flags());
+        if d_tag == tag::FRIEND {
+            let base = d.base_type().ok_or(bad(e, "baseType"))?;
+            self.push_anon(e, die, Kind::Friend);
+            return Ok(Some(ensure(base)));
+        }
+        if has(flags, DiFlags::STATIC_MEMBER) {
+            return Ok(Some(Task::Ensure {
+                from: class,
+                field: "elements",
+                node: e,
+                want: Want::StaticMember,
+            }));
+        }
+        if !matches!(d_tag, tag::MEMBER | tag::INHERITANCE) {
+            return Err(unsupported(e, "a class element of this tag"));
+        }
+        // `llc` ignores a member's scope; clang gives a vtable pointer the
+        // file.
+        if let Some(s) = d.scope()
+            && !self
+                .debug
+                .find_kind(s)
+                .is_some_and(|k| is_type_kind(k) || matches!(k, DiKind::File | DiKind::CompileUnit))
+        {
+            return Err(Error::MemberOutsideType { node: e.raw() });
+        }
+        let base = d.base_type().ok_or(bad(e, "baseType"))?;
+        let bitfield = has(flags, DiFlags::BIT_FIELD);
+        if bitfield && d.size() == 0 {
+            return Err(Error::MissingSize { node: e.raw() });
+        }
+        if d_tag == tag::INHERITANCE
+            && (!d.name().is_empty()
+                || d.line() != 0
+                || bitfield
+                || d.align() >= 8
+                || has(flags, DiFlags::ARTIFICIAL))
+        {
+            return Err(unsupported(
+                e,
+                "an inheritance with a name, line, bit field, alignment or artificial flag",
+            ));
+        }
+        self.push_anon(e, die, Kind::Member);
+        Ok(Some(ensure(base)))
     }
 
     /// Checks a subrange; the DIE of the variable its count names, or
@@ -1003,70 +1027,77 @@ const fn has_sp(flags: SpFlags, f: SpFlags) -> bool {
 /// The attributes of member function DIE `die`.
 fn method_attrs(plan: &UnitPlan<'_>, die: u32) -> MethodAttrs {
     let d = plan.dies[die as usize];
-    let DiNode::Subprogram(sp) = plan.debug.node(d.node) else { return MethodAttrs::default() };
-    let (ret, cc) = match sp.ty.map(|t| plan.debug.node(t)) {
-        Some(DiNode::SubroutineType(s)) => {
-            (s.types.first().is_some_and(|&t| t != DiId::NONE), s.cc != 0 && s.cc != DW_CC_NORMAL)
-        }
-        _ => (false, false),
+    // WP-311: the fields read one at a time, not the whole subprogram.
+    let Some(sp) = plan.debug.view::<DiSubprogram>(d.node) else {
+        return MethodAttrs::default();
     };
-    let wide_cc = cc && method_cc(plan, &sp).is_none();
-    let virtuality = sp.sp_flags.0 & 3 != 0;
+    let ty = sp.ty();
+    let (ret, cc) = match ty.and_then(|t| plan.debug.view::<DiSubroutineType>(t)) {
+        Some(s) => {
+            let cc = s.cc();
+            (s.types().first().is_some_and(|&t| t != DiId::NONE), cc != 0 && cc != DW_CC_NORMAL)
+        }
+        None => (false, false),
+    };
+    let wide_cc = cc && method_cc(plan, ty).is_none();
+    let (flags, sp_flags) = (sp.flags(), sp.sp_flags());
+    let virtuality = sp_flags.0 & 3 != 0;
     let fortran =
         SpFlags::PURE.0 | SpFlags::ELEMENTAL.0 | SpFlags::RECURSIVE.0 | SpFlags::MAIN_SUBPROGRAM.0;
     MethodAttrs {
-        link: !sp.linkage_name.is_empty(),
-        name: !sp.name.is_empty(),
-        decl: sp.line != 0,
+        link: !sp.linkage_name().is_empty(),
+        name: !sp.name().is_empty(),
+        decl: sp.line() != 0,
         ty: ret,
         virt: virtuality,
         cont: virtuality && plan.aux_of(die) != NONE,
-        art: has(sp.flags, DiFlags::ARTIFICIAL),
-        ext: !has_sp(sp.sp_flags, SpFlags::LOCAL_TO_UNIT),
-        acc: access(sp.flags) != 0,
-        expl: has(sp.flags, DiFlags::EXPLICIT),
-        lref: has(sp.flags, DiFlags::LVALUE_REFERENCE),
-        rref: has(sp.flags, DiFlags::RVALUE_REFERENCE),
-        nr: has(sp.flags, DiFlags::NO_RETURN),
-        del: has_sp(sp.sp_flags, SpFlags::DELETED),
+        art: has(flags, DiFlags::ARTIFICIAL),
+        ext: !has_sp(sp_flags, SpFlags::LOCAL_TO_UNIT),
+        acc: access(flags) != 0,
+        expl: has(flags, DiFlags::EXPLICIT),
+        lref: has(flags, DiFlags::LVALUE_REFERENCE),
+        rref: has(flags, DiFlags::RVALUE_REFERENCE),
+        nr: has(flags, DiFlags::NO_RETURN),
+        del: has_sp(sp_flags, SpFlags::DELETED),
         cc,
         other: wide_cc
-            || (virtuality && sp.virtual_index == u32::MAX)
-            || sp.sp_flags.0 & fortran != 0
-            || (has(sp.flags, DiFlags::PROTOTYPED) && is_c(plan.cu.language)),
+            || (virtuality && sp.virtual_index() == u32::MAX)
+            || sp_flags.0 & fortran != 0
+            || (has(flags, DiFlags::PROTOTYPED) && is_c(plan.cu.language)),
     }
 }
 
-/// The calling convention a member function declaration's type names,
-/// other than the normal one, as `DW_FORM_data1` writes it (WP-206).
-fn method_cc(plan: &UnitPlan<'_>, sp: &hod_ir::DiSubprogram<'_>) -> Option<u8> {
-    match sp.ty.map(|t| plan.debug.node(t)) {
-        Some(DiNode::SubroutineType(s)) if s.cc != 0 && s.cc != DW_CC_NORMAL => {
-            u8::try_from(s.cc).ok()
-        }
-        _ => None,
-    }
+/// The calling convention a member function declaration's type `ty`
+/// names, other than the normal one, as `DW_FORM_data1` writes it
+/// (WP-206).
+fn method_cc(plan: &UnitPlan<'_>, ty: Option<DiId>) -> Option<u8> {
+    let cc = plan.debug.view::<DiSubroutineType>(ty?)?.cc();
+    if cc != 0 && cc != DW_CC_NORMAL { u8::try_from(cc).ok() } else { None }
 }
 
 /// The `flags` of a type node.
 fn type_flags(plan: &UnitPlan<'_>, t: DiId) -> DiFlags {
-    match plan.debug.node(t) {
-        DiNode::BasicType(b) => b.flags,
-        DiNode::DerivedType(d) => d.flags,
-        DiNode::CompositeType(c) => c.flags,
-        DiNode::SubroutineType(s) => s.flags,
-        _ => DiFlags(0),
+    let debug = plan.debug;
+    match debug.kind(t) {
+        DiKind::BasicType => debug.view::<DiBasicType>(t).map(|b| b.flags()),
+        DiKind::DerivedType => debug.view::<DiDerivedType>(t).map(|d| d.flags()),
+        DiKind::CompositeType => debug.view::<DiCompositeType>(t).map(|c| c.flags()),
+        DiKind::SubroutineType => debug.view::<DiSubroutineType>(t).map(|s| s.flags()),
+        _ => None,
     }
+    .unwrap_or(DiFlags(0))
 }
 
 /// The `size` field of a type node.
 fn type_size(plan: &UnitPlan<'_>, t: DiId) -> u64 {
-    match plan.debug.node(t) {
-        DiNode::BasicType(b) => b.size,
-        DiNode::DerivedType(d) => d.size,
-        DiNode::CompositeType(c) => c.size,
-        _ => 0,
+    let debug = plan.debug;
+    match debug.kind(t) {
+        DiKind::BasicType => debug.view::<DiBasicType>(t).map(|b| b.size()),
+        DiKind::DerivedType => debug.view::<DiDerivedType>(t).map(|d| d.size()),
+        DiKind::CompositeType => debug.view::<DiCompositeType>(t).map(|c| c.size()),
+        _ => None,
     }
+    .unwrap_or(0)
 }
 
 impl<'a> Writer<'a> {
@@ -1382,12 +1413,10 @@ impl<'a> Writer<'a> {
             }
             (Kind::Enumerator, DiNode::Enumerator(e)) => {
                 let parent = plan.dies[d.parent as usize].node;
-                let unsigned = match plan.debug.node(parent) {
-                    DiNode::CompositeType(c) => match c.base_type {
-                        Some(t) => plan.is_unsigned(t)?,
-                        None => false,
-                    },
-                    _ => false,
+                let base = plan.debug.view::<DiCompositeType>(parent).and_then(|c| c.base_type());
+                let unsigned = match base {
+                    Some(t) => plan.is_unsigned(t)?,
+                    None => false,
                 };
                 self.abbrev(code(fam::ENUMERATOR, if unsigned { 1 } else { 2 }, false));
                 self.strx(e.name)?;
@@ -1496,12 +1525,12 @@ impl<'a> Writer<'a> {
                 let decl = Self::decl_of(plan, n, sp.file, sp.line)?;
                 self.decl(decl);
                 if a.cc {
-                    self.opt_byte(method_cc(plan, &sp).unwrap_or(0));
+                    self.opt_byte(method_cc(plan, sp.ty).unwrap_or(0));
                 }
                 if a.ty
-                    && let Some(DiNode::SubroutineType(s)) = sp.ty.map(|t| plan.debug.node(t))
+                    && let Some(s) = sp.ty.and_then(|t| plan.debug.view::<DiSubroutineType>(t))
                 {
-                    self.ref_to(plan, n, s.types[0])?;
+                    self.ref_to(plan, n, s.types()[0])?;
                 }
                 if a.virt {
                     self.info.push((sp.sp_flags.0 & 3) as u8);
@@ -1531,12 +1560,7 @@ impl<'a> Writer<'a> {
     }
 
     /// A member or base (`constructMemberDIE`).
-    fn member(
-        &mut self,
-        plan: &UnitPlan<'a>,
-        n: DiId,
-        m: &hod_ir::DiDerivedType<'a>,
-    ) -> Result<(), Error> {
+    fn member(&mut self, plan: &UnitPlan<'a>, n: DiId, m: &DiDerivedType<'a>) -> Result<(), Error> {
         let b = u32::from;
         let acc = access(m.flags);
         let virt = has(m.flags, DiFlags::VIRTUAL);

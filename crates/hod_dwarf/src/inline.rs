@@ -19,7 +19,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use hod_ir::{DiFlags, DiId, DiKind, DiNode, LocId, Module, SpFlags, SymbolKind};
+use hod_ir::{DiFlags, DiId, DiKind, DiLocalVariable, DiNode, LocId, Module, SpFlags, SymbolKind};
 
 use crate::Error;
 use crate::abbrev::{code, fam};
@@ -585,7 +585,12 @@ impl UnitPlan<'_> {
     /// makes its concrete entities in the order of the frame table,
     /// which is the order of the declarations, and
     /// `finishEntityDefinitions` makes their types in that order.
-    pub(crate) fn record_entities(&mut self, f: &crate::func::FunctionInput<'_>, added: bool) {
+    pub(crate) fn record_entities(
+        &mut self,
+        f: &crate::func::FunctionInput<'_>,
+        sp: &hod_ir::DiSubprogram<'_>,
+        added: bool,
+    ) {
         let Some(func) = self.funcs.len().checked_sub(1).filter(|_| added) else { return };
         let start = self.locals.iter().rposition(|l| l.func as usize != func).map_or(0, |i| i + 1);
         // By node: the instances of one variable inlined twice have one
@@ -627,14 +632,13 @@ impl UnitPlan<'_> {
                 }
             }
         }
-        self.record_retained(f.subprogram, start);
+        self.record_retained(sp, start);
     }
 
     /// After the declared variables, the retained ones without a record
     /// (WP-111), in `retainedNodes` order: `llc`'s `collectEntityInfo`
     /// makes their entities last.
-    fn record_retained(&mut self, sp: DiId, start: usize) {
-        let DiNode::Subprogram(sp) = self.debug.node(sp) else { return };
+    fn record_retained(&mut self, sp: &hod_ir::DiSubprogram<'_>, start: usize) {
         for &n in sp.retained_nodes {
             let found = self.locals[start..].iter().find(|l| {
                 matches!(l.what, LocalWhat::Retained) && self.dies[l.die as usize].node == n
@@ -651,11 +655,11 @@ impl UnitPlan<'_> {
     pub(crate) fn finish_entities(&mut self) -> Result<(), Error> {
         for i in 0..self.inline.entities.len() {
             let d = self.dies[self.inline.entities[i] as usize];
-            if let (Kind::LocalParam | Kind::LocalVar, DiNode::LocalVariable(v)) =
-                (d.kind, self.debug.node(d.node))
+            if matches!(d.kind, Kind::LocalParam | Kind::LocalVar)
+                && let Some(v) = self.debug.view::<DiLocalVariable>(d.node)
                 && self.inline.die(d.node).is_none()
             {
-                self.reference_type(d.node, "type", v.ty.unwrap_or(DiId::NONE))?;
+                self.reference_type(d.node, "type", v.ty().unwrap_or(DiId::NONE))?;
             }
         }
         Ok(())

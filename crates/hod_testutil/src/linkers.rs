@@ -26,7 +26,9 @@ pub const MATRIX: [&str; 5] = ["bfd", "lld", "mold", "wild", "mortar"];
 pub const MORTAR_COMMIT: &str = "ea9b94f42743d6772d690a374b5bf976e415f812";
 
 /// Whether a missing mortar fails a test under `HOD_REQUIRE_TOOLS=1`.
-/// False: no hosted lane builds it (WP-281).
+/// False (WP-281): the hosted lanes build it since WP-310
+/// (`.github/actions/mortar`, `HOD_MORTAR`), but it stays optional until
+/// a hosted run has shown that step works on both runners, as wild's.
 pub const MORTAR_REQUIRED: bool = false;
 
 /// The variable that names the mortar executable, over every other place.

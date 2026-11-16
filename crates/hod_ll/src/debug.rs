@@ -27,6 +27,7 @@ use crate::kw::Kw;
 use crate::lexer::Tok;
 use crate::meta::{MdKind, MdRef};
 use crate::parser::{Parser, ir};
+use crate::prelex::Feed;
 
 /// The fields LLVM's parser requires of a node of `kind` (`LLParser`'s
 /// `REQUIRED`); `DILocation`'s `scope` is checked where locations are
@@ -254,6 +255,12 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
     /// `!llvm.dbg.cu` (`spec/ll.md` §7.4). Does nothing, and allocates
     /// nothing, when every node is a generic tuple.
     pub(crate) fn build_debug(&mut self) -> PResult<()> {
+        self.build_debug_fed(None)
+    }
+
+    /// [`Parser::build_debug`], with the tokens of the node loop from
+    /// `feed`'s pieces, cut at `cuts` (`spec/ll.md` §4.5) when given.
+    pub(crate) fn build_debug_fed(&mut self, feed: Option<(&Feed, &[usize])>) -> PResult<()> {
         let count = self.md.nodes().len();
         let any = self.md.nodes().iter().any(|node| node.kind != MdKind::Tuple);
         if !any && self.dbg_cu.is_none() {
@@ -290,30 +297,13 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
                 self.dmap.handles[at] = Handle::Expr(expr);
             }
         }
-        for at in 0..count {
-            let node = self.md.nodes()[at];
-            match self.dmap.handles[at] {
-                // A tuple named as a node is defined by `define_tuples`.
-                Handle::Node(_) if node.kind == MdKind::Tuple => {}
-                Handle::Node(id) => {
-                    let made = self.node_body(node.kind, node.span, &mut scratch)?;
-                    let debug = &mut self.module.debug;
-                    let result = made.define(debug, id, &scratch, self.src, node.distinct);
-                    ir(node.span.start, result)?;
-                    scratch.fields.clear();
-                    scratch.lists.clear();
-                    scratch.strs.clear();
+        match feed {
+            None => {
+                for at in 0..count {
+                    self.debug_node(at, &mut scratch, false)?;
                 }
-                Handle::Loc(id) => {
-                    let (loc, atom, distinct) =
-                        self.location_body(node.span, node.distinct, &mut scratch)?;
-                    let debug = &mut self.module.debug;
-                    let result = debug.define_loc_in_atom(id, loc, atom, distinct);
-                    ir(node.span.start, result)?;
-                }
-                Handle::None | Handle::Expr(_) | Handle::AssignId => {}
             }
-            self.define_tuples(&mut scratch)?;
+            Some((feed, cuts)) => self.fed_nodes(feed, cuts, &mut scratch)?,
         }
         if let Some(span) = self.dbg_cu {
             self.goto(span.start);
@@ -345,12 +335,78 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
         Ok(())
     }
 
+    /// The node loop with the bodies' tokens from `feed`, a piece at a
+    /// time (`spec/ll.md` §4.5): each piece's recording is replayed while
+    /// its nodes are read, the lexer moved to each node and tuple with
+    /// [`Lexer::seek`](crate::lexer::Lexer::seek), so that a move ahead
+    /// to a tuple and back loses none of it.
+    #[inline(never)]
+    fn fed_nodes(
+        &mut self,
+        feed: &Feed,
+        cuts: &[usize],
+        scratch: &mut DebugScratch,
+    ) -> PResult<()> {
+        for piece in cuts.windows(2) {
+            let recording = feed.take(self.lx.record());
+            self.lx.replay(recording);
+            for at in piece[0]..piece[1] {
+                self.lx.seek(self.md.nodes()[at].span.start as usize);
+                self.debug_node(at, scratch, true)?;
+            }
+        }
+        let last = self.lx.record();
+        self.lx.reuse(last);
+        Ok(())
+    }
+
+    /// Node `at` of the node loop, then the tuples it named; with `fed`
+    /// the lexer is moved with `seek`.
+    #[allow(clippy::inline_always)] // The serial loop is this, as before the feed.
+    #[inline(always)]
+    fn debug_node(&mut self, at: usize, scratch: &mut DebugScratch, fed: bool) -> PResult<()> {
+        let node = self.md.nodes()[at];
+        match self.dmap.handles[at] {
+            // A tuple named as a node is defined by `define_tuples`.
+            Handle::Node(_) if node.kind == MdKind::Tuple => {}
+            Handle::Node(id) => {
+                let made = self.node_body(node.kind, node.span, scratch)?;
+                let debug = &mut self.module.debug;
+                let result = made.define(debug, id, scratch, self.src, node.distinct);
+                ir(node.span.start, result)?;
+                scratch.fields.clear();
+                scratch.lists.clear();
+                scratch.strs.clear();
+            }
+            Handle::Loc(id) => {
+                let (loc, atom, distinct) =
+                    self.location_body(node.span, node.distinct, scratch)?;
+                let debug = &mut self.module.debug;
+                let result = debug.define_loc_in_atom(id, loc, atom, distinct);
+                ir(node.span.start, result)?;
+            }
+            Handle::None | Handle::Expr(_) | Handle::AssignId => {}
+        }
+        self.define_tuples_in(scratch, fed)
+    }
+
     /// Defines the tuples fields named as single nodes, and those their
     /// elements named in turn.
     fn define_tuples(&mut self, scratch: &mut DebugScratch) -> PResult<()> {
+        self.define_tuples_in(scratch, false)
+    }
+
+    /// [`Parser::define_tuples`]; with `fed` the lexer is moved with
+    /// `seek`.
+    fn define_tuples_in(&mut self, scratch: &mut DebugScratch, fed: bool) -> PResult<()> {
         while let Some((id, span)) = scratch.tuples.pop() {
             let mark = scratch.lists.len();
-            self.goto(span.start);
+            if fed {
+                self.lx.seek(span.start as usize);
+                self.bump();
+            } else {
+                self.goto(span.start);
+            }
             while self.tok.start < span.end {
                 let element = self.list_element(scratch)?.unwrap_or(DiId::NONE);
                 scratch.lists.push(element);

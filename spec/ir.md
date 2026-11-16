@@ -1447,6 +1447,18 @@ by those fields' 4-byte cells: a field at its default costs nothing.
 `kind`, `tag`, `is_distinct` and `node` read a node; `subprogram_of` and
 `enclosing_block_scope` walk scopes.
 
+`view::<R>(id)` (WP-311) reads a node one field at a time instead:
+`R` is a kind's record (`DiRecord`, implemented by the records only),
+and the answer is `None` when `id` is not a node of the table or not of
+`R`'s kind, else a `DiView<R>` with one method per field of the record,
+named and typed as the record's field (and `tag()` for a tagged kind),
+which gives what `node(id)` would hold there. A field's method reads
+the mask, steps over the cells of the stored fields before it (a
+number, string, node, expression or constant one cell, a wide or signed
+number two, a bound three, a list its length and its elements, a
+`bool` none) and decodes that field alone: a reader that needs a few
+fields of a node does not pay for decoding the rest.
+
 The kinds, the record of each, and each field's LLVM name, Rust type and
 the kinds of node a reference may name (a "scope" is LLVM's `DIScope`, a
 "local scope" a subprogram or a block, a "type" a basic, derived,

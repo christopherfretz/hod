@@ -151,6 +151,16 @@ kiln's lanes). Its rules:
    (`.github/actions/kiln`); jobs that need it restore it into
    `/opt/kiln` and get `HOD_KILN=/opt/kiln/bin/kiln++`. hod records
    kiln's revision only there.
+   **mortar** (WP-310) is built from its public repository at
+   `hod_testutil::linkers::MORTAR_COMMIT` (read by
+   `scripts/mortar-commit.sh`, the one place the commit is written) with
+   `cargo build --release -p mortar` and kept in the Actions cache under
+   that commit and the runner's architecture (`.github/actions/mortar`):
+   the `kiln` job builds and saves it on a miss, the `test` jobs restore
+   it and fail on a miss, the `irdiff` job builds it on a miss without
+   saving; each gets `HOD_MORTAR=/opt/mortar/mortar`. Any failure of
+   these steps fails the job. mortar stays optional to the tests
+   (`MORTAR_REQUIRED` is false) until a hosted run has shown the step.
 5. **The steps.** The lane's jobs `lints` (`--step fmt`, `--step
    scripts`, `--step workflows`, `--step clippy`), `test <part>` (`--step test --part <part>`, one job per
    part of `xtask::ci::TEST_PARTS`, so that no job runs much over 15
@@ -2011,7 +2021,8 @@ cargo xtask corpus capture [--target <arch>] [--source kiln|gcc-torture|all]
                            [--kiln-repo <dir>] [--torture <dir>] [--limit <N>]
                            [-j <N>] [--force] [--retry-skipped]
 cargo xtask corpus verify  [--target <arch>] [-j <N>] [--hod <binary>] [--strict]
-                           [--manifest-only] [--keep] [-v] [<corpus dir>]
+                           [--linker <name>]... [--manifest-only] [--keep] [-v]
+                           [<corpus dir>]
 cargo xtask corpus census  [--target <arch>] [--report <file>] [<corpus dir>]
 cargo xtask corpus reasons [--target <arch>] [options] [<corpus dir>]
 cargo xtask corpus compare [--target <arch>] [--against <dir>]
@@ -2431,7 +2442,9 @@ used and not committed.
    Each difference is one `MANIFEST <entry>: <what>` line.
 2. **irdiff.** For each LLVM major of the corpus, newest first, one
    `irdiff` run over that major's group directories, in hybrid mode
-   (`--strict` for strict), with the workspace's hod (or `--hod`); results
+   (`--strict` for strict), with the workspace's hod (or `--hod`) and
+   every linker found (or those `--linker` names, as `irdiff`'s
+   `--linker`, WP-310); results
    in `<build>/corpus/verify-llvm<N>-<mode>.tsv` (`irdiff`'s records,
    before step 3). `--manifest-only` stops after step 1 and the list's
    check that each row names a test of the corpus.
@@ -4378,7 +4391,10 @@ WP-160 added the modes, the profiles and the census
 - `-j` seeds at once (default 4, at most 16); each child also holds a
   jobserver token ("Jobserver").
 - `--linker` links with that linker through the driver's `-B`; the
-  default is the driver's own `ld`.
+  default is the driver's own `ld`. With `--linker`, every program
+  linked (the oracle's, hod's, gcc's of the 128-bit cases) must carry
+  that linker's signature (`irdiff::tools::check_signature`, as
+  `irdiff`'s "Which linker ran"), else its link is an error (WP-310).
 - `--timeout` the time limit of each program (default 5 s), the same on
   both targets, emulated or not.
 - `--reduce-budget` probes a reduction may run (default 300; 0: none).

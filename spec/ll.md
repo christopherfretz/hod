@@ -140,9 +140,11 @@ the replaying lexer, asked for a token at an offset that has one, takes
 it instead of lexing; at any other offset it lexes, and it skips the
 entries it has moved past, so moving it anywhere (`set_pos`) still
 gives the lexed tokens. No `Eof` or `Error` token is kept, so the error
-text of §2 is always the lexer's own. The label scan of §11.3 is the one
-user: the tokens it lexes outside parentheses are the ones the parse of
-the body then asks for. At most 65,536 tokens (1 MiB) are kept per scan;
+text of §2 is always the lexer's own. A replaying lexer moved with
+`seek` instead of `set_pos` wants again every entry at or after the new
+offset (a move backwards loses none). The users: the label scan of
+§11.3, whose tokens lexed outside parentheses are the ones the parse of
+the body then asks for, and the debug nodes lexed ahead (§4.5). At most 65,536 tokens (1 MiB) are kept per scan;
 past that the scan goes on and those tokens are lexed again.
 
 ## 3. Accepted input
@@ -400,9 +402,44 @@ it so:
 - Joining appends each kept piece's entries per kind; a later triple or
   data layout replaces an earlier one, as in the serial scan.
 
-The phases of §4.3 stay serial. Measured in `spec/landed/ll/WP-303.md`:
-the scan of a 16 MB `-g` text takes 11.6 ms on one thread, 6.4 on two,
-3.7 on four and 2.2 on eight.
+The phases of §4.3 stay serial (§4.5 is the one piece of work beside
+them). Measured in `spec/landed/ll/WP-303.md`: the scan of a 16 MB `-g`
+text takes 11.6 ms on one thread, 6.4 on two, 3.7 on four and 2.2 on
+eight.
+
+### 4.5 The debug nodes lexed ahead (WP-303)
+
+With `threads` above one, the debug nodes of phase 6 (§7.4) are read
+with their bodies' tokens lexed ahead on one other thread
+(`PRELEX_THREADS`, 1); the reading itself stays on the calling thread,
+in node order, as in the serial parse. The rule:
+
+- The numbered nodes, in file order, are cut into pieces: a piece ends
+  at the first node at which the bytes of its nodes' bodies reach
+  `PRELEX_PIECE_BYTES` (64 KiB). With fewer than two pieces nothing is
+  lexed ahead.
+- The lexing thread takes the pieces in order and records, for each node
+  but an expression (read before the node loop), the tokens of its body
+  as the node loop asks for them: from the body's first byte up to the
+  token that starts at its end, stopping at an `Eof` or `Error` token
+  (neither is kept, §2.8), and keeping no token at or before an offset
+  already kept. At most `Recording::MAX` tokens a piece; past them, those
+  tokens are lexed where they are wanted.
+- The node loop takes piece `k` once it is lexed, replays it while it
+  reads that piece's nodes and gives its storage back; the lexing thread
+  is never more than two pieces ahead of it, which bounds the memory of
+  the recordings. Before each node, and before each tuple it defines in
+  place, the loop moves the lexer with `seek`: every recorded token at
+  or after the new offset is wanted again and none before it, so a jump
+  ahead to a tuple and back loses no replay.
+- When the loop ends, also by an error, the feed is closed and the
+  lexing thread stops.
+
+What is read is what the serial loop reads, by §2.8: the same tokens,
+so the same module, ids and tables, and for a text with errors the same
+first error, at the same offset, with the same message; only the lexing
+of a recorded token moves. The thread is one of those the scan was
+given (§4.4), so no more are used than were granted.
 
 ## 5. Entities
 

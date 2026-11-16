@@ -11,7 +11,7 @@ use hod_ir::{
 use crate::attrs::AttrMemo;
 use crate::consts::{BlockLabels, LabelKey};
 use crate::debug::{DebugMap, DebugScratch};
-use crate::error::{LlErrorKind, PResult, fail, ir_fail};
+use crate::error::{Fail, LlErrorKind, PResult, fail, ir_fail};
 use crate::index::{Index, scan};
 use crate::kw::Kw;
 use crate::lexer::{Lexer, MAX_SOURCE_BYTES, Recording, Tok, Token, unescape};
@@ -320,13 +320,28 @@ impl<'a, 'm, L: Layering> Parser<'a, 'm, L> {
         fail(LlErrorKind::Syntax, self.tok.start, message)
     }
 
+    /// The current token if it is a `kind`, the next one becoming
+    /// current; else the failure of [`Parser::syntax`]. Inline, so that
+    /// the token and the result are not copied through memory, with the
+    /// failure out of line.
+    #[inline]
     pub(crate) fn expect(&mut self, kind: Tok, what: &str) -> PResult<Token> {
         let token = self.tok;
         if token.kind != kind {
-            return self.syntax(what);
+            return Err(self.unexpected(what));
         }
         self.bump();
         Ok(token)
+    }
+
+    /// [`Parser::syntax`]'s failure, out of line.
+    #[cold]
+    #[inline(never)]
+    fn unexpected(&self, what: &str) -> Box<Fail> {
+        match self.syntax::<std::convert::Infallible>(what) {
+            Err(failure) => failure,
+            Ok(never) => match never {},
+        }
     }
 
     pub(crate) fn expect_word(&mut self, word: Kw, what: &str) -> PResult<()> {

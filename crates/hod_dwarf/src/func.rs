@@ -1163,7 +1163,7 @@ impl<'a> Writer<'a> {
             let mask = at | b(!v.name.is_empty()) << 1 | b(decl.is_some()) << 2 | b(art) << 3;
             self.abbrev(code(list_family(fam::FORMAL_PARAMETER), mask, false));
             self.location_if(plan, l, node, list, at);
-            self.opt_name(v.name)?;
+            self.opt_name_of::<DiLocalVariable>(plan.debug, node, v.name, |v| v.name())?;
         } else {
             let mask = at | b(decl.is_some()) << 1 | b(art) << 2;
             // WP-087: an unnamed variable has no `DW_AT_name`; an
@@ -1175,9 +1175,7 @@ impl<'a> Writer<'a> {
             };
             self.abbrev(code(list_family(family), mask, false));
             self.location_if(plan, l, node, list, at);
-            if !v.name.is_empty() {
-                self.strx(v.name)?;
-            }
+            self.opt_name_of::<DiLocalVariable>(plan.debug, node, v.name, |v| v.name())?;
             if v.align >= 8 {
                 write_uleb(&mut self.info, u64::from(v.align / 8));
             }

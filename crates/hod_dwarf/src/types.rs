@@ -11,8 +11,8 @@
 //! lookup.
 
 use hod_ir::{
-    Const, DiBasicType, DiBound, DiCompositeType, DiDerivedType, DiFlags, DiId, DiKind, DiNode,
-    DiSubprogram, DiSubroutineType, SpFlags,
+    Const, DiBasicType, DiBound, DiCompositeType, DiDerivedType, DiFlags, DiId, DiIds, DiKind,
+    DiNode, DiSubprogram, DiSubroutineType, SpFlags,
 };
 
 use crate::Error;
@@ -1520,8 +1520,10 @@ impl<'a> Writer<'a> {
                     .or_else(|| method_family(&a))
                     .ok_or(unsupported(n, "a member function declaration"))?;
                 self.abbrev(code(family, mask, children));
-                self.opt_name(sp.linkage_name)?;
-                self.strx_if(family, sp.name)?;
+                self.opt_name_of::<DiSubprogram>(plan.debug, n, sp.linkage_name, |v| {
+                    v.linkage_name()
+                })?;
+                self.strx_if(plan, n, family, sp.name)?;
                 let decl = Self::decl_of(plan, n, sp.file, sp.line)?;
                 self.decl(decl);
                 if a.cc {
@@ -1551,11 +1553,18 @@ impl<'a> Writer<'a> {
 
     /// A member function's name: always in the reserved families, when
     /// set in the general ones (whose name is option bit 1).
-    fn strx_if(&mut self, family: usize, name: &'a [u8]) -> Result<(), Error> {
+    fn strx_if(
+        &mut self,
+        plan: &UnitPlan<'a>,
+        n: DiId,
+        family: usize,
+        name: &'a [u8],
+    ) -> Result<(), Error> {
+        let field = |v: &DiIds<'a, DiSubprogram<'a>>| v.name();
         if matches!(family, fam::METHOD | fam::METHOD_QUALIFIED) {
-            self.opt_name(name)
+            self.opt_name_of(plan.debug, n, name, field)
         } else {
-            self.strx(name)
+            self.strx_of(plan.debug, n, name, field)
         }
     }
 

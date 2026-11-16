@@ -273,6 +273,7 @@ impl<'a> Writer<'a> {
         self.offsets.resize(n, NONE);
         self.patches.clear();
         self.strings.begin_unit();
+        self.strings.use_store(plan.debug);
         self.unit_start = 0;
 
         let ranges = self.spans.len() > 1;

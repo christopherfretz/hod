@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::hash::{BuildHasherDefault, Hasher};
 
+use hod_ir::{DebugInfo, DiStr};
+
 use crate::Error;
 
 /// A fast hash for byte strings: eight bytes per multiply. Not
@@ -60,11 +62,26 @@ impl Hasher for FxHasher {
 
 pub(crate) type FxBuild = BuildHasherDefault<FxHasher>;
 
-#[derive(Clone, Copy, Debug)]
+/// Appends `s` and its NUL to `.debug_str`; its offset there.
+fn add(data: &mut Vec<u8>, s: &[u8]) -> Result<u32, Error> {
+    if s.contains(&0) {
+        return Err(Error::NulInName);
+    }
+    let offset = u32::try_from(data.len()).map_err(|_| Error::TooLarge)?;
+    if data.len() + s.len() >= u32::MAX as usize {
+        return Err(Error::TooLarge);
+    }
+    data.extend_from_slice(s);
+    data.push(0);
+    Ok(offset)
+}
+
+#[derive(Clone, Copy, Debug, Default)]
 struct Slot {
     /// The offset in `.debug_str`.
     offset: u32,
-    /// The unit that last named the string, and its index there.
+    /// The unit that last named the string (0: none yet), and its index
+    /// there.
     unit: u32,
     index: u32,
 }
@@ -73,16 +90,29 @@ struct Slot {
 /// (each distinct string once), and per unit the `.debug_str_offsets`
 /// entries in order of first use (§6.3).
 ///
-/// One hash table keyed by the bytes serves both: a string's entry
-/// remembers the last unit that named it and its index there, so a
-/// lookup is one probe whether the string is new to the object, new to
-/// the unit, or neither.
+/// A string's entry remembers the last unit that named it and its index
+/// there, so a lookup is one probe whether the string is new to the
+/// object, new to the unit, or neither. The entries of the strings of the
+/// debug store ([`DebugStrings::use_store`]) are a table indexed by the
+/// store's string id ([`DiStr`]), so a string read from a node is found
+/// without hashing it; the other strings (made up by the writer) are a
+/// hash table keyed by the bytes. A string is in one of the two, never
+/// both: a string asked for by its bytes is first looked for in the store
+/// (one hash), and if the store holds it, it is the store's entry
+/// (WP-318). So both ways of asking give one index per string.
 #[derive(Debug)]
 pub struct DebugStrings<'a> {
     data: Vec<u8>,
+    /// The strings the store does not hold.
     map: HashMap<&'a [u8], Slot, FxBuild>,
     unit: u32,
     offsets: Vec<u32>,
+    /// The debug store whose strings are keyed by id, and whether the
+    /// current unit reads that store.
+    store: Option<&'a DebugInfo>,
+    same: bool,
+    /// By the store's string id; empty until the first id is asked for.
+    by_id: Vec<Slot>,
 }
 
 impl Default for DebugStrings<'_> {
@@ -94,13 +124,29 @@ impl Default for DebugStrings<'_> {
 impl<'a> DebugStrings<'a> {
     /// An empty pool, in its first unit.
     pub fn new() -> Self {
-        Self { data: Vec::new(), map: HashMap::default(), unit: 1, offsets: Vec::new() }
+        Self {
+            data: Vec::new(),
+            map: HashMap::default(),
+            unit: 1,
+            offsets: Vec::new(),
+            store: None,
+            same: false,
+            by_id: Vec::new(),
+        }
     }
 
     /// Starts the next unit: indices start again from 0.
     pub fn begin_unit(&mut self) {
         self.unit += 1;
         self.offsets.clear();
+    }
+
+    /// The current unit reads `store`: [`DebugStrings::index_str`] takes
+    /// its strings by id. The first store given is the pool's; a unit of
+    /// another store is served by the bytes of its strings.
+    pub fn use_store(&mut self, store: &'a DebugInfo) {
+        let pool = *self.store.get_or_insert(store);
+        self.same = std::ptr::eq(pool, store);
     }
 
     /// The `DW_FORM_strx` index of `s` in the current unit, adding it to
@@ -111,6 +157,9 @@ impl<'a> DebugStrings<'a> {
     /// would reach 4 GiB.
     #[inline]
     pub fn index(&mut self, s: &'a [u8]) -> Result<u32, Error> {
+        if let Some(found) = self.store.and_then(|store| store.find_string(s)) {
+            return self.by_store(found);
+        }
         let next = self.offsets.len() as u32;
         match self.map.entry(s) {
             Entry::Occupied(mut o) => {
@@ -123,20 +172,45 @@ impl<'a> DebugStrings<'a> {
                 Ok(e.index)
             }
             Entry::Vacant(v) => {
-                if s.contains(&0) {
-                    return Err(Error::NulInName);
-                }
-                let offset = u32::try_from(self.data.len()).map_err(|_| Error::TooLarge)?;
-                if self.data.len() + s.len() >= u32::MAX as usize {
-                    return Err(Error::TooLarge);
-                }
-                self.data.extend_from_slice(s);
-                self.data.push(0);
+                let offset = add(&mut self.data, s)?;
                 self.offsets.push(offset);
                 v.insert(Slot { offset, unit: self.unit, index: next });
                 Ok(next)
             }
         }
+    }
+
+    /// [`DebugStrings::index`] of a string read from a node of the
+    /// current unit's store: by its id, without hashing it, when that
+    /// store is the pool's.
+    ///
+    /// # Errors
+    /// As [`DebugStrings::index`].
+    #[inline]
+    pub fn index_str(&mut self, s: DiStr<'a>) -> Result<u32, Error> {
+        if self.same && s.id().is_some() { self.by_store(s) } else { self.index(s.text()) }
+    }
+
+    /// The index of `s`, a string of the pool's store.
+    #[inline]
+    fn by_store(&mut self, s: DiStr<'a>) -> Result<u32, Error> {
+        if self.by_id.is_empty() {
+            let count = self.store.map_or(0, DebugInfo::string_count);
+            self.by_id = vec![Slot::default(); count];
+        }
+        let next = self.offsets.len() as u32;
+        let Some(e) = s.id().and_then(|id| self.by_id.get_mut(id as usize)) else {
+            unreachable!("a string of the pool's store has an id below its count");
+        };
+        if e.unit != self.unit {
+            if e.unit == 0 {
+                e.offset = add(&mut self.data, s.text())?;
+            }
+            e.unit = self.unit;
+            e.index = next;
+            self.offsets.push(e.offset);
+        }
+        Ok(e.index)
     }
 
     /// The current unit's `.debug_str` offsets, by index.
@@ -207,5 +281,68 @@ mod tests {
         assert_eq!(p.index(long).unwrap(), 3);
         assert_eq!(p.index(b"").unwrap(), 4);
         assert_eq!(p.data().len(), 8 + 10_001 + 1);
+    }
+
+    /// A store with namespaces named `names`, and each name's string read
+    /// with its id.
+    fn store(names: &[&'static [u8]]) -> (hod_ir::DebugInfo, Vec<hod_ir::DiId>) {
+        use hod_ir::{DiFieldValue, DiKind, DiNode};
+        let mut d = hod_ir::DebugInfo::default();
+        let ids = names
+            .iter()
+            .map(|&name| {
+                let mut n = DiNode::new(DiKind::Namespace);
+                n.set(b"name", DiFieldValue::Str(name)).unwrap();
+                d.add(&n).unwrap()
+            })
+            .collect();
+        (d, ids)
+    }
+
+    fn name<'a>(d: &'a hod_ir::DebugInfo, n: hod_ir::DiId) -> DiStr<'a> {
+        d.view::<hod_ir::DiNamespace>(n).unwrap().ids().name()
+    }
+
+    /// WP-318: a string of the store asked for by its id or by its bytes
+    /// gets one index, whichever way comes first, in every unit; strings
+    /// the store does not hold are pooled by their bytes alone; the
+    /// indices and `.debug_str` are what the pool by bytes alone gives.
+    #[test]
+    fn by_id_and_by_bytes_agree() {
+        let (d, n) = store(&[b"int", b"x", b"y", b"a\0b"]);
+        let mut p = DebugStrings::new();
+        p.use_store(&d);
+        let mut q = DebugStrings::new();
+        assert_eq!(p.index_str(name(&d, n[0])).unwrap(), 0);
+        assert_eq!(q.index(b"int").unwrap(), 0);
+        assert_eq!(p.index(b"int").unwrap(), 0);
+        assert_eq!(p.index(b"made up").unwrap(), 1);
+        assert_eq!(q.index(b"made up").unwrap(), 1);
+        assert_eq!(p.index(b"x").unwrap(), 2);
+        assert_eq!(q.index(b"x").unwrap(), 2);
+        assert_eq!(p.index_str(name(&d, n[1])).unwrap(), 2);
+        assert_eq!(p.index_str(DiStr::EMPTY).unwrap(), 3);
+        assert_eq!(q.index(b"").unwrap(), 3);
+        assert_eq!(p.unit_offsets(), q.unit_offsets());
+        p.begin_unit();
+        q.begin_unit();
+        p.use_store(&d);
+        assert_eq!(p.index_str(name(&d, n[2])).unwrap(), 0);
+        assert_eq!(q.index(b"y").unwrap(), 0);
+        assert_eq!(p.index(b"x").unwrap(), 1);
+        assert_eq!(q.index(b"x").unwrap(), 1);
+        assert_eq!(p.index_str(name(&d, n[0])).unwrap(), 2);
+        assert_eq!(q.index(b"int").unwrap(), 2);
+        assert_eq!(p.unit_offsets(), q.unit_offsets());
+        assert_eq!(p.data(), q.data());
+        assert_eq!(p.index_str(name(&d, n[3])), Err(Error::NulInName));
+        // A unit of another store is served by its strings' bytes.
+        let (other, m) = store(&[b"z", b"int"]);
+        p.begin_unit();
+        p.use_store(&other);
+        assert_eq!(p.index_str(name(&other, m[0])).unwrap(), 0);
+        assert_eq!(p.index_str(name(&other, m[1])).unwrap(), 1);
+        assert_eq!(p.index(b"int").unwrap(), 1);
+        assert_eq!(p.data(), b"int\0made up\0x\0\0y\0z\0");
     }
 }

@@ -25,7 +25,7 @@ use crate::intern::{Hasher64, InternTable, Layered, Layering, NoLayer, Seg, next
 use crate::strings::StrPool;
 
 use expr::{DiOp, DiOps, ExprId, ExprTable, order_error};
-use node::{Dec, DiKind, DiNode, DiRecord, DiView, Enc, class};
+use node::{Dec, DiKind, DiNode, DiRecord, DiStr, DiView, Enc, class};
 use std::marker::PhantomData;
 
 /// A node's fixed part. Eight bytes.
@@ -558,6 +558,25 @@ impl<L: Layering> DebugInfo<L> {
             strings: self.strings.as_deref(),
             record: PhantomData,
         })
+    }
+
+    /// The number of strings the nodes hold: the ids of [`DiStr`] are
+    /// `0..string_count()`.
+    #[inline]
+    pub fn string_count(&self) -> usize {
+        self.strings.as_ref().map_or(0, |strings| strings.len())
+    }
+
+    /// The string of this table whose bytes are `text`, with its id; `None`
+    /// when no node holds it (the empty string included). One hash of
+    /// `text`.
+    pub fn find_string(&self, text: &[u8]) -> Option<DiStr<'_>> {
+        if text.is_empty() {
+            return None;
+        }
+        let strings = self.strings.as_deref()?;
+        let id = strings.find(text)?;
+        Some(DiStr::new(id, strings.get(id)))
     }
 
     /// The scope that encloses the local scope `id`: for a lexical block

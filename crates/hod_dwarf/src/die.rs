@@ -4,8 +4,8 @@
 //! `.debug_rnglists`.
 
 use hod_ir::{
-    ChecksumKind, ConstPool, DebugInfo, DiCompileUnit, DiFile, DiId, DiKind, DiNode, DiRecord,
-    DiView, EmissionKind, ExprId, Module, TypeTable,
+    ChecksumKind, ConstPool, DebugInfo, DiCompileUnit, DiFile, DiId, DiIds, DiKind, DiNode,
+    DiRecord, DiStr, DiView, EmissionKind, ExprId, Module, TypeTable,
 };
 use hod_obj::elf::{SHF_MERGE, SHF_STRINGS, SHT_PROGBITS};
 use hod_obj::{Object, SectionId, SectionKind, SymbolId};
@@ -773,6 +773,49 @@ impl<'a> Writer<'a> {
         Ok(())
     }
 
+    /// [`Writer::strx`] of a string read from a node of the unit's store,
+    /// found by its id (WP-318).
+    #[inline]
+    pub(crate) fn strx_str(&mut self, s: DiStr<'a>) -> Result<(), Error> {
+        let index = self.strings.index_str(s)?;
+        write_uleb(&mut self.info, u64::from(index));
+        Ok(())
+    }
+
+    /// [`Writer::strx`] of `text`, the string field that `field` reads
+    /// of node `n` (an `R`), by the field's id: for a writer that holds
+    /// the node decoded, whose strings are bytes. Reading the one field
+    /// again is cheaper than hashing it.
+    #[inline]
+    pub(crate) fn strx_of<R: DiRecord>(
+        &mut self,
+        debug: &'a DebugInfo,
+        n: DiId,
+        text: &'a [u8],
+        field: impl FnOnce(&DiIds<'a, R>) -> DiStr<'a>,
+    ) -> Result<(), Error> {
+        match debug.view::<R>(n) {
+            Some(v) => {
+                let s = field(&v.ids());
+                debug_assert_eq!(s.text(), text, "the field read again is the decoded one");
+                self.strx_str(s)
+            }
+            None => self.strx(text),
+        }
+    }
+
+    /// [`Writer::strx_of`] if `text` is not empty.
+    #[inline]
+    pub(crate) fn opt_name_of<R: DiRecord>(
+        &mut self,
+        debug: &'a DebugInfo,
+        n: DiId,
+        text: &'a [u8],
+        field: impl FnOnce(&DiIds<'a, R>) -> DiStr<'a>,
+    ) -> Result<(), Error> {
+        if text.is_empty() { Ok(()) } else { self.strx_of(debug, n, text, field) }
+    }
+
     /// The unit's `.debug_addr` entry for `symbol` + `addend`, added if it
     /// is new: one entry per distinct address, as `llc`'s address pool
     /// (WP-296, §6.4). Its index.
@@ -979,6 +1022,7 @@ impl<'a> Writer<'a> {
         self.offsets.resize(n, NONE);
         self.patches.clear();
         self.strings.begin_unit();
+        self.strings.use_store(plan.debug);
 
         let str_offsets_base = self.str_offsets.len() + 8;
         let addr_base = self.addr.len() + 8;

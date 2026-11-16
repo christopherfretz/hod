@@ -760,7 +760,7 @@ impl<'a> Writer<'a> {
                 if kind == Kind::AbstractParam {
                     let mask = b(!v.name.is_empty()) << 1 | b(decl.is_some()) << 2 | b(art) << 3;
                     self.abbrev(code(fam::FORMAL_PARAMETER, mask, false));
-                    self.opt_name(v.name)?;
+                    self.opt_name_of::<DiLocalVariable>(plan.debug, node, v.name, |v| v.name())?;
                 } else {
                     // WP-098: a named local's alignment is written in the
                     // abstract instance too (family 88 without `location`,
@@ -778,9 +778,7 @@ impl<'a> Writer<'a> {
                         (false, false) => fam::VARIABLE,
                     };
                     self.abbrev(code(family, mask, false));
-                    if !v.name.is_empty() {
-                        self.strx(v.name)?;
-                    }
+                    self.opt_name_of::<DiLocalVariable>(plan.debug, node, v.name, |v| v.name())?;
                     if aligned {
                         write_uleb(&mut self.info, u64::from(v.align / 8));
                     }

@@ -731,6 +731,134 @@ coded_field! {
     ChecksumKind: ChecksumKind, ChecksumKind::None, |kind| kind.code(), ChecksumKind::from_code;
 }
 
+/// A string of the debug store with its id there (§6.2, WP-318): what a
+/// string field reads as through [`DiIds`], and what
+/// [`crate::DebugInfo::find_string`] answers. The store interns its
+/// strings, so two strings of one store with equal bytes have one id, and
+/// the ids are dense, `0..DebugInfo::string_count()`: a reader can key a
+/// table by the id instead of hashing the bytes.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct DiStr<'a> {
+    id: u32,
+    text: &'a [u8],
+}
+
+impl<'a> DiStr<'a> {
+    /// The empty string, which no node stores: it has no id.
+    pub const EMPTY: DiStr<'static> = DiStr { id: StrId::NONE_RAW, text: &[] };
+
+    #[inline]
+    pub(crate) fn new(id: StrId, text: &'a [u8]) -> Self {
+        DiStr { id: id.raw(), text }
+    }
+
+    /// The string's id in its store, `None` for [`DiStr::EMPTY`].
+    #[inline]
+    pub fn id(self) -> Option<u32> {
+        (self.id != StrId::NONE_RAW).then_some(self.id)
+    }
+
+    /// The string's bytes.
+    #[inline]
+    pub fn text(self) -> &'a [u8] {
+        self.text
+    }
+
+    /// Whether the string is empty (a field at its default).
+    #[inline]
+    pub fn is_empty(self) -> bool {
+        self.text.is_empty()
+    }
+}
+
+/// The type a field of a record's type reads as through [`DiIds`]: a
+/// string (`&[u8]`) as a [`DiStr`], any other field as itself.
+/// Implemented by the field types of this module only.
+pub trait DiFieldId<'a>: sealed::Sealed {
+    /// What [`DiIds`] gives for a field of this type.
+    type Id: Copy;
+}
+
+/// How a field reads through [`DiIds`].
+pub(crate) trait IdField<'a>: Field<'a> + DiFieldId<'a> {
+    /// Consumes the stored value from `dec` as [`Field::get`] does.
+    fn get_id<L: Layering>(dec: &mut Dec<'a, L>) -> Self::Id;
+    /// [`Field::absent`].
+    fn absent_id() -> Self::Id;
+    /// Whether `id` reads as `self`.
+    #[cfg(test)]
+    fn same(self, id: Self::Id) -> bool;
+}
+
+impl sealed::Sealed for &[u8] {}
+
+impl<'a> DiFieldId<'a> for &'a [u8] {
+    type Id = DiStr<'a>;
+}
+
+impl<'a> IdField<'a> for &'a [u8] {
+    #[inline]
+    fn absent_id() -> DiStr<'a> {
+        DiStr::EMPTY
+    }
+    #[cfg(test)]
+    fn same(self, id: DiStr<'a>) -> bool {
+        self == id.text() && id.id().is_some() != self.is_empty()
+    }
+    #[inline]
+    fn get_id<L: Layering>(dec: &mut Dec<'a, L>) -> DiStr<'a> {
+        let raw = dec.word();
+        match (dec.strings, StrId::from_raw(raw)) {
+            (Some(strings), Some(id)) => DiStr::new(id, strings.get(id)),
+            _ => DiStr::EMPTY,
+        }
+    }
+}
+
+macro_rules! plain_ids {
+    ($($ty:ty),*) => {$(
+        impl<'a> sealed::Sealed for $ty {}
+
+        impl<'a> DiFieldId<'a> for $ty {
+            type Id = $ty;
+        }
+
+        impl<'a> IdField<'a> for $ty {
+            #[inline]
+            fn get_id<L: Layering>(dec: &mut Dec<'a, L>) -> $ty {
+                <$ty as Field<'a>>::get(dec)
+            }
+            #[inline]
+            fn absent_id() -> $ty {
+                <$ty as Field<'a>>::absent()
+            }
+            #[cfg(test)]
+            fn same(self, id: $ty) -> bool {
+                self == id
+            }
+        }
+    )*};
+}
+
+plain_ids!(
+    u16,
+    u32,
+    u64,
+    i64,
+    bool,
+    Option<u32>,
+    Option<DiId>,
+    &'a [DiId],
+    ExprId,
+    ConstId,
+    DiBound,
+    DiFlags,
+    SpFlags,
+    EmissionKind,
+    NameTableKind,
+    ChecksumKind
+);
+
 /// Sets of kinds, one bit per [`DiKind`]: what a reference may name.
 pub(crate) mod class {
     use super::DiKind;
@@ -810,9 +938,28 @@ impl<'a, R, L: Layering> DiView<'a, R, L> {
     /// over.
     #[inline]
     fn field<F: Field<'a>>(&self, bit: u32, cells: &[u8]) -> F {
+        match self.at(bit, cells) {
+            Some(mut dec) => F::get(&mut dec),
+            None => F::absent(),
+        }
+    }
+
+    /// [`DiView::field`] as [`DiIds`] reads it.
+    #[inline]
+    fn field_id<F: IdField<'a>>(&self, bit: u32, cells: &[u8]) -> F::Id {
+        match self.at(bit, cells) {
+            Some(mut dec) => F::get_id(&mut dec),
+            None => F::absent_id(),
+        }
+    }
+
+    /// Where the field at mask bit `bit` is read from; `None` when it is
+    /// not stored.
+    #[inline]
+    fn at(&self, bit: u32, cells: &[u8]) -> Option<Dec<'a, L>> {
         let at = 1u32 << bit;
         if self.mask & at == 0 {
-            return F::absent();
+            return None;
         }
         let mut before = self.mask & (at - 1);
         let mut start = 0usize;
@@ -824,8 +971,35 @@ impl<'a, R, L: Layering> DiView<'a, R, L> {
                 n => usize::from(n),
             };
         }
-        let mut dec = Dec { cells: self.cells.get(start..).unwrap_or(&[]), strings: self.strings };
-        F::get(&mut dec)
+        Some(Dec { cells: self.cells.get(start..).unwrap_or(&[]), strings: self.strings })
+    }
+
+    /// The same node read with the ids of its strings ([`DiIds`]).
+    #[inline]
+    pub fn ids(self) -> DiIds<'a, R, L> {
+        DiIds { view: self }
+    }
+}
+
+/// A [`DiView`] whose string fields read as [`DiStr`] (the string and
+/// its id in the store) instead of bytes: one method per field, named as
+/// the record's; a field that is not a string reads as through the view.
+/// From [`DiView::ids`].
+pub struct DiIds<'a, R, L: Layering = NoLayer> {
+    view: DiView<'a, R, L>,
+}
+
+impl<R, L: Layering> Clone for DiIds<'_, R, L> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<R, L: Layering> Copy for DiIds<'_, R, L> {}
+
+impl<R, L: Layering> std::fmt::Debug for DiIds<'_, R, L> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiIds").field("view", &self.view).finish()
     }
 }
 
@@ -1077,8 +1251,10 @@ macro_rules! nodes {
                 /// Whether every field of `view` reads as this record's.
                 #[cfg(test)]
                 fn agrees<L: Layering>(&self, view: &DiView<'a, Self, L>) -> bool {
-                    true $(&& nodes!(@second $tag, self.tag == view.tag()))?
-                        $(&& self.$field == view.$field())*
+                    let ids = view.ids();
+                    true $(&& nodes!(@second $tag, self.tag == view.tag() && self.tag == ids.tag()))?
+                        $(&& self.$field == view.$field()
+                            && <$fty as IdField<'a>>::same(self.$field, ids.$field()))*
                 }
             }
 
@@ -1106,6 +1282,23 @@ macro_rules! nodes {
                         #[inline]
                         pub fn $field(&self) -> $fty {
                             self.field::<$fty>(Bit::$field as u32, <$name>::CELLS)
+                        }
+                    )*
+                }
+
+                impl<'a, L: Layering> DiIds<'a, $name $(<$lt>)?, L> {
+                    $(
+                        #[doc = concat!("`tag:`, as [`", stringify!($name), "::tag`].")]
+                        #[inline]
+                        pub fn tag(&self) -> u16 {
+                            nodes!(@second $tag, self.view.tag)
+                        }
+                    )?
+                    $(
+                        #[doc = concat!("`", $fllvm, ":`, as [`", stringify!($name), "::", stringify!($field), "`], a string with its id ([`DiStr`]).")]
+                        #[inline]
+                        pub fn $field(&self) -> <$fty as DiFieldId<'a>>::Id {
+                            self.view.field_id::<$fty>(Bit::$field as u32, <$name>::CELLS)
                         }
                     )*
                 }

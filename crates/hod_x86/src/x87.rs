@@ -65,12 +65,6 @@ pub const INTRINSIC: &str = "x86:float:intrinsic";
 /// `bitcast` of a floating value).
 pub const CAST: &str = "x86:float:cast";
 
-/// The longest `llvm.memcpy`/`llvm.memmove` that `llc` writes inline
-/// (bytes, a constant length); a longer one is a call of libc's.
-const INLINE_COPY: u32 = 32;
-/// The longest `llvm.memset` that `llc` writes inline.
-const INLINE_SET: u32 = 64;
-
 /// One of the three x87 types.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Fp {
@@ -269,8 +263,8 @@ fn inst_at<'a>(cx: &FnCx<'a, X86>, raw: u32) -> Option<Inst<'a>> {
 
 /// Whether `llc` leaves no value in an x87 register across `inst`
 /// (measured, 19 and 22): a terminator; a call (but `memcpy`/`memmove`
-/// of at most [`INLINE_COPY`] and `memset` of at most [`INLINE_SET`]
-/// constant bytes, which it writes inline, and inline assembly but as
+/// and `memset` that it writes inline, `crate::bytes::calls_libc`, and
+/// inline assembly but as
 /// [`asm_barrier`] says); `frem` and the libm
 /// intrinsics (calls); an integer division wider than 32 bits
 /// (`__divdi3` and kin); and, without `cmov`, a `select` on a variable
@@ -287,20 +281,15 @@ fn barrier(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
     if tls_barrier(cx, inst) {
         return true;
     }
-    let small = |v: Value, max: u32| {
-        cx.types().int_bits(value_ty(cx, v)).is_some_and(|b| b <= 32)
-            && const_int(cx, v).is_some_and(|n| n <= max)
-    };
     match inst.kind() {
         InstKind::Call(site) => match (site.intrinsic(), site.args()) {
             (None, _) => match site.callee_value().kind() {
                 ValueKind::Asm(id) => asm_barrier(cx.module.asm(id).constraints),
                 _ => true,
             },
-            (Some(Intrinsic::Memcpy | Intrinsic::Memmove), &[_, _, len, ..]) => {
-                !small(len, INLINE_COPY)
+            (Some(Intrinsic::Memcpy | Intrinsic::Memmove | Intrinsic::Memset), _) => {
+                crate::bytes::site_calls_libc(cx, &site)
             }
-            (Some(Intrinsic::Memset), &[_, _, len, ..]) => !small(len, INLINE_SET),
             (Some(which), args) => {
                 (routine_op(which).is_some() && !folded(cx, inst, FOLD_DEPTH))
                     || int_branch(cx, inst, which, args)

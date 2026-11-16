@@ -237,9 +237,12 @@ impl Leaves {
     fn walk(&mut self, types: &TypeTable, ty: TypeId, base: u64) -> Result<(), &'static str> {
         match types.kind(ty) {
             TypeKind::Int(bits) if bits <= 32 => self.push(base, Leaf::Int(bits.div_ceil(8))),
-            TypeKind::Int(64) => {
+            // An integer of 33 to 64 bits is two words (`llc` promotes
+            // it to `i64`, the bits above its width unspecified); the
+            // high one moves the store size's bytes (WP-315).
+            TypeKind::Int(bits @ 33..=64) => {
                 self.push(base, Leaf::Int(4))?;
-                self.push(base + 4, Leaf::Int(4))
+                self.push(base + 4, Leaf::Int((bits - 32).div_ceil(8)))
             }
             TypeKind::Ptr { .. } => self.push(base, Leaf::Int(4)),
             TypeKind::Float => self.push(base, Leaf::Fp { size: 4, slot: 4 }),

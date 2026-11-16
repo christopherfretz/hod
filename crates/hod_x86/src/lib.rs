@@ -12,6 +12,7 @@
 #![forbid(unsafe_code)]
 
 pub mod abi;
+pub mod agg;
 pub mod alu;
 pub mod asm;
 pub mod bits;

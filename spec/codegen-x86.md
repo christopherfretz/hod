@@ -471,9 +471,9 @@ the operands are placed (step 1), as any value: its address comes from
 template sees a register, never a relocation of PIC or TLS. A template
 that writes `ebx` (a clobber or an operand) is followed by PLT calls
 that compute the GOT pointer again (§9.2: it is never kept).
-Module-level assembly with code or data stays refused for i386
-(`module:asm`: `hod_asm` has no 32-bit module assembler); text of
-symbol directives only is written as on the other targets.
+Module-level assembly with code or data is `hod_asm`'s 32-bit module
+assembler (`spec/asm.md` §23, WP-307); text of symbol directives only is
+written as on the other targets.
 
 ## 11. Floating point on the x87 (`x87`, WP-300, design 0008 I9)
 

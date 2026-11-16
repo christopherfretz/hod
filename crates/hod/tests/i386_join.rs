@@ -156,12 +156,13 @@ impl Tools {
     }
 }
 
-/// Module-level assembly on i386: text of symbol directives only compiles
-/// (`hod_cg`'s WP-075 path, which writes no code); text with code or data
-/// is refused by name (`module:asm`: `hod_asm` has no 32-bit module
-/// assembler yet), never assembled as another architecture's.
+/// Module-level assembly on i386: text of symbol directives compiles, and
+/// since WP-307 so does text with code or data (`hod_asm`'s 32-bit module
+/// assembler; `i386_module_asm.rs` compares it with llc's). What it cannot
+/// read is refused under an `asm:*` name, never `module:asm` and never
+/// assembled as another architecture's.
 #[test]
-fn module_asm_is_directives_only_on_i386() {
+fn module_asm_compiles_on_i386() {
     let options = Options {
         output_kind: OutputKind::Object,
         triple: Some(TRIPLE.into()),
@@ -173,9 +174,11 @@ fn module_asm_is_directives_only_on_i386() {
     hod::compile(symbols.as_bytes(), &options).unwrap_or_else(|e| panic!("directives: {e}"));
     for text in ["g: movl $5, %eax", ".section .rodata", ".long 7"] {
         let module = format!("{head}module asm \"{text}\"\n{body}");
-        let error = hod::compile(module.as_bytes(), &options).unwrap_err().to_string();
-        assert!(error.contains("module:asm"), "{text}: {error}");
+        hod::compile(module.as_bytes(), &options).unwrap_or_else(|e| panic!("{text}: {e}"));
     }
+    let module = format!("{head}module asm \"g: movq $5, %rax\"\n{body}");
+    let error = hod::compile(module.as_bytes(), &options).unwrap_err().to_string();
+    assert!(error.contains("asm:") && !error.contains("module:asm"), "{error}");
 }
 
 /// Every program, kind and CPU, by each compiler and linker.

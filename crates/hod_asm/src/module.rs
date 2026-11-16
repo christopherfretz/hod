@@ -206,11 +206,16 @@ pub enum RelocKind {
     /// An x86-64 instruction's field (§14): a memory operand's, or a
     /// branch's or call's (`R_X86_64_PLT32`).
     X64(crate::x64::RefKind),
-    /// `.quad`: `R_AARCH64_ABS64`, `R_X86_64_64`.
+    /// A 32-bit x86 instruction's field (§23): a displacement's, an
+    /// immediate's, or a branch's or call's.
+    X86(crate::x86::RefKind),
+    /// `.quad`: `R_AARCH64_ABS64`, `R_X86_64_64` (none in 32-bit x86).
     Abs64,
-    /// `.word` (AArch64), `.long`: `R_AARCH64_ABS32`, `R_X86_64_32`.
+    /// `.word` (AArch64), `.long`: `R_AARCH64_ABS32`, `R_X86_64_32`,
+    /// `R_386_32`.
     Abs32,
-    /// `.hword` (AArch64), `.short`: `R_AARCH64_ABS16`, `R_X86_64_16`.
+    /// `.hword` (AArch64), `.short`: `R_AARCH64_ABS16`, `R_X86_64_16`,
+    /// `R_386_16`.
     Abs16,
 }
 
@@ -385,8 +390,9 @@ enum Fill {
     /// An x86-64 branch's or call's displacement to a numeric label: one
     /// byte (`short`) or four.
     XLocal { n: u32, forward: bool, short: bool },
-    /// An x86-64 branch's or call's displacement to a named symbol.
-    XNamed { sym: u32, short: bool, kind: crate::x64::RefKind },
+    /// An x86 branch's or call's displacement to a named symbol, and the
+    /// kind of its relocation in the near form.
+    XNamed { sym: u32, short: bool, kind: RelocKind },
 }
 
 /// The instruction set of the text.
@@ -394,6 +400,15 @@ enum Fill {
 enum Isa {
     A64(Features),
     X64,
+    /// 32-bit x86 (§23).
+    X86,
+}
+
+impl Isa {
+    /// x86-64 or 32-bit x86: the x86 spellings, padding and branches.
+    fn is_x86(self) -> bool {
+        matches!(self, Isa::X64 | Isa::X86)
+    }
 }
 
 struct Pending {
@@ -451,11 +466,30 @@ pub fn assemble_module(text: &str, features: Features, out: &mut ModuleCode) -> 
 /// The `asm:*` refusal of the first statement, operand or symbol use
 /// that is not reproduced.
 pub fn assemble_module_x64(text: &str, out: &mut ModuleCode) -> R<()> {
+    assemble_x86(text, Isa::X64, out)
+}
+
+/// Assembles module-level assembly `text` for 32-bit x86 into `out`
+/// (cleared first), as [`assemble_module_x64`] does for x86-64, in
+/// 32-bit mode (`spec/asm.md` §23): the instructions of the inline
+/// assembler for `i686` (§22) and, beyond them, symbol immediates and the
+/// i386 relocation specifiers; padding with one-byte `nop`s; no `.quad`
+/// of a symbol.
+///
+/// # Errors
+/// The `asm:*` refusal of the first statement, operand or symbol use
+/// that is not reproduced; an `x86-mode:*` name of an instruction that
+/// does not exist in 32-bit mode.
+pub fn assemble_module_x86(text: &str, out: &mut ModuleCode) -> R<()> {
+    assemble_x86(text, Isa::X86, out)
+}
+
+fn assemble_x86(text: &str, isa: Isa, out: &mut ModuleCode) -> R<()> {
     let mut cleaned = String::new();
     crate::x64::clean(text, &mut cleaned)?;
     let mut near = HashSet::new();
     loop {
-        let grow = run(&cleaned, Isa::X64, &near, out)?;
+        let grow = run(&cleaned, isa, &near, out)?;
         if grow.is_empty() {
             return Ok(());
         }
@@ -504,7 +538,7 @@ fn new_section(name: &str, kind: SectionKind, isa: Isa) -> Section {
         kind,
         // x86-64: LLVM gives a code section alignment 1 until the text
         // asks for more (`.text` is 4 to llc: the caller's `.text`).
-        align: if kind == SectionKind::Text && isa != Isa::X64 { 4 } else { 1 },
+        align: if kind == SectionKind::Text && !isa.is_x86() { 4 } else { 1 },
         bytes: Vec::new(),
         size: 0,
         relocs: Vec::new(),
@@ -692,7 +726,7 @@ impl State<'_> {
     }
 
     fn mark(&mut self, to: Mapping) {
-        if self.isa == Isa::X64 {
+        if self.isa.is_x86() {
             return;
         }
         let s = self.section();
@@ -730,7 +764,7 @@ impl State<'_> {
             return Ok(());
         }
         let (head, rest) = split_mnemonic(stmt);
-        if self.isa == Isa::X64 && self.prefix.is_some() && head.starts_with('.') {
+        if self.isa.is_x86() && self.prefix.is_some() && head.starts_with('.') {
             return fail(op_reason::FORM);
         }
         // `name = value`.
@@ -790,6 +824,7 @@ impl State<'_> {
         let features = match self.isa {
             Isa::A64(features) => features,
             Isa::X64 => return self.instruction_x64(mnemonic, rest),
+            Isa::X86 => return self.instruction_x86(mnemonic, rest),
         };
         if !self.section().size.is_multiple_of(4) {
             return fail(other::UNALIGNED);
@@ -831,7 +866,7 @@ impl State<'_> {
 
     /// An x86-64 instruction statement (§14).
     fn instruction_x64(&mut self, mnemonic: &str, rest: &str) -> R<()> {
-        use crate::x64::{Jump, Stmt};
+        use crate::x64::Stmt;
         let mut bytes = Vec::new();
         let mut prefix = self.prefix.take();
         let stmt = crate::x64::instruction(mnemonic, rest, &mut prefix, &mut bytes)?;
@@ -851,37 +886,85 @@ impl State<'_> {
                 }
             }
             Stmt::Jump(jump, target, kind) => {
-                let near = jump == Jump::Call || self.near.contains(&seq);
-                let inst = jump.inst(near, 0)?;
-                let site = inst.site().ok_or(Refusal(op_reason::FORM))?;
-                let (fill, addend) = match target {
-                    Value { name: Some(Name::Local(n, forward)), constant: 0 } => {
-                        (Fill::XLocal { n, forward, short: !near }, 0)
-                    }
-                    Value { name: Some(Name::Local(..)), .. } => {
-                        return fail(op_reason::EXPRESSION);
-                    }
-                    Value { name: Some(Name::Sym(s)), constant } => {
-                        let sym = self.symbol(plain_name(s)?);
-                        let addend =
-                            constant.checked_add(site.addend).ok_or(Refusal(op_reason::RANGE))?;
-                        (Fill::XNamed { sym, short: !near, kind }, addend)
-                    }
-                    Value { name: None, .. } => return fail(op_reason::SYMBOL),
-                };
-                self.pending.push(Pending {
-                    seq,
-                    section,
-                    offset: offset + site.offset as u64,
-                    addend,
-                    fill,
-                });
-                bytes.extend_from_slice(inst.bytes());
+                self.jump(jump, target, RelocKind::X64(kind), offset, &mut bytes)?;
             }
         }
         let s = self.section();
         s.bytes.extend_from_slice(&bytes);
         s.size += bytes.len() as u64;
+        Ok(())
+    }
+
+    /// A 32-bit x86 instruction statement (§23).
+    fn instruction_x86(&mut self, mnemonic: &str, rest: &str) -> R<()> {
+        use crate::x86::ModuleStmt;
+        let mut bytes = Vec::new();
+        let mut prefix = self.prefix.take();
+        let stmt = crate::x86::module_instruction(mnemonic, rest, &mut prefix, &mut bytes)?;
+        self.prefix = prefix;
+        let (seq, section, offset) = (self.seq, self.current, self.section().size);
+        match stmt {
+            ModuleStmt::Bytes(field) => {
+                if let Some(p) = field {
+                    let sym = self.symbol(plain_name(&p.name)?);
+                    self.pending.push(Pending {
+                        seq,
+                        section,
+                        offset: offset + p.at as u64,
+                        addend: p.addend,
+                        fill: Fill::Named { sym, kind: RelocKind::X86(p.kind) },
+                    });
+                }
+            }
+            ModuleStmt::Jump(jump, target, kind) => {
+                self.jump(jump, target, RelocKind::X86(kind), offset, &mut bytes)?;
+            }
+        }
+        let s = self.section();
+        s.bytes.extend_from_slice(&bytes);
+        s.size += bytes.len() as u64;
+        Ok(())
+    }
+
+    /// An x86 branch or call to `target` at `offset` of the section:
+    /// short or near as the pass decides, its displacement pending, its
+    /// bytes appended to `bytes`; `kind` is the relocation of a field to
+    /// a symbol in the near form.
+    fn jump(
+        &mut self,
+        jump: crate::x64::Jump,
+        target: Value<'_>,
+        kind: RelocKind,
+        offset: u64,
+        bytes: &mut Vec<u8>,
+    ) -> R<()> {
+        let (seq, section) = (self.seq, self.current);
+        let offset = offset + bytes.len() as u64;
+        let near = jump == crate::x64::Jump::Call || self.near.contains(&seq);
+        let inst = jump.inst(near, 0)?;
+        let site = inst.site().ok_or(Refusal(op_reason::FORM))?;
+        let (fill, addend) = match target {
+            Value { name: Some(Name::Local(n, forward)), constant: 0 } => {
+                (Fill::XLocal { n, forward, short: !near }, 0)
+            }
+            Value { name: Some(Name::Local(..)), .. } => {
+                return fail(op_reason::EXPRESSION);
+            }
+            Value { name: Some(Name::Sym(s)), constant } => {
+                let sym = self.symbol(plain_name(s)?);
+                let addend = constant.checked_add(site.addend).ok_or(Refusal(op_reason::RANGE))?;
+                (Fill::XNamed { sym, short: !near, kind }, addend)
+            }
+            Value { name: None, .. } => return fail(op_reason::SYMBOL),
+        };
+        self.pending.push(Pending {
+            seq,
+            section,
+            offset: offset + site.offset as u64,
+            addend,
+            fill,
+        });
+        bytes.extend_from_slice(inst.bytes());
         Ok(())
     }
 
@@ -908,7 +991,7 @@ impl State<'_> {
     }
 
     fn directive(&mut self, name: &str, rest: &str) -> R<()> {
-        let x64 = self.isa == Isa::X64;
+        let x64 = self.isa.is_x86();
         match name {
             ".symver" => return self.symver(rest),
             ".word" | ".value" if x64 => return self.values(rest, 2),
@@ -1218,6 +1301,9 @@ impl State<'_> {
                 Some(Name::Local(..)) => return fail(op_reason::LABEL),
                 Some(Name::Sym(s)) => {
                     let kind = match size {
+                        // An error to llvm-mc for `i686` ("unsupported
+                        // relocation type").
+                        8 if self.isa == Isa::X86 => return fail(op_reason::SYMBOL),
                         8 => RelocKind::Abs64,
                         4 => RelocKind::Abs32,
                         2 => RelocKind::Abs16,
@@ -1309,7 +1395,7 @@ impl State<'_> {
             return fail(op_reason::FORM);
         }
         let crate::align::Align { align, fill, .. } = crate::align::parse(rest, log2)?;
-        let x64 = self.isa == Isa::X64;
+        let isa = self.isa;
         let s = self.section();
         s.align = s.align.max(align);
         let pad = (s.size.wrapping_neg() & (align - 1)) as usize;
@@ -1322,7 +1408,13 @@ impl State<'_> {
                 Some(f) => s.bytes.extend(std::iter::repeat_n(f, pad)),
                 // x86-64: LLVM's no-ops of at most 15 bytes (generic
                 // tuning), longest first.
-                None if s.kind == SectionKind::Text && x64 => {
+                // 32-bit x86: one-byte `nop`s, as llvm-mc and `llc` write
+                // them for `i686` (no long `nop`s in the CPU llc assembles
+                // module text for).
+                None if s.kind == SectionKind::Text && isa == Isa::X86 => {
+                    s.bytes.extend(std::iter::repeat_n(0x90, pad));
+                }
+                None if s.kind == SectionKind::Text && isa == Isa::X64 => {
                     let mut left = pad;
                     while left != 0 {
                         let n = left.min(15);
@@ -1379,6 +1471,9 @@ impl State<'_> {
                 Fill::Named { sym, kind: RelocKind::X64(kind) } => {
                     self.named_x64(&p, sym, kind)?;
                 }
+                Fill::Named { sym, kind: RelocKind::X86(kind) } => {
+                    self.named_x86(&p, sym, kind)?;
+                }
                 Fill::Named { sym, kind } => self.named(&p, sym, kind)?,
             }
         }
@@ -1422,13 +1517,7 @@ impl State<'_> {
     /// of local binding in the same section; else the near form with
     /// `R_X86_64_PLT32` (against the section for a local label
     /// elsewhere), as LLVM's assembler writes it.
-    fn named_jump(
-        &mut self,
-        p: &Pending,
-        sym: u32,
-        short: bool,
-        kind: crate::x64::RefKind,
-    ) -> R<()> {
+    fn named_jump(&mut self, p: &Pending, sym: u32, short: bool, kind: RelocKind) -> R<()> {
         let s = &self.out.symbols[sym as usize];
         let target = match s.def {
             Def::Absolute(_) => return fail(op_reason::SYMBOL),
@@ -1449,7 +1538,6 @@ impl State<'_> {
         if let Target::Symbol(i) = target {
             self.out.symbols[i as usize].referenced = true;
         }
-        let kind = RelocKind::X64(kind);
         self.out.sections[p.section as usize].relocs.push(Reloc {
             offset: p.offset,
             kind,
@@ -1498,6 +1586,42 @@ impl State<'_> {
         self.out.sections[p.section as usize].relocs.push(Reloc {
             offset: p.offset,
             kind: RelocKind::X64(kind),
+            target,
+            addend,
+        });
+        Ok(())
+    }
+
+    /// A 32-bit x86 instruction's symbol field (§23), as llvm-mc writes
+    /// it for `i686`: an absolute or `@GOTOFF` field to a label of local
+    /// binding is relocated against the label's section; a `@GOT` field
+    /// keeps the symbol (a `.L` name is refused, as on x86-64); a TLS
+    /// field to a local label, and `_GLOBAL_OFFSET_TABLE_` defined here,
+    /// are refused.
+    fn named_x86(&mut self, p: &Pending, sym: u32, kind: crate::x86::RefKind) -> R<()> {
+        use crate::x86::RefKind as K;
+        let s = &self.out.symbols[sym as usize];
+        let target = match (s.def, kind) {
+            (Def::Absolute(_), _) | (Def::Label(..), K::GotPc) => return fail(op_reason::SYMBOL),
+            (Def::Label(section, offset), K::Abs32 | K::GotOff) if s.is_local() => {
+                (Target::Section(section), (offset as i64).wrapping_add(p.addend))
+            }
+            (Def::Label(..), K::Got32 | K::Got32X) if s.is_local() && s.is_temporary() => {
+                return fail(op_reason::SYMBOL);
+            }
+            (Def::Label(..), K::Got32 | K::Got32X) if s.is_local() => {
+                (Target::Symbol(sym), p.addend)
+            }
+            (Def::Label(..), _) if s.is_local() => return fail(other::SYMBOL),
+            _ => (Target::Symbol(sym), p.addend),
+        };
+        let (target, addend) = target;
+        if let Target::Symbol(i) = target {
+            self.out.symbols[i as usize].referenced = true;
+        }
+        self.out.sections[p.section as usize].relocs.push(Reloc {
+            offset: p.offset,
+            kind: RelocKind::X86(kind),
             target,
             addend,
         });
@@ -1724,5 +1848,52 @@ mod tests {
         assert!(asm(".ident").is_err());
         assert!(asm(".ident \"a\", \"b\"").is_err());
         assert!(asm(".ident a").is_err());
+    }
+
+    /// `spec/asm.md` §23: the 32-bit kinds as `llvm-mc -triple=i686`
+    /// writes them for this text (GOT32X only for `mov`, GOTPC's addend
+    /// the field's offset in the instruction, a GOTOFF or absolute field
+    /// to a local against the section, code padded by one-byte nops).
+    #[test]
+    fn i386_kinds() {
+        use crate::x86::RefKind as K;
+        let mut m = ModuleCode::default();
+        let text = "f: movl x@GOT(%ebx), %eax\n addl x@GOT(%ebx), %eax\n \
+            addl $_GLOBAL_OFFSET_TABLE_, %ebx\n call g\n leal l@GOTOFF(%ebx), %eax\n \
+            movl %gs:t@ntpoff, %eax\n .p2align 3\nl: ret\n.data\n .long l\n .short x";
+        assemble_module_x86(text, &mut m).unwrap();
+        let code = &m.sections[0];
+        assert_eq!(code.size, 0x29);
+        assert_eq!(&code.bytes[..2], &[0x8B, 0x83]);
+        assert_eq!(&code.bytes[0x23..], &[0x90, 0x90, 0x90, 0x90, 0x90, 0xC3]);
+        let r = |offset, kind, target, addend| Reloc { offset, kind, target, addend };
+        let x = |k| RelocKind::X86(k);
+        assert_eq!(
+            code.relocs,
+            [
+                r(2, x(K::Got32X), Target::Symbol(1), 0),
+                r(8, x(K::Got32), Target::Symbol(1), 0),
+                r(0xE, x(K::GotPc), Target::Symbol(2), 2),
+                r(0x13, x(K::Pc32), Target::Symbol(3), -4),
+                r(0x19, x(K::GotOff), Target::Section(0), 0x28),
+                r(0x1F, x(K::TlsLe), Target::Symbol(5), 0),
+            ]
+        );
+        assert_eq!(
+            m.sections[1].relocs,
+            [
+                r(0, RelocKind::Abs32, Target::Section(0), 0x28),
+                r(4, RelocKind::Abs16, Target::Symbol(1), 0),
+            ]
+        );
+        let refused = |t: &str| {
+            let mut m = ModuleCode::default();
+            assemble_module_x86(t, &mut m).err().map(|r| r.0)
+        };
+        assert_eq!(refused(".quad x"), Some(op_reason::SYMBOL));
+        assert_eq!(refused(".byte x"), Some(op_reason::SYMBOL));
+        assert_eq!(refused("movl $x, y"), Some(op_reason::SYMBOL));
+        assert_eq!(refused("movl x@PLT, %eax"), Some(op_reason::SPECIFIER));
+        assert_eq!(refused("movl x@GOT@GOT(%ebx), %eax"), Some(op_reason::SPECIFIER));
     }
 }

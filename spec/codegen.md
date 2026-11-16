@@ -6918,6 +6918,13 @@ the `asm:*` name. Then:
 - **Relocations** of the text are the object's relocations, against
   the module symbol, the new symbol, or the section with an addend
   (`spec/asm.md` §9).
+- **i386** (WP-307, `spec/asm.md` §23): the text goes through
+  `assemble_module_x86`; its kinds map to `I386Reloc` (`i386_reloc_kind`),
+  and `i386_fields` writes into the bytes the addend of each kind whose
+  in-place field `hod_obj` does not know (`GOT32`, `TLS_LE_32`,
+  `TLS_IE_32`, `R_386_16`), leaving 0 in the relocation; a new symbol
+  that a TLS field names and no `.type` types is `STT_TLS`; an absolute
+  symbol's value is taken modulo 2^32.
 
 The oracle is `crates/hod_cg/tests/emit_module_asm.rs` (sections with
 bytes, symbols, relocations, code-section mapping symbols equal to

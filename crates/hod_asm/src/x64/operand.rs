@@ -194,7 +194,7 @@ pub fn reg_name(name: &str) -> Option<RegName> {
 }
 
 /// Splits `text` at the commas outside parentheses.
-fn split_operands(text: &str) -> Result<Vec<&str>, Refusal> {
+pub(crate) fn split_operands(text: &str) -> Result<Vec<&str>, Refusal> {
     let mut out = Vec::new();
     let mut depth = 0i32;
     let mut start = 0;
@@ -266,7 +266,7 @@ fn register(text: &str) -> Result<(RegName, &str), Refusal> {
 }
 
 /// A constant expression that is all of `text`.
-fn whole_expr(text: &str) -> Result<Value<'_>, Refusal> {
+pub(crate) fn whole_expr(text: &str) -> Result<Value<'_>, Refusal> {
     let mut c = Cursor::new(text);
     let v = c.expr()?;
     if !c.at_end() {

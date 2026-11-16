@@ -15,14 +15,17 @@ use crate::error::{CgError, CgResult};
 
 /// Refuses module-level assembly an assembler must read on a target
 /// `hod_asm` has no module assembler for ([`unsupported::MODULE_ASM`]);
-/// on AArch64 (WP-112) and x86-64 (WP-204) `hod_asm` reads it
-/// (`module_asm.rs`).
+/// on AArch64 (WP-112), x86-64 (WP-204) and 32-bit x86 (WP-307)
+/// `hod_asm` reads it (`module_asm.rs`).
 ///
 /// # Errors
 /// [`unsupported::MODULE_ASM`].
 pub(super) fn check(module: &Module) -> CgResult<()> {
     if module.module_asm().is_empty()
-        || matches!(module.target().arch(), hod_ir::Arch::Aarch64 | hod_ir::Arch::X86_64)
+        || matches!(
+            module.target().arch(),
+            hod_ir::Arch::Aarch64 | hod_ir::Arch::X86_64 | hod_ir::Arch::I386
+        )
     {
         return Ok(());
     }

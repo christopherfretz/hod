@@ -2,6 +2,10 @@
 // shared object LIB with dlopen, compares the addresses its code forms
 // with dlsym's (which gives the calling thread's copy of a thread-local
 // symbol), and checks from five threads that each sees fresh copies.
+// The five threads meet at a barrier after they have recorded their
+// addresses, so all five are alive at once when the addresses are taken:
+// a thread that starts after another has exited is given the freed
+// thread's block at the same address, by the loader's right (WP-280).
 #include <dlfcn.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -15,6 +19,7 @@ static void (*dl_bump)(long);
 static long (*dl_live)(long, long, long, long, double, double);
 static void *(*dl_select)(long, long);
 static void *seen[5][5];
+static pthread_barrier_t all_alive;
 
 #define CHECK(c)                                                               \
     do {                                                                       \
@@ -47,6 +52,7 @@ static void *run(void *arg) {
     for (int v = 0; v < 5; v++) {
         seen[k][v] = mine[v];
     }
+    pthread_barrier_wait(&all_alive);
     long by = k + 1;
     dl_bump(by);
     CHECK(*gd == 5 + by && *local == 6 + by && *(int *)ld == 7 + by);
@@ -78,9 +84,14 @@ int main(void) {
     RESOLVE(dl_bump);
     RESOLVE(dl_live);
     RESOLVE(dl_select);
+    pthread_barrier_init(&all_alive, 0, 5);
     pthread_t threads[4];
     for (int t = 0; t < 4; t++) {
-        pthread_create(&threads[t], 0, run, (void *)(intptr_t)(t + 1));
+        if (pthread_create(&threads[t], 0, run, (void *)(intptr_t)(t + 1))) {
+            // A missing thread would leave the others at the barrier.
+            printf("pthread_create failed\n");
+            return 1;
+        }
     }
     fail |= (int)(intptr_t)run(0);
     for (int t = 0; t < 4; t++) {
@@ -88,7 +99,8 @@ int main(void) {
         pthread_join(threads[t], &result);
         fail |= (int)(intptr_t)result;
     }
-    // Every thread's copies at addresses of their own.
+    // Every thread's copies at addresses of their own (all five were alive
+    // when they recorded them: the barrier).
     for (int a = 0; a < 5; a++) {
         for (int b = a + 1; b < 5; b++) {
             for (int v = 0; v < 5; v++) {

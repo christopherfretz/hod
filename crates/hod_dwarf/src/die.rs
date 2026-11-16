@@ -151,6 +151,12 @@ pub struct UnitPlan<'a> {
     pub(crate) index_die: u32,
     /// While the plan is built: the type graph's work (§6.8).
     pub(crate) build: crate::types::Build,
+    /// WP-308: the DIEs whose construction has started and not ended,
+    /// innermost last, each with its node and, for a member function,
+    /// its signature's types: decoded once for all the steps of the DIE
+    /// (a step is one call, and the steps of the DIEs a step makes run
+    /// before its next).
+    pub(crate) constructing: Vec<(u32, DiNode<'a>, &'a [DiId])>,
     /// Whether the plan is sealed (§6.4): inverted, and taking no more
     /// functions.
     pub(crate) sealed: bool,
@@ -343,6 +349,7 @@ impl<'a> UnitPlan<'a> {
             wide_values: Vec::new(),
             index_die: NONE,
             build: crate::types::Build::default(),
+            constructing: Vec::new(),
             sealed: false,
             funcs: Vec::new(),
             locals: Vec::new(),

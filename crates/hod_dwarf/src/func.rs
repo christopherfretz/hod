@@ -442,7 +442,7 @@ impl<'a> UnitPlan<'a> {
         }
         self.fn_scratch = s;
         let result = result.and_then(|d| self.add_call_sites(sp_id, &sp, d, f.calls, f.code.size)); // WP-113: §6.19
-        self.record_entities(f, result.is_ok()); // WP-094: §6.13
+        self.record_entities(f, &sp, result.is_ok()); // WP-094: §6.13
         result.map(|_| ())
     }
 
@@ -532,7 +532,7 @@ impl<'a> UnitPlan<'a> {
         s.groups.clear();
         self.scope_ranges(f, s)?;
 
-        self.collect_entities(f, s)?;
+        self.collect_entities(f, sp, s)?;
         s.group();
         self.abstract_instances(&mut s.inl)?;
 
@@ -571,7 +571,12 @@ impl<'a> UnitPlan<'a> {
     }
 
     /// The function's variables and labels, by scope (§6.4).
-    fn collect_entities(&mut self, f: &FunctionInput<'_>, s: &mut FnScratch) -> Result<(), Error> {
+    fn collect_entities(
+        &mut self,
+        f: &FunctionInput<'_>,
+        sp: &DiSubprogram<'a>,
+        s: &mut FnScratch,
+    ) -> Result<(), Error> {
         let sp_id = f.subprogram;
         // A variable or label whose scope has no code is dropped, as
         // `llc` drops it.
@@ -675,7 +680,7 @@ impl<'a> UnitPlan<'a> {
             s.ents.push((index, class, key, row as u32));
             self.abstract_entity(&mut s.inl, v.node, scope, class, key);
         }
-        self.retained_vars(f, s)?;
+        self.retained_vars(f, sp, s)?;
         s.groups.seal();
         s.ents.sort_unstable();
         // `llc`'s `needToEmitLexicalScope`: a block is written when it
@@ -686,12 +691,10 @@ impl<'a> UnitPlan<'a> {
             }
         }
         // A block with an imported entity is written too (WP-094, §6.13).
-        if let DiNode::Subprogram(sp) = self.debug.node(sp_id) {
-            self.import_blocks(&sp, |b| match find(s, b, LocId::NONE) {
-                NONE => {}
-                i => s.scopes[i as usize].vars = true,
-            });
-        }
+        self.import_blocks(sp, |b| match find(s, b, LocId::NONE) {
+            NONE => {}
+            i => s.scopes[i as usize].vars = true,
+        });
 
         Ok(())
     }
@@ -1412,8 +1415,12 @@ impl UnitPlan<'_> {
     /// `__coro_frame` and declares it only on the frame pointer's `phi`,
     /// which `llc -O0` drops (`spec/codegen.md` §9.5). Labels and imports
     /// are left where they are.
-    fn retained_vars(&self, f: &FunctionInput<'_>, s: &mut FnScratch) -> Result<(), Error> {
-        let DiNode::Subprogram(sp) = self.debug.node(f.subprogram) else { return Ok(()) };
+    fn retained_vars(
+        &self,
+        f: &FunctionInput<'_>,
+        sp: &DiSubprogram<'_>,
+        s: &mut FnScratch,
+    ) -> Result<(), Error> {
         for &n in sp.retained_nodes {
             if self.debug.find_kind(n) != Some(DiKind::LocalVariable)
                 || f.vars.iter().any(|v| v.node == n)

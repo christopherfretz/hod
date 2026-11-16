@@ -497,7 +497,8 @@ mod tests {
         let hashed = TEXTS.iter().skip(1).filter(|text| text.len() <= MAX_HASHED).count();
         assert_eq!(used, hashed, "each hashed keyword has a slot of its own");
         assert_eq!(LONG.len(), TEXTS.len() - 1 - hashed, "each long keyword is listed");
-        for word in [&b"DW_TAG_structure_type"[..], b"available_externallyy", b"local_unnamed_add"] {
+        for word in [&b"DW_TAG_structure_type"[..], b"available_externallyy", b"local_unnamed_add"]
+        {
             assert_eq!(keyword(word), Kw::Other, "{}", String::from_utf8_lossy(word));
         }
         assert!(TEXTS.windows(2).skip(1).all(|pair| pair[0] < pair[1]), "sorted, no repeats");

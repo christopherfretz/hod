@@ -9,7 +9,7 @@
 //! operands, the x87, MMX, AVX and control registers are
 //! `asm:operand/register`.
 
-use hod_mc_x64::{Reg, Scale, Seg, Size, Xmm};
+use hod_mc_x64::{Mode, Reg, Scale, Seg, Size, Xmm};
 
 use crate::expr::{Cursor, Name, Value};
 use crate::reason::{Refusal, operand};
@@ -102,6 +102,13 @@ impl<'a> Ops<'a> {
     pub fn get(&self, i: usize) -> Option<Op<'a>> {
         self.list.get(i).copied().flatten()
     }
+
+    /// Replaces operand `i` (below [`Self::len`]).
+    pub(crate) fn set(&mut self, i: usize, op: Op<'a>) {
+        if i < self.len {
+            self.list[i] = Some(op);
+        }
+    }
 }
 
 const GPR64: [&str; 16] = [
@@ -187,7 +194,7 @@ pub fn reg_name(name: &str) -> Option<RegName> {
 }
 
 /// Splits `text` at the commas outside parentheses.
-fn split_operands(text: &str) -> Result<Vec<&str>, Refusal> {
+pub(crate) fn split_operands(text: &str) -> Result<Vec<&str>, Refusal> {
     let mut out = Vec::new();
     let mut depth = 0i32;
     let mut start = 0;
@@ -219,6 +226,19 @@ fn split_operands(text: &str) -> Result<Vec<&str>, Refusal> {
 /// # Errors
 /// `asm:operand/syntax`, `register`, `form`, `expression`.
 pub fn parse(text: &str) -> Result<Ops<'_>, Refusal> {
+    parse_in(text, Mode::X64)
+}
+
+/// [`parse`] for the registers of processor mode `mode`
+/// (`spec/asm.md` §22.2): in [`Mode::X86`] a register name that needs a
+/// REX prefix or is 64 bits wide (`%rax`, `%r8d`, `%spl`, `%xmm8`,
+/// `%rip`) is `asm:operand/register`, and a memory operand's base and
+/// index are the 32-bit registers `%eax`..`%edi` (kept as `Rax`..`Rdi`:
+/// 32-bit addressing is the default there).
+///
+/// # Errors
+/// As [`parse`].
+pub fn parse_in(text: &str, mode: Mode) -> Result<Ops<'_>, Refusal> {
     let mut ops = Ops::default();
     if crate::text::trim(text).is_empty() {
         return Ok(ops);
@@ -227,7 +247,7 @@ pub fn parse(text: &str) -> Result<Ops<'_>, Refusal> {
         if ops.len == ops.list.len() {
             return Err(Refusal(operand::FORM));
         }
-        ops.list[ops.len] = Some(one(part)?);
+        ops.list[ops.len] = Some(one(part, mode)?);
         ops.len += 1;
     }
     Ok(ops)
@@ -246,7 +266,7 @@ fn register(text: &str) -> Result<(RegName, &str), Refusal> {
 }
 
 /// A constant expression that is all of `text`.
-fn whole_expr(text: &str) -> Result<Value<'_>, Refusal> {
+pub(crate) fn whole_expr(text: &str) -> Result<Value<'_>, Refusal> {
     let mut c = Cursor::new(text);
     let v = c.expr()?;
     if !c.at_end() {
@@ -255,7 +275,30 @@ fn whole_expr(text: &str) -> Result<Value<'_>, Refusal> {
     Ok(v)
 }
 
-fn one(text: &str) -> Result<Op<'_>, Refusal> {
+/// Whether general register view `g` exists in 32-bit mode: the eight
+/// legacy registers at 32, 16 bits and `al`..`bl` (`spl`..`dil` need a
+/// REX prefix).
+const fn x86_gpr(g: Gpr) -> bool {
+    match g.size {
+        Size::Q => false,
+        Size::B => g.reg.code() < 4,
+        Size::D | Size::W => g.reg.code() < 8,
+    }
+}
+
+fn one(text: &str, mode: Mode) -> Result<Op<'_>, Refusal> {
+    let op = one_any(text, mode)?;
+    if mode == Mode::X86 {
+        match op {
+            Op::Gpr(g) if !x86_gpr(g) => return Err(Refusal(operand::REGISTER)),
+            Op::Xmm(x) if x.code() >= 8 => return Err(Refusal(operand::REGISTER)),
+            _ => {}
+        }
+    }
+    Ok(op)
+}
+
+fn one_any(text: &str, mode: Mode) -> Result<Op<'_>, Refusal> {
     if text.is_empty() {
         return Err(Refusal(operand::SYNTAX));
     }
@@ -286,7 +329,7 @@ fn one(text: &str) -> Result<Op<'_>, Refusal> {
             _ => return Err(Refusal(operand::SYNTAX)),
         }
     }
-    memory(rest, seg)
+    memory(rest, seg, mode)
 }
 
 /// A displacement: an expression, or `sym@spec` with a constant before
@@ -324,7 +367,10 @@ fn displacement(text: &str) -> Result<(Value<'_>, Option<Spec>), Refusal> {
 }
 
 /// `disp(base, index, scale)` or `disp` alone, after any segment.
-fn memory(text: &str, seg: Option<Seg>) -> Result<Op<'_>, Refusal> {
+fn memory(text: &str, seg: Option<Seg>, mode: Mode) -> Result<Op<'_>, Refusal> {
+    // The width of an address register: 64 bits, 32 in 32-bit mode.
+    let addr = if mode == Mode::X86 { Size::D } else { Size::Q };
+    let addr_reg = |r: Reg| mode == Mode::X64 || r.code() < 8;
     // The parenthesised part is the last one whose content starts with
     // a register or a comma (an expression may have parentheses too).
     let regs_at = if text.ends_with(')') {
@@ -380,14 +426,22 @@ fn memory(text: &str, seg: Option<Seg>) -> Result<Op<'_>, Refusal> {
     };
     match reg64(parts[0])? {
         None => {}
-        Some(RegName::Gpr(Gpr { reg, size: Size::Q })) => mem.base = Some(Base::Reg(reg)),
-        Some(RegName::Rip) if parts.len() == 1 => mem.base = Some(Base::Rip),
+        Some(RegName::Gpr(Gpr { reg, size })) if size == addr && addr_reg(reg) => {
+            mem.base = Some(Base::Reg(reg));
+        }
+        Some(RegName::Rip) if parts.len() == 1 && mode == Mode::X64 => {
+            mem.base = Some(Base::Rip);
+        }
         // A 32-bit address (`addr32`) or another register.
         Some(_) => return Err(Refusal(operand::REGISTER)),
     }
     if parts.len() >= 2 {
         let index = match reg64(parts[1])? {
-            Some(RegName::Gpr(Gpr { reg, size: Size::Q })) if reg != Reg::Rsp => reg,
+            Some(RegName::Gpr(Gpr { reg, size }))
+                if size == addr && addr_reg(reg) && reg != Reg::Rsp =>
+            {
+                reg
+            }
             None => return Err(Refusal(operand::SYNTAX)),
             Some(_) => return Err(Refusal(operand::REGISTER)),
         };

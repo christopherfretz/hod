@@ -5,7 +5,7 @@
 //! hod does not build tables or trees.
 
 use hod_cg::{CgResult, Class, FnCx};
-use hod_ir::{BlockId, Const, Switch, Value};
+use hod_ir::{BlockId, Const, Inst, Switch, Value};
 use hod_mc_x64 as mc;
 use hod_mc_x64::{Cond, Size};
 
@@ -74,6 +74,9 @@ pub fn cond_br(
 /// The type refusal of a condition that is no `Gpr` value; what the
 /// branches report.
 pub fn switch<'a>(cx: &mut FnCx<'a, X86>, switch: &Switch<'a>) -> CgResult<()> {
+    if crate::int::is_wide(cx, switch.cond) {
+        return crate::int::switch(cx, switch);
+    }
     if cx.class_of(switch.cond) != Class::Gpr {
         let ty = crate::common::value_ty(cx, switch.cond);
         return Err(crate::target::refusal_of(cx, ty));
@@ -107,12 +110,16 @@ pub fn switch<'a>(cx: &mut FnCx<'a, X86>, switch: &Switch<'a>) -> CgResult<()> {
 ///
 /// # Errors
 /// What placing the value or the branch reports.
-pub fn ret(cx: &mut FnCx<'_, X86>, value: Option<Value>) -> CgResult<()> {
+pub fn ret(cx: &mut FnCx<'_, X86>, inst: Inst<'_>, value: Option<Value>) -> CgResult<()> {
     if let Some(value) = value {
         if cx.fn_assignment().ret_memory.is_some() {
             return unsupported(crate::target::AGGREGATE);
         }
-        cx.place_return(value)?;
+        // A result of the run returns at 80 bits (`x87::ret_copy`).
+        crate::x87::ret_copy(cx, inst, value, true);
+        let placed = cx.place_return(value);
+        crate::x87::ret_copy(cx, inst, value, false);
+        placed?;
     }
     if cx.ret_falls_through() {
         return Ok(());

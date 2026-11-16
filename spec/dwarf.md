@@ -571,7 +571,10 @@ placed:
 - has no rows (hod's own rule: its code is not covered either; `llc`
   always has at least the subprogram's row);
 
-and at the end of the module. Measured with `llvm-dwarfdump
+and at the end of the module. The first three are the unit's runs of
+§6.17 (WP-305): the bridge ends the sequence whenever `unit_span` starts
+a span, so a sequence never continues where the unit's range does not;
+the last two end a sequence inside a run. Measured with `llvm-dwarfdump
 --debug-line` against `llc` 19 and 22 on AArch64 and x86-64: a C file
 whose `.text` functions are separated by a function in its own section
 and by a `nodebug` function gets the same four sequences, with the same
@@ -1046,10 +1049,32 @@ written by the same walk.
 `DebugStrings` keeps `.debug_str` pooled per object, so each distinct
 string is stored once, and keeps `.debug_str_offsets` per unit, so each
 distinct string the unit names has one entry, in order of first use by
-the walk. The walk order is deterministic, so the indices are too. One
-hash table keyed by the bytes serves both. A string's entry remembers the
-last unit that named it and its index there, so a lookup is one probe,
-whether the string is new to the object, new to the unit, or neither.
+the walk. The walk order is deterministic, so the indices are too. A
+string's entry remembers the last unit that named it and its index
+there, so a lookup is one probe, whether the string is new to the
+object, new to the unit, or neither.
+
+The entries live in one of two tables (WP-318). The strings of the debug
+store (`hod_ir`, `spec/ir.md` §6.2) are a table indexed by the store's
+string id, made the first time an id is asked for, of
+`string_count()` entries: `index_str(DiStr)` reads it without hashing.
+The writer reads a string field with its id through `DiView::ids` (a
+writer that holds the node decoded reads the one field again, which is
+cheaper than hashing it: `Writer::strx_of`). Every other string (a name
+the writer makes up, such as `__ARRAY_SIZE_TYPE__`) is a hash table
+keyed by the bytes, `index(bytes)`. The invariant that keeps the
+indices those of one table: a string is in exactly one of the two.
+`index(bytes)` looks for the bytes in the store first (`find_string`,
+one hash) and, if the store holds them, uses the store's entry; the
+store is not changed while the DIEs are written and interns its strings,
+so equal bytes are one id. A string first asked for by its bytes and
+later by its id, or the other way round, therefore has one entry and
+one index, and `.debug_str` and `.debug_str_offsets` are byte for byte
+what one table keyed by the bytes gives. The pool's store is the first
+one `use_store` names (each unit names its plan's); a unit of another
+store is served by its strings' bytes. The skeleton unit of split DWARF
+(§6.15) pools its four strings by bytes alone; DWARF 4 (§6.20) converts
+the same indices to `DW_FORM_strp` offsets.
 
 The hash takes eight bytes per multiply, Fx style, and ends with a mix.
 Without that mix, the low bits of the product (the bucket) depend only on
@@ -1058,9 +1083,6 @@ buckets; with it they fill 41,542 of 65,536, which is what a random
 function gives (`strings::tests::hash_spreads`). A string with a NUL is
 `NulInName`.
 
-Planned optimization: `hod_ir`'s names are already interned, so a pool
-keyed by `hod_ir`'s string id would index an array instead of hashing.
-`hod_ir` does not expose that id from a decoded node yet (§2).
 
 ### 6.4 Subprograms, variables, blocks and labels (implemented, WP-057)
 
@@ -1251,8 +1273,10 @@ refusals. `LineTablesOnly` and `DebugDirectivesOnly` units are §6.10 (WP-061).
   padding). Each entry is relocated `ABS64` /
   `R_X86_64_64` against the symbol the caller gave (the variable's own,
   or its section's for an internal one, as `llc` does; a function's
-  section symbol plus offset, §1.3). Spans of one symbol that touch or
-  overlap are merged before numbering.
+  section symbol plus offset, §1.3). Spans of one symbol that overlap
+  are merged before numbering; spans that only touch are not (WP-305):
+  each span is a run of functions (§6.17), and `llc` writes two runs
+  that meet as two ranges.
 - **`.debug_rnglists`**: written only when some unit's code is in several
   sections.
 
@@ -2417,6 +2441,23 @@ end). The bridge does the same (`emit/lines.rs`, `unit_span`): x86-64
 pads functions to 16 bytes, so without it every unit had `DW_AT_ranges`
 where `llc`'s has one range. AArch64 functions have no padding between
 them; its objects are byte-identical before and after.
+
+**Runs** (WP-305; `spec/landed/dwarf/WP-305.md`). A run of functions is
+the functions placed one after another that are of one unit and one
+section, with no function between them that has no subprogram of a
+written unit (a `nodebug` function, or one whose subprogram's unit is
+`NoDebug`). Such a function ends the run before it
+(`DwarfDebug::skippedNonDebugFunction` forgets the previous unit, so the
+next function's `addRange` starts a range): the unit's range does not
+cover it, whether it is first, last or between, one or several in a row.
+Each run is one span of the unit, and one range of its `DW_AT_ranges`
+even where it starts at the end of the run before it (AArch64; the
+writer merges spans that overlap, not spans that touch). A unit whose
+code is one run has `DW_AT_low_pc`/`DW_AT_high_pc`; with two runs or
+more, `DW_AT_ranges`. `unit_span` decides whether a function continues
+the run, and the line table's sequence (§5.6) continues only where it
+does: the two cannot disagree. `.debug_aranges` is not written (§1.1),
+by `llc` either on these shapes.
 
 **Line table**: unchanged (§4, §5); `prologue_end` at the first row
 after the prologue, as `llc`'s. The `(function, line)` comparison of
@@ -3865,9 +3906,11 @@ are the same by construction.
 The writer makes the output independent of how the rows arrive. A
 global's address-table entry is numbered by its DIE's place in the walk,
 not by its place in the input. Spans are sorted by (symbol, start, size)
-and merged before they are numbered. So the bytes depend on the rows as
+and merged, where they overlap, before they are numbered (spans that
+only touch stay two, WP-305, §6.17). So the bytes depend on the rows as
 sets. `tests/dies.rs` checks this by shuffling the globals and the spans,
-cutting every span in two at a random point, repeating pieces, dealing
+cutting every span in two overlapping pieces at a random point,
+repeating pieces, dealing
 the rows into one to five chunks joined in random order, and building
 plans and writing on other threads. Every variant gives the same bytes
 on both targets.

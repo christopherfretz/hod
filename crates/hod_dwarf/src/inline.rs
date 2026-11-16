@@ -19,7 +19,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use hod_ir::{DiFlags, DiId, DiKind, DiNode, LocId, Module, SpFlags, SymbolKind};
+use hod_ir::{
+    DiFlags, DiId, DiKind, DiLabel, DiLocalVariable, DiNode, LocId, Module, SpFlags, SymbolKind,
+};
 
 use crate::Error;
 use crate::abbrev::{code, fam};
@@ -655,11 +657,11 @@ impl UnitPlan<'_> {
     pub(crate) fn finish_entities(&mut self) -> Result<(), Error> {
         for i in 0..self.inline.entities.len() {
             let d = self.dies[self.inline.entities[i] as usize];
-            if let (Kind::LocalParam | Kind::LocalVar, DiNode::LocalVariable(v)) =
-                (d.kind, self.debug.node(d.node))
+            if matches!(d.kind, Kind::LocalParam | Kind::LocalVar)
+                && let Some(v) = self.debug.view::<DiLocalVariable>(d.node)
                 && self.inline.die(d.node).is_none()
             {
-                self.reference_type(d.node, "type", v.ty.unwrap_or(DiId::NONE))?;
+                self.reference_type(d.node, "type", v.ty().unwrap_or(DiId::NONE))?;
             }
         }
         Ok(())
@@ -760,7 +762,7 @@ impl<'a> Writer<'a> {
                 if kind == Kind::AbstractParam {
                     let mask = b(!v.name.is_empty()) << 1 | b(decl.is_some()) << 2 | b(art) << 3;
                     self.abbrev(code(fam::FORMAL_PARAMETER, mask, false));
-                    self.opt_name(v.name)?;
+                    self.opt_name_of::<DiLocalVariable>(plan.debug, node, v.name, |v| v.name())?;
                 } else {
                     // WP-098: a named local's alignment is written in the
                     // abstract instance too (family 88 without `location`,
@@ -778,9 +780,7 @@ impl<'a> Writer<'a> {
                         (false, false) => fam::VARIABLE,
                     };
                     self.abbrev(code(family, mask, false));
-                    if !v.name.is_empty() {
-                        self.strx(v.name)?;
-                    }
+                    self.opt_name_of::<DiLocalVariable>(plan.debug, node, v.name, |v| v.name())?;
                     if aligned {
                         write_uleb(&mut self.info, u64::from(v.align / 8));
                     }
@@ -797,12 +797,12 @@ impl<'a> Writer<'a> {
                     && n.column != 0
                 {
                     self.abbrev(code(fam::LABEL_COLUMN, 0, false));
-                    self.strx(n.name)?;
+                    self.strx_of::<DiLabel>(plan.debug, node, n.name, |v| v.name())?;
                     self.decl(Some(d));
                     write_uleb(&mut self.info, u64::from(n.column));
                 } else {
                     self.abbrev(code(fam::LABEL, b(decl.is_some()), false));
-                    self.strx(n.name)?;
+                    self.strx_of::<DiLabel>(plan.debug, node, n.name, |v| v.name())?;
                     self.decl(decl);
                 }
             }
@@ -851,7 +851,7 @@ impl<'a> Writer<'a> {
         if plan.cu.emission_kind != hod_ir::EmissionKind::FullDebug {
             let name = !sp.name.is_empty();
             self.abbrev(code(fam::SUBPROGRAM_ABSTRACT, b(name) << 1, children));
-            self.opt_name(sp.name)?;
+            self.opt_name_of::<hod_ir::DiSubprogram>(plan.debug, node, sp.name, |v| v.name())?;
             self.info.push(DW_INL_INLINED);
             return Ok(());
         }
@@ -875,7 +875,9 @@ impl<'a> Writer<'a> {
                 write_uleb(&mut self.info, u64::from(sp.line));
             }
             if link {
-                self.strx(sp.linkage_name)?;
+                self.strx_of::<hod_ir::DiSubprogram>(plan.debug, node, sp.linkage_name, |v| {
+                    v.linkage_name()
+                })?;
             }
             self.ref4(spec);
             self.info.push(DW_INL_INLINED);
@@ -906,10 +908,12 @@ impl<'a> Writer<'a> {
             | b(nr) << 7;
         self.abbrev(code(fam::SUBPROGRAM_ABSTRACT, mask, children));
         if link {
-            self.strx(sp.linkage_name)?;
+            self.strx_of::<hod_ir::DiSubprogram>(plan.debug, node, sp.linkage_name, |v| {
+                v.linkage_name()
+            })?;
         }
         if name {
-            self.strx(sp.name)?;
+            self.strx_of::<hod_ir::DiSubprogram>(plan.debug, node, sp.name, |v| v.name())?;
         }
         self.decl(decl);
         if let Some(t) = ty {

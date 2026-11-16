@@ -175,6 +175,7 @@ dependencies = [
 name = "hod_x86"
 version = "1.0.0"
 dependencies = [
+ "hod_asm",
  "hod_cg",
  "hod_ir",
  "hod_ll",

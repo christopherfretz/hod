@@ -82,6 +82,15 @@ runtime_fns! {
     UModTi3 = "__umodti3": (I128, I128) -> I128;
     /// Signed 128-bit remainder.
     ModTi3 = "__modti3": (I128, I128) -> I128;
+    /// Unsigned 64-bit division on i386 (libgcc; `hod_x86` calls it
+    /// itself, design 0008 §5.2, WP-298).
+    UDivDi3 = "__udivdi3": (I64, I64) -> I64;
+    /// Signed 64-bit division on i386 (WP-298).
+    DivDi3 = "__divdi3": (I64, I64) -> I64;
+    /// Unsigned 64-bit remainder on i386 (WP-298).
+    UModDi3 = "__umoddi3": (I64, I64) -> I64;
+    /// Signed 64-bit remainder on i386 (WP-298).
+    ModDi3 = "__moddi3": (I64, I64) -> I64;
     /// `fp128` addition.
     AddTf3 = "__addtf3": (FP128, FP128) -> FP128;
     /// `fp128` subtraction.
@@ -98,6 +107,10 @@ runtime_fns! {
     UnwindResume = "_Unwind_Resume": (PTR) -> VOID;
     /// `void *__tls_get_addr(tls_index *)`: the general-dynamic TLS helper.
     TlsGetAddr = "__tls_get_addr": (PTR) -> PTR;
+    /// `void *___tls_get_addr(tls_index *)` (three underscores): the
+    /// i386 GNU entry with its argument in `eax`, the one the i386
+    /// general- and local-dynamic sequences call (WP-299).
+    TlsGetAddrRegparm = "___tls_get_addr": (PTR) -> PTR;
     /// `void __stack_chk_fail(void)`: a stack guard that changed
     /// (WP-183, §5.6.24); it does not return.
     StackChkFail = "__stack_chk_fail": () -> VOID;
@@ -612,6 +625,11 @@ runtime_fns! {
     Fminf = "fminf": (FLOAT, FLOAT) -> FLOAT;
     /// `llvm.maxnum.f16` on x86-64, through `float` (WP-117).
     Fmaxf = "fmaxf": (FLOAT, FLOAT) -> FLOAT;
+    /// `llvm.minnum.f64` on i386's x87, a call as `llc` makes it (the
+    /// i386 join).
+    Fmin = "fmin": (DOUBLE, DOUBLE) -> DOUBLE;
+    /// `llvm.maxnum.f64` on i386's x87 (the i386 join).
+    Fmax = "fmax": (DOUBLE, DOUBLE) -> DOUBLE;
     /// `sinf128`: `fp128` on x86-64, where `long double` is `x86_fp80` (WP-117).
     Sinf128 = "sinf128": (FP128) -> FP128;
     /// `cosf128`: `fp128` on x86-64, where `long double` is `x86_fp80` (WP-117).

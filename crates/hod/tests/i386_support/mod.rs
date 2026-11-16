@@ -83,6 +83,27 @@ pub fn run(qemu: &Path, exe: &Path) -> (Option<i32>, Vec<u8>) {
     (outcome.status.and_then(|s| s.code()), outcome.stdout)
 }
 
+/// The QEMU CPU features a program built for `cpu` needs: `"p4"`
+/// (`-march=pentium4`, whose code `llc` writes with SSE2) gets `mmx`,
+/// `sse`, `sse2` on top of [`run`]'s CPU; any other name none.
+pub fn cpu_features(cpu: &str) -> &'static [&'static str] {
+    if cpu == "p4" { &["mmx", "sse", "sse2"] } else { &[] }
+}
+
+/// What running `exe` under `qemu-i386` with the extra CPU `features`
+/// did ([`run`] when there are none): its status and output.
+pub fn run_with_features(qemu: &Path, exe: &Path, features: &[&str]) -> (Option<i32>, Vec<u8>) {
+    if features.is_empty() {
+        return run(qemu, exe);
+    }
+    let target = Target::I686;
+    let mut command = Command::new(qemu);
+    command.args(target.emulator_args_with(&target.sysroot(), features)).arg(exe);
+    let outcome = run_with(&mut command, &[], DEFAULT_TIMEOUT);
+    assert!(!outcome.timed_out(), "{} timed out", exe.display());
+    (outcome.status.and_then(|s| s.code()), outcome.stdout)
+}
+
 /// `hod_x86`'s object of `text` under `options`, from the back end
 /// directly (the facade has no stress options).
 pub fn back_end_object(text: &[u8], options: &hod_cg::Options) -> Vec<u8> {

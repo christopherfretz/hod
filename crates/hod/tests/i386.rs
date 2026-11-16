@@ -97,8 +97,9 @@ attributes #0 = { noinline nounwind "target-cpu"="i686" "target-features"="+cmov
 
 /// Every 32-bit x86 triple compiles an integer module to an i386 object
 /// (and a module of declarations only); `BODY`, with `i64`, `double` and
-/// `x86_fp80`, is refused by `hod_x86`, after the front half read and
-/// classified it (its report names the target).
+/// `x86_fp80` arguments and results, compiles since the i386 join (it was
+/// refused by `hod_x86` before I6, I7 and I9), after the front half read
+/// and classified it (its report names the target).
 #[test]
 fn every_i386_triple_reaches_hod_x86() {
     for triple in
@@ -108,7 +109,7 @@ fn every_i386_triple_reaches_hod_x86() {
         let mut report = hod::Report::default();
         let result =
             hod::compile_with(text.as_bytes(), &obj(), &hod::Settings::default(), &mut report);
-        assert!(refused_by_x86(&result), "{triple}: {result:?}");
+        assert!(result.as_ref().is_ok_and(|o| is_i386_object(o)), "{triple}: {result:?}");
         assert_eq!(report.target.as_deref(), Some(triple));
         let ints = format!("{}{INTEGERS}", header(triple));
         let object = hod::compile(ints.as_bytes(), &obj()).expect("an integer module");
@@ -125,21 +126,16 @@ fn every_i386_triple_reaches_hod_x86() {
     assert_eq!(hod::compile(ints.as_bytes(), &options).unwrap(), plain);
     let options = Options { cpu: Some("pentium4".into()), features: vec!["+sse2".into()], ..obj() };
     assert_eq!(hod::compile(ints.as_bytes(), &options).unwrap(), plain);
-    let text = format!("{}{BODY}", header("i686-unknown-linux-gnu"));
-    assert!(refused_by_x86(&hod::compile(text.as_bytes(), &options)));
 }
 
-/// `-relocation-model=pic` is refused as `x86:pic` (the static model
-/// only, design 0008's I8).
+/// `-relocation-model=pic` compiles (design 0008's I8, WP-299: it was
+/// refused as `x86:pic`; the run tests are `i386_pic.rs`).
 #[test]
-fn pic_is_refused() {
+fn pic_compiles() {
     let ints = format!("{}{INTEGERS}", header("i686-unknown-linux-gnu"));
     let options = Options { relocation_model: Some(hod::RelocModel::Pic), ..obj() };
     let result = hod::compile(ints.as_bytes(), &options);
-    let Err(CompileError::Unsupported(Unsupported { construct, .. })) = &result else {
-        panic!("{result:?}");
-    };
-    assert_eq!(construct.name(), "x86:pic");
+    assert!(result.is_ok(), "{result:?}");
 }
 
 /// What is not 32-bit x86 Linux with the GNU environment, a layout that is

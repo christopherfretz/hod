@@ -190,7 +190,7 @@ impl<'a> Writer<'a> {
         // With `calls`, `DW_AT_call_all_calls` is `DW_FORM_flag_present`:
         // no bytes.
         if name {
-            self.strx(sp.name)?;
+            self.strx_of::<DiSubprogram>(plan.debug, sp_id, sp.name, |v| v.name())?;
         }
         if let Some(o) = origin {
             self.ref4(o);

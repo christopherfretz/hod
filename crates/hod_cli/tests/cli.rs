@@ -481,13 +481,14 @@ fn reasons_reach_the_log() {
             "text",
             "x86_64-unknown-linux-gnu",
         ),
-        // WP-286, WP-293: 32-bit x86 is compiled by `hod_x86`, which
-        // refuses an `i64` (design 0008's I7); x32 stays another target.
+        // WP-286, WP-293, WP-297: 32-bit x86 is compiled by `hod_x86`,
+        // which refuses an `i128` argument (`spec/abi-x86.md` §3.2); x32
+        // stays another target.
         (
             &["-filetype=obj"],
             b"target triple = \"i686-unknown-linux-gnu\"\n\
-              define i64 @f(i64 %a) \"target-cpu\"=\"i686\" {\n  ret i64 %a\n}\n",
-            "x86:i64",
+              define void @f(i128 %a) \"target-cpu\"=\"i686\" {\n  ret void\n}\n",
+            "x86:abi:wide-arg",
             "text",
             "i686-unknown-linux-gnu",
         ),
@@ -1585,4 +1586,37 @@ fn real_llvm_dis_of_another_major() {
         ("fallback", "bitcode-converter-failed", "-")
     );
     assert_eq!(lines[0].fallback_status, "0");
+}
+
+/// `-mcpu` reaches 32-bit x86's feature selection for a function without
+/// `"target-cpu"` (`spec/codegen-x86.md` §2): `pentiumpro` has `cmov`,
+/// so a `double` compare is `fucomip` (`DF E9`) and a `double` `select`
+/// an `fcmov` (`DA`/`DB` `C0`..`DF`); without the option (`i686`'s
+/// default, no `cmov`), `fucompp` (`DA E9`) and a branch.
+#[test]
+fn mcpu_selects_i386_features() {
+    const IR: &[u8] = b"target triple = \"i686-unknown-linux-gnu\"\n\
+        define double @f(double %a, double %b, double %x, double %y) {\n\
+        \x20 %c = fcmp olt double %a, %b\n\
+        \x20 %r = select i1 %c, double %x, double %y\n\
+        \x20 ret double %r\n}\n";
+    let object = |extra: &[&str]| {
+        let outcome = run_hod(
+            hod().args(extra).args(["-O0", "-filetype=obj", "--strict", "-o", "-", "-"]),
+            IR,
+        );
+        assert_eq!(exit_code(&outcome), 0, "{extra:?}: {}", outcome.stderr_text());
+        outcome.stdout
+    };
+    let has = |o: &[u8], bytes: &[u8]| o.windows(bytes.len()).any(|w| w == bytes);
+    let fcmov = |o: &[u8]| {
+        o.windows(2).any(|w| matches!(w[0], 0xDA | 0xDB) && (0xC0..=0xDF).contains(&w[1]))
+    };
+    let pro = object(&["-mcpu=pentiumpro"]);
+    assert!(has(&pro, &[0xDF, 0xE9]), "-mcpu=pentiumpro: fucomip");
+    assert!(fcmov(&pro), "-mcpu=pentiumpro: fcmov");
+    let plain = object(&[]);
+    assert!(!has(&plain, &[0xDF, 0xE9]), "no -mcpu: no fucomip");
+    assert!(has(&plain, &[0xDA, 0xE9]), "no -mcpu: fucompp");
+    assert!(!fcmov(&plain), "no -mcpu: no fcmov");
 }

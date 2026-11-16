@@ -14,7 +14,7 @@
 //! - a definition's template parameters are its last children, made when
 //!   the plan is sealed (`finishSubprogramDefinitions`).
 
-use hod_ir::{DiId, DiKind, DiNode, DiSubprogram, SpFlags};
+use hod_ir::{DiId, DiKind, DiNode, DiSubprogram, DiSubroutineType, SpFlags};
 
 use crate::Error;
 use crate::abbrev::{code, fam};
@@ -103,14 +103,10 @@ impl UnitPlan<'_> {
         sp: &DiSubprogram<'_>,
     ) -> Result<Option<DiId>, Error> {
         let Some(decl) = sp.declaration else { return Ok(None) };
-        let DiNode::Subprogram(d) = self.node_of(sp_id, "declaration", decl)? else {
-            return Err(bad(sp_id, "declaration"));
-        };
-        let types = |s: &DiSubprogram<'_>| match s.ty.map(|t| self.debug.node(t)) {
-            Some(DiNode::SubroutineType(t)) => t.types.first().copied(),
-            _ => None,
-        };
-        Ok(match (types(sp), types(&d)) {
+        let d = self.view_of::<DiSubprogram>(sp_id, "declaration", decl)?;
+        let types =
+            |ty: Option<DiId>| self.debug.view::<DiSubroutineType>(ty?)?.types().first().copied();
+        Ok(match (types(sp.ty), types(d.ty())) {
             (Some(def), Some(dec)) if def != DiId::NONE && def != dec => Some(def),
             _ => None,
         })
@@ -184,7 +180,7 @@ impl<'a> Writer<'a> {
             write_uleb(&mut self.info, u64::from(sp.line));
         }
         if link {
-            self.strx(sp.linkage_name)?;
+            self.strx_of::<DiSubprogram>(plan.debug, sp_id, sp.linkage_name, |v| v.linkage_name())?;
         }
         self.ref4(spec);
         Ok(())

@@ -43,9 +43,9 @@ impl UnitPlan<'_> {
             {
                 abstracts += 1;
                 let sp = self.dies[die as usize].node;
-                let DiNode::Subprogram(s) = self.debug.node(sp) else { continue };
+                let Some(s) = self.debug.view::<DiSubprogram>(sp) else { continue };
                 // WP-210 (§6.29): its variables and labels are entities.
-                for &n in s.retained_nodes {
+                for &n in s.retained_nodes() {
                     if self.debug.find_kind(n) == Some(DiKind::ImportedEntity) {
                         self.import(n, Some((sp, die)), &mut chain)?;
                     }
@@ -53,12 +53,13 @@ impl UnitPlan<'_> {
             }
             let die = self.funcs[i].die;
             let sp = self.dies[die as usize].node;
-            let DiNode::Subprogram(s) = self.debug.node(sp) else { continue };
+            let Some(s) = self.debug.view::<DiSubprogram>(sp) else { continue };
+            let retained = s.retained_nodes();
             // `DeferredLocalDecls`: the function's own scope first, then
             // its blocks depth first, which is the order of their DIEs
             // (WP-094, §6.13); in each, in `retainedNodes` order.
             in_blocks.clear();
-            for (at, &n) in s.retained_nodes.iter().enumerate() {
+            for (at, &n) in retained.iter().enumerate() {
                 if self.debug.find_kind(n) != Some(DiKind::ImportedEntity) {
                     continue;
                 }

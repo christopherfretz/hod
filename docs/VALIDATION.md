@@ -391,7 +391,10 @@ or named by `HOD_MORTAR`, selected as `ld` like wild, and optional in
 the same way (`linkers::MORTAR_REQUIRED`). The output kinds it refuses by
 name (`-shared`, `-r`) are cells recorded as REFUSED after the refusal's
 text is checked (`linkers::REFUSALS`), not failures; a refused kind that
-starts to link fails the test so that the cell is enabled.
+starts to link fails the test so that the cell is enabled. The hosted
+lanes build the pinned commit (`.github/actions/mortar`, the commit
+printed by `scripts/mortar-commit.sh` from `MORTAR_COMMIT`, cached per
+commit and architecture) and name it by `HOD_MORTAR` (WP-310).
 
 A case one linker cannot pass is excepted in ONE table,
 `hod_testutil::linkers::EXCEPTIONS` (linker, version, case, class,

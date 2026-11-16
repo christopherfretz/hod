@@ -8,7 +8,7 @@
 //! that may unwind made by a function that may unwind.
 
 use hod_cg::{CgResult, FnCx};
-use hod_ir::{CallSite, FnAttrs, Inst, Intrinsic, Module, SymId, SymbolKind, TailKind, ValueKind};
+use hod_ir::{CallSite, FnAttrs, Inst, Intrinsic, Module, SymId, SymbolKind, ValueKind};
 
 use crate::common::unsupported;
 use crate::target::X86;
@@ -16,8 +16,6 @@ use crate::target::X86;
 /// An `invoke`, a `landingpad`, a `resume`, and a call that may unwind
 /// in a function that may unwind: design 0008's I10.
 pub const EH: &str = "x86:eh";
-/// Inline assembly: design 0008's I13.
-pub const INLINE_ASM: &str = "x86:inline-asm";
 /// `va_start`, `va_copy`, `va_end`, `va_arg`: design 0008's I11.
 pub const VARARGS: &str = "x86:varargs";
 /// An intrinsic this package does not lower.
@@ -55,24 +53,26 @@ pub fn check(cx: &FnCx<'_, X86>, inst: Inst<'_>, site: &CallSite<'_>) -> CgResul
     if inst.opcode() == hod_ir::Opcode::CallBr || site.bundle_count() != 0 {
         return unsupported(CALL);
     }
-    if site.tail() == TailKind::MustTail {
-        return unsupported(crate::frame::MUSTTAIL);
-    }
-    Ok(())
+    crate::abi::check_call(cx, site)
 }
 
 /// The `call` arm of the dispatch.
 ///
 /// # Errors
-/// The refusals above, [`INLINE_ASM`], [`VARARGS`], [`INTRINSIC`] and
+/// The refusals above, those of [`crate::asm::call`], [`VARARGS`], [`INTRINSIC`] and
 /// those of the module owning the intrinsic; what the call sequence
 /// reports.
 pub fn lower<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, site: &CallSite<'a>) -> CgResult<()> {
     match site.intrinsic() {
-        None if matches!(site.callee_value().kind(), ValueKind::Asm(_)) => unsupported(INLINE_ASM),
+        None if matches!(site.callee_value().kind(), ValueKind::Asm(_)) => {
+            crate::asm::call(cx, inst)
+        }
         None => {
             check(cx, inst, site)?;
-            cx.call(inst)
+            crate::x87::call_result(cx, inst, true)?;
+            let done = cx.call(inst);
+            crate::x87::call_result(cx, inst, false)?;
+            done
         }
         Some(Intrinsic::Trap) => {
             cx.trap();
@@ -89,8 +89,14 @@ pub fn lower<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, site: &CallSite<'a>) ->
         Some(Intrinsic::StackSave | Intrinsic::StackRestore) => {
             unsupported(crate::frame::DYNAMIC_ALLOCA)
         }
-        Some(Intrinsic::ThreadLocalAddress | Intrinsic::ThreadPointer) => {
-            unsupported(crate::tls::TLS)
+        Some(which @ (Intrinsic::ThreadLocalAddress | Intrinsic::ThreadPointer)) => {
+            crate::tls::intrinsic(cx, inst, which, site.args())
+        }
+        Some(which) if crate::int::is_intrinsic(cx, inst, which) => {
+            crate::int::intrinsic(cx, inst, which, site.args())
+        }
+        Some(which) if crate::bits::is_intrinsic(cx, inst, which, site.args()) => {
+            crate::bits::intrinsic(cx, inst, which, site.args())
         }
         Some(_) => unsupported(INTRINSIC),
     }

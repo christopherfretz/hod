@@ -220,7 +220,7 @@ impl<'a> Writer<'a> {
                     | b(link) << 7;
                 self.abbrev(code(fam::GLOBAL_ANY, mask, children));
             }
-            self.strx(v.name)?;
+            self.strx_of::<DiGlobalVariable>(plan.debug, node, v.name, |v| v.name())?;
             self.ref_to(plan, node, v.ty.unwrap_or(DiId::NONE))?;
             if let Some(file) = file {
                 write_uleb(&mut self.info, u64::from(file));
@@ -261,7 +261,9 @@ impl<'a> Writer<'a> {
             None => {}
         }
         if link {
-            self.strx(v.linkage_name)?;
+            self.strx_of::<DiGlobalVariable>(plan.debug, node, v.linkage_name, |v| {
+                v.linkage_name()
+            })?;
         }
         Ok(())
     }

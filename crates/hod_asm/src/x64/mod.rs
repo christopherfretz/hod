@@ -18,7 +18,7 @@ pub mod encode;
 pub mod operand;
 
 use hod_mc_x64 as mc;
-use hod_mc_x64::{Cond, Size};
+use hod_mc_x64::{Cond, Mode, Size};
 
 use crate::align::Align;
 use crate::expr::{Cursor, Name, Value};
@@ -419,7 +419,7 @@ pub(crate) enum Prefix {
     Repne,
 }
 
-fn prefix(name: &str) -> Option<Prefix> {
+pub(crate) fn prefix(name: &str) -> Option<Prefix> {
     match name {
         "lock" => Some(Prefix::Lock),
         "rep" | "repe" | "repz" => Some(Prefix::Rep),
@@ -546,7 +546,7 @@ pub fn assemble(
     refs: &mut Vec<Ref>,
     scratch: &mut String,
 ) -> Result<(), Refusal> {
-    assemble_body(body, code, refs, None, None, scratch)
+    assemble_body(body, code, refs, None, None, scratch, Mode::X64)
 }
 
 /// [`assemble`], with the call-frame directives of §15 read into `cfi`
@@ -563,7 +563,7 @@ pub fn assemble_with_cfi(
     scratch: &mut String,
 ) -> Result<(), Refusal> {
     cfi.clear();
-    assemble_body(body, code, refs, Some(cfi), None, scratch)
+    assemble_body(body, code, refs, Some(cfi), None, scratch, Mode::X64)
 }
 
 /// [`assemble_with_cfi`], with the alignment directives `.p2align`,
@@ -590,7 +590,18 @@ pub fn assemble_aligned(
     cfi.clear();
     aligns.clear();
     let aligning = Aligning { placement, longest };
-    assemble_body(body, code, refs, Some(cfi), Some((aligning, aligns)), scratch)
+    assemble_body(body, code, refs, Some(cfi), Some((aligning, aligns)), scratch, Mode::X64)
+}
+
+/// [`assemble`] in processor mode `mode` ([`crate::x86::assemble`]).
+pub(crate) fn assemble_in(
+    body: &str,
+    code: &mut Vec<u8>,
+    refs: &mut Vec<Ref>,
+    scratch: &mut String,
+    mode: Mode,
+) -> Result<(), Refusal> {
+    assemble_body(body, code, refs, None, None, scratch, mode)
 }
 
 fn assemble_body(
@@ -600,6 +611,7 @@ fn assemble_body(
     cfi: Option<&mut Vec<CfiRow>>,
     aligns: Option<(Aligning, &mut Vec<AlignRow>)>,
     scratch: &mut String,
+    mode: Mode,
 ) -> Result<(), Refusal> {
     code.clear();
     refs.clear();
@@ -658,7 +670,7 @@ fn assemble_body(
             continue;
         }
         let at = bytes.len();
-        match instruction(mnemonic, rest, &mut pending, &mut bytes)? {
+        match instruction_in(mnemonic, rest, &mut pending, &mut bytes, mode)? {
             Stmt::Bytes(field) => {
                 if let Some(p) = field {
                     pending_refs.push(p);
@@ -818,8 +830,15 @@ pub(crate) fn symbol_jump(
 /// keeps `R_X86_64_PLT32` for a symbol alone or one with `@PLT` (and an
 /// addend), and writes `R_X86_64_PC32` for any other expression, `S+0`
 /// included.
-fn jump_kind(rest: &str) -> RefKind {
+///
+/// In [`Mode::X86`] llvm-mc writes `R_386_PLT32` ([`RefKind::Plt32`])
+/// for a target with `@PLT` and `R_386_PC32` ([`RefKind::Pc32`]) for any
+/// other (`spec/asm.md` §22.3).
+fn jump_kind(rest: &str, mode: Mode) -> RefKind {
     let t = rest.trim();
+    if mode == Mode::X86 {
+        return if t.contains('@') { RefKind::Plt32 } else { RefKind::Pc32 };
+    }
     let alone = !t.is_empty()
         && !t.starts_with(|c: char| c.is_ascii_digit())
         && t.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '$'));
@@ -850,6 +869,20 @@ pub(crate) fn instruction<'a>(
     pending: &mut Option<Prefix>,
     bytes: &mut Vec<u8>,
 ) -> Result<Stmt<'a>, Refusal> {
+    instruction_in(mnemonic, rest, pending, bytes, Mode::X64)
+}
+
+/// [`instruction`] in processor mode `mode`: in [`Mode::X86`] the
+/// statement is read as [`crate::x86::statement`] says and every
+/// instruction passes [`Mode::admit`], whose error is the refusal.
+pub(crate) fn instruction_in<'a>(
+    mnemonic: &str,
+    rest: &'a str,
+    pending: &mut Option<Prefix>,
+    bytes: &mut Vec<u8>,
+    mode: Mode,
+) -> Result<Stmt<'a>, Refusal> {
+    let admit = |inst: mc::Inst| mode.admit(inst).map_err(|e| Refusal(e.name()));
     let mut name = mnemonic.to_ascii_lowercase();
     let mut rest = rest;
     // A prefix with its instruction on the same statement is part of
@@ -872,7 +905,7 @@ pub(crate) fn instruction<'a>(
     let separate = pending.take();
     let prefix = joined.or(separate);
     let inst = match prefix {
-        Some(p @ (Prefix::Rep | Prefix::Repne)) => repeated(p, &name, rest, bytes)?,
+        Some(p @ (Prefix::Rep | Prefix::Repne)) => admit(repeated(p, &name, rest, bytes)?)?,
         Some(Prefix::Lock) | None => {
             if let Some(form) = waiting(&name) {
                 if prefix.is_some() {
@@ -881,7 +914,10 @@ pub(crate) fn instruction<'a>(
                 bytes.push(0x9b);
                 name = form.to_owned();
             }
-            let ops = operand::parse(rest)?;
+            let mut ops = operand::parse_in(rest, mode)?;
+            if mode == Mode::X86 {
+                name = crate::x86::statement(&name, &mut ops)?;
+            }
             match encode::encode(&name, &ops)? {
                 Encoded::Inst(inst) => {
                     let inst = match prefix {
@@ -893,6 +929,7 @@ pub(crate) fn instruction<'a>(
                         Some(_) => mc::lock(inst),
                         None => inst,
                     };
+                    let inst = admit(inst)?;
                     let field = symbol_field(&name, &ops, &inst, bytes.len())?;
                     bytes.extend_from_slice(inst.bytes());
                     return Ok(Stmt::Bytes(field));
@@ -901,14 +938,14 @@ pub(crate) fn instruction<'a>(
                     if prefix.is_some() {
                         return Err(Refusal(op_reason::FORM));
                     }
-                    let kind = jump_kind(rest);
+                    let kind = jump_kind(rest, mode);
                     return Ok(Stmt::Jump(cond.map_or(Jump::Jmp, Jump::Jcc), target, kind));
                 }
                 Encoded::Call(target) => {
                     if prefix.is_some() {
                         return Err(Refusal(op_reason::FORM));
                     }
-                    return Ok(Stmt::Jump(Jump::Call, target, jump_kind(rest)));
+                    return Ok(Stmt::Jump(Jump::Call, target, jump_kind(rest, mode)));
                 }
             }
         }

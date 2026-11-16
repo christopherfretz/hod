@@ -23,7 +23,7 @@ use hod_mc_x64::Size;
 
 use crate::common::{self, gp, put, unsupported};
 use crate::reg::{EAX, EBX, ECX, EDI, EDX, ESI, xmm};
-use crate::{abi, alu, call, control, frame, mem};
+use crate::{abi, alu, call, control, frame, int, mem};
 
 /// A vector value: design 0008's I12.
 pub const VECTOR: &str = "x86:vector";
@@ -35,15 +35,45 @@ pub const FUNCLET: &str = "x86:funclet";
 /// A function with a stack protector: hod has no i386 guard.
 pub const STACK_PROTECTOR: &str = "x86:stack-protector";
 
-/// The i686 Linux target (i386 System V psABI, static relocation model).
-#[derive(Clone, Copy, Default, Debug)]
-pub struct X86;
+/// The i686 Linux target (i386 System V psABI, every relocation model).
+/// `cpu` is the command line's `-mcpu`, the CPU of a function without a
+/// `target-cpu` attribute (as `llc` applies it); [`X86`] the target
+/// without one (`generic`).
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct X86 {
+    cpu: Option<&'static str>,
+}
+
+/// The target without `-mcpu`.
+#[allow(non_upper_case_globals, reason = "the value of the former unit struct, kept by name")]
+pub const X86: X86 = X86 { cpu: None };
+
+impl X86 {
+    /// The target for a compile with `-mcpu` `cpu`: a name of
+    /// `hod_ir::I386_CPUS` (another name is `llc`'s "not a recognized
+    /// processor": ignored, `generic`).
+    #[must_use]
+    pub fn with_cpu(cpu: Option<&str>) -> X86 {
+        let known = cpu.and_then(|cpu| {
+            hod_ir::I386_CPUS.iter().find(|&&(name, _)| name == cpu).map(|&(name, _)| name)
+        });
+        X86 { cpu: known }
+    }
+
+    /// The `-mcpu` CPU, if any.
+    #[must_use]
+    pub const fn cpu(&self) -> Option<&'static str> {
+        self.cpu
+    }
+}
 
 /// What the target remembers about the function being compiled.
-#[derive(Clone, Copy, Default, Debug)]
+#[derive(Clone, Default, Debug)]
 pub struct FnState {
     /// The frame: the prologue's patched immediate.
     pub frame: frame::FrameState,
+    /// The 80-bit copies of `float`/`double` results (I9).
+    pub x87: crate::x87::Copies,
 }
 
 /// The registers: pool and holdable `ebx`, `esi`, `edi` (and `xmm0`..
@@ -119,7 +149,7 @@ impl Target for X86 {
     }
 
     fn begin_function(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()> {
-        crate::pic::check_static(cx)?;
+        crate::pic::check(cx)?;
         frame::begin(cx)
     }
 
@@ -144,7 +174,26 @@ impl Target for X86 {
         }
         let gpr = abi::is_gpr(cx.types(), inst.ty());
         match inst.kind() {
+            _ if crate::x87::owns(cx, inst) => crate::x87::lower(cx, inst),
             InstKind::Binary { lhs, rhs } if gpr => alu::binary(cx, inst, lhs, rhs),
+            InstKind::Binary { lhs, rhs } if int::is_wide(cx, inst.result()) => {
+                int::binary(cx, inst, lhs, rhs)
+            }
+            InstKind::Unary { arg }
+                if int::is_wide(cx, inst.result()) && inst.opcode() == Opcode::Freeze =>
+            {
+                int::freeze(cx, inst, arg)
+            }
+            InstKind::Cast { arg } if int::is_cast(cx, inst, arg) => int::cast(cx, inst, arg),
+            InstKind::ICmp { pred, lhs, rhs } if int::is_wide(cx, lhs) => {
+                int::icmp(cx, inst, pred, lhs, rhs)
+            }
+            InstKind::Store { value, ptr, mem } if int::is_wide(cx, value) => {
+                int::store(cx, inst, value, ptr, mem)
+            }
+            InstKind::Select { cond, if_true, if_false } if int::is_wide(cx, inst.result()) => {
+                int::select(cx, inst, cond, if_true, if_false)
+            }
             InstKind::Unary { arg } if gpr && inst.opcode() != Opcode::FNeg => {
                 alu::freeze(cx, inst, arg)
             }
@@ -160,6 +209,9 @@ impl Target for X86 {
             InstKind::FCmp { .. } => unsupported(crate::x87::FLOAT),
             InstKind::Load { ptr, mem } if gpr => mem::load(cx, inst, ptr, mem),
             InstKind::Load { mem, .. } if mem.ordering().is_some() => unsupported(mem::ATOMIC),
+            InstKind::Load { ptr, mem } if int::is_wide(cx, inst.result()) => {
+                int::load(cx, inst, ptr, mem)
+            }
             InstKind::Store { value, ptr, mem } => {
                 let ty = common::value_ty(cx, value);
                 if mem.ordering().is_some() {
@@ -190,7 +242,7 @@ impl Target for X86 {
             }
             InstKind::Switch(switch) => control::switch(cx, &switch),
             InstKind::IndirectBr { .. } => unsupported(control::INDIRECT_BRANCH),
-            InstKind::Ret { value } => control::ret(cx, value),
+            InstKind::Ret { value } => control::ret(cx, inst, value),
             InstKind::Unreachable => control::unreachable(cx),
             InstKind::Fence { .. } | InstKind::CmpXchg { .. } | InstKind::AtomicRmw { .. } => {
                 unsupported(mem::ATOMIC)
@@ -204,11 +256,17 @@ impl Target for X86 {
     }
 
     fn load(&self, cx: &mut FnCx<'_, Self>, reg: PReg, src: FrameRef, bytes: u32) {
+        if reg == abi::ST0 {
+            return crate::x87::load_ret(cx, src, bytes);
+        }
         // Only general registers hold values of this package.
         common::load_gpr(cx, gp(reg), src, bytes);
     }
 
     fn store(&self, cx: &mut FnCx<'_, Self>, reg: PReg, dst: FrameRef, bytes: u32) {
+        if reg == abi::ST0 {
+            return crate::x87::store_call_result(cx, dst, bytes);
+        }
         common::store_gpr(cx, gp(reg), dst, bytes);
     }
 
@@ -246,11 +304,14 @@ impl Target for X86 {
     fn materialize_mem(
         &self,
         cx: &mut FnCx<'_, Self>,
-        _dst: FrameRef,
+        dst: FrameRef,
         value: Value,
     ) -> CgResult<()> {
-        let ty = common::value_ty(cx, value);
-        refuse(cx, ty)
+        if int::is_wide(cx, value) {
+            return int::materialize_mem(cx, dst, value);
+        }
+        // Floating point; any other type is refused by its family there.
+        crate::x87::materialize_mem(cx, dst, value)
     }
 
     fn frame_addr(&self, cx: &mut FnCx<'_, Self>, reg: PReg, of: FrameRef) {
@@ -278,7 +339,7 @@ impl Target for X86 {
     }
 
     fn emit_call(&self, cx: &mut FnCx<'_, Self>, call: &CallEmit) -> CgResult<()> {
-        frame::emit_call(cx, call.target)
+        crate::pic::emit_call(cx, call.target, call.callee_pop)
     }
 
     fn dynamic_slot(

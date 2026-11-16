@@ -671,8 +671,12 @@ impl<'a, T: Target> FnCx<'a, T> {
         }
 
         let start = self.offset();
-        let emit =
-            CallEmit { target, variadic: call.variadic, vector_regs_used: asg.vector_regs_used };
+        let emit = CallEmit {
+            target,
+            variadic: call.variadic,
+            vector_regs_used: asg.vector_regs_used,
+            callee_pop: asg.callee_pop,
+        };
         t.emit_call(self, &emit)?;
         self.check_debug_call(armed)?; // WP-113
         let len = self.offset() - start;

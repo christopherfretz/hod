@@ -1447,6 +1447,30 @@ by those fields' 4-byte cells: a field at its default costs nothing.
 `kind`, `tag`, `is_distinct` and `node` read a node; `subprogram_of` and
 `enclosing_block_scope` walk scopes.
 
+`view::<R>(id)` (WP-311) reads a node one field at a time instead:
+`R` is a kind's record (`DiRecord`, implemented by the records only),
+and the answer is `None` when `id` is not a node of the table or not of
+`R`'s kind, else a `DiView<R>` with one method per field of the record,
+named and typed as the record's field (and `tag()` for a tagged kind),
+which gives what `node(id)` would hold there. A field's method reads
+the mask, steps over the cells of the stored fields before it (a
+number, string, node, expression or constant one cell, a wide or signed
+number two, a bound three, a list its length and its elements, a
+`bool` none) and decodes that field alone: a reader that needs a few
+fields of a node does not pay for decoding the rest.
+
+`view.ids()` (WP-318) is a `DiIds<R>`: the same node, with the same
+methods, except that a string field reads as a `DiStr` (its bytes,
+`text()`, and its id in the table, `id()`) instead of bytes; the type a
+field reads as there is `<T as DiFieldId>::Id`, `DiStr` for `&[u8]` and
+the field's own type for any other. Strings are interned per table, so
+two strings of one table with equal bytes have one id, and the ids are
+dense: `0..string_count()`. The empty string (a field at its default) is
+`DiStr::EMPTY`, without an id. `find_string(bytes)` is the table's
+string with those bytes and its id, `None` if no node holds it or it is
+empty; one hash. A consumer that pools a table's strings can key them by
+the id instead of hashing the bytes (`spec/dwarf.md` §6.3).
+
 The kinds, the record of each, and each field's LLVM name, Rust type and
 the kinds of node a reference may name (a "scope" is LLVM's `DIScope`, a
 "local scope" a subprogram or a block, a "type" a basic, derived,

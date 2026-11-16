@@ -109,6 +109,11 @@ static A64_STACK_ARGS: hod_cg::abi::TargetStackArgs<'static, hod_a64::A64> =
 static X64_STACK_ARGS: hod_cg::abi::TargetStackArgs<'static, hod_x64::X64> =
     hod_cg::abi::TargetStackArgs::per_function(&hod_x64::X64, hod_x64::call::target_of);
 
+/// i386's stack-argument rule (WP-297, `spec/abi-x86.md` §8.5): the
+/// convention does not depend on the function's features.
+static X86_STACK_ARGS: hod_cg::abi::TargetStackArgs<'static, hod_x86::X86> =
+    hod_cg::abi::TargetStackArgs::new(&hod_x86::X86);
+
 /// The classifier of `arch`, with its stack-argument rule
 /// (`spec/codegen.md` §7.1, "Tail kinds"; `spec/ir.md` §8.6): without it
 /// every `musttail` call is declined as `musttail:stack-args-unknown`.
@@ -117,9 +122,7 @@ fn classifier_for(arch: Arch, support: &Support) -> Classifier<'_> {
     match arch {
         Arch::Aarch64 => classifier.with_stack_args(&A64_STACK_ARGS),
         Arch::X86_64 => classifier.with_stack_args(&X64_STACK_ARGS),
-        // No 32-bit stack-argument rule before its code generator: a
-        // `musttail` call is `musttail:stack-args-unknown`.
-        Arch::I386 => classifier,
+        Arch::I386 => classifier.with_stack_args(&X86_STACK_ARGS),
     }
 }
 

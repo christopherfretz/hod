@@ -13,6 +13,8 @@
 
 pub mod abi;
 pub mod alu;
+pub mod asm;
+pub mod bits;
 pub mod bytes;
 pub mod call;
 pub mod common;

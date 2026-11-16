@@ -25,7 +25,8 @@ use crate::intern::{Hasher64, InternTable, Layered, Layering, NoLayer, Seg, next
 use crate::strings::StrPool;
 
 use expr::{DiOp, DiOps, ExprId, ExprTable, order_error};
-use node::{Dec, DiKind, DiNode, Enc, class};
+use node::{Dec, DiKind, DiNode, DiRecord, DiStr, DiView, Enc, class};
+use std::marker::PhantomData;
 
 /// A node's fixed part. Eight bytes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -537,6 +538,45 @@ impl<L: Layering> DebugInfo<L> {
         let cells = self.cells.from(at).get(1..).unwrap_or(&[]);
         let mut dec = Dec { cells, strings: self.strings.as_deref() };
         DiNode::decode(kind, head.tag, mask, &mut dec)
+    }
+
+    /// Node `id` as a record of `R`'s kind whose fields are read one at a
+    /// time ([`DiView`]): two array reads, and each field read steps over
+    /// the stored fields before it only. `None` when `id` is not a node
+    /// of this table or not of that kind.
+    #[inline]
+    pub fn view<R: DiRecord>(&self, id: DiId) -> Option<DiView<'_, R, L>> {
+        let head = *self.heads.get(id.index())?;
+        if head.kind != R::KIND as u8 {
+            return None;
+        }
+        let (mask, cells) = self.cells.from(head.at as usize).split_first()?;
+        Some(DiView {
+            tag: head.tag,
+            mask: mask.raw(),
+            cells,
+            strings: self.strings.as_deref(),
+            record: PhantomData,
+        })
+    }
+
+    /// The number of strings the nodes hold: the ids of [`DiStr`] are
+    /// `0..string_count()`.
+    #[inline]
+    pub fn string_count(&self) -> usize {
+        self.strings.as_ref().map_or(0, |strings| strings.len())
+    }
+
+    /// The string of this table whose bytes are `text`, with its id; `None`
+    /// when no node holds it (the empty string included). One hash of
+    /// `text`.
+    pub fn find_string(&self, text: &[u8]) -> Option<DiStr<'_>> {
+        if text.is_empty() {
+            return None;
+        }
+        let strings = self.strings.as_deref()?;
+        let id = strings.find(text)?;
+        Some(DiStr::new(id, strings.get(id)))
     }
 
     /// The scope that encloses the local scope `id`: for a lexical block

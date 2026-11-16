@@ -264,3 +264,27 @@ fn other_assembly_is_refused_by_name() {
         assert!(hod_ir::module_asm_effects(&parsed.module, &mut effects).is_ok(), "{name}");
     }
 }
+
+// WP-307 (`spec/asm.md` §23): i386 reads the text x86-64 reads and
+// refuses the rest by the same names.
+#[test]
+fn i386_reads_and_refuses_as_x86_64() {
+    let mut failures = Vec::new();
+    let i386 = format!(
+        "target datalayout = \"{}\"\ntarget triple = \"i686-unknown-linux-gnu\"\n",
+        hod_ir::I386_LINUX_DATA_LAYOUT
+    );
+    let read = READ_ON_AARCH64.iter().map(|ir| (*ir, None));
+    let refused = REFUSED.iter().map(|&(ir, name)| (ir, Some(name)));
+    for (ir, name) in read.chain(refused) {
+        let text = format!("{i386}{ir}");
+        let parsed = hod_ll::parse_module(text.as_bytes(), &hod_ll::ParseOptions::default())
+            .unwrap_or_else(|e| panic!("{ir}: hod_ll: {e}"));
+        match (emit_module(&parsed.module, &options(), &[]), name) {
+            (Ok(_), None) => {}
+            (Err(CgError::Unsupported { construct }), Some(name)) if construct == name => {}
+            (other, _) => failures.push(format!("i386 {ir:?}: expected {name:?}, got {other:?}")),
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

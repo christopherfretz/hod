@@ -127,6 +127,8 @@ enum Failure {
 struct Group {
     refused: Option<(&'static str, String)>,
     x64: hod_x64::X64,
+    /// i386: `-mcpu`, the CPU of a function without `target-cpu`.
+    x86: hod_x86::X86,
 }
 
 /// The [`Group`] of each attribute set a body's function has, by
@@ -163,7 +165,11 @@ fn groups(module: &Module, bodies: &[Body], options: &Options) -> Vec<Option<Gro
             // Unused off x86-64.
             Arch::Aarch64 | Arch::I386 => hod_x64::X64,
         };
-        groups[index] = Some(Group { refused, x64 });
+        let x86 = match arch {
+            Arch::I386 => hod_x86::X86::with_cpu(options.cpu.as_deref()),
+            Arch::Aarch64 | Arch::X86_64 => hod_x86::X86,
+        };
+        groups[index] = Some(Group { refused, x64, x86 });
     }
     groups
 }
@@ -191,7 +197,10 @@ fn compile_one(
             compile_function(target, module, body, &options, scratch, chunk)
         }
         // WP-293: `spec/codegen-x86.md`.
-        Arch::I386 => compile_function(&hod_x86::X86, module, body, &options, scratch, chunk),
+        Arch::I386 => {
+            let target = group.map_or(&hod_x86::X86, |group| &group.x86);
+            compile_function(target, module, body, &options, scratch, chunk)
+        }
     }
     .map_err(Failure::Cg)
 }

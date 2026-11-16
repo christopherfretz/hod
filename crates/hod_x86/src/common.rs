@@ -320,8 +320,10 @@ pub fn put_abs(cx: &mut FnCx<'_, X86>, inst: Inst, target: SymRef, addend: i64) 
     Ok(())
 }
 
-/// The absolute memory operand `[sym + addend]` for `make`, in the
-/// static model (`R_386_32`); a thread-local symbol is `tls`'s.
+/// The memory operand `[sym + addend]` for `make` by the access choice
+/// (`crate::pic::mem_inst`): `R_386_32` outside PIC; in PIC through the
+/// GOT pointer in `eax`, so `make` must not read `eax`; a thread-local
+/// symbol is `tls`'s.
 ///
 /// # Errors
 /// What [`crate::tls`] and [`crate::pic`] refuse.
@@ -331,20 +333,16 @@ pub fn sym_inst(
     addend: i64,
     make: impl FnOnce(Mem) -> Inst,
 ) -> CgResult<()> {
-    crate::pic::check_static(cx)?;
-    if let hod_cg::Access::Tls(_) = hod_cg::sym_access(cx.module, cx.options, sym) {
-        return crate::tls::address(cx);
-    }
-    let mem = Mem::abs(0).with_abs32().unwrap_or(Mem::abs(0));
-    put_abs(cx, make(mem), SymRef::Module(sym), addend)
+    crate::pic::mem_inst(cx, sym, addend, make)
 }
 
-/// The address of `sym` + `addend` in `rd`: `lea rd, [sym + addend]`.
+/// The address of `sym` + `addend` in `rd` by the access choice
+/// (`crate::pic::address`); writes `rd` only, the flags kept.
 ///
 /// # Errors
 /// As [`sym_inst`].
 pub fn sym_address(cx: &mut FnCx<'_, X86>, rd: Reg, sym: SymId, addend: i64) -> CgResult<()> {
-    sym_inst(cx, sym, addend, |m| mc::lea(Size::D, rd, m))
+    crate::pic::address(cx, rd, sym, addend)
 }
 
 /// A constant that is no integer and is no address (an aggregate, a

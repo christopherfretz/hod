@@ -822,9 +822,17 @@ impl Bench {
         args.extend(objects.iter().map(OsString::from));
         let output = self.step(log, &self.tools.driver, &args, None, self.tool_limits)?;
         match output.end {
-            End::Exit(0) if program.is_file() => Ok(()),
+            End::Exit(0) if program.is_file() => self.check_linker(program),
             end => Err(format!("{}: {}", ended(end), output.first_error_line())),
         }
+    }
+
+    /// With `--linker`, that the linked `program` carries the linker's
+    /// signature (`irdiff::tools::check_signature`, WP-310): a driver
+    /// that ignored the `-B` directory and linked with its own `ld` is
+    /// an error, never a run with the wrong linker.
+    pub fn check_linker(&self, program: &Path) -> Result<(), String> {
+        linked_by(self.tools.linker_dir.is_some(), &self.tools.linker_name, program)
     }
 
     /// Runs a linked program, under the emulator for a cross target.
@@ -1572,9 +1580,37 @@ fn first_line_of_interest(output: &Output) -> String {
     output.first_error_line()
 }
 
+/// [`Bench::check_linker`]: with a linker asked for (`asked`), `program`
+/// must carry the signature of `name`; without, the driver's `ld` is
+/// whatever it is.
+fn linked_by(asked: bool, name: &str, program: &Path) -> Result<(), String> {
+    if !asked {
+        return Ok(());
+    }
+    let bytes =
+        fs::read(program).map_err(|e| format!("cannot read '{}': {e}", program.display()))?;
+    tools::check_signature(name, &bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // WP-310: `--linker` is checked on every program, as irdiff checks it.
+    #[test]
+    fn the_asked_linker_signed_the_program() {
+        let scratch = hod_testutil::Scratch::new("fuzz-linker-signature");
+        let signed = scratch.path().join("signed");
+        let unsigned = scratch.path().join("unsigned");
+        fs::write(&signed, b"\x7fELF\0mortar 0.0.0\0").unwrap();
+        fs::write(&unsigned, b"\x7fELF\0GCC: (Debian) 14\0").unwrap();
+        assert_eq!(linked_by(true, "mortar", &signed), Ok(()));
+        let wrong = linked_by(true, "mortar", &unsigned).unwrap_err();
+        assert!(wrong.contains("did not link with mortar"), "{wrong}");
+        assert!(linked_by(true, "mold", &signed).unwrap_err().contains("mortar's"));
+        assert_eq!(linked_by(false, "ld", &unsigned), Ok(()));
+        assert!(linked_by(true, "mortar", &scratch.path().join("none")).is_err());
+    }
 
     fn output(end: End, stdout: &[u8]) -> Output {
         Output { end, stdout: stdout.to_vec(), stderr: Vec::new(), truncated: false }

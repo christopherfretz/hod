@@ -91,6 +91,7 @@ impl Example {
             stack_size: self.stack,
             va: VaInfo { gpr_used: self.va.0, fpr_used: self.va.1, stack_offset: self.va.2 },
             vector_regs_used: 0,
+            callee_pop: 0,
         };
         assert_eq!(got, want, "`{text}`");
     }

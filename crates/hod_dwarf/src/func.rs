@@ -14,7 +14,8 @@
 //! the writer needs is three side tables sorted by DIE.
 
 use hod_ir::{
-    DiFlags, DiId, DiKind, DiLocation, DiNode, DiOp, DiSubprogram, ExprId, LocId, SpFlags,
+    DiFlags, DiId, DiIds, DiKind, DiLabel, DiLocalVariable, DiLocation, DiNode, DiOp, DiStr,
+    DiSubprogram, DiSubroutineType, ExprId, LocId, SpFlags,
 };
 
 use crate::Error;
@@ -491,10 +492,8 @@ impl<'a> UnitPlan<'a> {
     /// Whether a subprogram's type ends in a null parameter type.
     fn variadic(&self, of: DiId, sp: &DiSubprogram<'_>) -> Result<bool, Error> {
         let Some(ty) = sp.ty else { return Ok(false) };
-        let DiNode::SubroutineType(t) = self.node_of(of, "type", ty)? else {
-            return Err(bad(of, "type"));
-        };
-        Ok(t.types.len() > 1 && t.types.last() == Some(&DiId::NONE))
+        let types = self.view_of::<DiSubroutineType>(of, "type", ty)?.types();
+        Ok(types.len() > 1 && types.last() == Some(&DiId::NONE))
     }
 
     /// The return type of a subprogram, `None` for `void` or no type.
@@ -504,10 +503,8 @@ impl<'a> UnitPlan<'a> {
         sp: &DiSubprogram<'_>,
     ) -> Result<Option<DiId>, Error> {
         let Some(ty) = sp.ty else { return Ok(None) };
-        let DiNode::SubroutineType(t) = self.node_of(of, "type", ty)? else {
-            return Err(bad(of, "type"));
-        };
-        Ok(t.types.first().copied().filter(|&t| t != DiId::NONE))
+        let types = self.view_of::<DiSubroutineType>(of, "type", ty)?.types();
+        Ok(types.first().copied().filter(|&t| t != DiId::NONE))
     }
 
     /// `llc`'s `endFunctionImpl`: the scopes and entities, the abstract
@@ -836,8 +833,8 @@ impl<'a> UnitPlan<'a> {
             };
             if class == 0
                 && !inlined
-                && let DiNode::LocalVariable(n) = self.debug.node(v.node)
-                && has(n.flags, DiFlags::OBJECT_POINTER)
+                && let Some(n) = self.debug.view::<DiLocalVariable>(v.node)
+                && has(n.flags(), DiFlags::OBJECT_POINTER)
             {
                 let fd = &mut self.funcs[func as usize];
                 if fd.object_pointer != NONE {
@@ -1001,6 +998,11 @@ impl<'a> UnitPlan<'a> {
     }
 }
 
+/// A subprogram's linkage name with its id (`Writer::strx_of`, WP-318).
+fn linkage_name<'a>(v: DiIds<'a, DiSubprogram<'a>>) -> DiStr<'a> {
+    v.linkage_name()
+}
+
 impl<'a> Writer<'a> {
     pub(crate) fn exprloc(&mut self) {
         write_uleb(&mut self.info, self.expr.len() as u64);
@@ -1078,7 +1080,7 @@ impl<'a> Writer<'a> {
                 write_uleb(&mut self.info, u64::from(sp.line));
             }
             if link {
-                self.strx(sp.linkage_name)?;
+                self.strx_of(plan.debug, sp_id, sp.linkage_name, linkage_name)?;
             }
             self.ref4(spec);
             return Ok(());
@@ -1110,10 +1112,10 @@ impl<'a> Writer<'a> {
         self.addr_attrs(index, fd.code.size);
         self.exprloc();
         if link {
-            self.strx(sp.linkage_name)?;
+            self.strx_of(plan.debug, sp_id, sp.linkage_name, linkage_name)?;
         }
         if name {
-            self.strx(sp.name)?;
+            self.strx_of::<DiSubprogram>(plan.debug, sp_id, sp.name, |v| v.name())?;
         }
         self.decl(decl);
         if let Some(t) = ty {
@@ -1137,7 +1139,7 @@ impl<'a> Writer<'a> {
         kind: Kind,
         node: DiId,
         what: LocalWhat,
-        v: &hod_ir::DiLocalVariable<'a>,
+        v: &DiLocalVariable<'a>,
     ) -> Result<(), Error> {
         let b = u32::from;
         // WP-162: a location list (§6.23), or none.
@@ -1166,7 +1168,7 @@ impl<'a> Writer<'a> {
             let mask = at | b(!v.name.is_empty()) << 1 | b(decl.is_some()) << 2 | b(art) << 3;
             self.abbrev(code(list_family(fam::FORMAL_PARAMETER), mask, false));
             self.location_if(plan, l, node, list, at);
-            self.opt_name(v.name)?;
+            self.opt_name_of::<DiLocalVariable>(plan.debug, node, v.name, |v| v.name())?;
         } else {
             let mask = at | b(decl.is_some()) << 1 | b(art) << 2;
             // WP-087: an unnamed variable has no `DW_AT_name`; an
@@ -1178,9 +1180,7 @@ impl<'a> Writer<'a> {
             };
             self.abbrev(code(list_family(family), mask, false));
             self.location_if(plan, l, node, list, at);
-            if !v.name.is_empty() {
-                self.strx(v.name)?;
-            }
+            self.opt_name_of::<DiLocalVariable>(plan.debug, node, v.name, |v| v.name())?;
             if v.align >= 8 {
                 write_uleb(&mut self.info, u64::from(v.align / 8));
             }
@@ -1250,12 +1250,12 @@ impl<'a> Writer<'a> {
                 {
                     // `llc` 21 and later write the column of a label.
                     self.abbrev(code(fam::LABEL_COLUMN, 1, false));
-                    self.strx(n.name)?;
+                    self.strx_of::<DiLabel>(plan.debug, node, n.name, |v| v.name())?;
                     self.decl(Some(d));
                     write_uleb(&mut self.info, u64::from(n.column));
                 } else {
                     self.abbrev(code(fam::LABEL, b(decl.is_some()) | 2, false));
-                    self.strx(n.name)?;
+                    self.strx_of::<DiLabel>(plan.debug, node, n.name, |v| v.name())?;
                     self.decl(decl);
                 }
                 let index = self.push_addr(fd.code.symbol, fd.code.addend + i64::from(offset));

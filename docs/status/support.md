@@ -1574,6 +1574,51 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.x86.avx512.mask.scattersiv8.sf` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
 | `intrinsic:llvm.x86.avx512.mask.scattersiv8.si` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
 
+## i386
+
+The 32-bit x86 target (`i686-unknown-linux-gnu`, `spec/abi-x86.md`) is
+classified as x86_64 except for the rows below.
+
+| group | constructs | i386 supported | not-implemented | rejected |
+|---|---|---|---|---|
+| `module` | 25 | 22 | 3 | 0 |
+| `structor` | 2 | 2 | 0 | 0 |
+| `debug` | 5 | 4 | 1 | 0 |
+| `global` | 12 | 11 | 1 | 0 |
+| `linkage` | 11 | 10 | 0 | 1 |
+| `visibility` | 2 | 2 | 0 | 0 |
+| `tls` | 4 | 4 | 0 | 0 |
+| `comdat` | 5 | 2 | 0 | 3 |
+| `init` | 10 | 6 | 3 | 1 |
+| `function` | 6 | 6 | 0 | 0 |
+| `cc` | 26 | 3 | 17 | 6 |
+| `attr` | 64 | 39 | 22 | 3 |
+| `type` | 15 | 13 | 0 | 2 |
+| `inst` | 67 | 60 | 0 | 7 |
+| `mem` | 3 | 3 | 0 | 0 |
+| `atomicrmw` | 21 | 21 | 0 | 0 |
+| `call` | 4 | 4 | 0 | 0 |
+| `tail` | 3 | 3 | 0 | 0 |
+| `bundle` | 10 | 0 | 5 | 5 |
+| `landingpad` | 3 | 3 | 0 | 0 |
+| `operand` | 11 | 8 | 3 | 0 |
+| `const-expr` | 19 | 0 | 0 | 19 |
+| `intrinsic` | 1032 | 782 | 10 | 240 |
+| total | 1360 | 1008 | 65 | 287 |
+
+| construct | x86_64 | i386 | why on i386 |
+|---|---|---|---|
+| `cc:coldcc` (i386) | not-implemented | supported |  |
+| `cc:preserve_mostcc` (i386) | supported | not-implemented | i386 `x86:abi:cc` |
+| `cc:preserve_allcc` (i386) | supported | not-implemented | i386 `x86:abi:cc` |
+| `cc:x86_stdcallcc` (i386) | rejected | not-implemented | i386 `x86:abi:cc` |
+| `cc:x86_fastcallcc` (i386) | rejected | not-implemented | i386 `x86:abi:cc` |
+| `cc:x86_thiscallcc` (i386) | rejected | not-implemented | i386 `x86:abi:cc` |
+| `cc:x86_64_sysvcc` (i386) | supported | not-implemented | i386 `x86:abi:cc` |
+| `cc:win64cc` (i386) | supported | not-implemented | i386 `x86:abi:cc` |
+| `attr:inreg` (i386) | not-implemented | supported |  |
+| `attr:nest` (i386) | not-implemented | supported |  |
+
 ## Structural rules
 
 Refused whatever the matrix says (`spec/ir.md` §8.6), on both targets.

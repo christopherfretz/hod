@@ -187,16 +187,19 @@ fn narrow_intrinsics_compile() {
     }
 }
 
-/// What stays `x86:intrinsic`: `scmp`/`ucmp` of operands wider than 32
-/// bits (no package lowers them yet), and the overflow intrinsics, whose
+/// `scmp`/`ucmp` of operands of 33 to 64 bits compile since the i386 join
+/// C (`int.rs`, run by `i386_i64_rest.rs`), of wider ones are
+/// `x86:i64:wide`; what stays refused: the overflow intrinsics, whose
 /// `{i32, i1}` result is read with `extractvalue` (`x86:aggregate`).
 #[test]
 fn what_stays_refused() {
     let wide = "define i8 @f(ptr %p) {\n  %a = load i64, ptr %p\n  \
                 %r = call i8 @llvm.scmp.i8.i64(i64 %a, i64 %a)\n  ret i8 %r\n}\n\
                 declare i8 @llvm.scmp.i8.i64(i64, i64)";
-    let error = refusal(wide).unwrap_or_else(|| panic!("compiled:\n{wide}"));
-    assert!(error.contains("x86:intrinsic"), "{wide}\n{error}");
+    assert_eq!(refusal(wide), None, "{wide}");
+    let wider = wide.replace("i64", "i128");
+    let error = refusal(&wider).unwrap_or_else(|| panic!("compiled:\n{wider}"));
+    assert!(error.contains("x86:i64:wide"), "{wider}\n{error}");
     let overflow = "define i32 @f(i32 %a) {\n  \
                     %r = call {i32, i1} @llvm.sadd.with.overflow.i32(i32 %a, i32 %a)\n  \
                     %v = extractvalue {i32, i1} %r, 0\n  ret i32 %v\n}\n\

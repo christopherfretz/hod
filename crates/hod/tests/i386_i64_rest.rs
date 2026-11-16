@@ -2,7 +2,7 @@
 //! the integer intrinsics (`bswap`, `ctpop`, `ctlz`, `cttz`, `bitreverse`,
 //! `abs`, min/max, saturating add/sub/shift, funnel shifts), `switch` on
 //! one, a `ptradd` index of one. Programs under `tests/data/i386/i64_rest/`
-//! (`unary.ll`, `binary.ll`, `funnel.ll` written by `gen.py` there;
+//! (`unary.ll`, `binary.ll`, `funnel.ll`, `compare.ll` written by `gen.py` there;
 //! `switch.ll`, `ptradd.ll` by hand) move their values through memory only,
 //! at widths 64, 57, 48 and 33, and print every result in hex. Each is
 //! built with no `target-cpu` (`generic`: no `cmov`) and with `pentium4`,
@@ -22,8 +22,9 @@ use i386_support::{
     TRIPLE, back_end_object, checked, cpu_features, llc_object, llvm_tool, run_with_features, tool,
 };
 
-/// The programs.
-const PROGRAMS: [&str; 5] = ["unary.ll", "binary.ll", "funnel.ll", "switch.ll", "ptradd.ll"];
+/// The programs (`compare.ll`, `scmp`/`ucmp` of wide operands: i386 join C).
+const PROGRAMS: [&str; 6] =
+    ["unary.ll", "binary.ll", "funnel.ll", "switch.ll", "ptradd.ll", "compare.ll"];
 
 fn data(program: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/i386/i64_rest").join(program)

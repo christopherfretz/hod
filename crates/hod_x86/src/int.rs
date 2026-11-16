@@ -32,7 +32,8 @@
 
 use hod_cg::{CallTarget, CgResult, FnCx, FrameRef, Label, RuntimeFn, SymRef};
 use hod_ir::{
-    Const, Inst, IntPredicate, Intrinsic, MemFlags, Opcode, Switch, TypeId, Value, ValueKind,
+    Const, Inst, InstKind, IntPredicate, Intrinsic, MemFlags, Opcode, Switch, TypeId, Value,
+    ValueKind,
 };
 use hod_mc_x64 as mc;
 use hod_mc_x64::{Cond, Mem, Reg, Size};
@@ -592,9 +593,15 @@ fn is_int_intrinsic(which: Intrinsic<'_>) -> bool {
 }
 
 /// Whether the call of intrinsic `which` as `inst` is this module's: one
-/// of the integer intrinsics with a result wider than 32 bits.
+/// of the integer intrinsics with a result wider than 32 bits, or
+/// `scmp`/`ucmp` of operands wider than 32 bits.
 #[inline]
 pub fn is_intrinsic(cx: &FnCx<'_, X86>, inst: Inst<'_>, which: Intrinsic<'_>) -> bool {
+    if matches!(which, Intrinsic::Scmp | Intrinsic::Ucmp) {
+        let InstKind::Call(site) = inst.kind() else { return false };
+        return site.args().first().is_some_and(|&a| is_wide(cx, a))
+            && cx.types().int_bits(inst.ty()).is_some();
+    }
     is_int_intrinsic(which) && wide_bits(cx, inst.ty()).is_some()
 }
 
@@ -626,6 +633,9 @@ pub fn intrinsic<'a>(
     args: &'a [Value],
 ) -> CgResult<()> {
     use Intrinsic as I;
+    if let (I::Scmp | I::Ucmp, &[a, b]) = (which, args) {
+        return three_way(cx, inst, which == I::Scmp, a, b);
+    }
     let bits = bits_of(cx, inst.ty())?;
     match (which, args) {
         (I::Bswap | I::Ctpop | I::Ctlz | I::Cttz | I::BitReverse | I::Abs, &[x, ..]) => {
@@ -816,6 +826,54 @@ fn min_max<'a>(
     cx.bind(take_a)?;
     copy(cx, r, a);
     cx.bind(done)?;
+    Ok(())
+}
+
+/// `%r = call iM @llvm.scmp/ucmp(iN %a, iN %b)`, `33 <= N <= 64`, `M`
+/// of 2 to 64 bits: `a > b` and then `a < b` by [`compare_slots`], each
+/// `setcc`, the first kept on the stack while the second is computed;
+/// the result their difference (1, 0 or -1, sign-extended to the high
+/// word of a wide result). No branch (as `llc`).
+///
+/// # Errors
+/// [`WIDE`] for operands or a result wider than 64 bits; what the
+/// operands report.
+fn three_way<'a>(
+    cx: &mut FnCx<'a, X86>,
+    inst: Inst<'a>,
+    signed: bool,
+    lhs: Value,
+    rhs: Value,
+) -> CgResult<()> {
+    let bits = bits_of(cx, value_ty(cx, lhs))?;
+    let result = cx.types().int_bits(inst.ty()).unwrap_or(0);
+    if result > 64 {
+        return unsupported(WIDE);
+    }
+    let (gt, lt) = if signed {
+        (IntPredicate::Sgt, IntPredicate::Slt)
+    } else {
+        (IntPredicate::Ugt, IntPredicate::Ult)
+    };
+    let (a, b) = (cx.use_mem(lhs)?, cx.use_mem(rhs)?);
+    let cond = compare_slots(cx, gt, bits, a, b);
+    put(cx, mc::setcc_r(cond, EAX));
+    put(cx, mc::movzx_rr(Size::D, EAX, Size::B, EAX));
+    put(cx, mc::push_r(EAX));
+    let cond = compare_slots(cx, lt, bits, a, b);
+    put(cx, mc::setcc_r(cond, ECX));
+    put(cx, mc::movzx_rr(Size::D, ECX, Size::B, ECX));
+    put(cx, mc::pop_r(EAX));
+    put(cx, mc::sub_rr(Size::D, EAX, ECX));
+    if result <= 32 {
+        let rd = cx.def_reg(inst)?;
+        put(cx, mc::mov_rr(Size::D, gp(rd), EAX));
+        return cx.finish(inst, rd);
+    }
+    let r = cx.def_mem(inst)?;
+    st(cx, EAX, r, 0);
+    put(cx, mc::sar_ri(Size::D, EAX, 31));
+    st(cx, EAX, r, 1);
     Ok(())
 }
 

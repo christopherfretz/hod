@@ -267,12 +267,30 @@ def funnel(probe=False):
     return p
 
 
+def compare(probe=False):
+    """i386 join C: scmp/ucmp of i33..i64 operands, results of 2 to 64 bits."""
+    p = Program()
+    for width in WIDTHS:
+        t = p.table(f"v{width}", vals(width))
+        for name in ["scmp", "ucmp"]:
+            for rw in [2, 8, 32, 33, 64]:
+                p.decls.add(
+                    f"declare i{rw} @llvm.{name}.i{rw}.i{width}(i{width}, i{width})\n")
+                body = trunc("x", "a", width) + trunc("y", "b", width)
+                body += (f"  %r = call i{rw} @llvm.{name}.i{rw}.i{width}"
+                         f"(i{width} %x, i{width} %y)\n")
+                body += store_result("r", rw)
+                p.test(f"{name}.{rw}.{width}", body, [t, t])
+    return p
+
+
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     programs = [
         ("unary.ll", unary, "WP-306: bswap, ctpop, ctlz, cttz, bitreverse, abs of i33..i64"),
         ("binary.ll", binary, "WP-306: min/max, saturating add/sub/shift of i33..i64"),
         ("funnel.ll", funnel, "WP-306: fshl/fshr of i33..i64, variable and constant amounts"),
+        ("compare.ll", compare, "join C: scmp/ucmp of i33..i64 operands"),
     ]
     probe = sys.argv[1:2] == ["--probe"]
     where = sys.argv[2] if probe else here

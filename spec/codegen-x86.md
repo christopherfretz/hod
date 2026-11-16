@@ -189,7 +189,7 @@ their values).
 | `x86:abi:musttail` | a `musttail` call with stack arguments and an argument in `ecx`; under PIC, one to another module's function with `eax`, `ecx` and `edx` all holding arguments (`spec/abi-x86.md` §8.5) | — |
 | `x86:varargs` | `va_start`, `va_copy`, `va_end`, `va_arg` | I11 |
 | `x86:dynamic-alloca` | a dynamic `alloca`, an over-aligned slot, `llvm.stacksave`/`stackrestore` | I11 |
-| `x86:intrinsic` | any other intrinsic (the integer intrinsics of §4.1 and §8 are lowered; still refused: `scmp`/`ucmp` of operands wider than 32 bits, the `*.with.overflow` family, `eh.typeid.for`, `frameaddress`, `returnaddress`, `ubsantrap`, `ptrmask`, `is.constant`, `objectsize`, `clear_cache`, `readcyclecounter`, ...) | per family |
+| `x86:intrinsic` | any other intrinsic (the integer intrinsics of §4.1 and §8 are lowered; still refused: the `*.with.overflow` family, `eh.typeid.for`, `frameaddress`, `returnaddress`, `ubsantrap`, `ptrmask`, `is.constant`, `objectsize`, `clear_cache`, `readcyclecounter`, ...) | per family |
 | `x86:call` | a call with operand bundles, `callbr` | — |
 | `x86:blockaddress`, `x86:indirect-branch` | `blockaddress`, `indirectbr` | — |
 | `x86:stack-protector` | a function with a stack guard | — |
@@ -300,9 +300,15 @@ through `ecx`). Wider than 64 bits is refused as `x86:i64:wide`.
     is the same).
   - Wider than 64 bits: `x86:i64:wide` (an odd width above 64 is refused
     before, by the shared classifier, as `intrinsic:<name>/int-wide`).
+- `scmp`, `ucmp` of operands of 33 to 64 bits (i386 join C;
+  `int::three_way`), a result of 2 to 64 bits: `a > b` by the order
+  compare above and `setcc`, kept on the stack (`push`), then `a < b`
+  likewise; the result is their difference (1, 0, -1), its high word
+  sign-extended for a result wider than 32 bits. No branch. Operands or
+  a result wider than 64 bits: `x86:i64:wide`.
 
-Still refused: such an integer passed or returned by value (`x86:i64`,
-I6, `abi.rs`). The `*.with.overflow` intrinsics of every width return
+Still refused: such an integer of 33 to 63 bits passed or returned by
+value (`x86:i64`, `abi.rs`; `i64` itself is I6's). The `*.with.overflow` intrinsics of every width return
 the aggregate `{iN, i1}`: their call stays `x86:intrinsic` and their
 `extractvalue` `x86:aggregate` (I11). Every other intrinsic of these
 widths stays `x86:intrinsic`.
@@ -502,11 +508,27 @@ and an `llvm.memset` of more than 64 (shorter ones are written inline);
 `frem` and the libm intrinsics (calls); an integer division wider than
 32 bits (`__divdi3` and kin); without `cmov`, a `select` on a variable
 condition unless its type is `i1` or it chooses between two integer
-constants (`llc` branches: the block splits). `llc` branches without
-`cmov` also for integer `smin`/`smax`/`umin`/`umax`, `ctlz`/`cttz` and
-the saturating additions and subtractions (measured); `hod_x86` refuses
-those intrinsics today, and the package that lowers them adds them to
-the barriers (`x87::barrier`). With the other packages (measured, the
+constants (`llc` branches: the block splits); and, without `cmov`, the
+integer intrinsics below. *Integer intrinsics* (measured with `llc` 19
+and 22 at widths 1 to 64, CPU `generic`; with `cmov`, `i686`,
+`pentiumpro`, `pentium4`, none branches), at a result of `N` bits:
+`ctlz` with zero defined at `N` >= 2 and with zero poison at `N` > 32;
+`cttz` with zero defined at `N` >= 32 and with zero poison at `N` > 32;
+`smax`, `smin`, `umax`, `umin`, `sadd.sat`, `uadd.sat`, `ssub.sat`,
+`usub.sat`, `sshl.sat`, `ushl.sat` at `N` >= 2; `fshl`/`fshr` by a
+variable amount at `N` > 32. Never: `bswap`, `ctpop`, `bitreverse`,
+`abs`, `scmp`, `ucmp`, a funnel shift by a constant amount. Not where
+`llc`'s DAG folds the call: all operands constants or folded results; a
+min/max of one value twice or with the type's least or greatest value;
+a saturating addition of 0; a saturating subtraction of a value from
+itself or of 0, `usub.sat` from all ones; a saturating shift of 0 or by
+0; a funnel shift of one constant twice (an operand that is a folded
+result equal to such a constant is not recognized: hod counts a
+barrier there, `llc` none). LLVM 19 also branches for `sadd.sat`,
+`uadd.sat`, `ssub.sat`, `usub.sat` at `N` = 1, LLVM 22 does not; hod
+follows 22 (the shape `saddsat1_between` of
+`crates/hod/tests/data/i386/x87/int-shapes-*.ll` differs from `llc` 19's
+program at CPU `generic`). With the other packages (measured, the
 shapes of `crates/hod/tests/data/i386/join_b/join_b.ll`): a
 thread-local of a dynamic model under PIC is a barrier where `llc` calls
 `___tls_get_addr` (the first use of its symbol in the block, of any

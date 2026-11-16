@@ -6,6 +6,9 @@
 //! IR by the clang of the same major, without PIC (hod's i386 back end is
 //! static only, `x86:pic`).
 //!
+//! Each program is also compiled under `hod_cg::Stress::ALL` (the
+//! `min_pool` stress mode among them) and must run the same.
+//!
 //! A missing tool is skipped with a note, unless `HOD_REQUIRE_TOOLS=1`.
 
 use std::ffi::OsString;
@@ -24,7 +27,8 @@ const TRIPLE: &str = "i686-unknown-linux-gnu";
 const PROGRAMS: [&str; 5] = ["loops.c", "switch.c", "calls.c", "memory.c", "bytes.c"];
 
 /// The least module: `main` returns 42.
-const RET42: &str = "define i32 @main() {\n  ret i32 42\n}\n";
+const RET42: &str =
+    "target triple = \"i686-unknown-linux-gnu\"\n\ndefine i32 @main() {\n  ret i32 42\n}\n";
 
 fn llvm_tool(major: u32, name: &str) -> Option<PathBuf> {
     let path = PathBuf::from(format!("/usr/lib/llvm-{major}/bin/{name}"));
@@ -76,6 +80,25 @@ fn run(qemu: &Path, exe: &Path) -> (Option<i32>, Vec<u8>) {
     (outcome.status.and_then(|s| s.code()), outcome.stdout)
 }
 
+/// `hod_x86`'s object of `text` under `Stress::ALL` (`min_pool`, far
+/// branches, displaced registers), from the back end directly.
+fn stressed_object(text: &[u8]) -> Vec<u8> {
+    let parsed = hod_ll::parse_module(text, &hod_ll::ParseOptions::default())
+        .unwrap_or_else(|e| panic!("hod_ll: {e}"));
+    let side = parsed.text;
+    let mut module = parsed.module;
+    let mut bodies = Vec::new();
+    hod_ll::parse_bodies(&mut module, &side, |_, read| {
+        bodies.push(read.body.expect("every body is read").clone());
+        Ok::<(), hod_ll::LlError>(())
+    })
+    .unwrap_or_else(|e| panic!("hod_ll: {e}"));
+    let options = hod_cg::Options { stress: hod_cg::Stress::ALL, ..hod_cg::Options::default() };
+    hod_x86::compile_to_object(&module, &bodies, &options).unwrap_or_else(|e| panic!("stress: {e}"))
+}
+
+/// Each program built by `llc`, by hod, and by `hod_x86` under every
+/// stress option; the three runs agree under every linker.
 #[test]
 fn milestone_a_programs_run_as_llc_s() {
     let target = Target::I686;
@@ -105,6 +128,8 @@ fn milestone_a_programs_run_as_llc_s() {
             let object = hod::compile(&std::fs::read(&ll).unwrap(), &options)
                 .unwrap_or_else(|e| panic!("hod {program} ({major}): {e}"));
             let hod_o = scratch.write(&format!("{program}-{major}-hod.o"), object);
+            let stressed = stressed_object(&std::fs::read(&ll).unwrap());
+            let stress_o = scratch.write(&format!("{program}-{major}-stress.o"), stressed);
             let llc_o = scratch.join(format!("{program}-{major}-llc.o"));
             let mut command = Command::new(&llc);
             command.args(["-O0", "-global-isel=0", "-fast-isel=0", "-filetype=obj"]);
@@ -112,7 +137,7 @@ fn milestone_a_programs_run_as_llc_s() {
             checked(&format!("llc {major} {program}"), &mut command);
             for (linker, program_path) in &linkers {
                 let mut results = Vec::new();
-                for (who, object) in [("hod", &hod_o), ("llc", &llc_o)] {
+                for (who, object) in [("llc", &llc_o), ("hod", &hod_o), ("stress", &stress_o)] {
                     let exe = scratch.join(format!("{program}-{major}-{who}-{linker}"));
                     let mut command = Command::new(&gcc);
                     let flags: Vec<OsString> =
@@ -121,10 +146,12 @@ fn milestone_a_programs_run_as_llc_s() {
                     checked(&format!("{linker} link of {program} ({who}, {major})"), &mut command);
                     results.push(run(&qemu, &exe));
                 }
-                assert_eq!(
-                    results[0], results[1],
-                    "{program} (clang {major}, {linker}): hod's run differs from llc's"
-                );
+                for (who, result) in ["hod", "stress"].iter().zip(&results[1..]) {
+                    assert_eq!(
+                        &results[0], result,
+                        "{program} (clang {major}, {linker}): {who}'s run differs from llc's"
+                    );
+                }
                 runs += 1;
             }
         }

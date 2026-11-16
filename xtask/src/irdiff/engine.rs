@@ -389,9 +389,11 @@ impl Session {
         // third target), and what is checked is the reference side; an
         // object hod does build is compared as on any target.
         // i686's back end is partial (design 0008, WP-293 on): a refusal
-        // under an `x86:` name is expected as well, without a directive.
-        let partial =
-            arch == Arch::I686 && reason.as_deref().is_some_and(|r| r.starts_with("x86:"));
+        // is expected there as well, without a directive, whether it is an
+        // `x86:` name or one of the shared classifier's the 64-bit targets
+        // pass (`coro:target`, `musttail:stack-args-unknown`): the seeds
+        // are written for 64-bit targets and carry no i686 directives.
+        let partial = arch == Arch::I686;
         let refused_target =
             (!arch.compiled_by_hod() || partial) && matches!(build, HodBuild::Declined);
         let expected =

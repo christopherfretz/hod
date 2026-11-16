@@ -346,8 +346,8 @@ mod tests {
             assert_eq!(Target::from_name(target.name()), Some(target));
             assert!(target.triple().starts_with(target.name()));
         }
-        // The one place: hod does not compile for i686 yet.
-        assert!(!t.compiled_by_hod());
+        // The one place: hod compiles for i686 (WP-293, in part).
+        assert!(t.compiled_by_hod());
         assert!(Target::COMPILED_BY_HOD.iter().all(|t| Target::ALL.contains(t)));
     }
 }

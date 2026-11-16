@@ -263,7 +263,14 @@ pub fn corpus_units(dir: &Path) -> Result<Vec<Unit>, String> {
         let arch = expect.targets.first().copied().or_else(|| {
             Arch::from_name(&target_of_text(modules.first().map_or(&text, |m| &m.text)))
         });
-        let target = arch.map_or_else(|| "unknown".to_owned(), |a| a.name().to_owned());
+        // WP-292: an entry that names no target (a `tests/ir` seed without
+        // a triple, which irdiff builds for every target) is compiled once
+        // per target hod compiles for: without `-mtriple` both binaries
+        // refuse it alike, and the comparison would prove nothing.
+        let arches = match arch {
+            Some(arch) => vec![arch],
+            None => Arch::compiled(),
+        };
         let parts: Vec<(Option<usize>, String)> = if modules.is_empty() {
             vec![(None, path.display().to_string())]
         } else {
@@ -273,13 +280,13 @@ pub fn corpus_units(dir: &Path) -> Result<Vec<Unit>, String> {
                 .map(|(i, m)| (Some(i), format!("{}#{}", path.display(), m.name)))
                 .collect()
         };
-        for (mode, extra) in CORPUS_MODES {
+        for (arch, (mode, extra)) in
+            arches.iter().flat_map(|&arch| CORPUS_MODES.map(|mode| (arch, mode)))
+        {
             for (index, name) in &parts {
                 let mut args: Vec<String> =
                     ["--strict", "-O0", "-filetype=obj"].map(String::from).to_vec();
-                if let Some(arch) = arch {
-                    args.push(format!("-mtriple={}", arch.triple()));
-                }
+                args.push(format!("-mtriple={}", arch.triple()));
                 args.extend(extra.map(String::from));
                 args.extend(expect.llc_args.iter().cloned());
                 args.push("-o".to_owned());
@@ -288,7 +295,7 @@ pub fn corpus_units(dir: &Path) -> Result<Vec<Unit>, String> {
                 args.push("-".to_owned());
                 units.push(Unit {
                     name: name.clone(),
-                    target: target.clone(),
+                    target: arch.name().to_owned(),
                     mode: mode.to_owned(),
                     args,
                     output,

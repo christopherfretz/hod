@@ -16,7 +16,7 @@ use std::process::ExitCode;
 const USAGE: &str = "\
 usage: cargo xtask ci [--quick] [--step <step>]... [--part a64|x64|harness|front|rest]
          steps: fmt scripts workflows clippy test irdiff roundtrip; the full gate's only:
-         debug-x86_64 debug-aarch64 corpus-aarch64 corpus-x86_64
+         bench-aarch64 bench-x86_64 debug-x86_64 debug-aarch64 corpus-aarch64 corpus-x86_64
        cargo xtask jobserver <status|refill> [--fifo <path>] [--jobs <n>]
        cargo xtask shim --llvm <dir> --hod <hod binary> --out <dir> [--kiln <kiln++>]
        cargo xtask irdiff [options] [<file.ll or directory>...]   (--help for the options)

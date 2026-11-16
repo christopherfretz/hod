@@ -145,6 +145,49 @@ fn equal_binaries_pass() {
     assert!(report.outcomes.iter().any(|o| o.name.ends_with("two.ll#two.ll")));
 }
 
+// WP-292: a seed that names no target (no `;@ target:`, no triple) is
+// compiled once per target hod compiles for, each with its `-mtriple`;
+// one that names its target only for that target.
+#[test]
+fn a_seed_without_a_target_is_compared_per_target() {
+    let s = setup("cmpbin-notarget");
+    let dir = s.scratch.join("corpus/kiln/llvm22");
+    std::fs::write(dir.join("any.ll"), "@any = global i32 0\n").unwrap();
+    entry(&dir, "named", "named");
+    let report = run(&options(&s)).unwrap();
+    assert_eq!(report.exit_status(), 0, "{}", report.summary());
+    let targets: Vec<&str> = xtask::irdiff::Arch::compiled().iter().map(|a| a.name()).collect();
+    assert!(targets.len() >= 2, "{targets:?}");
+    let mut any: Vec<(String, String)> = report
+        .outcomes
+        .iter()
+        .filter(|o| o.name.ends_with("any.ll"))
+        .map(|o| (o.target.clone(), o.mode.clone()))
+        .collect();
+    any.sort();
+    let mut expected: Vec<(String, String)> = targets
+        .iter()
+        .flat_map(|t| ["pic", "plain"].map(|m| ((*t).to_owned(), m.to_owned())))
+        .collect();
+    expected.sort();
+    assert_eq!(any, expected);
+    assert!(report.outcomes.iter().all(|o| o.class == Class::Identical));
+    let named: Vec<&str> = report
+        .outcomes
+        .iter()
+        .filter(|o| o.name.ends_with("named.ll"))
+        .map(|o| o.target.as_str())
+        .collect();
+    assert_eq!(named, ["aarch64", "aarch64"]);
+    // Each object carries the arguments its fake was given: the triple.
+    let units = xtask::compare_binaries::corpus_units(&dir.join("any.ll")).unwrap();
+    for unit in &units {
+        let arch = xtask::irdiff::Arch::from_name(&unit.target).unwrap();
+        assert!(unit.args.contains(&format!("-mtriple={}", arch.triple())), "{:?}", unit.args);
+    }
+    assert_eq!(report.modules(), 2);
+}
+
 #[test]
 fn an_empty_corpus_fails() {
     let s = setup("cmpbin-empty");

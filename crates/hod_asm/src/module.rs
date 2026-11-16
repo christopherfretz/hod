@@ -1849,4 +1849,51 @@ mod tests {
         assert!(asm(".ident \"a\", \"b\"").is_err());
         assert!(asm(".ident a").is_err());
     }
+
+    /// `spec/asm.md` §23: the 32-bit kinds as `llvm-mc -triple=i686`
+    /// writes them for this text (GOT32X only for `mov`, GOTPC's addend
+    /// the field's offset in the instruction, a GOTOFF or absolute field
+    /// to a local against the section, code padded by one-byte nops).
+    #[test]
+    fn i386_kinds() {
+        use crate::x86::RefKind as K;
+        let mut m = ModuleCode::default();
+        let text = "f: movl x@GOT(%ebx), %eax\n addl x@GOT(%ebx), %eax\n \
+            addl $_GLOBAL_OFFSET_TABLE_, %ebx\n call g\n leal l@GOTOFF(%ebx), %eax\n \
+            movl %gs:t@ntpoff, %eax\n .p2align 3\nl: ret\n.data\n .long l\n .short x";
+        assemble_module_x86(text, &mut m).unwrap();
+        let code = &m.sections[0];
+        assert_eq!(code.size, 0x29);
+        assert_eq!(&code.bytes[..2], &[0x8B, 0x83]);
+        assert_eq!(&code.bytes[0x23..], &[0x90, 0x90, 0x90, 0x90, 0x90, 0xC3]);
+        let r = |offset, kind, target, addend| Reloc { offset, kind, target, addend };
+        let x = |k| RelocKind::X86(k);
+        assert_eq!(
+            code.relocs,
+            [
+                r(2, x(K::Got32X), Target::Symbol(1), 0),
+                r(8, x(K::Got32), Target::Symbol(1), 0),
+                r(0xE, x(K::GotPc), Target::Symbol(2), 2),
+                r(0x13, x(K::Pc32), Target::Symbol(3), -4),
+                r(0x19, x(K::GotOff), Target::Section(0), 0x28),
+                r(0x1F, x(K::TlsLe), Target::Symbol(5), 0),
+            ]
+        );
+        assert_eq!(
+            m.sections[1].relocs,
+            [
+                r(0, RelocKind::Abs32, Target::Section(0), 0x28),
+                r(4, RelocKind::Abs16, Target::Symbol(1), 0),
+            ]
+        );
+        let refused = |t: &str| {
+            let mut m = ModuleCode::default();
+            assemble_module_x86(t, &mut m).err().map(|r| r.0)
+        };
+        assert_eq!(refused(".quad x"), Some(op_reason::SYMBOL));
+        assert_eq!(refused(".byte x"), Some(op_reason::SYMBOL));
+        assert_eq!(refused("movl $x, y"), Some(op_reason::SYMBOL));
+        assert_eq!(refused("movl x@PLT, %eax"), Some(op_reason::SPECIFIER));
+        assert_eq!(refused("movl x@GOT@GOT(%ebx), %eax"), Some(op_reason::SPECIFIER));
+    }
 }

@@ -196,7 +196,7 @@ their values).
 | `x86:probe-stack` | a function with `"probe-stack"="inline-asm"` (§12.3) | — |
 | `x86:intrinsic` | any other intrinsic (the integer intrinsics of §4.1 and §8 are lowered; the overflow and small intrinsics of §13 and `eh.typeid.for` (§14) are lowered; still refused: every intrinsic none of them names) | per family |
 | `x86:call` | a call with operand bundles, `callbr` | — |
-| `x86:blockaddress`, `x86:indirect-branch` | `blockaddress`, `indirectbr` | — |
+| `x86:blockaddress` | a `blockaddress` of another function's block in code (§15; `x86:indirect-branch` removed by WP-324) | — |
 | `x86:stack-protector` | a function with a stack guard | — |
 | `x86:addrspacecast`, `x86:int-cast` | those casts | — |
 | `x86:constant` | a constant expression or other constant reaching a register | — |
@@ -930,3 +930,31 @@ removed in front of the back end. `eh.typeid.for` is §14's.
   through the relocations. Which pad is not compared: where several
   `invoke`s unwind to one IR pad, `llc` has one landing address and hod
   one per `invoke`.
+
+## 15. Indirect branches (`ibr`, WP-324)
+
+`indirectbr ptr %a, [...]` is `jmp r` on the address's register; on a
+`blockaddress` constant of the function itself it is a direct branch to
+that block (as on x86-64). A `blockaddress` of the function's own block
+in a register is position independent in every relocation model and
+needs no relocation:
+
+```text
+call 0f                ; e8 00000000: pushes the address of 0
+0: pop rd
+lea rd, [rd + disp32]  ; REL32 fixup to the block's label: label - (0 + 7)
+lea rd, [rd + 7]
+```
+
+It writes `rd` only and keeps the flags. `llc` writes `movl $.Ltmp, %r`
+(`R_386_32`) in the static model and `leal .Ltmp@GOTOFF(%ebx), %r` under
+PIC; the value is the same. Neither is an x87 barrier beyond what `llc`
+has: `indirectbr` ends its block, a `blockaddress` is one `mov`/`lea` in
+`llc`. A `blockaddress` in a global's initializer is the module
+emitter's (`R_386_32` against the function's section, plus the block's
+offset). The address of another function's block in code stays refused,
+`x86:blockaddress`. Evidence: `tests/i386_ibr.rs` (a computed-goto
+interpreter with a static table of label addresses, one built at run
+time, a label address selected and compared; `-march=i586` and the
+default CPU, static and PIE, GNU ld, lld and mold, `llc` 19 and 22, also
+under `Stress::ALL`).

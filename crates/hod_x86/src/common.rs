@@ -362,7 +362,7 @@ pub fn materialize_const(cx: &mut FnCx<'_, X86>, rd: Reg, id: ConstId) -> CgResu
         Const::Addr { sym, addend } => sym_address(cx, rd, sym, addend)?,
         Const::IntOfAddr { addr, .. } => return materialize_const(cx, rd, addr),
         Const::DsoLocalEquivalent(sym) | Const::NoCfi(sym) => sym_address(cx, rd, sym, 0)?,
-        Const::BlockAddr { .. } => return unsupported(crate::control::BLOCKADDRESS),
+        Const::BlockAddr { func, block } => crate::ibr::block_address(cx, rd, func, block)?,
         _ => return unsupported(CONSTANT),
     }
     Ok(())

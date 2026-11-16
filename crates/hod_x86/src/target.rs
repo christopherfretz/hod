@@ -285,7 +285,7 @@ impl Target for X86 {
                 control::cond_br(cx, cond, if_true, if_false)
             }
             InstKind::Switch(switch) => control::switch(cx, &switch),
-            InstKind::IndirectBr { .. } => unsupported(control::INDIRECT_BRANCH),
+            InstKind::IndirectBr { addr, .. } => crate::ibr::indirect_br(cx, inst, addr),
             InstKind::Ret { value } => control::ret(cx, inst, value),
             InstKind::Unreachable => control::unreachable(cx),
             InstKind::Fence { .. } | InstKind::CmpXchg { .. } | InstKind::AtomicRmw { .. } => {

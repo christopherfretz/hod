@@ -24,6 +24,7 @@ pub mod control;
 pub mod dynstack;
 pub mod eh;
 pub mod frame;
+pub mod ibr;
 pub mod int;
 pub mod mem;
 pub mod pic;

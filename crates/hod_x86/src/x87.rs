@@ -308,6 +308,18 @@ fn barrier(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
                 && !features(cx).has(X86Features::CMOV)
                 && !folded(cx, inst, FOLD_DEPTH)
         }
+        // An aggregate `select` branches without `cmov` like a scalar one,
+        // `{i1}` included, except between two constants or of a type
+        // without bytes (measured with `llc` 19 and 22, WP-315).
+        InstKind::Select { if_true, if_false, .. }
+            if crate::agg::is_aggregate(cx, inst.ty())
+                && (cx.types().size_of(inst.ty()) == 0
+                    || [if_true, if_false]
+                        .iter()
+                        .all(|v| matches!(v.kind(), ValueKind::Const(_)))) =>
+        {
+            false
+        }
         InstKind::Select { cond, if_true, if_false } => {
             let bits = cx.types().int_bits(inst.ty());
             let constants = bits.is_some()

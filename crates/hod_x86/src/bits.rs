@@ -511,6 +511,122 @@ fn three_way<'a>(
     Ok(())
 }
 
+/// `llvm.frameaddress` / `llvm.returnaddress` deeper than 256 frames
+/// (WP-315; as `hod_x64`'s limit).
+pub const FRAME_DEPTH: &str = "x86:frame-depth";
+
+/// Whether `which` is one of the small intrinsics [`small`] lowers
+/// (WP-315).
+#[must_use]
+pub fn is_small(which: Intrinsic<'_>) -> bool {
+    matches!(
+        which,
+        Intrinsic::UbsanTrap
+            | Intrinsic::DebugTrap
+            | Intrinsic::X86Sse2Pause
+            | Intrinsic::FrameAddress
+            | Intrinsic::ReturnAddress
+            | Intrinsic::AddressOfReturnAddress
+            | Intrinsic::ObjectSize
+            | Intrinsic::IsConstant
+            | Intrinsic::Prefetch
+            | Intrinsic::ClearCache
+            | Intrinsic::Ptrmask
+            | Intrinsic::ReadCycleCounter
+    )
+}
+
+/// The small intrinsics (WP-315, `spec/codegen-x86.md` §12), as `llc` 19
+/// and 22 lower them at `-O0` (none with a call or a branch, so none is
+/// an x87 barrier): `ubsantrap` is `ud1 eax, [eax + kind]`, `debugtrap`
+/// `int3`, `x86.sse2.pause` `pause` (it encodes as `rep nop` on every
+/// CPU); `frameaddress(d)` follows the saved `ebp` chain `d` times,
+/// `returnaddress(d)` reads the word above the frame reached,
+/// `addressofreturnaddress` is `ebp + 4`; `objectsize` is its unknown
+/// answer (-1, or 0 with `min`), `is.constant` 1 exactly for a manifest
+/// constant; `prefetch` and `clear_cache` write nothing (x86 keeps the
+/// instruction cache coherent; `llc` emits nothing without SSE);
+/// `ptrmask` an `and`; `readcyclecounter` `rdtsc` into the `i64`'s slot.
+///
+/// # Errors
+/// [`FRAME_DEPTH`]; `x86:intrinsic` for a result that is no `Gpr` value
+/// (other than `readcyclecounter`'s) or a vector `ptrmask`; what the
+/// operands report.
+pub fn small<'a>(
+    cx: &mut FnCx<'a, X86>,
+    inst: Inst<'a>,
+    which: Intrinsic<'a>,
+    args: &'a [Value],
+) -> CgResult<()> {
+    use crate::common::{const_int, frame_inst, mov_imm};
+    let gpr_result = crate::abi::is_gpr(cx.types(), inst.ty());
+    let refuse = || unsupported(crate::call::INTRINSIC);
+    match (which, args) {
+        (Intrinsic::UbsanTrap, &[kind]) => {
+            let Some(kind) = const_int(cx, kind) else {
+                return cx.bug("llvm.ubsantrap of a kind that is not a constant");
+            };
+            put(cx, mc::ud1_eax(kind as u8));
+        }
+        (Intrinsic::DebugTrap, []) => put(cx, mc::int3()),
+        (Intrinsic::X86Sse2Pause, []) => put(cx, mc::pause()),
+        (Intrinsic::Prefetch | Intrinsic::ClearCache, _) => {}
+        (Intrinsic::FrameAddress | Intrinsic::ReturnAddress, &[depth]) if gpr_result => {
+            let depth = const_int(cx, depth).unwrap_or(0);
+            if depth > 256 {
+                return unsupported(FRAME_DEPTH);
+            }
+            let rd = cx.def_reg(inst)?;
+            let r = gp(rd);
+            put(cx, mc::mov_rr(Size::D, r, crate::common::EBP));
+            for _ in 0..depth {
+                put(cx, mc::mov_rm(Size::D, r, hod_mc_x64::Mem::base(r, 0)));
+            }
+            if which == Intrinsic::ReturnAddress {
+                put(cx, mc::mov_rm(Size::D, r, hod_mc_x64::Mem::base(r, 4)));
+            }
+            return cx.finish(inst, rd);
+        }
+        (Intrinsic::AddressOfReturnAddress, []) if gpr_result => {
+            let rd = cx.def_reg(inst)?;
+            put(cx, mc::lea(Size::D, gp(rd), hod_mc_x64::Mem::base(crate::common::EBP, 4)));
+            return cx.finish(inst, rd);
+        }
+        (Intrinsic::ObjectSize, &[_, min, ..]) if gpr_result => {
+            let bits = crate::common::width(cx, inst.result());
+            // `hod_cg`'s answer (llc's evaluator of known objects is a
+            // known gap of the shared fold, `hod_cg::const_fold`).
+            let unknown = hod_cg::const_fold::object_size(cx.module, min) as u32;
+            let rd = cx.def_reg(inst)?;
+            mov_imm(cx, gp(rd), crate::alu::ext_const(unknown, bits, Ext::Zero));
+            return cx.finish(inst, rd);
+        }
+        (Intrinsic::IsConstant, &[x]) if gpr_result => {
+            let manifest = hod_cg::const_fold::is_manifest(cx.module, x);
+            let rd = cx.def_reg(inst)?;
+            mov_imm(cx, gp(rd), u32::from(manifest));
+            return cx.finish(inst, rd);
+        }
+        (Intrinsic::Ptrmask, &[ptr, mask]) if gpr_result => {
+            if !crate::abi::is_gpr(cx.types(), value_ty(cx, mask)) {
+                return refuse();
+            }
+            let p = cx.use_reg(ptr)?;
+            let m = gp(cx.use_reg(mask)?);
+            put(cx, mc::and_rr(Size::D, gp(p), m));
+            return cx.finish(inst, p);
+        }
+        (Intrinsic::ReadCycleCounter, []) if crate::int::is_wide(cx, inst.result()) => {
+            let r = cx.def_mem(inst)?;
+            put(cx, mc::rdtsc());
+            frame_inst(cx, r, |m| mc::mov_mr(Size::D, m, EAX));
+            frame_inst(cx, r.offset_by(4), |m| mc::mov_mr(Size::D, m, EDX));
+        }
+        _ => return refuse(),
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

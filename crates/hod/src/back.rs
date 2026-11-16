@@ -602,11 +602,11 @@ fn check_split_dwarf(module: &Module, options: &Options) -> Result<(), CompileEr
 /// sections are.
 fn write_dwo(
     dwo: Option<hod_obj::Object>,
-    arch: hod_obj::Arch,
+    machine: hod_obj::Machine,
     path: &std::path::Path,
     compression: hod_obj::Compression,
 ) -> Result<(), CompileError> {
-    let mut dwo = dwo.unwrap_or_else(|| hod_obj::Object::new(arch));
+    let mut dwo = dwo.unwrap_or_else(|| hod_obj::Object::for_machine(machine));
     dwo.compress_debug_sections(compression).map_err(from_obj)?;
     let bytes = hod_obj::elf::to_vec(&dwo).map_err(from_obj)?;
     std::fs::write(path, bytes).map_err(|e| {
@@ -755,10 +755,12 @@ pub(crate) fn generate_object(
         .as_ref()
         .filter(|_| cg.split_dwarf == hod_dwarf::SplitDwarf::Separate)
         .map(|path| (path, emitted.object.take_dwo()));
-    let arch = emitted.object.arch();
+    // The machine, not the `Arch`: an i386 object has none
+    // (`Object::arch` panics on it).
+    let machine = emitted.object.machine();
     let object = hod_obj::elf::prepare(emitted.object).map_err(from_obj)?;
     if let Some((path, dwo)) = dwo {
-        write_dwo(dwo, arch, path, cg.debug_compression)?;
+        write_dwo(dwo, machine, path, cg.debug_compression)?;
     }
     Ok(ObjectFile(object, None))
 }

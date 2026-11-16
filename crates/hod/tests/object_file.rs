@@ -10,7 +10,8 @@ use std::path::PathBuf;
 
 use hod::{CompileError, Options, OutputKind, RelocModel, Report, Settings, Threads};
 
-const TRIPLES: [&str; 2] = ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"];
+const TRIPLES: [&str; 3] =
+    ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu", "i686-unknown-linux-gnu"];
 
 /// A sink that takes `step` bytes per call, and fails once `room` bytes
 /// are taken.
@@ -84,6 +85,9 @@ fn compile_object_writes_the_bytes_of_compile_releasing() {
                     (Ok(bytes), Ok(object)) => (bytes, object),
                     (Err(a), Err(b)) => {
                         assert_eq!(text(&a), text(&b), "{what}");
+                        // A refusal, never a bug of the write path (an
+                        // i386 object once panicked there, asked its `Arch`).
+                        assert!(!matches!(b, CompileError::Panic(_)), "{what}: {b:?}");
                         refused += 1;
                         continue;
                     }
@@ -110,6 +114,44 @@ fn compile_object_writes_the_bytes_of_compile_releasing() {
             }
         }
     }
-    // Most seeds compile for both targets.
+    // Most seeds compile for both 64-bit targets.
     assert!(compiled >= 200, "{compiled} compiled, {refused} refused");
+}
+
+/// The ELFCLASS32 object through every write path of the facade: a
+/// vector, a whole sink, a trickling sink and a file, each the bytes of
+/// `hod::compile` (the whole-buffer path), header class and machine
+/// checked.
+#[test]
+fn an_i386_object_is_written_through_every_path() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/ir");
+    let input = std::fs::read(dir.join("odd_width_store.ll")).unwrap();
+    let options = Options {
+        triple: Some("i686-unknown-linux-gnu".to_owned()),
+        relocation_model: Some(RelocModel::Static),
+        output_kind: OutputKind::Object,
+        ..Options::default()
+    };
+    let expected = hod::compile(&input, &options).unwrap();
+    assert_eq!(expected[4], 1, "ELFCLASS32");
+    assert_eq!(u16::from_le_bytes([expected[18], expected[19]]), 3, "EM_386");
+    let mut report = Report::default();
+    let object =
+        hod::compile_object(&mut Cow::Owned(input), &options, &Settings::default(), &mut report)
+            .unwrap();
+    assert_eq!(object.size(), expected.len() as u64);
+    assert!(object.to_vec().unwrap() == expected, "to_vec");
+    let mut whole = Vec::new();
+    object.write_to(&mut whole).unwrap().unwrap();
+    assert!(whole == expected, "write_to");
+    let mut trickle = Trickle { bytes: Vec::new(), step: 4093, room: usize::MAX };
+    object.write_to(&mut trickle).unwrap().unwrap();
+    assert!(trickle.bytes == expected, "a trickling sink");
+    let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("i386-object-file.o");
+    let mut file = std::fs::File::create(&path).unwrap();
+    object.write_to(&mut file).unwrap().unwrap();
+    file.flush().unwrap();
+    drop(file);
+    assert!(std::fs::read(&path).unwrap() == expected, "a file");
+    std::fs::remove_file(&path).unwrap();
 }

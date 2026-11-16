@@ -1412,6 +1412,35 @@ mod tests {
         assert_eq!(stdout.0, expected[..100]);
         let reasons: Vec<String> = fields(&log).into_iter().map(|l| l[1].clone()).collect();
         assert_eq!(reasons, ["-", "-", "output-unwritable"]);
+
+        // Every target, the ELFCLASS32 one included (an i386 object has
+        // no `Arch`: the write path asks the machine), to standard output
+        // and to a file.
+        for (triple, class, machine) in [
+            ("aarch64-unknown-linux-gnu", 2, 183),
+            ("x86_64-unknown-linux-gnu", 2, 62),
+            ("i686-unknown-linux-gnu", 1, 3),
+        ] {
+            let module = String::from_utf8(ADD.to_vec())
+                .unwrap()
+                .replace("aarch64-unknown-linux-gnu", triple)
+                .into_bytes();
+            let expected = hod::compile(&module, &options).unwrap();
+            assert_eq!(expected[4], class, "{triple}: EI_CLASS");
+            assert_eq!(u16::from_le_bytes([expected[18], expected[19]]), machine, "{triple}");
+            let env = Environment::default();
+            let ran = run_with(&["-filetype=obj", "-o", "-"], &env, &compile_hod, &module);
+            assert_eq!((ran.exit, ran.stderr.as_str()), (EXIT_OK, ""), "{triple}");
+            assert!(ran.stdout == expected, "{triple}: standard output");
+            let ran = run_with(
+                &["-filetype=obj", "-o", out.to_str().unwrap()],
+                &env,
+                &compile_hod,
+                &module,
+            );
+            assert_eq!((ran.exit, ran.stderr.as_str()), (EXIT_OK, ""), "{triple}");
+            assert!(std::fs::read(&out).unwrap() == expected, "{triple}: file");
+        }
     }
 
     // spec/cli.md "Exit status": I/O failures are errors with one line.

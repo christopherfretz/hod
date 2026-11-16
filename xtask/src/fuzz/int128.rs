@@ -473,6 +473,7 @@ impl Bench {
                 output.first_error_line()
             ));
         }
+        self.check_linker(&program)?;
         self.execute(log, &program, self.run_limits).map(|(output, _)| output)
     }
 }

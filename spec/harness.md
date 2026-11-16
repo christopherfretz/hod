@@ -549,7 +549,7 @@ options.
 | `-j <N>`, `-j<N>`, `--jobs <N>` | tests run at once, at least 1; under a jobserver an upper bound ("Jobserver") | the smaller of 4 and the machine's cores; more than 16 is 16 |
 | `--llvm <major or dir>` | the oracle: an LLVM major, or an installation directory (its `bin/llc`) | the first of 22 and 19 that is installed |
 | `--target <arch>` | `aarch64`, `x86_64` or `i686` (`i386`; "The third target: i686") | this host's |
-| `--linker <name>` | `bfd`, `lld`, `mold` or `wild`; repeatable; the order given does not matter | every one that is found |
+| `--linker <name>` | `bfd`, `lld`, `mold`, `wild` or `mortar`; repeatable; the order given does not matter | every one that is found |
 | `--tier <quick or all>` | `quick`: only tests with `tier: quick` | `all` |
 | `--hod <binary>` | the hod to test | build the workspace's (`cargo build --package hod_cli --bin hod`, development profile, into the build directory) |
 | `--hybrid` | let hod fall back to the oracle ("Hybrid mode") | strict |
@@ -581,8 +581,12 @@ The build directory is `$CARGO_TARGET_DIR` when it is set, else
   `mold`, then `ld.mold`. `wild`: the one `hod_testutil` finds ("Linkers"
   under "Toolchain for tests": `HOD_WILD`, else the pinned release in
   `.toolchain/wild/<version>/`) when its file is named `wild`, then
-  `wild`, then `ld.wild` on `PATH`. The matrix is every one of these
-  that is found, in this order.
+  `wild`, then `ld.wild` on `PATH`. `mortar`: likewise the one
+  `hod_testutil` finds (`HOD_MORTAR`, else
+  `.toolchain/mortar/<commit>/`) when its file is named `mortar`, then
+  `mortar`, then `ld.mortar` on `PATH`. The matrix is every one of these
+  that is found, in this order. (The harness links executables only, so
+  mortar's refused kinds do not arise here.)
 - **Emulator**, for the architecture that is not the host's ("Cross
   runs"): `qemu-<arch>` on `PATH`, then `qemu-<arch>-static`; and the
   cross system root `/usr/<prefix>` (the target's C library and dynamic
@@ -605,6 +609,7 @@ What is missing:
 | the emulator or the system root, for the other architecture | objects are built, nothing is linked or run ("Cross targets"), with a note | failure |
 | `bfd`, `lld` or `mold` | that linker is not in the matrix, with a note | failure |
 | `wild` | not in the matrix, with a note | still a note: wild is optional (`hod_testutil::linkers::WILD_REQUIRED` is false and stays so; not a condition of 1.0) |
+| `mortar` | not in the matrix, with a note | still a note: mortar is optional (`hod_testutil::linkers::MORTAR_REQUIRED` is false) |
 | a linker named with `--linker` | usage error (exit status 2) | the same |
 
 A failure for a missing tool does not stop the run: the tests still run
@@ -642,13 +647,15 @@ run (else it is SKIP), in its own directory under the work directory:
    -B<dir with that linker as ld> -pie -Wl,--fatal-warnings -o <program>
    <objects>` and then `-lstdc++` and `-lm` as the test's `link` directive
    asks; `-no-pie` instead of `-pie` for `link: no-pie`, and no
-   `-Wl,--fatal-warnings` for `link: allow-warnings`. lld, mold and wild
-   are told to use one thread (`-Wl,--threads=1`, `-Wl,--thread-count=1`):
+   `-Wl,--fatal-warnings` for `link: allow-warnings`. lld, mold, wild and
+   mortar are told to use one thread (`-Wl,--threads=1` for lld and
+   mortar, `-Wl,--thread-count=1`):
    the harness is what runs things in parallel. wild also gets
    `-Wl,--no-gc-sections`: it discards unused sections by default, the
    other three do not. The harness then checks which linker made the
    program, by the signature in its `.comment` section (`LLD <digit>`,
-   `mold <digit>`, `Linker: Wild <digit>`, none for GNU ld); a program
+   `mold <digit>`, `Linker: Wild <digit>`, `mortar <digit>`, none for
+   GNU ld); a program
    made by another linker is an ERROR. The program runs in its directory with the test's `args` and
    `stdin`.
 4. **Compare.** The oracle's program against the directives: how it ended
@@ -1002,7 +1009,7 @@ then linker in matrix order; nine fields separated by tabs:
 | 2 | test | the test's name |
 | 3 | target | the triple |
 | 4 | LLVM | the oracle's major, or `-` |
-| 5 | linker | `bfd`, `lld`, `mold`, `wild`, or `-` |
+| 5 | linker | `bfd`, `lld`, `mold`, `wild`, `mortar`, or `-` |
 | 6 | built by | `hod`; `fallback`; `declined`; `-` when hod was not run or failed |
 | 7 | reason | the coverage-log reason of a decline or a fallback, or `-` |
 | 8 | detail | what differed, what failed, why it was skipped, or `-` |
@@ -1365,8 +1372,8 @@ and not SSE3, CMPXCHG16B or POPCNT, and `popcnt` dies with SIGILL).
 
 `hod_testutil::linkers` (`crates/hod_testutil/src/linkers.rs`) is the one
 description of the linker matrix (`docs/VALIDATION.md` "Linker matrix")
-for every test that links: `MATRIX` is `bfd`, `lld`, `mold`, `wild`, in
-report order; `present(target)` is the ones found for a target;
+for every test that links: `MATRIX` is `bfd`, `lld`, `mold`, `wild`,
+`mortar`, in report order; `present(target)` is the ones found for a target;
 `driver_flags(dir, name, program)` the `gcc`/`g++` flags that select one.
 
 - **Finding.** `bfd`: `ld.bfd`, or `<prefix>-ld.bfd` for the other
@@ -1382,12 +1389,32 @@ report order; `present(target)` is the ones found for a target;
      directory above it (where the workspace's provisioning script
      installs the pinned release, `docs/status/linkers.md`);
   3. `wild`, then `ld.wild`, on `PATH`.
+
+  `mortar` (`https://github.com/christopherfretz/mortar`, built from the
+  one pinned commit `MORTAR_COMMIT` with `cargo build --release -p
+  mortar`; it also links both targets from either host), by
+  `find_mortar`, in the same order: `HOD_MORTAR` (a path that is not a
+  file panics; empty skips to `PATH`), then
+  `.toolchain/mortar/<MORTAR_COMMIT>/mortar` in the checkout or above it,
+  then `mortar`, then `ld.mortar`, on `PATH`.
 - **Missing.** A missing `bfd`, `lld` or `mold` is a note, and a failure
   under `HOD_REQUIRE_TOOLS=1`. A missing wild is a note even then:
   `WILD_REQUIRED` is false and stays so (wild is an optional linker of
   the matrix, used where it is installed, as by the lanes' set-up
   `.github/actions/hod-ci`, which exports `HOD_WILD`; its cases are
-  excepted on the harness side, never worked around in hod).
+  excepted on the harness side, never worked around in hod). mortar is
+  optional the same way (`MORTAR_REQUIRED` is false; no hosted lane
+  builds it).
+- **Refused kinds.** `REFUSALS` lists the output kinds a linker refuses
+  by name: linker, version, the flag (`-shared`, `-r`) and the text its
+  refusal prints (mortar: `unsupported option: -shared`, `unsupported
+  option: -r`). `refusal(linker, flags)` finds the one a link meets
+  (the flag alone or as `-Wl,<flag>`); `check_refused` requires the link
+  to have failed with that text and prints `REFUSED`; a link that
+  succeeds panics (the row is to be deleted and the cell enabled), and so
+  does a failure with another diagnostic. `Toolchain::refuses` runs such
+  a cell, and the test skips the rest of it; `Toolchain::link_ok` panics
+  for a refused kind, so a cell that forgets to ask fails loudly.
 - **Selecting.** Each linker gets a directory `<dir>/use-<name>`, passed
   with `-B`. GNU ld, lld and mold are in it as `ld.<name>` and selected
   with `-fuse-ld=<name>`. GCC 14's driver refuses `-fuse-ld=wild`, so
@@ -1395,10 +1422,12 @@ report order; `present(target)` is the ones found for a target;
   `-fuse-ld`, and it also gets `WILD_FLAGS` (`-Wl,--no-gc-sections`:
   wild discards unused sections unless told not to, the other three keep
   them unless told to; a test's own `-Wl,--gc-sections`, given later,
-  still wins).
+  still wins). mortar is in it as `ld` too (no driver knows
+  `-fuse-ld=mortar`), with no further flag (it keeps unused sections by
+  default).
 - **Which linker ran.** `signer(comment)` names the linker that signed
   a program's `.comment` text: `LLD <version>`, `mold <version>`,
-  `Linker: Wild <version>`; GNU ld signs nothing. `Toolchain::link_ok`
+  `Linker: Wild <version>`, `mortar <digit>`; GNU ld signs nothing. `Toolchain::link_ok`
   requires the selected linker's signature.
 - **Exceptions.** `EXCEPTIONS` is the one table of the cases a linker is
   excepted from: linker, version, a stable case name, class (`Linker`:
@@ -1411,7 +1440,10 @@ report order; `present(target)` is the ones found for a target;
   The debugger layer consults it for the cases that break the oracle's
   session ("debug", "Linker exceptions"). Unit tests: `signatures`, `exceptions_name_linkers_of_the_matrix_once`,
   `the_pinned_wild_is_found_above_the_start`,
-  `wild_is_selected_as_ld_and_the_others_by_fuse_ld`.
+  `wild_is_selected_as_ld_and_the_others_by_fuse_ld`,
+  `refusals_are_found_and_checked`,
+  `the_pinned_mortar_is_found_above_the_start`, `mortar_is_selected_as_ld`;
+  `crates/hod_obj/tests/link.rs` `refused_kinds_are_refused_by_name`.
 
 ## Jobserver
 
@@ -2626,7 +2658,7 @@ programs are run on Linux, on the corpus's own architecture.
 | `--filter <text>` | only the entries whose path in the corpus contains `<text>`; repeatable, any one must match | all |
 | `--limit <N>` | only the first `N` selected entries of each major, in path order | all |
 | `--tier <quick or all>` | `quick`: only the entries of the quick tier | `all` |
-| `--linker <name>` | `bfd`, `lld`, `mold` or `wild`; repeatable | every one found, as for `irdiff` |
+| `--linker <name>` | `bfd`, `lld`, `mold`, `wild` or `mortar`; repeatable | every one found, as for `irdiff` |
 | `-j <N>`, `--jobs <N>` | entries at once, at most 16; under a jobserver an upper bound | as `irdiff` |
 | `--expected <file>` | the expectation file | `tests/roundtrip/expected-<arch>.tsv` of the workspace |
 | `--update-expected` | write what this run found into the expectation file | |
@@ -3579,7 +3611,7 @@ Code: `xtask/src/debug.rs` and `xtask/src/debug/`.
 |---|---|
 | `-j <N>`, `--jobs <N>`, `-j<N>` | units (a test and a front end) at once; default `min(4, cores)`, at most 16 |
 | `--hod <binary>` | the hod tested; default: this workspace's, built (`irdiff::build_workspace_hod`) |
-| `--linker <name>` | `bfd`, `lld`, `mold`, `wild`; repeatable; default every one found. One asked for and not found is an error |
+| `--linker <name>` | `bfd`, `lld`, `mold`, `wild`, `mortar`; repeatable; default every one found. One asked for and not found is an error |
 | `--debugger <name>` | `gdb`, `lldb` (every lldb), `lldb-19`, `lldb-22`; repeatable; default all |
 | `--frontend <name>` | `clang-19`, `clang-22`, `kiln`, `ir-19`, `ir-22`; repeatable; default every one the test allows |
 | `--tier <quick\|all>` | `quick`: only the tests with `tier: quick`; default `all` |
@@ -4097,7 +4129,7 @@ WP-160 added the modes, the profiles and the census
 
 `cargo xtask fuzz [--mix | --debug | --census] [--profile P] [--seed N]
 [--count M] [--target aarch64|x86_64] [--llvm 22|19] [-j J]
-[--linker bfd|lld|mold|wild] [--timeout S] [--reduce-budget P]
+[--linker bfd|lld|mold|wild|mortar] [--timeout S] [--reduce-budget P]
 [--hod <binary>] [--out <dir>] [-v]`
 
 - Seeds `N` to `N+M-1` (defaults 1 and 100). The run is a function of

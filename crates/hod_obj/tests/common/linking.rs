@@ -211,8 +211,59 @@ impl Toolchain {
         run_with(&mut command, &[], Duration::from_mins(3))
     }
 
+    /// Whether `linker` refuses the output kind `flags` ask for
+    /// ([`hod_testutil::linkers::REFUSALS`]: mortar's `-shared` and `-r`):
+    /// then the link is run and must fail with the refusal's name, and the
+    /// cell is REFUSED (the caller skips the rest of it). A refused kind
+    /// that links fails the test, so the cell gets enabled.
+    #[allow(dead_code)] // Not every test binary that includes this uses it.
+    pub fn refuses(
+        &self,
+        linker: &Linker,
+        flags: &[&str],
+        inputs: &[&Path],
+        output: &Path,
+    ) -> bool {
+        let Some(refusal) = linkers::refusal(linker.name, flags) else { return false };
+        let outcome = self.link(linker, flags, inputs, output);
+        let cell = format!("{} {}", self.target.name(), output.display());
+        linkers::check_refused(refusal, outcome.success(), &outcome.stderr_text(), &cell);
+        true
+    }
+
+    /// [`Toolchain::refuses`] for an input feature `case` of
+    /// [`hod_testutil::linkers::REFUSALS`] that `inputs` carry (mortar's
+    /// `compressed-debug-input`), or for a refused flag of `flags`.
+    #[allow(dead_code)] // Not every test binary that includes this uses it.
+    pub fn refuses_input(
+        &self,
+        linker: &Linker,
+        case: &str,
+        flags: &[&str],
+        inputs: &[&Path],
+        output: &Path,
+    ) -> bool {
+        let Some(refusal) = linkers::input_refusal(linker.name, case) else {
+            return self.refuses(linker, flags, inputs, output);
+        };
+        let outcome = self.link(linker, flags, inputs, output);
+        let cell = format!("{} {}", self.target.name(), output.display());
+        linkers::check_refused(refusal, outcome.success(), &outcome.stderr_text(), &cell);
+        true
+    }
+
     /// Links, requiring success and silence, and checks which linker ran.
+    ///
+    /// # Panics
+    /// Also for an output kind `linker` refuses: the caller asks
+    /// [`Toolchain::refuses`] first.
     pub fn link_ok(&self, linker: &Linker, flags: &[&str], inputs: &[&Path], output: &Path) {
+        if let Some(refusal) = linkers::refusal(linker.name, flags) {
+            panic!(
+                "{} refuses `{}` ({}): this cell must ask Toolchain::refuses first",
+                linker.name, refusal.flag, refusal.refusal
+            );
+        }
         let outcome = self.link(linker, flags, inputs, output);
         assert!(
             outcome.success(),

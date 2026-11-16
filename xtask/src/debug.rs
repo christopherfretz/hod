@@ -44,7 +44,7 @@ the (function, line) pairs of the two programs.
 
   -j <N>, --jobs <N>     tests run at once (default 4)
   --hod <binary>         the hod to test (default: build this workspace's)
-  --linker <name>        bfd, lld, mold or wild; repeatable (default: every one)
+  --linker <name>        bfd, lld, mold, wild or mortar; repeatable (default: every one)
   --debugger <name>      gdb, lldb, lldb-19 or lldb-22; repeatable (default: all)
   --frontend <name>      clang-19, clang-22, kiln, ir-19, ir-22; repeatable
   --tier <quick|all>     the tests to run (default: all)

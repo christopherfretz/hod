@@ -14,6 +14,7 @@ development machine, where x86-64 programs are cross-linked against
 | lld | 22.1.8 (and 19, `Toolchain::lld`) | `lld-22`, `lld-19` | `-B<dir> -fuse-ld=lld` |
 | mold | 2.37.1 | `mold` | `-B<dir> -fuse-ld=mold` |
 | wild | 0.11.0 | the release archive, checksum verified (below) | `-B<dir>` holding it as `ld`, and `-Wl,--no-gc-sections` |
+| mortar | commit `ea9b94f42743d6772d690a374b5bf976e415f812` (`--version`: `mortar 0.0.0`) | built from the pinned commit (below) | `-B<dir>` holding it as `ld` |
 
 wild 0.11.0 (2026-10-24), `https://github.com/wild-linker/wild/releases/download/0.11.0/`:
 
@@ -29,6 +30,16 @@ discards unused sections unless told not to (the others keep them unless
 told to), hence `--no-gc-sections`; without it a program's globals that
 nothing refers to vanish, debug information included (reproduction
 `unreferenced-globals`).
+
+mortar (`https://github.com/christopherfretz/mortar`, WP-281) is built
+from the commit `hod_testutil::linkers::MORTAR_COMMIT` (the one pin) with
+its own toolchain file's Rust (1.95.0, the workspace's) and
+`cargo build --release -p mortar`, into
+`.toolchain/mortar/<commit>/mortar`, or named by `HOD_MORTAR`. One
+executable links both targets. It is optional, as wild is
+(`MORTAR_REQUIRED` is false; no hosted lane builds it). It keeps unused
+sections by default, so it needs no `--no-gc-sections`; it signs
+`.comment` with `mortar <version>`.
 
 ## What links and runs
 
@@ -70,6 +81,70 @@ development machine under `.build/findings/wp-239/`.
 
 No hod defect was found: every failure with wild alone reproduced with
 objects hod did not write.
+
+## mortar
+
+Measured on the AArch64 development machine with commit `ea9b94f`, every
+linking test of `hod`, `hod_a64`, `hod_x64`, `hod_obj`, `hod_dwarf`,
+`hod_eh`, `hod_mc_x64`, `hod_cg` and `hod_cli` with `HOD_REQUIRE_TOOLS=1`
+(x86-64 programs cross-linked and run under `qemu-x86_64`):
+
+| | mortar |
+|---|---|
+| AArch64 and x86-64: non-PIE, PIE, static, static PIE executables (plain, PIC, TLS of the executable models, exceptions, DWARF 5, COMDAT, IFUNC, large code model with the start files) | yes |
+| shared objects (`-shared`) | REFUSED, documented |
+| relocatable output (`-r`) | REFUSED, documented |
+| far layout by `--section-start` (large code model, both targets) | REFUSED: finding `section-start-option` |
+| `SHF_COMPRESSED` debug sections in an input (`--compress-debug-sections=zlib` objects) | REFUSED: finding `compressed-debug-input` |
+
+### Refused kinds
+
+`hod_testutil::linkers::REFUSALS` is the one table: linker, version,
+what is refused (a flag, or an input case), the text of the refusal and
+the finding, if any. A cell that meets one runs the link, checks that it
+fails with that text and prints `REFUSED`; it is neither a failure nor a
+silent skip. If the link succeeds, the test fails (delete the row and
+enable the cell); if it fails with another diagnostic, the test fails
+too. Tests ask `Toolchain::refuses` (flags) or `Toolchain::refuses_input`
+(an input case) first; `Toolchain::link_ok` panics for a refused flag, so
+a cell that forgets to ask fails loudly.
+
+| linker | refused | text checked | finding |
+|---|---|---|---|
+| mortar `ea9b94f` | `-shared` | `unsupported option: -shared` | documented by mortar |
+| mortar `ea9b94f` | `-r` | `unsupported option: -r` | documented by mortar |
+| mortar `ea9b94f` | `--section-start` | `unsupported option: --section-start` | `section-start-option` |
+| mortar `ea9b94f` | input `compressed-debug-input` | `unsupported feature: SHF_COMPRESSED input sections` | `compressed-debug-input` |
+
+### Findings
+
+Reported to mortar's maintainers; the evidence (hod's commit, the `.ll`,
+hod's and `llc`'s objects, the link line, mortar's stderr, what GNU ld and
+mold did) is kept on the development machine under
+`.build/findings/wp-281/<finding>/`. Both are refusals of an option or an
+input feature for an executable link, and both refuse `llc`'s object as
+they refuse hod's: neither is about hod's objects. No program linked by
+mortar misbehaved where GNU ld, lld and mold behaved.
+
+- `section-start-option`: `--section-start=<section>=<address>` is
+  refused for any input; GNU ld and mold link the same `hod.o` and
+  `llc.o` and the programs run.
+- `compressed-debug-input`: an input with zlib-compressed `.debug_*`
+  sections is refused, hod's and LLVM's (`llvm-objcopy
+  --compress-debug-sections=zlib`) alike; the uncompressed objects of the
+  same tests link and run with mortar.
+
+### Not yet run with mortar
+
+- The hosted lanes: no set-up builds mortar. Doing so would add, per
+  job, a checkout of mortar at the pinned commit and `cargo build
+  --release -p mortar` (about two minutes on the development machine,
+  no third-party crate in mortar's own crate graph), or one build per
+  architecture cached by commit, then `HOD_MORTAR` for every later step.
+- The harness's own runs through `xtask` (`irdiff`, `debug`,
+  `roundtrip`, `fuzz`, `corpus`) know mortar (`--linker mortar`,
+  signature `mortar <digit>`, `-Wl,--threads=1`) but were not run with it.
+- The libc++ shard and the real-project lanes.
 
 ## Not yet run with wild
 

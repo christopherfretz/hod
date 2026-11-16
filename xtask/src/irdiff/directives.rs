@@ -75,7 +75,7 @@ impl Arch {
 }
 
 /// The linker names of the matrix, in report order.
-pub const LINKER_NAMES: [&str; 4] = ["bfd", "lld", "mold", "wild"];
+pub const LINKER_NAMES: [&str; 5] = ["bfd", "lld", "mold", "wild", "mortar"];
 
 /// Which set a test belongs to.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -882,7 +882,7 @@ fn parse_conds(list: Option<&str>, linkers_allowed: bool) -> Result<Vec<Cond>, S
         } else {
             return Err(format!(
                 "unknown condition '{item}': expected a target (aarch64, x86_64), \
-                 a linker (bfd, lld, mold, wild) or llvm<N>"
+                 a linker (bfd, lld, mold, wild, mortar) or llvm<N>"
             ));
         };
         let same_kind =

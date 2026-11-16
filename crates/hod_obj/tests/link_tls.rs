@@ -265,6 +265,9 @@ fn tls_in_a_shared_object(tools: &Toolchain, arch: Arch, models: &[Model], dynam
     let driver = tools.compile_c(&scratch, "driver", &driver, &["-fPIE"]);
     for linker in &tools.linkers {
         let library = scratch.join(format!("libtls-{}.so", linker.name));
+        if tools.refuses(linker, &["-shared"], &[&object], &library) {
+            continue;
+        }
         tools.link_ok(linker, &["-shared"], &[&object], &library);
         let relocations = run(&readelf, [Path::new("-r"), &library]).stdout_text();
         for name in dynamic {

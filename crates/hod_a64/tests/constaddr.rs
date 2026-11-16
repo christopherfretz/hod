@@ -595,6 +595,10 @@ fn the_cases_run_under_every_linker() {
                         &[&main_o, &object, &hid_o],
                     );
                     let lib = dir.join(format!("lib{name}.so"));
+                    if toolchain.refuses(linker, &["-shared"], &[&object, &hid_o], &lib) {
+                        runs += 1;
+                        continue;
+                    }
                     toolchain.link_ok(linker, &["-shared"], &[&object, &hid_o], &lib);
                     let rpath = format!("-Wl,-rpath,{}", dir.path().display());
                     run_ok(

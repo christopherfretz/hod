@@ -359,12 +359,20 @@ fn run_case(case: &Case) {
             assert_eq!(lldb(&llvm, &own(case.lldb_object)), lldb(&zlib, &own(case.lldb_object)));
             sessions += 4;
         }
-        for linker in &toolchain.linkers {
+        'linker: for linker in &toolchain.linkers {
             let dir = scratch.join(format!("{tag}-{}", linker.name));
             std::fs::create_dir_all(&dir).unwrap();
             let mut programs = Vec::new();
             for (object, kind) in [(&plain, "plain"), (&zlib, "zlib")] {
                 let program = dir.join(kind);
+                // mortar refuses compressed input sections (WP-281
+                // finding `compressed-debug-input`): the plain program
+                // still links and runs; the comparison needs both.
+                let case = "compressed-debug-input";
+                if kind == "zlib" && toolchain.refuses_input(linker, case, &[], &[object], &program)
+                {
+                    continue 'linker;
+                }
                 let ran = toolchain.link_and_run(linker, &[], &[object], &program);
                 assert_eq!(exit_code(&ran), Some(0), "{tag}, {kind}, {}", linker.name);
                 programs.push(program);
@@ -444,6 +452,10 @@ fn large_sections_compressed() {
     let Some(toolchain) = Toolchain::aarch64(&scratch) else { return };
     for linker in &toolchain.linkers {
         let program = scratch.join(format!("large-{}", linker.name));
+        let case = "compressed-debug-input";
+        if toolchain.refuses_input(linker, case, &[], &[&zlib], &program) {
+            continue;
+        }
         let ran = toolchain.link_and_run(linker, &[], &[&zlib], &program);
         assert_eq!(exit_code(&ran), Some(0), "{}", linker.name);
     }

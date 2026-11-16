@@ -517,6 +517,11 @@ fn runs_with_code_got_and_data_far_apart() {
                     let mut flags = vec![mode.link_flag(), "-nostartfiles"];
                     flags.extend(far.iter().map(String::as_str));
                     let inputs = [stub.as_path(), start.as_path(), object.as_path()];
+                    // mortar refuses `--section-start` (WP-281 finding
+                    // `section-start-option`): REFUSED, checked.
+                    if toolchain.refuses(&link.linker, &flags, &inputs, &output) {
+                        continue;
+                    }
                     link_and_check(&toolchain, link, &flags, &inputs, &output);
                     check_far_layout(&output, &link.label, mode);
                     let size = std::fs::metadata(&output).unwrap().len();

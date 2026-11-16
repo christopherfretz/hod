@@ -812,7 +812,8 @@ fn compare(
 ///
 /// # Errors
 /// [`WIDE_FP_CAST`] for a conversion between floating point and an
-/// integer wider than 128 bits or `bfloat`; [`CAST`] for
+/// integer wider than 128 bits, or from `bfloat` to one wider than 64;
+/// [`CAST`] for
 /// `addrspacecast` and what no rule covers; what the operand and the
 /// runtime call report.
 pub fn cast<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, arg: Value) -> CgResult<()> {
@@ -958,8 +959,9 @@ fn bitcast<'a>(
 /// `fptosi`, `fptoui`, `sitofp`, `uitofp` between a floating-point type
 /// and an integer of 65 to 128 bits: the calls `llc` makes
 /// (`fp_to_int_routine`, `int_to_fp_routine`: `__fix[uns]{hf,sf,df,tf}ti`,
-/// `__float[un]ti{hf,sf,df,tf}`). An operand narrower than 128 bits is
-/// extended into a 16-byte slot first.
+/// `__float[un]ti{hf,sf,df,tf}`); to `bfloat` inline, rounded once
+/// ([`wide_to_bfloat`]). An operand narrower than 128 bits is extended
+/// into a 16-byte slot first.
 fn fp_int_cast<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, arg: Value) -> CgResult<()> {
     let op = inst.opcode();
     let to_int = matches!(op, Opcode::FPToSI | Opcode::FPToUI);
@@ -971,6 +973,13 @@ fn fp_int_cast<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, arg: Value) -> CgResu
         _ => return unsupported(WIDE_FP_CAST),
     };
     let fp = match cx.types().kind(fp_ty) {
+        TypeKind::BFloat if !to_int => {
+            let slot = cx.use_mem(arg)?;
+            let src = widen_to_128(cx, slot, bits, signed)?;
+            let rd = cx.def_reg(inst)?;
+            wide_to_bfloat(cx, src, signed, xm(rd))?;
+            return cx.finish(inst, rd);
+        }
         TypeKind::BFloat => return unsupported(WIDE_FP_CAST),
         kind => FpType::of(kind),
     };
@@ -994,6 +1003,78 @@ fn fp_int_cast<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, arg: Value) -> CgResu
         return cx.bug("a runtime function returned nothing");
     };
     cx.finish(inst, reg)
+}
+
+/// The 128-bit integer at `src` converted to a `bfloat` in `xd`, rounded
+/// ONCE to nearest even (as `int_to_bfloat` in `float` does up to 64
+/// bits; `llc` calls `__floattisf` and `__truncsfbf2` and rounds twice,
+/// `spec/codegen.md` §5.6.5): the magnitude in `rdx:rax` (negated when
+/// signed and negative); above 64 bits shifted right by one more than
+/// the index of the top bit of the high word, the dropped bits kept as a
+/// sticky last bit, so that 64 bits with the top one set remain; those
+/// to `double` rounded to odd, the shift added to the exponent (exact:
+/// the magnitude is below `2^128`), the sign put back; then to `float`
+/// rounded to odd and to `bfloat`. Writes `rax`, `rcx`, `rdx`, `r10`,
+/// `r11`, `xmm14`, `xmm15` and the flags.
+fn wide_to_bfloat(
+    cx: &mut FnCx<'_, X64>,
+    src: FrameRef,
+    signed: bool,
+    xd: mc::Xmm,
+) -> CgResult<()> {
+    const RAX: Reg = Reg::Rax;
+    const RCX: Reg = Reg::Rcx;
+    const RDX: Reg = Reg::Rdx;
+    ld(cx, RAX, src, 0);
+    ld(cx, RDX, src, 1);
+    if signed {
+        let positive = cx.new_label();
+        put(cx, mc::test_rr(Size::Q, RDX, RDX));
+        crate::common::branch_cond(cx, Cond::Ns, positive)?;
+        put(cx, mc::neg_r(Size::Q, RAX));
+        put(cx, mc::adc_ri(Size::Q, RDX, 0));
+        put(cx, mc::neg_r(Size::Q, RDX));
+        cx.bind(positive)?;
+    }
+    let fits = cx.new_label();
+    put(cx, mc::xor_rr(Size::D, R10, R10));
+    put(cx, mc::test_rr(Size::Q, RDX, RDX));
+    crate::common::branch_cond(cx, Cond::E, fits)?;
+    // `cl` = b, the index of the top bit of the high word.
+    put(cx, mc::mov_rr(Size::Q, R11, RAX));
+    put(cx, mc::bsr_rr(Size::Q, RCX, RDX));
+    put(cx, mc::shrd_rrcl(Size::Q, RAX, RDX));
+    // `rdx` = the bits the shift by b dropped (nonzero if any).
+    put(cx, mc::mov_rr(Size::Q, RDX, RAX));
+    put(cx, mc::shl_rcl(Size::Q, RDX));
+    put(cx, mc::xor_rr(Size::Q, RDX, R11));
+    // One more: bit 64 of the shifted value (set) comes in on top.
+    put(cx, mc::mov_rr(Size::D, R11, RAX));
+    put(cx, mc::and_ri(Size::D, R11, 1));
+    put(cx, mc::or_rr(Size::Q, RDX, R11));
+    put(cx, mc::shr_ri(Size::Q, RAX, 1));
+    put(cx, mc::bts_ri(Size::Q, RAX, 63));
+    put(cx, mc::test_rr(Size::Q, RDX, RDX));
+    put(cx, mc::setcc_r(Cond::Ne, RDX));
+    put(cx, mc::movzx_rr(Size::D, RDX, Size::B, RDX));
+    put(cx, mc::or_rr(Size::Q, RAX, RDX));
+    put(cx, mc::lea(Size::D, R10, Mem::base(RCX, 1)));
+    cx.bind(fits)?;
+    put(cx, mc::mov_rr(Size::Q, RCX, RAX));
+    crate::float::magnitude_to_double_odd(cx, xd)?;
+    put(cx, mc::shl_ri(Size::Q, R10, 52));
+    put(cx, mc::movd_rx(Size::Q, RAX, xd));
+    put(cx, mc::add_rr(Size::Q, RAX, R10));
+    if signed {
+        ld(cx, R11, src, 1);
+        put(cx, mc::shr_ri(Size::Q, R11, 63));
+        put(cx, mc::shl_ri(Size::Q, R11, 63));
+        put(cx, mc::or_rr(Size::Q, RAX, R11));
+    }
+    put(cx, mc::movd_xr(Size::Q, xd, RAX));
+    crate::float::double_to_float_odd(cx, xd)?;
+    crate::float::bfloat_narrow(cx, xd);
+    Ok(())
 }
 
 // ---- memory ----

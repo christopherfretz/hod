@@ -860,27 +860,7 @@ fn int_to_bfloat(cx: &mut FnCx<'_, X64>, r: Reg, bits: u32, signed: bool, xd: Xm
             put(cx, mc::neg_r(Size::Q, RCX));
             put(cx, mc::cmovcc_rr(Cond::S, Size::Q, RCX, r));
         }
-        let (small, sign) = (cx.new_label(), cx.new_label());
-        put(cx, mc::mov_rr(Size::Q, RAX, RCX));
-        put(cx, mc::shr_ri(Size::Q, RAX, 53));
-        branch_cond(cx, Cond::E, small)?;
-        // `rdx` = the dropped bits; the rest, halved, converts exactly.
-        put(cx, mc::mov_rr(Size::D, RDX, RCX));
-        put(cx, mc::and_ri(Size::D, RDX, 0xfff));
-        put(cx, mc::and_ri(Size::Q, RCX, -0x1000));
-        put(cx, mc::shr_ri(Size::Q, RCX, 1));
-        put(cx, mc::cvtsi2s_rr(FpSize::D, xd, Size::Q, RCX));
-        put(cx, mc::adds_rr(FpSize::D, xd, xd));
-        put(cx, mc::movd_rx(Size::Q, RAX, xd));
-        put(cx, mc::test_rr(Size::D, RDX, RDX));
-        put(cx, mc::setcc_r(Cond::Ne, RDX));
-        put(cx, mc::movzx_rr(Size::D, RDX, Size::B, RDX));
-        put(cx, mc::or_rr(Size::Q, RAX, RDX));
-        put(cx, mc::movd_xr(Size::Q, xd, RAX));
-        crate::common::branch(cx, sign)?;
-        cx.bind(small)?;
-        put(cx, mc::cvtsi2s_rr(FpSize::D, xd, Size::Q, RCX));
-        cx.bind(sign)?;
+        magnitude_to_double_odd(cx, xd)?;
         if signed {
             put(cx, mc::mov_rr(Size::Q, RAX, r));
             put(cx, mc::shr_ri(Size::Q, RAX, 63));
@@ -893,6 +873,35 @@ fn int_to_bfloat(cx: &mut FnCx<'_, X64>, r: Reg, bits: u32, signed: bool, xd: Xm
     double_to_float_odd(cx, xd)?;
     bfloat_narrow(cx, xd);
     Ok(())
+}
+
+/// The unsigned 64-bit magnitude in `rcx` converted to a `double` in
+/// `xd`, rounded to odd: below `2^53` exactly; at `2^53` or more the low
+/// 12 bits are dropped (the rest, halved, converts exactly, and is
+/// doubled) and folded into the last bit. Writes `rax`, `rcx`, `rdx` and
+/// the flags.
+pub fn magnitude_to_double_odd(cx: &mut FnCx<'_, X64>, xd: Xmm) -> CgResult<()> {
+    let (small, done) = (cx.new_label(), cx.new_label());
+    put(cx, mc::mov_rr(Size::Q, RAX, RCX));
+    put(cx, mc::shr_ri(Size::Q, RAX, 53));
+    branch_cond(cx, Cond::E, small)?;
+    // `rdx` = the dropped bits; the rest, halved, converts exactly.
+    put(cx, mc::mov_rr(Size::D, RDX, RCX));
+    put(cx, mc::and_ri(Size::D, RDX, 0xfff));
+    put(cx, mc::and_ri(Size::Q, RCX, -0x1000));
+    put(cx, mc::shr_ri(Size::Q, RCX, 1));
+    put(cx, mc::cvtsi2s_rr(FpSize::D, xd, Size::Q, RCX));
+    put(cx, mc::adds_rr(FpSize::D, xd, xd));
+    put(cx, mc::movd_rx(Size::Q, RAX, xd));
+    put(cx, mc::test_rr(Size::D, RDX, RDX));
+    put(cx, mc::setcc_r(Cond::Ne, RDX));
+    put(cx, mc::movzx_rr(Size::D, RDX, Size::B, RDX));
+    put(cx, mc::or_rr(Size::Q, RAX, RDX));
+    put(cx, mc::movd_xr(Size::Q, xd, RAX));
+    crate::common::branch(cx, done)?;
+    cx.bind(small)?;
+    put(cx, mc::cvtsi2s_rr(FpSize::D, xd, Size::Q, RCX));
+    cx.bind(done)
 }
 
 /// A conversion with an `fp128` side and no `bfloat` side: one runtime

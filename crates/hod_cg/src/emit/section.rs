@@ -4,14 +4,14 @@
 //! and `getExplicitSectionGlobal`, and `MCContext`'s rules for which
 //! sections of one name are one section.
 
-use std::collections::HashMap;
-
 use hod_obj::elf::{
     SHF_ALLOC, SHF_EXCLUDE, SHF_EXECINSTR, SHF_GNU_RETAIN, SHF_MERGE, SHF_STRINGS, SHF_TLS,
     SHF_WRITE, SHF_X86_64_LARGE, SHT_FINI_ARRAY, SHT_INIT_ARRAY, SHT_NOBITS, SHT_NOTE,
     SHT_PREINIT_ARRAY, SHT_PROGBITS,
 };
 use hod_obj::{SectionId, SectionKind};
+
+use crate::idhash::IdMap;
 
 /// LLVM's `SectionKind`, as far as ELF output tells the kinds apart.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -218,11 +218,35 @@ struct ByName {
     entry_sizes: Vec<(u64, u64, u32)>,
 }
 
+impl ByName {
+    /// `MCContext::recordELFMergeableSectionInfo` for this name.
+    fn record(&mut self, name: &[u8], flags: u64, id: u32, entry_size: u64) {
+        let mergeable = flags & SHF_MERGE != 0 || id == GENERIC;
+        if id == GENERIC {
+            self.seen = true;
+        }
+        if (mergeable || self.seen || is_implicit_mergeable(name))
+            && !self.entry_sizes.iter().any(|&(f, e, _)| f == flags && e == entry_size)
+        {
+            self.entry_sizes.push((flags, entry_size, id));
+        }
+    }
+
+    /// The section of this name in `group` with unique id `id`.
+    fn find(&self, group: u32, id: u32) -> Option<SectionId> {
+        self.sections.iter().find(|&&(g, i, _)| g == group && i == id).map(|&(_, _, s)| s)
+    }
+}
+
 /// The state of section selection for one object: the named sections
 /// that exist, in the shape `MCContext` keeps them.
 #[derive(Debug)]
 pub(crate) struct Sections {
-    by_name: HashMap<Box<[u8]>, ByName>,
+    /// Never iterated: only looked up by name, so its order cannot reach
+    /// the object. WP-321: hashed by [`crate::idhash::IdHasher`], and
+    /// once per request (`SipHash` and up to five hashes of a name per
+    /// created section cost about 13 M instructions on stl-heavy `-g`).
+    by_name: IdMap<Box<[u8]>, ByName>,
     next_unique: u32,
     /// The generic section of each standard kind, once created: `Text`,
     /// `ReadOnly`, `ReadOnlyWithRel`, `Data`, `Bss`, `ThreadData`,
@@ -238,7 +262,7 @@ impl Sections {
     /// generic sections (whether or not they are ever written).
     pub(crate) fn new() -> Sections {
         let mut sections = Sections {
-            by_name: HashMap::new(),
+            by_name: IdMap::default(),
             next_unique: 0,
             standard: [None; 11],
             strings: Vec::new(),
@@ -257,7 +281,7 @@ impl Sections {
             (b".rodata.cst32", Kind::Const(32)),
         ];
         for (name, kind) in standard {
-            sections.record(name, kind.flags(), GENERIC, kind.entry_size());
+            sections.entry(name).record(name, kind.flags(), GENERIC, kind.entry_size());
         }
         sections
     }
@@ -280,25 +304,12 @@ impl Sections {
         })
     }
 
-    /// `MCContext::recordELFMergeableSectionInfo`.
-    fn record(&mut self, name: &[u8], flags: u64, id: u32, entry_size: u64) {
-        let entry = self.entry(name);
-        let mergeable = flags & SHF_MERGE != 0 || id == GENERIC;
-        if id == GENERIC {
-            entry.seen = true;
-        }
-        if (mergeable || entry.seen || is_implicit_mergeable(name))
-            && !entry.entry_sizes.iter().any(|&(f, e, _)| f == flags && e == entry_size)
-        {
-            entry.entry_sizes.push((flags, entry_size, id));
-        }
-    }
-
+    /// The record of `name`, created empty when there is none: one hash
+    /// of the name. The key is allocated even when the name is there,
+    /// which is rare: `created` follows a lookup that found no section of
+    /// the name, group and id, and that is mostly a name never seen.
     fn entry(&mut self, name: &[u8]) -> &mut ByName {
-        if !self.by_name.contains_key(name) {
-            self.by_name.insert(name.into(), ByName::default());
-        }
-        self.by_name.get_mut(name).expect("record: just inserted")
+        self.by_name.entry(Box::from(name)).or_default()
     }
 
     /// The section a global without an explicit section goes to, by
@@ -411,11 +422,18 @@ impl Sections {
         }
         let entry_size = kind.entry_size();
         let mergeable = flags & SHF_MERGE != 0;
+        // One hash of the name for the whole request (WP-321).
+        let entry = self.by_name.get(name);
+        let next_unique = &mut self.next_unique;
+        let mut unique = || {
+            let id = *next_unique;
+            *next_unique += 1;
+            id
+        };
         let id = if retain {
             flags |= SHF_GNU_RETAIN;
-            self.unique()
+            unique()
         } else {
-            let entry = self.by_name.get(name);
             let seen = entry.is_some_and(|entry| entry.seen) || is_implicit_mergeable(name);
             let previous = entry.and_then(|entry| {
                 entry.entry_sizes.iter().find(|&&(f, e, _)| f == flags && e == entry_size)
@@ -430,10 +448,10 @@ impl Sections {
             {
                 GENERIC
             } else {
-                self.unique()
+                unique()
             }
         };
-        if let Some(section) = self.find(name, group, id) {
+        if let Some(section) = entry.and_then(|entry| entry.find(group, id)) {
             return Found::Old(section);
         }
         let new = NewSection { kind: obj_kind(section_type(name, kind), flags, entry_size), group };
@@ -460,15 +478,8 @@ impl Sections {
         Found::New(new, Pending { own: false, id: GENERIC, flags, entry_size, group: NO_GROUP })
     }
 
-    fn unique(&mut self) -> u32 {
-        let id = self.next_unique;
-        self.next_unique += 1;
-        id
-    }
-
     fn find(&self, name: &[u8], group: u32, id: u32) -> Option<SectionId> {
-        let entry = self.by_name.get(name)?;
-        entry.sections.iter().find(|&&(g, i, _)| g == group && i == id).map(|&(_, _, s)| s)
+        self.by_name.get(name)?.find(group, id)
     }
 
     /// Registers a section created after a lookup returned
@@ -481,8 +492,9 @@ impl Sections {
         section: SectionId,
         cache: Option<(Kind, u64)>,
     ) {
-        self.entry(name).sections.push((pending.group, pending.id, section));
-        self.record(name, pending.flags, pending.id, pending.entry_size);
+        let entry = self.entry(name);
+        entry.sections.push((pending.group, pending.id, section));
+        entry.record(name, pending.flags, pending.id, pending.entry_size);
         if let Some((kind, align)) =
             cache.filter(|_| !pending.own && pending.group == NO_GROUP && pending.id == GENERIC)
         {

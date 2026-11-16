@@ -106,6 +106,38 @@ fn refuse<R>(cx: &FnCx<'_, X86>, ty: TypeId) -> CgResult<R> {
     Err(refusal_of(cx, ty))
 }
 
+/// `extractvalue`: of the `{ ptr, i32 }` landing-pad value (`eh`, §14),
+/// else the general aggregate's (`agg`, §13.2). The layouts are the same
+/// (`eax`'s word at 0, `edx`'s at 4); `atomic`'s `cmpxchg` arm comes
+/// before both.
+fn extract_value<'a>(
+    cx: &mut FnCx<'a, X86>,
+    inst: Inst<'a>,
+    agg: Value,
+    offset: u64,
+) -> CgResult<()> {
+    if crate::eh::owns_aggregate(cx, inst) {
+        crate::eh::extract_value(cx, inst, agg, offset)
+    } else {
+        crate::agg::extract_value(cx, inst, agg, offset)
+    }
+}
+
+/// `insertvalue`: as [`extract_value`].
+fn insert_value<'a>(
+    cx: &mut FnCx<'a, X86>,
+    inst: Inst<'a>,
+    agg: Value,
+    value: Value,
+    offset: u64,
+) -> CgResult<()> {
+    if crate::eh::owns_aggregate(cx, inst) {
+        crate::eh::insert_value(cx, inst, agg, value, offset)
+    } else {
+        crate::agg::insert_value(cx, inst, agg, value, offset)
+    }
+}
+
 /// The cast arm: both sides `Gpr`, or the refusal of the side that is
 /// not.
 fn lower_cast<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, arg: Value) -> CgResult<()> {
@@ -217,15 +249,12 @@ impl Target for X86 {
             }
             InstKind::FCmp { .. } => unsupported(crate::x87::FLOAT),
             InstKind::Load { ptr, mem } if gpr => mem::load(cx, inst, ptr, mem),
-            InstKind::Load { mem, .. } if mem.ordering().is_some() => unsupported(mem::ATOMIC),
             InstKind::Load { ptr, mem } if int::is_wide(cx, inst.result()) => {
                 int::load(cx, inst, ptr, mem)
             }
             InstKind::Store { value, ptr, mem } => {
                 let ty = common::value_ty(cx, value);
-                if mem.ordering().is_some() {
-                    unsupported(mem::ATOMIC)
-                } else if abi::is_gpr(cx.types(), ty) {
+                if abi::is_gpr(cx.types(), ty) {
                     mem::store(cx, inst, value, ptr, mem)
                 } else {
                     refuse(cx, ty)
@@ -235,17 +264,9 @@ impl Target for X86 {
                 crate::dynstack::alloca(cx, inst, count, elem_size, align)
             }
             InstKind::PtrAdd(add) => mem::ptr_add(cx, inst, &add),
-            InstKind::ExtractValue { agg, offset } if crate::eh::owns_aggregate(cx, inst) => {
-                crate::eh::extract_value(cx, inst, agg, offset)
-            }
-            InstKind::InsertValue { agg, value, offset } if crate::eh::owns_aggregate(cx, inst) => {
-                crate::eh::insert_value(cx, inst, agg, value, offset)
-            }
-            InstKind::ExtractValue { agg, offset } => {
-                crate::agg::extract_value(cx, inst, agg, offset)
-            }
+            InstKind::ExtractValue { agg, offset } => extract_value(cx, inst, agg, offset),
             InstKind::InsertValue { agg, value, offset } => {
-                crate::agg::insert_value(cx, inst, agg, value, offset)
+                insert_value(cx, inst, agg, value, offset)
             }
             InstKind::Select { cond, if_true, if_false } if gpr => {
                 alu::select(cx, inst, cond, if_true, if_false)

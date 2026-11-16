@@ -161,6 +161,17 @@ pub fn address(cx: &mut FnCx<'_, X86>, rd: Reg, sym: SymId, addend: i64) -> CgRe
     }
 }
 
+/// `sym`'s GOT entry (its address) in `r`: the GOT pointer, then `mov r,
+/// [r + sym@GOT]` (`R_386_GOT32X`), as `llc` reaches a `musttail` callee
+/// under PIC. Writes `r` and the word below `esp`.
+///
+/// # Errors
+/// `Internal` for an encoder inconsistency.
+pub fn got_entry(cx: &mut FnCx<'_, X86>, r: Reg, sym: SymId) -> CgResult<()> {
+    got_pointer(cx, r)?;
+    put_reloc(cx, mc::mov_rm(Size::D, r, field(r)), I386Reloc::Got32X, SymRef::Module(sym), 0)
+}
+
 /// `[disp32]`, the displacement a relocatable field.
 fn field_abs() -> Mem {
     Mem::abs(0).with_abs32().unwrap_or(Mem::abs(0))

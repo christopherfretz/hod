@@ -625,6 +625,11 @@ runtime_fns! {
     Fminf = "fminf": (FLOAT, FLOAT) -> FLOAT;
     /// `llvm.maxnum.f16` on x86-64, through `float` (WP-117).
     Fmaxf = "fmaxf": (FLOAT, FLOAT) -> FLOAT;
+    /// `llvm.minnum.f64` on i386's x87, a call as `llc` makes it (the
+    /// i386 join).
+    Fmin = "fmin": (DOUBLE, DOUBLE) -> DOUBLE;
+    /// `llvm.maxnum.f64` on i386's x87 (the i386 join).
+    Fmax = "fmax": (DOUBLE, DOUBLE) -> DOUBLE;
     /// `sinf128`: `fp128` on x86-64, where `long double` is `x86_fp80` (WP-117).
     Sinf128 = "sinf128": (FP128) -> FP128;
     /// `cosf128`: `fp128` on x86-64, where `long double` is `x86_fp80` (WP-117).

@@ -240,7 +240,10 @@ pub fn address(
 
 /// The thread-local symbol of a dynamic model and the offset `ptr` names,
 /// if it is one.
-fn dynamic_symbol(cx: &FnCx<'_, X86>, ptr: Value) -> Option<(SymId, i64, TlsAccess)> {
+pub(crate) fn dynamic_symbol(
+    cx: &FnCx<'_, X86>,
+    ptr: Value,
+) -> Option<(SymId, i64, TlsAccess)> {
     let (sym, addend) = match ptr.kind() {
         ValueKind::Sym(sym) => (sym, 0),
         ValueKind::Const(id) => match cx.module.consts.get(id) {

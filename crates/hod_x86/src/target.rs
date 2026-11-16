@@ -35,9 +35,37 @@ pub const FUNCLET: &str = "x86:funclet";
 /// A function with a stack protector: hod has no i386 guard.
 pub const STACK_PROTECTOR: &str = "x86:stack-protector";
 
-/// The i686 Linux target (i386 System V psABI, static relocation model).
-#[derive(Clone, Copy, Default, Debug)]
-pub struct X86;
+/// The i686 Linux target (i386 System V psABI, every relocation model).
+/// `cpu` is the command line's `-mcpu`, the CPU of a function without a
+/// `target-cpu` attribute (as `llc` applies it); [`X86`] the target
+/// without one (`generic`).
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct X86 {
+    cpu: Option<&'static str>,
+}
+
+/// The target without `-mcpu`.
+#[allow(non_upper_case_globals, reason = "the value of the former unit struct, kept by name")]
+pub const X86: X86 = X86 { cpu: None };
+
+impl X86 {
+    /// The target for a compile with `-mcpu` `cpu`: a name of
+    /// `hod_ir::I386_CPUS` (another name is `llc`'s "not a recognized
+    /// processor": ignored, `generic`).
+    #[must_use]
+    pub fn with_cpu(cpu: Option<&str>) -> X86 {
+        let known = cpu.and_then(|cpu| {
+            hod_ir::I386_CPUS.iter().find(|&&(name, _)| name == cpu).map(|&(name, _)| name)
+        });
+        X86 { cpu: known }
+    }
+
+    /// The `-mcpu` CPU, if any.
+    #[must_use]
+    pub const fn cpu(&self) -> Option<&'static str> {
+        self.cpu
+    }
+}
 
 /// What the target remembers about the function being compiled.
 #[derive(Clone, Default, Debug)]

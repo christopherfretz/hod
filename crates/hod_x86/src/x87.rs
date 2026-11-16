@@ -155,15 +155,17 @@ fn fp_of(cx: &FnCx<'_, X86>, ty: TypeId) -> CgResult<Fp> {
     if sse { unsupported(SSE) } else { Ok(fp) }
 }
 
-/// The CPU features of the function, as `llc` decides them (unknown CPU:
-/// none, `generic`'s).
+/// The CPU features of the function, as `llc` decides them: its
+/// `target-cpu`, else `-mcpu` ([`X86::cpu`]), else `generic`; then its
+/// `target-features` (unknown CPU: none, `generic`'s).
 fn features(cx: &FnCx<'_, X86>) -> X86Features {
+    let mcpu = cx.target.cpu();
     let SymbolKind::Function { attrs, .. } = cx.module.symbol(cx.body.symbol()).kind() else {
-        return X86Features::NONE;
+        return X86Features::of_function(None, None, mcpu, &[]).unwrap_or(X86Features::NONE);
     };
     let attrs = cx.module.fn_attrs(attrs);
     let text = |what| attrs.string(what).and_then(|s| std::str::from_utf8(s).ok());
-    X86Features::of_function(text(FnStr::TargetCpu), text(FnStr::TargetFeatures), None, &[])
+    X86Features::of_function(text(FnStr::TargetCpu), text(FnStr::TargetFeatures), mcpu, &[])
         .unwrap_or(X86Features::NONE)
 }
 
@@ -217,7 +219,8 @@ fn inst_at<'a>(cx: &FnCx<'a, X86>, raw: u32) -> Option<Inst<'a>> {
 /// Whether `llc` leaves no value in an x87 register across `inst`
 /// (measured, 19 and 22): a terminator; a call (but `memcpy`/`memmove`
 /// of at most [`INLINE_COPY`] and `memset` of at most [`INLINE_SET`]
-/// constant bytes, which it writes inline); `frem` and the libm
+/// constant bytes, which it writes inline, and inline assembly but as
+/// [`asm_barrier`] says); `frem` and the libm
 /// intrinsics (calls); an integer division wider than 32 bits
 /// (`__divdi3` and kin); and, without `cmov`, a `select` on a variable
 /// condition that is no `i1` and no choice of two integer constants
@@ -229,13 +232,19 @@ fn barrier(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
     if !cx.fold_action(inst).emits() {
         return false;
     }
-    let small = |v: Value, max: u32| {
+    if tls_barrier(cx, inst) {
+        return true;
+    }
+    let small =|v: Value, max: u32| {
         cx.types().int_bits(value_ty(cx, v)).is_some_and(|b| b <= 32)
             && const_int(cx, v).is_some_and(|n| n <= max)
     };
     match inst.kind() {
         InstKind::Call(site) => match (site.intrinsic(), site.args()) {
-            (None, _) => true,
+            (None, _) => match site.callee_value().kind() {
+                ValueKind::Asm(id) => asm_barrier(cx.module.asm(id).constraints),
+                _ => true,
+            },
             (Some(Intrinsic::Memcpy | Intrinsic::Memmove), &[_, _, len, ..]) => {
                 !small(len, INLINE_COPY)
             }
@@ -261,6 +270,62 @@ fn barrier(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
         }
         _ => false,
     }
+}
+
+/// The key of `llc`'s `___tls_get_addr` call for operand `v`: the symbol
+/// of a general-dynamic thread-local, `None` (the module's block) for a
+/// local-dynamic one; nothing for any other value.
+fn tls_key(cx: &FnCx<'_, X86>, v: Value) -> Option<Option<hod_ir::SymId>> {
+    let (sym, _, model) = crate::tls::dynamic_symbol(cx, v)?;
+    Some((model == hod_cg::TlsAccess::GeneralDynamic).then_some(sym))
+}
+
+fn operands_of<'a>(inst: Inst<'a>) -> &'a [Value] {
+    match inst.kind() {
+        InstKind::Call(site) => site.args(),
+        _ => inst.operands(),
+    }
+}
+
+/// Whether `inst` is where `llc` calls `___tls_get_addr` (measured, 19 and
+/// 22: the live x87 values are spilled at their width around it, as for
+/// any call): it names a thread-local of a dynamic model (the TLS
+/// sequences of `tls`) whose address no earlier instruction of its block
+/// took (the DAG computes it once per block, local dynamic's module block
+/// once for all its symbols). A GOT access under PIC (`call; pop`) is
+/// none: `llc` keeps the x87 registers across it.
+fn tls_barrier(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
+    let keys: Vec<_> = operands_of(inst).iter().filter_map(|&v| tls_key(cx, v)).collect();
+    if keys.is_empty() {
+        return false;
+    }
+    let mut raw = inst.id().raw();
+    let mut fresh = keys;
+    while raw > 0 && !fresh.is_empty() {
+        raw -= 1;
+        let Some(q) = inst_at(cx, raw) else { break };
+        if q.is_terminator() {
+            break;
+        }
+        let seen: Vec<_> = operands_of(q).iter().filter_map(|&v| tls_key(cx, v)).collect();
+        fresh.retain(|k| !seen.contains(k));
+    }
+    !fresh.is_empty()
+}
+
+/// Whether inline assembly with `constraints` ends a run (measured, `llc`
+/// 19 and 22): it is no call, so `llc` keeps its x87 registers across it,
+/// unless an operand is an x87 register (`{st}`, `{st(1)}`, ...) or it
+/// clobbers `st(0)` (`~{st}`): then the live values are spilled at their
+/// type's width. A clobber of a deeper register alone (`~{st(7)}`) spills
+/// nothing (`llc` refuses the template when a live value is there:
+/// "clobbers must be last on the x87 stack"). `t`, `u`, `f` operands are
+/// refused by `asm` (`x86:inline-asm:x87`).
+fn asm_barrier(constraints: &[u8]) -> bool {
+    constraints.split(|&b| b == b',').any(|item| match item.strip_prefix(b"~") {
+        Some(clobber) => matches!(clobber, b"{st}" | b"{st(0)}"),
+        None => item.windows(3).any(|w| w == b"{st"),
+    })
 }
 
 /// How deep [`folded`] looks through operands.
@@ -440,6 +505,12 @@ pub fn materialize_mem(cx: &mut FnCx<'_, X86>, dst: FrameRef, value: Value) -> C
         Const::Zero(_) | Const::Undef(_) | Const::Poison(_) => 0,
         _ => return unsupported(crate::common::CONSTANT),
     };
+    write_bits(cx, dst, fp, bits);
+    Ok(())
+}
+
+/// The encoding `bits` of an `fp` written to `dst` by `mov` immediates.
+fn write_bits(cx: &mut FnCx<'_, X86>, dst: FrameRef, fp: Fp, bits: u128) {
     let bytes = fp.bytes();
     let mut at = 0;
     while at < bytes {
@@ -450,7 +521,99 @@ pub fn materialize_mem(cx: &mut FnCx<'_, X86>, dst: FrameRef, value: Value) -> C
         frame_inst(cx, dst.offset_by(at), |m| mc::mov_mi(size, m, imm));
         at += if size == Size::D { 4 } else { 2 };
     }
-    Ok(())
+}
+
+// ---- constants `llc`'s DAG folds ----
+
+/// The encoding of `v` (of type `fp`) when `llc`'s DAG folds it to a
+/// constant that hod computes the same way at compile time: a constant,
+/// or a result of `user`'s block (no terminator between) of `fadd`,
+/// `fsub`, `fmul`, `fdiv` ([`fold`]), `fneg`, `fpext`, `fptrunc` of such
+/// operands, [`FOLD_DEPTH`] levels deep; never a NaN (left to the run
+/// time). `x86_fp80` is never folded here (the x87 computes it in its
+/// precision, one rounding, as `llc`'s `APFloat`).
+fn const_bits(cx: &FnCx<'_, X86>, v: Value, fp: Fp, user: Inst<'_>, depth: u32) -> Option<u64> {
+    let nan = |bits: u64| match fp {
+        Fp::F32 => f32::from_bits(bits as u32).is_nan(),
+        _ => f64::from_bits(bits).is_nan(),
+    };
+    let bits = match v.kind() {
+        ValueKind::Const(id) => match cx.module.consts.get(id) {
+            Const::Float { bits, .. } => bits,
+            Const::Zero(_) => 0,
+            _ => return None,
+        },
+        _ => {
+            let def = cx.body.inst(v.as_inst()?);
+            let local = def.id() < user.id()
+                && (def.id().raw() + 1..user.id().raw())
+                    .all(|raw| inst_at(cx, raw).is_some_and(|q| !q.is_terminator()));
+            if depth == 0 || !local || fp_of(cx, def.ty()).ok() != Some(fp) {
+                return None;
+            }
+            match def.kind() {
+                InstKind::Binary { lhs, rhs } => {
+                    let a = const_bits(cx, lhs, fp, def, depth - 1)?;
+                    let b = const_bits(cx, rhs, fp, def, depth - 1)?;
+                    fold(def.opcode(), fp, a, b)?
+                }
+                InstKind::Unary { arg } if def.opcode() == Opcode::FNeg => {
+                    let a = const_bits(cx, arg, fp, def, depth - 1)?;
+                    a ^ if fp == Fp::F32 { 0x8000_0000 } else { 1 << 63 }
+                }
+                InstKind::Cast { arg } => {
+                    let from = fp_of(cx, value_ty(cx, arg)).ok()?;
+                    let a = const_bits(cx, arg, from, def, depth - 1)?;
+                    match (def.opcode(), from, fp) {
+                        (Opcode::FPExt, Fp::F32, Fp::F64) => {
+                            f64::from(f32::from_bits(a as u32)).to_bits()
+                        }
+                        (Opcode::FPTrunc, Fp::F64, Fp::F32) => {
+                            u64::from((f64::from_bits(a) as f32).to_bits())
+                        }
+                        _ => return None,
+                    }
+                }
+                _ => return None,
+            }
+        }
+    };
+    (!nan(bits)).then_some(bits)
+}
+
+/// `op` of the encodings `a` and `b` of an `fp`, rounded once to `fp` as
+/// `llc`'s `APFloat` folds it (IEEE round to nearest, which Rust's `f32`
+/// and `f64` arithmetic is); `None` for a NaN result or another `op`.
+fn fold(op: Opcode, fp: Fp, a: u64, b: u64) -> Option<u64> {
+    macro_rules! apply {
+        ($x:expr, $y:expr) => {
+            match op {
+                Opcode::FAdd => $x + $y,
+                Opcode::FSub => $x - $y,
+                Opcode::FMul => $x * $y,
+                Opcode::FDiv => $x / $y,
+                _ => return None,
+            }
+        };
+    }
+    let bits = match fp {
+        Fp::F32 => {
+            let r = apply!(f32::from_bits(a as u32), f32::from_bits(b as u32));
+            if r.is_nan() {
+                return None;
+            }
+            u64::from(r.to_bits())
+        }
+        Fp::F64 => {
+            let r = apply!(f64::from_bits(a), f64::from_bits(b));
+            if r.is_nan() {
+                return None;
+            }
+            r.to_bits()
+        }
+        Fp::F80 => return None,
+    };
+    Some(bits)
 }
 
 // ---- memory ----
@@ -562,6 +725,18 @@ fn binary<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, lhs: Value, rhs: Value) ->
         }
         _ => return cx.bug("an integer opcode on a floating type"),
     };
+    // `llc`'s DAG folds it: one rounding, where the x87 would round twice
+    // (80 bits, then the type) for a `double`.
+    let folded = |cx: &FnCx<'_, X86>| {
+        let a = const_bits(cx, lhs, fp, inst, FOLD_DEPTH)?;
+        let b = const_bits(cx, rhs, fp, inst, FOLD_DEPTH)?;
+        fold(inst.opcode(), fp, a, b)
+    };
+    if let Some(bits) = folded(cx) {
+        let r = cx.def_mem(inst)?;
+        write_bits(cx, r, fp, u128::from(bits));
+        return Ok(());
+    }
     push(cx, lhs, fp, inst)?;
     push(cx, rhs, fp, inst)?;
     put(cx, op);
@@ -788,8 +963,11 @@ fn int_bits(cx: &FnCx<'_, X86>, ty: TypeId) -> CgResult<u32> {
 /// of it (of 64 bits with a zero high half for an unsigned `i32`).
 fn from_int<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, arg: Value) -> CgResult<()> {
     let fp = fp_of(cx, inst.ty())?;
-    let bits = int_bits(cx, value_ty(cx, arg))?;
     let signed = inst.opcode() == Opcode::SIToFP;
+    if cx.types().int_bits(value_ty(cx, arg)) == Some(64) {
+        return from_i64(cx, inst, arg, fp, signed);
+    }
+    let bits = int_bits(cx, value_ty(cx, arg))?;
     let r = cx.use_reg(arg)?;
     put(cx, mc::mov_rr(Size::D, ECX, gp(r)));
     let ext = if signed { crate::alu::Ext::Sign } else { crate::alu::Ext::Zero };
@@ -806,11 +984,67 @@ fn from_int<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, arg: Value) -> CgResult<
     result(cx, inst, fp, true)
 }
 
+/// `sitofp`/`uitofp` of an `i64` (§8's slot, low word first): `fild
+/// qword` of the slot, exact at 80 bits; unsigned, `2^64` added when the
+/// high bit is set (as `llc`: `fadd` of a `float` chosen by the sign,
+/// here `0x5F800000` or 0 built in `ecx` without a branch). The result
+/// keeps its 80-bit copy for its run.
+fn from_i64<'a>(
+    cx: &mut FnCx<'a, X86>,
+    inst: Inst<'a>,
+    arg: Value,
+    fp: Fp,
+    signed: bool,
+) -> CgResult<()> {
+    let slot = cx.use_mem(arg)?;
+    frame_inst(cx, slot, |m| mc::fild_m(Size::Q, m));
+    if !signed {
+        frame_inst(cx, slot.offset_by(4), |m| mc::mov_rm(Size::D, ECX, m));
+        put(cx, mc::sar_ri(Size::D, ECX, 31));
+        put(cx, mc::and_ri(Size::D, ECX, 0x5F80_0000));
+        below(cx, 16);
+        put(cx, mc::mov_mr(Size::D, sp(0), ECX));
+        put(cx, mc::fld_m(X87Size::S, sp(0)));
+        put(cx, mc::faddp(St::St1));
+        above(cx, 16);
+    }
+    result(cx, inst, fp, true)
+}
+
+/// `fptosi` to an `i64`: as [`to_int`], `fistp qword` into the result's
+/// slot. `fptoui` to an `i64` stays [`I64_CAST`].
+fn to_i64<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, arg: Value, fp: Fp) -> CgResult<()> {
+    if inst.opcode() == Opcode::FPToUI {
+        return unsupported(I64_CAST);
+    }
+    push(cx, arg, fp, inst)?;
+    let inst = cx.body.inst(inst.id());
+    let r = cx.def_mem(inst)?;
+    below(cx, 16);
+    put(cx, mc::fnstcw_m(sp(0)));
+    put(cx, mc::movzx_rm(Size::D, ECX, Size::W, sp(0)));
+    put(cx, mc::or_ri(Size::D, ECX, 0xc00));
+    put(cx, mc::mov_mr(Size::W, sp(2), ECX));
+    put(cx, mc::fldcw_m(sp(2)));
+    put(cx, mc::fistp_m(Size::Q, sp(4)));
+    put(cx, mc::fldcw_m(sp(0)));
+    // The result's slot is addressed from `ebp`.
+    for at in [0, 4] {
+        put(cx, mc::mov_rm(Size::D, ECX, sp(4 + at)));
+        frame_inst(cx, r.offset_by(at as u32), |m| mc::mov_mr(Size::D, m, ECX));
+    }
+    above(cx, 16);
+    Ok(())
+}
+
 /// `fptosi`/`fptoui`: rounding toward zero around `fistp` (`fnstcw`,
 /// `or 0xC00`, `fldcw`, `fistp`, `fldcw` of the saved word), of 64 bits
 /// for an unsigned `i32`.
 fn to_int<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, arg: Value) -> CgResult<()> {
     let fp = fp_of(cx, value_ty(cx, arg))?;
+    if cx.types().int_bits(inst.ty()) == Some(64) {
+        return to_i64(cx, inst, arg, fp);
+    }
     let bits = int_bits(cx, inst.ty())?;
     let wide = inst.opcode() == Opcode::FPToUI && bits == 32;
     let rd = cx.def_reg(inst)?;
@@ -869,13 +1103,14 @@ fn routine_op(which: Intrinsic<'_>) -> Option<FpOp> {
 /// `floorl`), the same names as x86-64's.
 fn routine(op: FpOp, fp: Fp) -> CgResult<RuntimeFn> {
     // `llc` calls `fmin`/`fmax` for `minnum`/`maxnum` on the x87 (x86-64
-    // has instructions); `hod_cg` names no `double` one yet.
+    // has instructions).
     match (op, fp) {
         (FpOp::MinNum, Fp::F32) => return Ok(RuntimeFn::Fminf),
         (FpOp::MaxNum, Fp::F32) => return Ok(RuntimeFn::Fmaxf),
+        (FpOp::MinNum, Fp::F64) => return Ok(RuntimeFn::Fmin),
+        (FpOp::MaxNum, Fp::F64) => return Ok(RuntimeFn::Fmax),
         (FpOp::MinNum, Fp::F80) => return Ok(RuntimeFn::Fminl),
         (FpOp::MaxNum, Fp::F80) => return Ok(RuntimeFn::Fmaxl),
-        (FpOp::MinNum | FpOp::MaxNum, Fp::F64) => return unsupported(INTRINSIC),
         _ => {}
     }
     match fp_routine(op, fp.fp_type(), Arch::X86_64) {
@@ -951,7 +1186,9 @@ fn libcall<'a>(
         copy_frame(cx, FrameRef::Outgoing(fp.arg_bytes() * i as u32), place, fp.bytes());
     }
     let at = cx.offset();
-    crate::frame::emit_call(cx, CallTarget::Sym(SymRef::Runtime(func)), 0)?;
+    // `pic`'s call: under PIC through the PLT with the GOT pointer in
+    // `ebx`, as `llc` calls libm (`spec/codegen-x86.md` §9.2).
+    crate::pic::emit_call(cx, CallTarget::Sym(SymRef::Runtime(func)), 0)?;
     let len = cx.offset() - at;
     cx.record_call_site(at, len);
     above(cx, area);

@@ -154,6 +154,16 @@ pub fn end(cx: &mut FnCx<'_, X86>) -> CgResult<()> {
         teardown(cx);
         cx.tail_branch_here(index, dwarf);
         match exit.target {
+            CallTarget::Sym(sym) if pic_tail_through_got(cx, sym) => {
+                // Under PIC a jump to `f@PLT` would need the GOT pointer
+                // in `ebx`, which the teardown just gave back to the
+                // caller: `llc` (19, 22) loads `f`'s GOT entry into a free
+                // argument register instead and jumps through it.
+                let Some(r) = free_tail_register(cx) else { return unsupported(MUSTTAIL) };
+                let SymRef::Module(id) = sym else { return cx.bug("a tail jump to no symbol") };
+                crate::pic::got_entry(cx, r, id)?;
+                put(cx, mc::jmp_r(r));
+            }
             CallTarget::Sym(sym) => {
                 let inst = mc::jmp_near(0);
                 let Some(site) = Mode::X86.admit(inst).ok().and_then(|i| i.site()) else {
@@ -196,6 +206,25 @@ fn call_reloc(cx: &FnCx<'_, X86>, sym: SymRef) -> I386Reloc {
         },
         _ => I386Reloc::Plt32,
     }
+}
+
+/// Whether a tail jump to `sym` goes through its GOT entry: under PIC, to
+/// a callee that may be in another module (`R_386_PLT32` otherwise).
+fn pic_tail_through_got(cx: &FnCx<'_, X86>, sym: SymRef) -> bool {
+    cx.options.reloc_model.is_pic() && call_reloc(cx, sym) == I386Reloc::Plt32
+}
+
+/// The first of `eax`, `ecx`, `edx` that holds no argument of this
+/// function (the `musttail` callee has its signature), as `llc` chooses:
+/// `None` with three register arguments (`llc` runs out of registers).
+fn free_tail_register(cx: &FnCx<'_, X86>) -> Option<Reg> {
+    let asg = cx.fn_assignment();
+    let taken = |r: Reg| {
+        let preg = crate::reg::gpr(r);
+        asg.args.iter().any(|p| p.place == Place::Reg(preg))
+            || asg.ret_memory.as_ref().is_some_and(|m| m.address == Place::Reg(preg))
+    };
+    [Reg::Rax, Reg::Rcx, Reg::Rdx].into_iter().find(|&r| !taken(r))
 }
 
 /// `Target::frame_base_offset`: from `ebp`.

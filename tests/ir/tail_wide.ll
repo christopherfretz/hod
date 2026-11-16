@@ -7,6 +7,8 @@
 ; is compared with llc 22 and the interpreter in
 ; crates/hod_a64/tests/tail.rs.
 ;@ covers: spec/ir.md §5.4 cast, aggregate (ExtractValue, InsertValue of fp128), terminator (Switch at i128), §5.5 intrinsics (umul.with.overflow wide); spec/codegen.md §5.5.1 (WP-084)
+; i686's libgcc has no `__fixdfti` (128-bit integers).
+;@ kept-off(i686): runtime-routine
 ;@ tier: quick
 ;@ stdout: conv 2426047410323587072 8 12345 12345
 ;@ stdout: conv -7250000000000000000 0 -2 1.2676506e+30

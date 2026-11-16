@@ -202,8 +202,7 @@ fn readelf_reads_hello() {
                 (".note.GNU-stack", "PROGBITS", 0, "", 1),
                 (".rela.text", "RELA", 72, "I", 8),
                 (".symtab", "SYMTAB", 120, "", 8),
-                (".strtab", "STRTAB", 26, "", 1),
-                (".shstrtab", "STRTAB", 62, "", 1),
+                (".strtab", "STRTAB", 77, "", 1),
             ],
             "{label}"
         );
@@ -656,10 +655,11 @@ fn readelf_reads_70000_sections() {
         let lines: Vec<String> =
             text.lines().map(|l| l.split_whitespace().collect::<Vec<_>>().join(" ")).collect();
         let has = |line: &str| lines.iter().any(|l| l == line);
-        assert!(has("Number of section headers: 0 (70008)"), "{label}");
-        assert!(has("Section header string table index: 65535 (70007)"), "{label}");
+        assert!(has("Number of section headers: 0 (70007)"), "{label}");
+        assert!(has("Section header string table index: 65535 (70006)"), "{label}");
         let report = Report::parse(&text);
-        assert_eq!(report.sections.len(), 70_008, "{label}");
+        assert_eq!(report.sections.len(), 70_007, "{label}");
+        assert_eq!(report.section(".strtab").index, 70_006, "{label}");
         assert_eq!(report.section(".text.f69999").index, 70_000, "{label}");
         assert_eq!(report.section(".rela.text.main").info, 70_001, "{label}");
         assert_eq!(report.section(".symtab_shndx").link, report.section(".symtab").index);

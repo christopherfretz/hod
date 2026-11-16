@@ -4,6 +4,8 @@
 ; descriptors (local dynamic through _TLS_MODULE_BASE_) and the linker
 ; relaxes them in the executable; plus hidden and dso_local variables.
 ;@ covers: spec/ir.md §2.2 symbols (thread-local model), spec/codegen.md §5.6.37 TLS descriptors
+; `pthread_t` is an i64 here (spec/harness.md "Kept off a target").
+;@ kept-off(i686): lp64-abi
 ;@ llc-args: -enable-tlsdesc
 ;@ stdout: main: counter=7 zero=0 ie=30 le=40 ld=50 array=10
 ;@ stdout: thread 1: sum=237, own copy 1

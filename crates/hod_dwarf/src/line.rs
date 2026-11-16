@@ -223,16 +223,35 @@ struct AddrField {
     addend: i64,
 }
 
+/// The sequence a [`LineProgram::push_open`] left open (WP-296,
+/// `spec/dwarf.md` §4.5): the state machine after its last row, and
+/// where its `end_sequence` goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Open {
+    symbol: SymbolId,
+    /// The address of the last row, from `symbol`.
+    at: i64,
+    /// The address of the end of the last code it covers, from `symbol`.
+    end: i64,
+    file: u32,
+    line: u32,
+    column: u16,
+    stmt: bool,
+}
+
 /// The program of one line-table unit (`spec/dwarf.md` §4.5), encoded
 /// one sequence at a time (§7.1).
 ///
-/// A sequence's bytes depend only on its own rows (each sequence starts
-/// from the state machine's initial state), and its one address is a
-/// relocation recorded relative to the program's start. So a worker can
-/// encode the sequences of its functions into a program of its own and
-/// the merge can [`append`](LineProgram::append) the programs in module
-/// order: the bytes are those of encoding every sequence into one
-/// program.
+/// A sequence pushed with [`push`](LineProgram::push) depends only on its
+/// own rows (it starts from the state machine's initial state), and its
+/// one address is a relocation recorded relative to the program's start.
+/// [`push_open`](LineProgram::push_open) continues the open sequence when
+/// the code it describes follows that sequence's code in the same section
+/// (WP-296: `llc`'s one sequence per run of functions, §5.6), and leaves
+/// the sequence open; [`close`](LineProgram::close) ends it, and
+/// [`write_debug_line_units`] ends a sequence still open.
+/// [`append`](LineProgram::append) concatenates programs: a sequence open
+/// in the first program ends where the second starts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LineProgram {
     target: &'static LineTarget,
@@ -241,12 +260,20 @@ pub struct LineProgram {
     /// WP-114: 1 for a DWARF 4 unit, whose files are counted from 1
     /// (`spec/dwarf.md` §6.20); 0 for DWARF 5.
     file_base: u32,
+    /// The open sequence, whose `end_sequence` is not written yet.
+    open: Option<Open>,
 }
 
 impl LineProgram {
     /// An empty program for `arch`.
     pub fn new(arch: Arch) -> Self {
-        Self { target: for_arch(arch), bytes: Vec::new(), addrs: Vec::new(), file_base: 0 }
+        Self {
+            target: for_arch(arch),
+            bytes: Vec::new(),
+            addrs: Vec::new(),
+            file_base: 0,
+            open: None,
+        }
     }
 
     /// An empty program for `arch` of a unit of DWARF `version`: 4 numbers
@@ -269,6 +296,7 @@ impl LineProgram {
             bytes: Vec::with_capacity(rows * 5 + seqs * 16),
             addrs: Vec::with_capacity(seqs),
             file_base: 0,
+            open: None,
         }
     }
 
@@ -281,9 +309,10 @@ impl LineProgram {
     pub fn clear(&mut self) {
         self.bytes.clear();
         self.addrs.clear();
+        self.open = None;
     }
 
-    /// The encoded bytes.
+    /// The encoded bytes, without the `end_sequence` of an open sequence.
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
     }
@@ -294,24 +323,58 @@ impl LineProgram {
         self.addrs.len()
     }
 
-    /// Appends `seq`'s program, for a header of `files` files. Its
-    /// `order` is used only to name it in an error: sequences are in the
-    /// order they are pushed.
+    /// Appends `seq`'s program as a sequence of its own, for a header of
+    /// `files` files, after ending the open sequence. Its `order` is used
+    /// only to name it in an error: sequences are in the order they are
+    /// pushed.
     ///
     /// # Errors
     /// `BadFile`, `RowOutOfOrder`, `RowBeyondEnd`, `Unaligned`,
     /// `BadFlags` (§4.6), `TooLarge`; the program is then unchanged.
     pub fn push(&mut self, files: usize, seq: &Sequence<'_>) -> Result<(), Error> {
+        self.push_checked(files, seq, true)
+    }
+
+    /// Appends `seq`'s rows to the open sequence when they continue it
+    /// (WP-296, `spec/dwarf.md` §4.5): `seq` is relative to the same
+    /// symbol and starts at or after the end of the open sequence's code,
+    /// a whole number of instructions after its last row. Otherwise it
+    /// ends the open sequence and starts one. Either way the sequence is
+    /// left open, its end at `seq`'s `size`. A `seq` without rows changes
+    /// nothing.
+    ///
+    /// # Errors
+    /// Those of [`push`](LineProgram::push); the program is then unchanged.
+    pub fn push_open(&mut self, files: usize, seq: &Sequence<'_>) -> Result<(), Error> {
+        self.push_checked(files, seq, false)
+    }
+
+    /// Ends the open sequence, if there is one.
+    pub fn close(&mut self) {
+        if let Some(open) = self.open.take() {
+            let advance = self.end_advance(&open);
+            write_end(&mut self.bytes, advance);
+        }
+    }
+
+    /// The address advance from an open sequence's last row to its end.
+    fn end_advance(&self, open: &Open) -> u64 {
+        (open.end - open.at) as u64 / u64::from(self.target.min_inst_length)
+    }
+
+    fn push_checked(&mut self, files: usize, seq: &Sequence<'_>, close: bool) -> Result<(), Error> {
         check_sequence(seq, files, u32::from(self.target.min_inst_length))?;
-        let len = self.bytes.len();
-        let result = self.encode(seq);
+        let (len, open) = (self.bytes.len(), self.open);
+        let result = self.encode(seq, close);
         if result.is_err() {
             self.bytes.truncate(len);
+            self.open = open;
         }
         result
     }
 
-    /// Appends `other`'s sequences after this program's.
+    /// Appends `other`'s sequences after this program's, ending this
+    /// program's open sequence first; `other`'s open sequence stays open.
     ///
     /// # Errors
     /// `TooLarge`; `ArchMismatch` if the two are for different
@@ -320,22 +383,42 @@ impl LineProgram {
         if other.target.arch != self.target.arch || other.file_base != self.file_base {
             return Err(Error::ArchMismatch);
         }
-        let base = u32::try_from(self.bytes.len()).map_err(|_| Error::TooLarge)?;
-        if u32::try_from(self.bytes.len() + other.bytes.len()).is_err() {
+        // An end is at most 3 + 10 bytes.
+        if u32::try_from(self.bytes.len() + other.bytes.len() + 13).is_err() {
             return Err(Error::TooLarge);
         }
+        self.close();
+        let base = self.bytes.len() as u32;
         self.bytes.extend_from_slice(&other.bytes);
         self.addrs.extend(other.addrs.iter().map(|a| AddrField { offset: base + a.offset, ..*a }));
+        self.open = other.open;
         Ok(())
     }
 
-    /// Appends one checked sequence (§4.5).
-    fn encode(&mut self, seq: &Sequence<'_>) -> Result<(), Error> {
-        let Some(first) = seq.rows.first() else { return Ok(()) };
+    /// Appends one checked sequence (§4.5), continuing the open sequence
+    /// if `seq` follows it, and ends it if `close`.
+    fn encode(&mut self, seq: &Sequence<'_>, close: bool) -> Result<(), Error> {
+        let Some(first) = seq.rows.first() else {
+            if close {
+                self.close();
+            }
+            return Ok(());
+        };
         let target = self.target;
-        let out = &mut self.bytes;
         let min = u32::from(target.min_inst_length);
-        let (mut file, mut line, mut column, mut stmt) = (1u32, 1u32, 0u16, true);
+        let start = seq.addend + i64::from(first.offset);
+        let cont = self.open.filter(|o| {
+            o.symbol == seq.symbol
+                && seq.addend >= o.end
+                && (start - o.at) % i64::from(min) == 0
+                && !close
+        });
+        if cont.is_none() {
+            self.close();
+        }
+        let out = &mut self.bytes;
+        let (mut file, mut line, mut column, mut stmt) =
+            cont.map_or((1u32, 1u32, 0u16, true), |o| (o.file, o.line, o.column, o.stmt));
         let mut at = first.offset;
         let mut addr = None;
         for (i, r) in seq.rows.iter().enumerate() {
@@ -362,25 +445,38 @@ impl LineProgram {
                 out.push(DW_LNS_SET_EPILOGUE_BEGIN);
             }
             let delta = i64::from(r.line) - i64::from(line);
-            if i == 0 {
+            if i != 0 {
+                write_advance(out, delta, u64::from((r.offset - at) / min));
+            } else if let Some(o) = cont {
+                // Across the padding and code between the two.
+                write_advance(out, delta, (start - o.at) as u64 / u64::from(min));
+            } else {
                 out.extend_from_slice(&[0, 1 + target.address_size, DW_LNE_SET_ADDRESS]);
                 addr = Some(out.len());
                 out.extend_from_slice(&[0; 8][..usize::from(target.address_size)]);
                 write_advance(out, delta, 0);
-            } else {
-                write_advance(out, delta, u64::from((r.offset - at) / min));
             }
             line = r.line;
             at = r.offset;
         }
-        write_end(out, u64::from((seq.size - at) / min));
+        if close {
+            write_end(out, u64::from((seq.size - at) / min));
+        }
         if u32::try_from(out.len()).is_err() {
             return Err(Error::TooLarge);
         }
         if let Some(offset) = addr {
-            let addend = seq.addend + i64::from(first.offset);
-            self.addrs.push(AddrField { offset: offset as u32, symbol: seq.symbol, addend });
+            self.addrs.push(AddrField { offset: offset as u32, symbol: seq.symbol, addend: start });
         }
+        self.open = (!close).then_some(Open {
+            symbol: seq.symbol,
+            at: seq.addend + i64::from(at),
+            end: seq.addend + i64::from(seq.size),
+            file,
+            line,
+            column,
+            stmt,
+        });
         Ok(())
     }
 }
@@ -556,7 +652,7 @@ pub fn write_debug_line(
     let rows: usize = seqs.iter().map(|s| s.rows.len()).sum();
     let mut program = LineProgram::with_capacity(obj.arch(), rows, seqs.len());
     for &i in &sorted {
-        program.encode(&seqs[i as usize])?;
+        program.encode(&seqs[i as usize], true)?;
     }
     let unit = LineUnit { header: *header, program: &program };
     Ok(write_debug_line_units(obj, &[unit])?.sections)
@@ -611,6 +707,9 @@ pub fn write_debug_line_units(
         };
         let base = u32::try_from(out.len()).map_err(|_| Error::TooLarge)?;
         out.extend_from_slice(&u.program.bytes);
+        if let Some(open) = &u.program.open {
+            write_end(&mut out, u.program.end_advance(open)); // WP-296: §4.5
+        }
         relocs.extend(u.program.addrs.iter().map(|a| Pending {
             offset: base.wrapping_add(a.offset),
             symbol: Some(a.symbol),

@@ -16,13 +16,14 @@
 
 use std::time::{Duration, Instant};
 
-use hod_ll::{BodyParser, Lexer, ParseOptions, Tok, parse_module, scan_only};
+use hod_ll::{BodyParser, Lexer, ParseOptions, Tok, parse_module, parse_module_on, scan_only};
 
 fn stats(mut times: Vec<Duration>) -> (Duration, Duration) {
     times.sort();
     (times[times.len() / 2], times[0])
 }
 
+#[allow(clippy::too_many_lines)] // One block per step, as listed in the usage.
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(path) = args.first() else {
@@ -78,6 +79,21 @@ fn main() {
             .collect();
         let (median, min) = stats(times);
         println!("module     {:>9.0} / {:>9.0} us", median.as_micros(), min.as_micros());
+    }
+    // `module-on:<threads>`: the module level with the scan on threads
+    // (WP-303).
+    if let Some(threads) = what.strip_prefix("module-on:") {
+        let threads: usize = threads.parse().expect("a number of threads");
+        let times = (0..runs)
+            .map(|_| {
+                let start = Instant::now();
+                let parsed = parse_module_on(&text, &options, threads).expect("a module");
+                std::hint::black_box(parsed);
+                start.elapsed()
+            })
+            .collect();
+        let (median, min) = stats(times);
+        println!("module-on:{threads} {:>9.0} / {:>9.0} us", median.as_micros(), min.as_micros());
     }
     if all || what == "bodies" || what == "recycled" {
         let recycle = what == "recycled";

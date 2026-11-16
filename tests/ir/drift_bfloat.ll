@@ -9,6 +9,8 @@
 ; nothing is folded. Expected values computed by a script with exact
 ; rational arithmetic, not a compiler.
 ;@ covers: spec/ir.md §5.4 floating point (bfloat)
+; i686's libgcc `__truncsfbf2` uses SSE2 (LLVM 22); LLVM 19's llc cannot return a bfloat without SSE.
+;@ kept-off(i686): runtime-routine
 ;@ stdout: bfloat 4049 bc00: add 4048 sub 404a mul bcc9 div c3c9 lt 0 gt 1
 ;@ stdout: bfloat from double: 0.1 3dcd 1/3 3eab 70000 4789 1+2^-8+2^-30 3f81
 ;@ stdout: bfloat from float: 0.1 3dcd; to float 3.140625; from i32 1000 447a; to i32 -402

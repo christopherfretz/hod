@@ -405,9 +405,12 @@ pub struct Object {
     pub(crate) machine: Machine,
     pub(crate) flags: u32,
     pub(crate) stack_note: StackNote,
-    /// Symbol names, each followed by a NUL, after one leading NUL: the
-    /// image of the string table.
+    /// Symbol names, each followed by a NUL, after one leading NUL (the
+    /// empty name).
     pub(crate) strings: Vec<u8>,
+    /// Per [`StrId`]: the arena offset past the name's NUL. Entry 0 is the
+    /// empty name's (1).
+    pub(crate) string_ends: Vec<u32>,
     pub(crate) section_names: NameTable,
     pub(crate) sections: Vec<SectionData>,
     pub(crate) symbols: Vec<Symbol>,
@@ -436,6 +439,7 @@ impl Object {
             flags: 0,
             stack_note: StackNote::NonExecutable,
             strings: vec![0],
+            string_ends: vec![1],
             section_names: NameTable::default(),
             sections: Vec::new(),
             symbols: Vec::new(),
@@ -489,6 +493,7 @@ impl Object {
         self.referenced.reserve(symbols / 64 + 1);
         self.relocs.reserve(relocations);
         self.strings.reserve(string_bytes);
+        self.string_ends.reserve(symbols);
     }
 
     fn defer(&mut self, error: Error) {
@@ -511,21 +516,39 @@ impl Object {
         if name.contains(&0) {
             return Err(Error::NulInName);
         }
-        let id = u32::try_from(self.strings.len())
+        let end = u32::try_from(self.strings.len())
             .ok()
-            .filter(|&start| u32::try_from(name.len()).is_ok_and(|len| len < u32::MAX - start))
+            .and_then(|start| start.checked_add(u32::try_from(name.len()).ok()?)?.checked_add(1))
+            .filter(|&end| end < u32::MAX)
             .ok_or(Error::TooLarge(Limit::StringBytes))?;
+        let id = u32::try_from(self.string_ends.len())
+            .map_err(|_| Error::TooLarge(Limit::StringBytes))?;
         self.strings.extend_from_slice(name);
         self.strings.push(0);
+        self.string_ends.push(end);
         Ok(StrId(id))
     }
 
     /// The bytes of a stored name. Never panics: for an id this object did
     /// not issue the result is unspecified (empty when past the end).
     pub fn string(&self, id: StrId) -> &[u8] {
-        let tail = self.strings.get(id.0 as usize..).unwrap_or_default();
-        let len = tail.iter().position(|&b| b == 0).unwrap_or(tail.len());
-        &tail[..len]
+        let (start, end) = self.string_span(id);
+        &self.strings[start as usize..end.saturating_sub(1).max(start) as usize]
+    }
+
+    /// Where name `id` is in the arena: its first byte and past its NUL;
+    /// `(0, 0)` for the empty name or an id past the end.
+    pub(crate) fn string_span(&self, id: StrId) -> (u32, u32) {
+        let at = id.0 as usize;
+        match (self.string_ends.get(at.wrapping_sub(1)), self.string_ends.get(at)) {
+            (Some(&start), Some(&end)) if at != 0 => (start, end),
+            _ => (0, 0),
+        }
+    }
+
+    /// How many names have been issued, with the empty name.
+    pub(crate) fn string_count(&self) -> usize {
+        self.string_ends.len()
     }
 
     // ---- sections ----
@@ -986,6 +1009,8 @@ mod tests {
         assert_eq!(obj.string(StrId(1000)), b"");
         assert_eq!(obj.add_string(b"a\0"), Err(Error::NulInName));
         assert_eq!(obj.strings, b"\0main\0main\0");
+        assert_eq!((main, again), (StrId(1), StrId(2)), "ids number the names");
+        assert_eq!(obj.string_span(again), (6, 11));
     }
 
     /// "Section contents": appending returns offsets and keeps sizes.

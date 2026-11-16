@@ -128,16 +128,15 @@ location for a breakpoint in it (§8.4). The same holds with
 `-function-sections`: every function is its own section and its own
 sequence.
 
-hod's choice for the line table (§5.6): **one sequence per function**,
-whether or not the next function is in the same section. `llc`'s choice
-differs only for consecutive functions of one section, where hod writes
-an `end_sequence` and a `set_address` (14 bytes and one relocation) more.
-Reason: a function's sequence then depends only on its own rows, so a
-worker can encode it in the chunk that compiled the function and the merge
-concatenates bytes (§7.1). For C++ the cost is small, since most
-functions (templates, inline functions) are COMDAT members and are their
-own sequences in `llc`'s output too. The writer of §4 takes sequences as
-given, so it can also write `llc`'s grouping, which the oracle test uses.
+hod's choice for the line table (§5.6, WP-296): `llc`'s, **one sequence
+per run of consecutive functions of one unit in one section**. Until
+WP-296 hod wrote one sequence per function, which cost an `end_sequence`
+and a `set_address` (14 bytes and one relocation on x86-64) per function
+that `llc` would have shared a sequence with: on a translation unit of
+5,000 small `.text` functions (the `tiny-functions -g` bench input) 5,001
+sequences and 140 KB of `.debug_line` against `llc`'s 1 sequence and
+60 KB. The writer of §4 takes sequences as given, so it can also write
+any other grouping; the oracle test writes `llc`'s.
 
 ## 2. Where each DIE comes from
 
@@ -213,6 +212,7 @@ pub fn write_debug_line(obj: &mut Object, header: &LineHeader<'_>, seqs: &[Seque
     -> Result<LineSections, Error>;
 // encoded sequences, and several units (§7.1, WP-056)
 pub struct LineProgram { .. }    // new(arch), with_capacity(arch, rows, seqs), push(files, &Sequence),
+                                 // push_open(files, &Sequence), close() (WP-296),
                                  // append(&LineProgram), clear(), bytes(), sequence_count()
 pub struct LineUnit<'a> { pub header: LineHeader<'a>, pub program: &'a LineProgram }
 pub struct LineUnits { pub sections: LineSections, pub offsets: Vec<u32> }
@@ -267,11 +267,19 @@ function's code section and the function's offset in it, as `llc` does.
 `write_debug_line_units` writes several line-table units (one per
 compile unit) whose sequences are already encoded: a `LineProgram` holds
 the encoded bytes of the sequences pushed into it, in push order, with
-their address fields, and `append` concatenates two programs. A
-sequence's bytes depend only on its rows and the target (every sequence
-starts from the initial state and ends with `end_sequence`), so programs
-encoded per chunk and appended in module order are the bytes of one
-program encoded in one go (§7.1). The units share one `.debug_line_str`
+their address fields, and `append` concatenates two programs. `push`
+writes a sequence of its own: its bytes depend only on its rows and the
+target (it starts from the initial state and ends with `end_sequence`).
+`push_open` (WP-296) continues the open sequence instead when the new
+rows are relative to the same symbol and the new code starts at or
+after the end of the open sequence's code, a whole number of
+instructions after its last row (§4.5); otherwise it ends the open
+sequence and starts one; either way the sequence stays open, its end at
+the new code's `size`. `close` ends it; `push`, `append` and a
+`push_open` that does not continue end it first, and
+`write_debug_line_units` writes the `end_sequence` of a program's
+sequence still open. A sequence open at the end of a chunk's program
+ends there when the programs are appended. The units share one `.debug_line_str`
 pool; `offsets` are the units' offsets in `.debug_line`, for
 `DW_AT_stmt_list`. `write_debug_line` is `push` of every sequence in
 `order` and one unit.
@@ -395,6 +403,13 @@ written as `llc`'s `MCDwarfLineTable::emitOne` writes it:
 4. After the last row: the advance to `size` (`DW_LNS_const_add_pc` when
    it is exactly 17, else `DW_LNS_advance_pc` when it is not 0), then
    `DW_LNE_end_sequence` (`00 01 01`).
+5. WP-296: rows that continue an open sequence (`push_open`, §3) start
+   from the state after its last row (file, line, column, `is_stmt`), with
+   no `set_address`: their first row is written as any other row, its
+   address advance the distance from the open sequence's last row, over
+   the padding and any code between the two (`llc` writes the advance
+   between the two functions' labels in the same way). Step 4 then
+   applies to the last row of the run, with the last function's `size`.
 
 Consecutive rows at one offset are each written (each is a row of the
 matrix, DWARF 5 §6.2.5.1); a row needs no change of state to be written
@@ -428,9 +443,7 @@ added in increasing offset order.
 ### 4.7 Size
 
 The table is as small as `llc`'s for the same rows (it is the same
-encoding). On top of the opcodes, one-sequence-per-function costs 14
-bytes and one relocation per function that `llc` would have shared a
-sequence with (§1.3). Not used, because `llc`'s readers and ours gain
+encoding, and since WP-296 the same sequences, §5.6). Not used, because `llc`'s readers and ours gain
 nothing at `-O0` from them: `DW_LNS_fixed_advance_pc` (needed only by
 assemblers that cannot compute deltas), `DW_LNS_set_isa`, discriminators
 (`DILexicalBlockFile.discriminator`: optimized code only; open question
@@ -536,10 +549,34 @@ differ only in a column).
 
 ### 5.6 Sequences
 
-One sequence per function (§1.3): the function's section symbol and
-offset, its code size as `size`, its rows. `end_sequence` is at the end
-of the function's code, before any padding to the next function, as in
-`llc`.
+WP-296: one sequence per run of functions, as `llc` writes it (§1.3).
+Each function gives its section symbol and offset, its code size as
+`size` and its rows (`push_open`, §3); its rows continue the sequence of
+the function placed just before it when that function is of the same
+unit and the same section and the new function starts at or after its
+end (functions of one section are placed at increasing offsets, so the
+run's functions are contiguous in the section but for padding). The last
+row of a function then covers the padding up to the next function's
+first row. A sequence ends (`end_sequence` at the end of its last
+function's code, before any padding, as in `llc`) when the next function
+placed:
+
+- is in another section (a COMDAT member, `-function-sections`, a
+  `section "..."` attribute): `llc`'s `DwarfCompileUnit::addRange` starts
+  a range and terminates the previous unit's line table;
+- is of another unit (the same `addRange` rule);
+- has no subprogram of a written unit, or no code
+  (`DwarfDebug::skippedNonDebugFunction` terminates the line table), so
+  that its code is not covered by a row of the function before it;
+- has no rows (hod's own rule: its code is not covered either; `llc`
+  always has at least the subprogram's row);
+
+and at the end of the module. Measured with `llvm-dwarfdump
+--debug-line` against `llc` 19 and 22 on AArch64 and x86-64: a C file
+whose `.text` functions are separated by a function in its own section
+and by a `nodebug` function gets the same four sequences, with the same
+ends, from `llc` and hod; the `tiny-functions -g` bench input one
+sequence.
 
 ### 5.7 The bridge (implemented, WP-056)
 
@@ -548,9 +585,8 @@ compile unit that is written, its `UnitPlan`, whose `FileTable` (the
 unit's file, then every `DiFile` in the order of its contents, §4.4) is
 the line table's; for each function with a subprogram of that unit, as it is
 placed, `function_rows` into one `Vec<Row>` reused across functions, and
-the rows encoded at once as its own sequence into the unit's
-`LineProgram`, relative to the section symbol of its code plus its
-offset. A location's file is the file of its own scope (an inlined
+the rows encoded at once into the unit's `LineProgram` (`push_open`,
+§5.6), relative to the section symbol of its code plus its offset. A location's file is the file of its own scope (an inlined
 location keeps its scope's file and line, as `llc` writes it); a scope
 without a file is the unit's primary file.
 
@@ -1198,8 +1234,21 @@ refusals. `LineTablesOnly` and `DebugDirectivesOnly` units are §6.10 (WP-061).
   `export_symbols` (inline), with their children.
 - **Base types**: `name`, `encoding`, `byte_size`.
 - **Pointer types**: `type` (absent for `void *`), `name` (when set).
-- **`.debug_addr`**, per unit: the globals' entries in DIE order, then
-  one per merged code span. Each entry is relocated `ABS64` /
+- **`.debug_addr`**, per unit, an address pool (WP-296): in DIE order,
+  one entry per **distinct** address the DIEs use (symbol, addend, and
+  whether it is a thread-local offset), then one per merged code span
+  not already among them: a subprogram that starts a span, an inlined
+  call or block that starts where its parent does, a call site's return
+  address equal to a label, all share one entry. This is `llc`'s
+  `AddressPool`: one entry per distinct address, numbered in the order
+  asked for, the unit's own `DW_AT_low_pc` and range list last (`llc`
+  22, `stl-heavy -g` on x86-64: 4,111 entries; hod 4,109, 7,398 before
+  the pool). The unit DIE of a non-split unit with one span comes before
+  its index is known: its `DW_AT_low_pc` ULEB is reserved at the width
+  of the largest index the unit could have (its entry count without the
+  pool, less one) and patched, `0x80`-padded when the index is shorter
+  (a split unit's skeleton is written after its DIEs and needs no
+  padding). Each entry is relocated `ABS64` /
   `R_X86_64_64` against the symbol the caller gave (the variable's own,
   or its section's for an internal one, as `llc` does; a function's
   section symbol plus offset, §1.3). Spans of one symbol that touch or
@@ -3948,8 +3997,8 @@ spliced into the object. Asserted:
   types and targets) and `.debug_line_str`;
 - the decoded rows of the spliced object equal `llc`'s (address, file,
   line, column, flags) and `llvm-dwarfdump --verify` is clean;
-- the bytes of one sequence per function (hod's grouping, §5.6) also
-  verify clean, and are measured against `llc`'s;
+- the bytes of one sequence per function (hod's grouping before WP-296,
+  §5.6) also verify clean, and are measured against `llc`'s;
 - the **policy** against `llc`: each function's rows are turned back into
   transitions (the start row dropped, its line taken as `scope`; the
   `epilogue_begin` row as the epilogue), passed through `function_rows`,

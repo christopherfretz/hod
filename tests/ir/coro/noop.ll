@@ -46,7 +46,7 @@ define i32 @main() {
   %d0.i = zext i1 %d0 to i32
   call i32 (ptr, ...) @printf(ptr @.same, i32 %same.i, i32 %d0.i)
   %resume = load ptr, ptr %a
-  %d.slot = getelementptr i8, ptr %a, i64 8
+  %d.slot = getelementptr ptr, ptr %a, i64 1
   %destroy = load ptr, ptr %d.slot
   %one = icmp eq ptr %resume, %destroy
   %one.i = zext i1 %one to i32

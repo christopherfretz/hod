@@ -475,8 +475,10 @@ is produced, partial or otherwise:
    emptied as it is added, so a module's code and relocations are not held
    twice (WP-166): on the calling thread alone, the functions are compiled
    in chunks of about `PARALLEL_MIN_INSTS` instructions, each added as soon
-   as it is made and its buffers reused; on several threads, the chunks are
-   added once all are made, each freed as it is added. A refusal of a
+   as it is made and its buffers reused; on several threads, the calling
+   thread adds the chunks in module order while the other threads make
+   the later ones, compiles a chunk itself whenever the next one to add is
+   not made yet, and frees each as it is added (WP-304). A refusal of a
    function (step 4) is the answer before one of the emitter's, as when
    every chunk was made first. Their
    `Unsupported` is a module refusal; `hod_obj`'s `NulInName` is
@@ -530,6 +532,14 @@ function and at most what it may use; below 2 it asks for no token.
 Measured in `spec/landed/cli/WP-043.md`: a thread costs 20-60 µs to start
 and join, and code generation about 90 ns per instruction, so two threads
 beat one from about 2-4k instructions and eight beat four from about 30k.
+The calling thread is one of those threads: it lays the chunks out in
+module order as they are made and compiles while the next one is not
+("The back half", step 5).
+
+Before that, the index scan of a text module runs on
+`hod_ll::scan_threads(size, n)` of them (`spec/ll.md` §4.4: one per MiB
+of text, at most 8); under a jobserver its tokens come from the same one
+request described below, and stay held for reading and code generation.
 
 The same threads also read the bodies (`hod_ll::parse_bodies_on`,
 `hod_bc::read_bodies_on`) when `read_threads` allows more than one: at most
@@ -1357,7 +1367,7 @@ no phase covers (the coverage line).
 | `parse` | the module level has been read (`hod_ll::parse_module`, `hod_bc::read_module`) |
 | `classify` | `classify`'s module pass has judged the module |
 | `bodies` | every body has been read and judged (only when the walk did not stop at a reason) |
-| `emission` | every body has been compiled to machine code ("The back half", step 4); compiled on the calling thread alone, each chunk is also laid out as it is made (step 5) |
+| `emission` | every body has been compiled to machine code ("The back half", step 4); each chunk is also laid out as it is made (step 5), on one thread or several |
 | `object` | the module has been laid out and its object written in memory |
 | `convert` | the bitcode converter ended ("Bitcode conversion"), with text or a failure; the attempt that declined the bitcode is in it. Only an invocation that started a conversion has it |
 | `compile` | `hod::compile` returned, with an object or an error: what follows the last of `parse`, `classify`, `bodies` (code generation, today the seam's decline), or the whole call when it declined before reading |

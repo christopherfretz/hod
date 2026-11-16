@@ -19,9 +19,9 @@
 use crate::attrs::{CallConv, ParamAttrs};
 use crate::body::{
     BlockData, Body, Bundle, BundleData, CALL_ALWAYS_INLINE, CALL_CONVERGENT, CALL_NO_CF_CHECK,
-    CALL_NOINLINE, CALL_NORETURN, CALL_NOUNWIND, CALL_RETURNS_TWICE, CallData, Callee, Clause,
-    DbgDeclare, DbgRecordData, DbgRecordKind, Fixup, Incoming, LifetimeMarker, MetaData, PadData,
-    Place, Reserved, Slot, SlotVar, UNSET, UseFacts,
+    CALL_NOINLINE, CALL_NORETURN, CALL_NOUNWIND, CALL_RETURNS_TWICE, CALL_WILL_RETURN, CallData,
+    Callee, Clause, DbgDeclare, DbgRecordData, DbgRecordKind, Fixup, Incoming, LifetimeMarker,
+    MetaData, PadData, Place, Reserved, Slot, SlotVar, UNSET, UseFacts,
 };
 use crate::debug::expr::ExprId;
 use crate::error::{IrErrorKind, IrResult, err};
@@ -76,6 +76,8 @@ pub struct CallDesc<'a> {
     /// `nocf_check` on the call (WP-184): an indirect call that is not
     /// tracked under `cf-protection-branch`.
     pub nocf_check: bool,
+    /// `willreturn` on the call (WP-270).
+    pub will_return: bool,
     /// The kept attributes of the return value.
     pub ret_attrs: ParamAttrs,
     /// The kept attributes of each argument: empty when none has any,
@@ -103,6 +105,7 @@ impl<'a> CallDesc<'a> {
             always_inline: false,
             noinline: false,
             nocf_check: false,
+            will_return: false,
             ret_attrs: ParamAttrs::NONE,
             arg_attrs: &[],
             bundles: &[],
@@ -1294,7 +1297,8 @@ impl FunctionBuilder {
             | if desc.convergent { CALL_CONVERGENT } else { 0 }
             | if desc.always_inline { CALL_ALWAYS_INLINE } else { 0 }
             | if desc.noinline { CALL_NOINLINE } else { 0 }
-            | if desc.nocf_check { CALL_NO_CF_CHECK } else { 0 };
+            | if desc.nocf_check { CALL_NO_CF_CHECK } else { 0 }
+            | if desc.will_return { CALL_WILL_RETURN } else { 0 };
         let index = body.calls.len() as u32;
         body.calls.push(CallData {
             inst: user,

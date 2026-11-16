@@ -732,9 +732,17 @@ impl FnAttrs {
     /// tracked (x86-64 `notrack`). Only `cf-protection-branch` modules on
     /// x86-64 change code for it, as in `llc`.
     pub const NO_CF_CHECK: u32 = 1 << 21;
+    /// `willreturn` (WP-270): on a function or a call site. Only the
+    /// constant fold reads it (`spec/codegen.md` §5.6.8: an `invoke` of a
+    /// `nounwind` callee); it changes no other code.
+    pub const WILL_RETURN: u32 = 1 << 22;
+    /// `null_pointer_is_valid` (WP-270): on a function. Only the constant
+    /// fold reads it (`spec/codegen.md` §5.6.8: an access through `null`
+    /// does not end a block there); it changes no other code.
+    pub const NULL_POINTER_IS_VALID: u32 = 1 << 23;
 
     /// Every flag with LLVM's keyword for it, in bit order.
-    pub const FLAG_NAMES: [(&'static str, u32); 22] = [
+    pub const FLAG_NAMES: [(&'static str, u32); 24] = [
         ("noreturn", Self::NORETURN),
         ("naked", Self::NAKED),
         ("nounwind", Self::NOUNWIND),
@@ -757,9 +765,11 @@ impl FnAttrs {
         ("convergent", Self::CONVERGENT),
         ("noredzone", Self::NO_RED_ZONE),
         ("nocf_check", Self::NO_CF_CHECK),
+        ("willreturn", Self::WILL_RETURN),
+        ("null_pointer_is_valid", Self::NULL_POINTER_IS_VALID),
     ];
 
-    const ALL_FLAGS: u32 = (1 << 22) - 1;
+    const ALL_FLAGS: u32 = (1 << 24) - 1;
 
     /// No attributes.
     pub fn new() -> FnAttrs {
@@ -1341,7 +1351,7 @@ pub const ATTRIBUTES: [AttrInfo; 142] = [
     kw("nosync", Dropped),
     kw("noundef", Dropped),
     kw("nounwind", Kept),
-    kw("null_pointer_is_valid", Dropped),
+    kw("null_pointer_is_valid", Kept),
     kw("optdebug", Rejected),
     kw("optforfuzzing", Rejected),
     kw("optnone", Dropped),
@@ -1379,7 +1389,7 @@ pub const ATTRIBUTES: [AttrInfo; 142] = [
     kw("swiftself", Kept),
     kw("uwtable", Kept),
     kw("vscale_range", Dropped),
-    kw("willreturn", Dropped),
+    kw("willreturn", Kept),
     kw("writable", Dropped),
     kw("writeonly", Dropped),
     kw("zeroext", Kept),
@@ -1684,7 +1694,7 @@ mod tests {
         assert_eq!(a.strings().count(), 0);
 
         let kind = |r: IrResult<()>| r.unwrap_err().kind;
-        assert_eq!(kind(a.set(1 << 22)), IrErrorKind::InvalidOperand);
+        assert_eq!(kind(a.set(1 << 24)), IrErrorKind::InvalidOperand);
         assert_eq!(kind(a.set_stack_align(24)), IrErrorKind::InvalidOperand);
         assert_eq!(kind(a.set_string(FnStr::NoBuiltin, b"")), IrErrorKind::InvalidOperand);
         assert!(a.is_empty());

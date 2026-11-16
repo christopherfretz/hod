@@ -139,8 +139,14 @@ impl<'a, T: Target> FnCx<'a, T> {
         if args.len() < params.len() || (!variadic && args.len() != params.len()) {
             return self.bug("a call whose arguments do not match its function type");
         }
-        let unwind = site.unwind_dest();
-        let normal = site.normal_dest();
+        // §5.6.8 (WP-270): an `invoke` the constant fold rewrote is a
+        // call without its unwind edge (then a `br`, or nothing), or keeps
+        // only its unwind edge.
+        let (unwind, normal, then) = match self.s.fold.action(inst.id()) {
+            crate::const_fold::Action::Call(then) => (None, None, then),
+            crate::const_fold::Action::NoNormal => (site.unwind_dest(), None, None),
+            _ => (site.unwind_dest(), site.normal_dest(), None),
+        };
         let callee = site.callee_value();
         // §7.1 step 1.
         if let Some(pad) = unwind {
@@ -200,11 +206,20 @@ impl<'a, T: Target> FnCx<'a, T> {
         }
         // WP-084: an `invoke`'s result is read on the normal edge, after
         // the branch: the bits above its odd integer leaves are cleared
-        // here, before the phi stores (a call's are cleared by the target).
-        if let (Some(_), Some(home)) = (unwind, ret_mem) {
+        // here, before the phi stores (a call's are cleared by the target,
+        // which leaves those of every `invoke`, rewritten or not, here).
+        if let (Opcode::Invoke, Some(home)) = (inst.opcode(), ret_mem) {
             self.clear_odd_leaves(ret, home);
         }
-        self.invoke_edges(normal, unwind, done)
+        self.invoke_edges(normal, unwind, done)?;
+        if let Some(then) = then {
+            self.phi_stores(then)?;
+            if !self.falls_through(then) {
+                let t = self.target;
+                t.jump(self, self.block_label(then))?;
+            }
+        }
+        Ok(())
     }
 
     /// A `call` or `invoke` `inst` that the lowering of an intrinsic
@@ -284,12 +299,17 @@ impl<'a, T: Target> FnCx<'a, T> {
         unwind: Option<BlockId>,
         done: Called,
     ) -> CgResult<()> {
-        if let (Some(normal), Some(pad)) = (normal, unwind) {
+        // `normal` is `None` with an `unwind` for an `invoke` whose normal
+        // destination `llc` made `unreachable` (§5.6.8, WP-270): nothing
+        // follows the call but the pad stub.
+        if let Some(pad) = unwind {
             let t = self.target;
-            self.phi_stores(normal)?;
             let stub = done.area != 0;
-            if stub || !self.falls_through(normal) {
-                t.jump(self, self.block_label(normal))?;
+            if let Some(normal) = normal {
+                self.phi_stores(normal)?;
+                if stub || !self.falls_through(normal) {
+                    t.jump(self, self.block_label(normal))?;
+                }
             }
             if stub {
                 // §5.3: the unwinder enters the pad with the stack

@@ -233,7 +233,8 @@ impl Target for A64 {
         // What `llc` deletes or rewrites in a function that asks
         // `is.constant` or `objectsize` (`spec/codegen.md` §5.6.8).
         match cx.fold_action(inst) {
-            FoldAction::Emit => {}
+            // A rewritten `invoke` is the call sequence's (WP-270).
+            FoldAction::Emit | FoldAction::Call(_) | FoldAction::NoNormal => {}
             FoldAction::Drop => return Ok(()),
             FoldAction::Jump(target) => return term::br(cx, target),
             FoldAction::Unreachable => return term::unreachable(cx),

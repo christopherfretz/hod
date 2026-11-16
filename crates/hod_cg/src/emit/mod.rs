@@ -38,6 +38,7 @@ use self::copy::CopyTarget;
 use self::data::Relocs;
 use self::lines::DebugLines;
 use self::section::{Found, Kind, NO_GROUP, Sections};
+pub(crate) use self::unwind::known_personality;
 use crate::access::prefers_local_alias;
 use crate::error::{CgError, CgResult};
 use crate::idhash::IdMap;

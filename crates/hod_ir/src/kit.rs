@@ -427,6 +427,7 @@ pub const CALL_SITE_FLAGS: u32 = FnAttrs::NORETURN
     | FnAttrs::CONVERGENT
     | FnAttrs::ALWAYS_INLINE
     | FnAttrs::NO_CF_CHECK
+    | FnAttrs::WILL_RETURN
     | CALL_SITE_NOINLINE;
 
 /// Sets `desc`'s flags from the call site's function attributes `flags`
@@ -441,6 +442,7 @@ pub fn set_call_site_flags(desc: &mut CallDesc<'_>, flags: u32) {
     desc.always_inline = flags & FnAttrs::ALWAYS_INLINE != 0;
     desc.noinline = flags & CALL_SITE_NOINLINE != 0;
     desc.nocf_check = flags & FnAttrs::NO_CF_CHECK != 0;
+    desc.will_return = flags & FnAttrs::WILL_RETURN != 0;
 }
 
 /// What an attribute does in the place it was written.

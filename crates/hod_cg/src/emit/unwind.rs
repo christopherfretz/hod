@@ -49,6 +49,17 @@ const KNOWN_PERSONALITIES: [&[u8]; 17] = [
     b"__zos_cxx_personality_v2",
 ];
 
+/// Whether `func` has no personality or one of [`KNOWN_PERSONALITIES`]
+/// (so that without landing pads it gets neither personality nor LSDA).
+pub(crate) fn known_personality(module: &hod_ir::Module, func: SymId) -> bool {
+    match module.symbol(func).kind() {
+        hod_ir::SymbolKind::Function { personality: Some(p), .. } => {
+            KNOWN_PERSONALITIES.contains(&module.symbol(p).name())
+        }
+        _ => true,
+    }
+}
+
 /// One function's ranges of the mapped LSDA buffers.
 struct Ranges {
     func: u32,

@@ -1080,6 +1080,18 @@ does not have is `Rejected`. The lists below are the table, in full.
   target (`attr:nocf_check`, row `ON`); it changes no AArch64 code, as
   in `llc`.
 
+  `willreturn` (WP-270), a function flag (`FnAttrs::WILL_RETURN`, bit
+  22) and a call-site flag (`CallDesc::will_return`,
+  `CallSite::is_will_return`, printed after the call as ` willreturn`),
+  and `null_pointer_is_valid` (WP-270), a function flag
+  (`FnAttrs::NULL_POINTER_IS_VALID`, bit 23). `llc`'s
+  `removeUnreachableBlocks`, which its pre-ISel constant fold runs, reads
+  both (`spec/codegen.md` §5.6.8): an `invoke` of a `nounwind` callee
+  whose result is unused becomes a plain branch only when the call
+  `willReturn`, and an access through `null` ends its block only without
+  `null_pointer_is_valid`. Nothing else reads them; they change no other
+  code, and `classify` accepts them on every target (no row).
+
   `"probe-stack"` and `"stack-probe-size"` (WP-186; clang's
   `-fstack-clash-protection` writes `"probe-stack"="inline-asm"` on every
   function, `-mstack-probe-size=N` the size) are read together by
@@ -1106,11 +1118,11 @@ backend) reads them:
   `readnone`, `readonly`, `writeonly`, `nofpclass`, `range`, `writable`,
   `dead_on_unwind`, `dead_on_return`, `initializes`, `returned`,
   `immarg`, `allocalign`, `allocptr`, `noext`;
-- on functions and calls: `memory`, `nofree`, `nosync`, `willreturn`,
+- on functions and calls: `memory`, `nofree`, `nosync`,
   `mustprogress`, `noinline`, `optnone`, `minsize`, `optsize`, `cold`,
   `hot`, `speculatable`, `allocsize`, `allockind`, `nocallback`,
   `nomerge`, `nobuiltin`, `builtin`, `norecurse`, `inlinehint`,
-  `null_pointer_is_valid`, `nocreateundeforpoison`, `vscale_range`,
+  `nocreateundeforpoison`, `vscale_range`,
   `disable_sanitizer_instrumentation`, `nosanitize_bounds`,
   `nosanitize_coverage`, `noprofile`, `skipprofile`;
 - the fast-math strings `approx-func-fp-math`, `less-precise-fpmad`,
@@ -1121,7 +1133,8 @@ backend) reads them:
   `fmv-features`, likewise (WP-095); and `alloc-family`, likewise
   (WP-227, below).
 
-  Fifteen of these were added when the table was built against LLVM's
+  Fourteen of these (and `null_pointer_is_valid`, kept since WP-270)
+  were added when the table was built against LLVM's
   attribute list and clang's output, each because clang emits it in an
   ordinary build or because it is the twin of a name already here,
   two later, because LLVM 22 modules carry them, and one, `alloc-family`,
@@ -1134,7 +1147,6 @@ backend) reads them:
   | `inlinehint` | an inliner threshold |
   | `allocalign`, `allocptr` | parameter roles in the optimizer's model of allocation functions, like `allocsize` and `allockind` |
   | `noext` | says that neither `zeroext` nor `signext` applies, which their absence already says; read by a verification mode of targets that demand one of the three |
-  | `null_pointer_is_valid` | withdraws an assumption that only optimizations make |
   | `nocreateundeforpoison` | a fact about an intrinsic for poison analysis; on intrinsic declarations in clang 22 output |
   | `vscale_range` | bounds on `vscale` for the optimizer; code must be right for every `vscale`; on every function clang emits with `+sve` |
   | `disable_sanitizer_instrumentation`, `nosanitize_bounds`, `nosanitize_coverage` | read by the sanitizer instrumentation passes, which run before a backend; clang emits the first without any sanitizer enabled |

@@ -40,7 +40,7 @@ usage: cargo xtask compare-binaries --base <hod> --head <hod>
            [--corpus <dir>]... [--modules <dir>]... [--out <absolute dir>]
            [-j <n>] [--timeout <seconds>]
 
-  --corpus <dir>    every .ll entry under <dir> (a corpus or a part of one):
+  --corpus <dir>    every .ll entry under <dir> (a corpus, a part of one, or one entry):
                     each module, plain and -relocation-model=pic
   --modules <dir>   every MODULES.tsv under <dir> (kept by a lane with
                     HOD_OSS_KEEP_MODULES): each module with its recorded arguments
@@ -223,8 +223,12 @@ pub fn target_of_text(text: &str) -> String {
         .map_or_else(|| "unknown".to_owned(), |arch| arch.replace("arm64", "aarch64"))
 }
 
-/// Every `.ll` file under `dir`, sorted.
+/// Every `.ll` file under `dir`, sorted (`dir` itself when it is a file).
 fn ll_files(dir: &Path, found: &mut Vec<PathBuf>) -> Result<(), String> {
+    if dir.is_file() {
+        found.push(dir.to_path_buf());
+        return Ok(());
+    }
     let read = fs::read_dir(dir).map_err(|e| format!("cannot read '{}': {e}", dir.display()))?;
     let mut entries: Vec<PathBuf> = read.filter_map(|e| e.ok().map(|e| e.path())).collect();
     entries.sort();

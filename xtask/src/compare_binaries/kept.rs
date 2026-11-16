@@ -61,7 +61,9 @@ fn unescape(field: &str) -> String {
 pub fn parse_manifest(text: &str) -> Result<Vec<Row>, String> {
     let mut rows = Vec::new();
     for (number, line) in text.lines().enumerate() {
-        if number == 0 && line.starts_with("hash\t") || line.is_empty() {
+        // The header: first, or after rows a concurrent compile appended
+        // before the header was written.
+        if line.starts_with("hash\t") || line.is_empty() {
             continue;
         }
         let fields: Vec<String> = line.split('\t').map(unescape).collect();

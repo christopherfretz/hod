@@ -75,7 +75,7 @@ fn options(s: &Setup) -> Options {
     options.corpora.push(s.scratch.join("corpus"));
     options.out = s.scratch.join("out");
     options.jobs = 2;
-    options.limits = Limits { time: Duration::from_secs(60), memory_kib: 1 << 20 };
+    options.limits = Limits { time: Duration::from_mins(1), memory_kib: 1 << 20 };
     options
 }
 

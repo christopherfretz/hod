@@ -64,7 +64,14 @@
 # <workspace>/kiln/resource when it exists), HOD_OSS_HOD (hod; default
 # $CARGO_TARGET_DIR/release/hod), HOD_OSS_ROOT (default <build root>/oss),
 # KILN_OSS_VMEM_KB (the cap, default the row's vmem_kb; the tests' is the
-# row's test_vmem_kb unless KILN_OSS_VMEM_KB is set).
+# row's test_vmem_kb unless KILN_OSS_VMEM_KB is set),
+# HOD_OSS_KEEP_MODULES (an absolute directory; off when unset, WP-272):
+# in the hod and strict modes every module kiln hands hod is kept, with
+# hod's arguments, under <dir>/<target>/<project>/<flavour>/ (<hash>.ll and
+# MODULES.tsv, hod-shim's header; a module identical to one kept costs
+# nothing, so the hod and strict builds share one copy; the prune leaves
+# it alone), for `cargo xtask compare-binaries --modules <dir>`; a module
+# that cannot be kept fails its compile.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -138,6 +145,17 @@ case "$TARGET" in
 esac
 case "$JOBS" in ''|*[!0-9]*) echo "oss-build: --jobs takes a number" >&2; exit 2 ;; esac
 [ "$JOBS" -le 4 ] || JOBS=4
+# The modules hod is handed, kept for `cargo xtask compare-binaries
+# --modules` (HOD_OSS_KEEP_MODULES, opt-in; header and hod-shim).
+KEEP_MODULES=""
+if [ -n "${HOD_OSS_KEEP_MODULES:-}" ]; then
+  case "$HOD_OSS_KEEP_MODULES" in
+    /*) ;;
+    *) echo "oss-build: HOD_OSS_KEEP_MODULES must be an absolute path" >&2; exit 2 ;;
+  esac
+  KEEP_MODULES="$HOD_OSS_KEEP_MODULES/$TARGET/$PROJECT/$FLAVOUR"
+  mkdir -p "$KEEP_MODULES" || { echo "oss-build: cannot create $KEEP_MODULES" >&2; exit 2; }
+fi
 
 # Keep the logs, the report and the kept modules of a tree; drop the rest.
 prune() {
@@ -275,13 +293,14 @@ esac
 # The back end of a phase: configure always with LLVM; build and test in
 # the mode's.
 backend_env() {
-  unset KILN_HOD KILN_HOD_STRICT HOD_OSS_STRICT HOD_CENSUS HOD_COVERAGE_LOG HOD_OSS_SHIM_LOG HOD_OSS_DECLINED KILN_STATS_LOG
+  unset KILN_HOD KILN_HOD_STRICT HOD_OSS_STRICT HOD_CENSUS HOD_COVERAGE_LOG HOD_OSS_SHIM_LOG HOD_OSS_DECLINED KILN_STATS_LOG HOD_OSS_MODULES_DIR
   if [ "$1" = configure ] || [ "$MODE" = llc ]; then
     export KILN_BACKEND=llvm
   else
     export KILN_BACKEND=hod KILN_HOD="$HERE/hod-shim" HOD_OSS_REAL_HOD="$HOD" HOD_CENSUS=1 \
       HOD_COVERAGE_LOG="$BUILD/coverage.log" HOD_OSS_SHIM_LOG="$BUILD/hod-shim.jsonl" HOD_OSS_DECLINED="$BUILD/declined"
     [ "$MODE" != strict ] || export KILN_HOD_STRICT=1 HOD_OSS_STRICT=1
+    [ -z "$KEEP_MODULES" ] || export HOD_OSS_MODULES_DIR="$KEEP_MODULES"
   fi
   [ "$1" = configure ] || export KILN_STATS_LOG="$BUILD/kiln-stats.jsonl"
 }

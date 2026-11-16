@@ -2402,6 +2402,98 @@ two sources' rules, `kiln::{discover, parse_header, plan, plan_for}` and
   counted. Skips without the tools; fails under `HOD_REQUIRE_TOOLS=1`. It
   needs neither kiln nor the GCC suite.
 
+## compare-binaries
+
+```
+cargo xtask compare-binaries --base <hod> --head <hod> [--corpus <dir or entry>]...
+    [--modules <dir>]... [--out <absolute dir>] [-j <n>] [--timeout <seconds>]
+```
+
+Two hod binaries, object by object, on the same inputs (WP-272): the
+evidence `docs/RELEASE.md` section 5 rule 5 asks for when a row measured
+at one candidate stands for the next ("byte-identical objects over the
+whole corpus on both targets, plain and PIC, and over the projects'
+modules").
+
+**Inputs.** `--corpus`: every `.ll` entry under the directory (a corpus,
+a group such as `<corpus>/kiln/llvm22`, or one entry file). Each module of
+an entry is compiled on its own (the `;@ module:` parts, padded as
+`irdiff` pads them), in two modes: `plain` and `pic`. The arguments are
+`--strict -O0 -filetype=obj -mtriple=<the entry's target> [-relocation-model=pic]
+<the entry's llc-args> -o <object> -`, the module on standard input; the
+target is the `;@ target:` directive's, else the module's triple.
+`--modules`: every `MODULES.tsv` under the directory (kept by the lane
+with `HOD_OSS_KEEP_MODULES`, "Real projects"): each module with the
+arguments it was really compiled with, its `-o` value replaced (a joined
+`-o<x>` is split), in the mode `kept:<the -relocation-model value, or
+default>`; its target is `-mtriple`'s, else the module's triple, else
+`unknown`. A kept module whose arguments do not read standard input
+(`-`) or have no `-o`, or a manifest row that does not parse, is an
+error of the run (exit 2), never a silent skip.
+
+**Before anything runs** each binary is run with `--version` and hashed:
+the report names both paths, the first line of each version and both
+sha256 sums. A binary that cannot be read, cannot run, or does not answer
+`--version` with status 0 and a line is an error of the run (exit 2):
+nothing is compared.
+
+**Children.** Both binaries run through the harness's bounded children
+(`irdiff`'s "Child processes"): each holds a jobserver token while it
+runs; at most `-j` modules (default 4, at most 16) at a time, base then
+head; every `HOD_*` variable removed from their environment; a time
+limit of `--timeout` (600 s) and 8 GiB of address space each.
+
+**Classes**, per module and mode:
+
+| class | when |
+|---|---|
+| `identical` | both exit 0 with an object, and the objects are byte-equal |
+| `different` | both exit 0 with an object, and the objects differ |
+| `changed-outcome` | one succeeds and the other does not; or both fail with another end (exit status, signal, time-out) or another standard error |
+| `identical-failure` | both fail with the same end and the same standard error |
+| `harness-error` | the module could not be read or a child could not be started |
+
+Standard error is compared whole, with the object's path replaced by
+`<object>` (the two runs write to different paths): two refusals that
+name different constructs or functions are a changed outcome. An exit 0
+without an object is a failure.
+
+**What differs** in a `different` object is named by section, from the
+ELF64 section headers (an object reader of its own in `xtask`, nothing
+interpreted): `sections differ: <names>`, `only in base: <names>`,
+`only in head: <names>`, the second and later sections of one name as
+`<name>#<n>`; when every section is equal, the ELF header or the section
+table differs. No disassembly.
+
+**Report.** Under `--out` (default `<build dir>/compare-binaries`; must
+be absolute): `summary.md` (the binaries, the inputs, the jobs, a table
+of counts per target and mode with a column per class and a total row,
+and the totals line), `results.tsv` (`class`, `target`, `mode`, `module`
+for every comparison) and `differences.tsv` (the same and `detail`, for
+every `different`, `changed-outcome` and `harness-error`). The summary
+is also printed. The totals line:
+`compare-binaries: <m> modules, <n> comparisons: identical <i>, different <d>, ...; PASS|FAIL`.
+
+**Exit status**: 0 when at least one comparison ran and none is
+`different`, `changed-outcome` or `harness-error`; 1 otherwise (a run
+that compared nothing fails: "FAIL: nothing was compared"); 2 for a
+usage error, a binary that does not answer, or an input that cannot be
+read.
+
+**Library**: `xtask::compare_binaries::{Options, parse_args, run, Report,
+Class, classify, Run, identify, corpus_units, kept_units}`,
+`compare_binaries::kept::{parse_manifest, replay_args}`,
+`compare_binaries::elf::difference`.
+
+**Tests**: unit tests of the classes, the triples, the command line, the
+manifest and the replayed arguments, and the section difference on
+hand-made ELF objects; `xtask/tests/compare_binaries_fakes.rs` with two
+fake hods (shell scripts): every class, the PIC mode alone differing, a
+diagnostic naming the object's path, an entry of two modules, base =
+head passing, an empty corpus failing, a binary that is not executable
+and one that is missing, kept modules replayed with their arguments, and
+a manifest that does not parse.
+
 ## roundtrip
 
 ```
@@ -4557,6 +4649,23 @@ command of the kiln process (from `/proc`) and its directory, and keeps
 the module as `declined/<reason>/<n>.ll` with `<n>.json`, `n` from 1 to
 `$HOD_OSS_KEEP` (1; modules run to megabytes): the first modules of each reason, claimed with an
 exclusive create.
+
+**Kept modules** (opt-in, WP-272): with `HOD_OSS_KEEP_MODULES=<absolute
+dir>`, oss-build.sh gives the shim `HOD_OSS_MODULES_DIR=<dir>/<target>/<project>/<flavour>`
+in the hod and strict modes, and the shim keeps every module it is
+handed, whatever hod answered, after hod has run: `<h>.ll`, the bytes on
+standard input, `<h>` the first 40 hex digits of the sha256 of the module
+and of the arguments with the object's path replaced by `<object>`
+(written to a temporary file and hard-linked into place, so concurrent
+compiles never share a file and an identical module, such as the same
+TU in the hod and the strict build, is kept once); a new module appends
+one row to `MODULES.tsv` (header `hash bytes output args`; then hash,
+size, the object path, and hod's arguments one per field, escaped as the
+corpus manifest is). A module that cannot be kept, or arguments that do
+not read standard input, make the shim exit 1 with `hod-shim: cannot
+keep the module`: the compile fails. The prune leaves the directory
+alone (it is outside the build tree). `cargo xtask compare-binaries
+--modules <dir>` replays them.
 
 **report.json** (by `projects.py report-json`): kiln's fields (`tus`,
 `tus_by_lang`, `links`, `configure_rc`, `build_rc`, `test_rc`,

@@ -74,6 +74,8 @@ pub struct FnState {
     pub frame: frame::FrameState,
     /// The 80-bit copies of `float`/`double` results (I9).
     pub x87: crate::x87::Copies,
+    /// The 80-bit values of SSE call results (I12).
+    pub sse: crate::sse::Views,
 }
 
 /// The registers: pool and holdable `ebx`, `esi`, `edi` (and `xmm0`..

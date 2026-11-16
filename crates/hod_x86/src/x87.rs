@@ -229,6 +229,10 @@ pub struct Copies {
 /// What allocating the copy's slot reports.
 pub fn call_result(cx: &mut FnCx<'_, X86>, inst: Inst<'_>, on: bool) -> CgResult<()> {
     cx.state.x87.call = None;
+    // A result of an SSE type: `sse` keeps its 80-bit value (I12).
+    if crate::sse::call_result(cx, inst, on)? {
+        return Ok(());
+    }
     let wide = matches!(cx.types().kind(inst.ty()), TypeKind::Float | TypeKind::Double);
     if on && wide && !inst.uses().is_unused() {
         cx.state.x87.call = copy_slot(cx, inst)?.map(|slot| (inst.id().raw(), slot));
@@ -239,6 +243,7 @@ pub fn call_result(cx: &mut FnCx<'_, X86>, inst: Inst<'_>, on: bool) -> CgResult
 /// The glue store of `st0` to `dst` (`Target::store`): first the 80-bit
 /// copy of the call result being stored, if [`call_result`] took a slot.
 pub fn store_call_result(cx: &mut FnCx<'_, X86>, dst: FrameRef, bytes: u32) {
+    crate::sse::store_call_copy(cx);
     if let Some((raw, slot)) = cx.state.x87.call.take() {
         let inst = cx.body.inst(InstId::new(raw));
         store_copy(cx, inst, slot);
@@ -251,7 +256,12 @@ pub fn store_call_result(cx: &mut FnCx<'_, X86>, dst: FrameRef, bytes: u32) {
 /// (measured: `fdivrp; retl`), so the glue load ([`load_ret`]) takes
 /// its copy. `on` false ends the bracket.
 pub fn ret_copy(cx: &mut FnCx<'_, X86>, inst: Inst<'_>, value: Value, on: bool) {
-    cx.state.x87.ret = if on { copy_for(cx, value, inst.id()) } else { None };
+    // A view of an SSE call result returns its 80-bit value (I12).
+    cx.state.x87.ret = if on {
+        crate::sse::ret_view(cx, value, inst).or_else(|| copy_for(cx, value, inst.id()))
+    } else {
+        None
+    };
 }
 
 /// The glue load of `src` into `st0` (`Target::load`): the copy that

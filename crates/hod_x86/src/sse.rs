@@ -27,8 +27,8 @@
 use hod_cg::sym::{FpOp, FpType, fp_routine};
 use hod_cg::{CallTarget, CgError, CgResult, FnCx, FrameRef, RuntimeFn, SymRef};
 use hod_ir::{
-    Arch, Const, FloatPredicate, FnStr, Inst, InstKind, Intrinsic, MemFlags, Opcode, SymbolKind,
-    TypeId, TypeKind, Value, ValueKind, X86Features,
+    Arch, Const, FloatPredicate, FnStr, Inst, InstId, InstKind, Intrinsic, MemFlags, Opcode, RmwOp,
+    SymbolKind, TypeId, TypeKind, Value, ValueKind, X86Features,
 };
 use hod_mc_x64 as mc;
 use hod_mc_x64::{Cond, FpCmp, FpSize, Mem, Reg, Size, St, X87Size, Xmm};
@@ -452,13 +452,12 @@ fn x87_of(cx: &FnCx<'_, X86>, ty: TypeId) -> CgResult<X87Size> {
 /// (`x87::ret_copy`/`load_ret`: the bracket that serves a `ret` serves
 /// any user), and `fstp` to the result's home: one rounding.
 ///
-/// The copy matters for two operands (measured, `llc` 19 and 22): a
-/// call result of an SSE type, which `llc` takes out of `st0` as an
-/// exact `fp_round` that its DAG folds into an `fpext` or `fptrunc` of
-/// the result (`fstpl` of the 80-bit register: `x87_half` in
-/// `tests/i386_sse.rs`); and at SSE without SSE2 a computed `double`,
-/// an x87 value that `llc` rounds to `float` directly (`fstps`). Every
-/// other operand has no copy and its home holds it exactly.
+/// Two operands are read wider than their home (measured, `llc` 19 and
+/// 22): a view of a call result of an SSE type ([`Views`]: `x`, or for
+/// `fptrunc (fpext w)` to another type `x` rounded to `w`'s type); and
+/// at SSE without SSE2 a computed `double`, an x87 value that `llc`
+/// rounds to `float` directly (`fstps`), through §11's copy. Every other
+/// operand has no copy and its home holds it exactly.
 fn fp_cast<'a>(
     cx: &mut FnCx<'a, X86>,
     inst: Inst<'a>,
@@ -472,13 +471,73 @@ fn fp_cast<'a>(
         X87Size::D => 8,
         X87Size::T => 10,
     };
-    let src = cx.use_mem(arg)?;
-    crate::x87::ret_copy(cx, inst, arg, true);
-    crate::x87::load_ret(cx, src, bytes);
+    match source(cx, inst, arg, to)? {
+        Source::View(slot) => frame_inst(cx, slot, |m| mc::fld_m(X87Size::T, m)),
+        Source::Rounded(slot, size) => {
+            // `x` rounded to `w`'s type below the stack pointer (`w`'s home
+            // is no operand of this instruction).
+            frame_inst(cx, slot, |m| mc::fld_m(X87Size::T, m));
+            below(cx, 12);
+            put(cx, mc::fstp_m(size, sp(0)));
+            put(cx, mc::fld_m(size, sp(0)));
+            above(cx, 12);
+        }
+        Source::Operand => {
+            let src = cx.use_mem(arg)?;
+            crate::x87::ret_copy(cx, inst, arg, true);
+            crate::x87::load_ret(cx, src, bytes);
+        }
+    }
     let inst = cx.body.inst(inst.id());
     let r = cx.def_mem(inst)?;
     frame_inst(cx, r, |m| mc::fstp_m(b, m));
     Ok(())
+}
+
+/// What an `fpext`/`fptrunc` pushes ([`Views`]).
+enum Source {
+    /// `x` of a call result.
+    View(FrameRef),
+    /// `fptrunc (fpext w)` of a view `w` to another type: `x` rounded to
+    /// `w`'s type (the slot of `x`, `w`'s width).
+    Rounded(FrameRef, X87Size),
+    /// The operand: its §11 copy if `x87` keeps one, else its home.
+    Operand,
+}
+
+fn source(cx: &FnCx<'_, X86>, inst: Inst<'_>, arg: Value, to: TypeId) -> CgResult<Source> {
+    if cx.state.sse.live.is_empty() {
+        return Ok(Source::Operand);
+    }
+    let user = inst.id().raw();
+    let w = if inst.opcode() == Opcode::FPTrunc { ext_operand(cx, arg) } else { None };
+    let Some(w) = w else {
+        return Ok(view(cx, arg, user, VIEW_DEPTH).map_or(Source::Operand, Source::View));
+    };
+    let Some(slot) = view(cx, w, user, VIEW_DEPTH) else { return Ok(Source::Operand) };
+    let ty = value_ty(cx, w);
+    // `llc` folds a store of the result into the conversion (a store of
+    // `x` at the result's width) when every use is such a store.
+    if ty == to || only_stored(cx, inst) {
+        Ok(Source::View(slot))
+    } else {
+        Ok(Source::Rounded(slot, x87_of(cx, ty)?))
+    }
+}
+
+/// Whether every use of `inst`'s result is a store of it in its block.
+fn only_stored(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
+    let at = inst.id().raw();
+    let result = inst.result();
+    let uses = inst.uses().count();
+    let end = reach(cx, at);
+    let stores = (at + 1..end)
+        .filter(|&raw| {
+            matches!(cx.body.inst(InstId::new(raw)).kind(),
+                InstKind::Store { value, .. } if value == result)
+        })
+        .count();
+    uses > 0 && stores == uses as usize
 }
 
 /// `bitcast` between an SSE type and the integer of its width: a copy.
@@ -825,6 +884,158 @@ fn libcall<'a>(
     let r = cx.def_mem(inst)?;
     frame_inst(cx, r, |m| mc::fstp_m(s.x87(), m));
     Ok(())
+}
+
+// ---- the 80-bit value of a call result (`llc`'s fold) ----
+
+/// The 80-bit copies of the SSE call results of the function
+/// (`FnState::sse`).
+///
+/// `llc` takes a `float`/`double` call result out of `st0` as an exact
+/// `fp_round` of the 80-bit register, and its DAG (one per block) folds
+/// that node into an `fpext`, an `fptrunc` or a `ret` of the result in
+/// the same block (measured, 19 and 22, `pentium4` and `pentium3`; the
+/// spec's §12 "The 80-bit value of a call result"). A *view* is a value
+/// that `llc` still has as the 80-bit register `x`: the call result, an
+/// `fpext` of a view, and an `fptrunc` of an `fpext` of a view back to
+/// the view's type. In the call's block, up to an `atomicrmw` that
+/// `llc` expands into a loop (a new block), and across anything else
+/// (calls included: `llc` spills `x` at 80 bits):
+/// - an `fpext` of a view to `U` is `x` rounded to `U`;
+/// - an `fptrunc` of a view to `U` is `x` rounded to `U` once; but an
+///   `fptrunc` of an `fpext` of a view `w` to `U` is `w` when `U` is
+///   `w`'s type, else `w`'s rounded value converted;
+/// - a `ret` of a view returns `x`.
+///
+/// Every other use reads the value rounded to its type (its home).
+#[derive(Clone, Default, Debug)]
+pub struct Views {
+    /// The SSE call results with a copy: the call, the 12-byte slot of
+    /// `x`, and the end of its reach (the end of its block or an
+    /// `atomicrmw` loop), in the order of the calls.
+    live: Vec<(u32, FrameRef, u32)>,
+    /// The copy the call being lowered stores ([`store_call_copy`]).
+    pending: Option<(u32, FrameRef, u32)>,
+}
+
+/// Bounds the chains of [`view`] (an `fpext` of an `fpext` ...).
+const VIEW_DEPTH: u32 = 8;
+
+/// Whether `llc` (`AtomicExpand`, which runs at `-O0`) turns `inst` into
+/// a loop, which ends the block's DAG (measured: an `and`/`or`/`xor`
+/// whose result is used, any 64-bit operation, the floating ones, `nand`,
+/// `min`/`max` and the rest; `xchg`, `add`, `sub` of at most 32 bits are
+/// one instruction, and so are `cmpxchg` and an unused `and`/`or`/`xor`).
+fn splits_block(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
+    let InstKind::AtomicRmw { op, value, .. } = inst.kind() else { return false };
+    let ty = value_ty(cx, value);
+    let types = cx.types();
+    let narrow = match types.kind(ty) {
+        TypeKind::Float => true,
+        TypeKind::Ptr { .. } => true,
+        _ => types.int_bits(ty).is_some_and(|b| b <= 32),
+    };
+    let one = match op {
+        RmwOp::Xchg | RmwOp::Add | RmwOp::Sub => true,
+        RmwOp::And | RmwOp::Or | RmwOp::Xor => inst.uses().is_unused(),
+        _ => false,
+    };
+    !(narrow && one)
+}
+
+/// The first raw index past the reach of the call result at `at`: the end
+/// of its block, or an `atomicrmw` loop before it.
+fn reach(cx: &FnCx<'_, X86>, at: u32) -> u32 {
+    let layout = cx.body.layout();
+    let k = layout.partition_point(|&b| cx.body.block(b).inst_range().end <= at);
+    let end = layout.get(k).map_or(at + 1, |&b| cx.body.block(b).inst_range().end);
+    (at + 1..end).find(|&raw| splits_block(cx, cx.body.inst(InstId::new(raw)))).unwrap_or(end)
+}
+
+/// Whether instruction `user` reads `v` as a view: an `fpext`, an
+/// `fptrunc` or a `ret` of it.
+fn reads_view(user: Inst<'_>, v: Value) -> bool {
+    match user.kind() {
+        InstKind::Cast { arg } => {
+            arg == v && matches!(user.opcode(), Opcode::FPExt | Opcode::FPTrunc)
+        }
+        InstKind::Ret { value } => value == Some(v),
+        _ => false,
+    }
+}
+
+/// Brackets the call sequence of `inst` (from `x87::call_result`): a
+/// result of an SSE type that an `fpext`, `fptrunc` or `ret` in its reach
+/// reads gets a 12-byte slot for `x`, stored by [`store_call_copy`].
+/// Whether the result is of an SSE type (then `x87` keeps no copy of
+/// its own).
+///
+/// # Errors
+/// What allocating the slot reports.
+pub fn call_result(cx: &mut FnCx<'_, X86>, inst: Inst<'_>, on: bool) -> CgResult<bool> {
+    cx.state.sse.pending = None;
+    if !is_sse(cx, inst.ty()) {
+        return Ok(false);
+    }
+    if on && !inst.uses().is_unused() {
+        let at = inst.id().raw();
+        let end = reach(cx, at);
+        let result = inst.result();
+        if (at + 1..end).any(|raw| reads_view(cx.body.inst(InstId::new(raw)), result)) {
+            let slot = cx.alloc_slot(12, 4)?;
+            cx.state.sse.pending = Some((at, slot, end));
+        }
+    }
+    Ok(true)
+}
+
+/// Stores `st0` at 80 bits to the slot [`call_result`] took, keeping
+/// `st0` (from `x87::store_call_result`, before the glue store).
+pub fn store_call_copy(cx: &mut FnCx<'_, X86>) {
+    if let Some(copy) = cx.state.sse.pending.take() {
+        put(cx, mc::fld_st(St::St0));
+        frame_inst(cx, copy.1, |m| mc::fstp_m(X87Size::T, m));
+        cx.state.sse.live.push(copy);
+    }
+}
+
+/// The slot of `x` if `v` is a view for instruction `user` (the struct
+/// comment).
+fn view(cx: &FnCx<'_, X86>, v: Value, user: u32, depth: u32) -> Option<FrameRef> {
+    let id = v.as_inst()?;
+    let inst = cx.body.inst(id);
+    match (inst.opcode(), inst.kind()) {
+        (Opcode::FPExt, InstKind::Cast { arg }) if depth > 0 => view(cx, arg, user, depth - 1),
+        (Opcode::FPTrunc, InstKind::Cast { arg }) if depth > 0 => {
+            let w = ext_operand(cx, arg)?;
+            (value_ty(cx, w) == inst.ty()).then(|| view(cx, w, user, depth - 1))?
+        }
+        (Opcode::Call, _) => {
+            let live = &cx.state.sse.live;
+            let k = live.binary_search_by_key(&id.raw(), |e| e.0).ok()?;
+            let (at, slot, end) = live[k];
+            (at < user && user < end).then_some(slot)
+        }
+        _ => None,
+    }
+}
+
+/// The operand of `v` if `v` is an `fpext`.
+fn ext_operand(cx: &FnCx<'_, X86>, v: Value) -> Option<Value> {
+    let inst = cx.body.inst(v.as_inst()?);
+    match inst.kind() {
+        InstKind::Cast { arg } if inst.opcode() == Opcode::FPExt => Some(arg),
+        _ => None,
+    }
+}
+
+/// The slot of `x` that `ret` `user` returns for `value`, if `value` is
+/// a view (from `x87::ret_copy`).
+pub fn ret_view(cx: &FnCx<'_, X86>, value: Value, user: Inst<'_>) -> Option<FrameRef> {
+    if cx.state.sse.live.is_empty() {
+        return None;
+    }
+    view(cx, value, user.id().raw(), VIEW_DEPTH)
 }
 
 // ---- the dispatch ----

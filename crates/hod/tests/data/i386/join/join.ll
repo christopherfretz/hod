@@ -23,9 +23,10 @@ target triple = "i686-unknown-linux-gnu"
 @addr = global i64 0
 @x = global i32 7
 @fmt = private constant [13 x i8] c"%d %08x%08x\0A\00"
-@fmt2 = private constant [10 x i8] c"%d %d %d\0A\00"
+@fmt2 = private constant [15 x i8] c"%d %d %d\0Adone\0A\00"
 
 declare i32 @printf(ptr, ...)
+declare ptr @llvm.threadlocal.address.p0(ptr)
 
 define internal void @show(i32 %k, ptr %p) #0 {
   %lo = load i32, ptr %p
@@ -104,7 +105,26 @@ define i32 @main() #0 {
   %sel = select i1 %eq1, i64 %q1, i64 %q2
   store i64 %sel, ptr %s
   call void @show(i32 9, ptr %s)
-  %ne = icmp ne i64 %pa, 0
+  ; Thread-locals' addresses as `ptrtoint` instructions to `i64`, against
+  ; `llvm.threadlocal.address` (as a constant expression it is
+  ; `tls:address-in-constant`, a refusal of every target).
+  %pt = ptrtoint ptr @t_ld to i64
+  %ta = call ptr @llvm.threadlocal.address.p0(ptr @t_ld)
+  %ti = ptrtoint ptr %ta to i32
+  %tz = zext i32 %ti to i64
+  %eq2 = icmp eq i64 %pt, %tz
+  %pd = ptrtoint ptr @t_gd to i64
+  %tb = call ptr @llvm.threadlocal.address.p0(ptr @t_gd)
+  %tj = ptrtoint ptr %tb to i32
+  %tk = zext i32 %tj to i64
+  %eq3 = icmp eq i64 %pd, %tk
+  store i64 1234567890123, ptr @t_gd
+  %tc = load i64, ptr %tb
+  store i64 %tc, ptr %s
+  call void @show(i32 10, ptr %s)
+  %ne0 = icmp ne i64 %pa, 0
+  %ne1 = and i1 %ne0, %eq2
+  %ne = and i1 %ne1, %eq3
   %z = zext i1 %ne to i32
   %sum = add i32 %x1, %x2
   %n = call i32 (ptr, ...) @printf(ptr @fmt2, i32 %sum, i32 %x3, i32 %z)

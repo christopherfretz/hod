@@ -243,7 +243,7 @@ fn the_packages_run_together_as_llc_s() {
                         }
                         let (_, reference) = &results[0];
                         assert!(
-                            reference.1.ends_with(b"done\n") || is_ir(program),
+                            reference.1.ends_with(b"done\n"),
                             "{label} ({}): llc's run did not finish: {}",
                             linker.0,
                             String::from_utf8_lossy(&reference.1)

@@ -675,7 +675,16 @@ the PLT call, §9.2), as every call does.
 - **x87 (§11).** An `invoke` is a terminator, so a barrier: no 80-bit
   copy lives across it; its `double` result is stored at 64 bits on the
   normal path. A landing pad starts a block (a new run). `resume` ends
-  one.
+  one. Measured in `llc -O0` assembly (19 and 22, CPU `generic` and
+  `pentiumpro`): a `double`/`float` product computed before an `invoke`
+  is stored rounded (`fstpl`/`fstps`) before the call and reloaded in
+  both successors; one computed and used inside the pad stays in an x87
+  register. `eh/callconv.ll` runs both shapes (§12 tests).
+- **Static model.** hod writes `llc`'s PIC encodings in the tables in
+  every relocation model (as on x86-64); `llc`'s static tables use
+  absolute encodings. A documented deviation: the static objects' tables
+  differ from `llc`'s by design and are tested by linking and running
+  (`-no-pie`, three linkers) and by decoding the LSDAs.
 - **Tests** (`crates/hod/tests/i386_eh.rs`, programs in
   `tests/data/i386/eh/`): C++ programs by clang 19 and 22 (throw and
   catch by value, reference and base class, rethrow, nested `try`,
@@ -692,3 +701,15 @@ the PLT call, §9.2), as every call does.
   count and LSDA count, the same prologue rules per FDE (without
   `ebx`/`esi`/`edi`, which hod always saves), the same relocation kinds
   of `.eh_frame`, `.gcc_except_table` and the `DW.ref` slot.
+  `eh/callconv.ll`: `invoke` of an `sret` callee (it pops the pointer),
+  of an `i64` result and of a `fastcc` callee, each throwing and
+  returning, at CPU `generic` and `pentiumpro`, and the x87 shapes above.
+  An `invoke` of `x86_stdcallcc`/`x86_fastcallcc` is refused under
+  `cc:x86_stdcallcc`/`cc:x86_fastcallcc`, as a call is. The LSDAs of
+  `basic.cpp`, `live.ll` and `callconv.ll` (static and PIC) decode as
+  `llc`'s: the encodings (PIC), per function the call sites (with or
+  without a pad, merged where consecutive ones are equal) and their
+  action chains with the catch types, cleanups and filters resolved
+  through the relocations. Which pad is not compared: where several
+  `invoke`s unwind to one IR pad, `llc` has one landing address and hod
+  one per `invoke`.

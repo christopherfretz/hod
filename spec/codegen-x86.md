@@ -77,6 +77,64 @@ byte), `movzx`. `select`: always a branch (`test al, 1`; `je`; `mov`).
 `freeze` is a copy. Casts among `Gpr` types: `trunc`, `ptrtoint`,
 `ptrtoaddr`, `bitcast` copy; `zext`, `inttoptr`, `sext` extend.
 
+### 4.1 Integer intrinsics (`bits`, WP-309)
+
+The integer intrinsics with a result of 1 to 32 bits (wider: §8), in
+the first operand's register; each operand is asked for once (a repeated
+operand shares its register), so at most three pool registers are
+pinned; the work registers are `eax`, `ecx`, `edx`. Every `cmov` of
+`hod_x64`'s shape is a branch, on every CPU. `popcnt`, `lzcnt`, `tzcnt`
+are never used (hod's feature model has `popcnt` but no `lzcnt`/`bmi`,
+and the back end reads no feature yet): the generic sequences below
+give the same results. `is_zero_poison` and `is_int_min_poison` are
+ignored (the defined result is computed). With `N` the width:
+
+- `bswap` (`N` = 16, 32; the verifier rejects other widths): `bswap`,
+  then `shr 32 - N`. `bitreverse`: `bswap` and the three mask-and-shift
+  swaps, then `shr 32 - N`. Both drop the unspecified bits.
+- `ctpop`: zero-extend, the SWAR sequence (`imul 0x01010101`, `shr 24`).
+- `ctlz`: `N` = 32: `bsr`; `jne`; `mov 63`; `xor 31`. `N` < 32: `shl 32 - N`,
+  `or` of bit `31 - N` (a zero counts `N`), `bsr`, `xor 31`.
+- `cttz`: `N` = 32: `bsf`; `jne`; `mov 32`. `N` < 32: `or` of bit `N`, `bsf`.
+- `abs`: sign-extend, `(x ^ s) - s` with `s = x >> 31` (the minimum maps to
+  itself).
+- `smax`, `smin`, `umax`, `umin`: both extended (sign or zero), `cmp`, a
+  branch over the copy of the second operand.
+- `sadd.sat`, `ssub.sat`, `uadd.sat`, `usub.sat`: `N` = 32: the operation's
+  own `OF` (the bound chosen from the first operand's sign before it) or
+  `CF`, a branch over the bound. `N` < 32: both extended, the exact 32-bit
+  result clamped to the width's bounds by compares and branches (`usub`:
+  negative means 0).
+- `sshl.sat`, `ushl.sat`: the amount zero-extended into `cl`, the value
+  moved to the top of the register (`shl 32 - N`), shifted left and back
+  (`sar`/`shr cl`); if that differs, the saturated value (all ones, or
+  `(x >> 31) ^ 0x7fffffff`); then `sar`/`shr 32 - N`. An amount of `N` or
+  more is poison.
+- `fshl`, `fshr`: a constant amount is taken modulo `N` (0: the first,
+  or second, operand unchanged); `N` = 32: `shld`/`shrd` (by `cl` for a
+  variable amount, which the instruction takes modulo 32). `N` < 32: the
+  second operand zero-extended in `eax`, the two halves shifted by `k`
+  and `N - k` and or-ed; a variable `k` is `c and (N - 1)` for a power of
+  two, else the remainder of a `div` by `N` (`c` zero-extended); `N` = 1
+  is the unchanged operand.
+- `scmp`, `ucmp` of operands of 1 to 32 bits: both extended, `cmp`,
+  `setg`/`seta` into `al`, `setl`/`setb` into `cl`, `sub al, cl`, `movsx`;
+  a result of 33 to 64 bits (class `Mem`) is stored as that word and its
+  sign. Operands wider than 32 bits stay `x86:intrinsic`.
+
+Where `llc` 19 and 22 (`-O0 -global-isel=0 -fast-isel=0`) branch inside
+these intrinsics (a basic-block label in the function; measured with
+`tests/data/i386/bits/gen.py --probe` and `tests/data/i386/i64_rest/branches.py`
+at `N` = 1, 7, 8, 16, 24, 31, 32): only at a CPU without `cmov`
+(`generic`): `ctlz` with `is_zero_poison` false at every `N` but 1;
+`cttz` with `is_zero_poison` false at 32 only (with it true, neither
+branches); `smax`, `smin`, `umax`, `umin` at every `N`
+but 1; `sadd.sat`, `uadd.sat`, `ssub.sat`, `usub.sat` at every `N` but 1
+(LLVM 22) or at every `N` (LLVM 19); `sshl.sat`, `ushl.sat` at every `N`
+but 1. With `cmov` (`pentium4`, `haswell`) none. `bswap`, `ctpop`,
+`bitreverse`, `abs`, `fshl`/`fshr` (constant or variable amount),
+`scmp`/`ucmp` never branch.
+
 ## 5. Memory (`mem`, `bytes`)
 
 An address is a stack slot's frame place, a symbol's absolute `disp32`
@@ -123,7 +181,7 @@ their values).
 | `x86:abi:musttail` | a `musttail` call | I6 |
 | `x86:varargs` | `va_start`, `va_copy`, `va_end`, `va_arg` | I11 |
 | `x86:dynamic-alloca` | a dynamic `alloca`, an over-aligned slot, `llvm.stacksave`/`stackrestore` | I11 |
-| `x86:intrinsic` | any other intrinsic | per family |
+| `x86:intrinsic` | any other intrinsic (the integer intrinsics of §4.1 and §8 are lowered; still refused: `scmp`/`ucmp` of operands wider than 32 bits, the `*.with.overflow` family, `eh.typeid.for`, `frameaddress`, `returnaddress`, `ubsantrap`, `ptrmask`, `is.constant`, `objectsize`, `clear_cache`, `readcyclecounter`, ...) | per family |
 | `x86:call` | a call with operand bundles, `callbr` | — |
 | `x86:blockaddress`, `x86:indirect-branch` | `blockaddress`, `indirectbr` | — |
 | `x86:stack-protector` | a function with a stack guard | — |

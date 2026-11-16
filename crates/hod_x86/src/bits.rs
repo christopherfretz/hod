@@ -410,8 +410,7 @@ fn funnel<'a>(
     // At one bit every amount is 0 modulo the width.
     let amount = crate::common::const_int(cx, c).or((bits == 1).then_some(0));
     if let Some(amount) = amount {
-        let k = amount & mask(bits);
-        let k = if bits == 32 { k } else { k % bits };
+        let k = (amount & mask(bits)) % bits;
         if k == 0 {
             let [r] = regs(cx, [if left { a } else { b }])?;
             return cx.finish(inst, r);

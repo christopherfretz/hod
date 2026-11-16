@@ -101,6 +101,61 @@ fn object_is_the_same_for_every_thread_count() {
     assert_eq!(compile(&small, max(8)), compile(&small, max(1)));
 }
 
+/// A module of `count` functions of three instructions, as the bench input
+/// `tiny-functions`; function `refused`, if any, has a feature hod refuses.
+fn tiny_module(count: usize, refused: Option<usize>) -> String {
+    let mut out = format!("{TRIPLE}@g = global i32 0, align 4\n");
+    for index in 0..count {
+        let attrs = u8::from(Some(index) == refused);
+        let _ = write!(
+            out,
+            "define i32 @f{index}(i32 %a) #{attrs} {{
+  %b = add i32 %a, {index}
+  store i32 %b, ptr @g, align 4
+  ret i32 %b
+}}
+"
+        );
+    }
+    let _ = write!(
+        out,
+        "attributes #0 = {{ nounwind \"target-features\"=\"{PLAIN}\" }}
+attributes #1 = {{ nounwind \"target-features\"=\"+neon,+strict-align\" }}
+"
+    );
+    out
+}
+
+/// As many threads as `max` allows, one per instruction: many chunks of
+/// few functions each, so that the calling thread lays chunks out while
+/// the workers still make later ones.
+fn every(max: usize) -> Threads {
+    Threads { max, per_thread: 1, ..Threads::default() }
+}
+
+// spec/cli.md "Threads" (WP-304): the calling thread lays the chunks out
+// in module order as the workers make them; a module of many small
+// functions gives the same object at every thread count, and the first
+// refusal in module order is the answer, wherever it is.
+#[test]
+fn many_small_functions_give_one_object_at_every_thread_count() {
+    let count = 3_000;
+    let input = tiny_module(count, None);
+    let one = compile(&input, max(1)).expect("hod compiles the module");
+    for threads in [2, 3, 4, 8, 24, 2, 24] {
+        let object = compile(&input, every(threads)).expect("hod compiles the module");
+        assert!(object == one, "{threads} threads give another object");
+    }
+    for refused in [0, 1, count / 2, count - 1] {
+        let input = tiny_module(count, Some(refused));
+        let expected =
+            feature_refusal("attr:target-feature-strict-align", refused, "+strict-align");
+        for threads in [1, 2, 4, 24] {
+            assert_eq!(compile(&input, every(threads)), expected, "{threads} threads, f{refused}");
+        }
+    }
+}
+
 /// Hands out at most `idle` tokens and counts what is held.
 #[derive(Debug)]
 struct Pool {

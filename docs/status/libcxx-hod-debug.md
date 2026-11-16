@@ -1,5 +1,76 @@
 # libc++ test suite through hod with `-g` (native AArch64)
 
+## At the candidate cd6ef6bc (WP-271, 2026-11-15, control and strict, `-g`)
+
+The 1.0 release candidate, hod `main` at `cd6ef6bc` (release binary,
+frozen copy, sha256
+`80138ec1411506d5b4048f1eac49e8b377f9eeedb21e70ae43e3c81ab094929c`),
+with kiln 1.2.0 at `8f93304ee`, LLVM `/usr/lib/llvm-22` behind the shim.
+Both runs are `scripts/libcxx-hod-debug.sh` at `cd6ef6bc` with its
+defaults (`--timeout 20 --mem-limit 3072 --no-fail`), `-j 3`
+(`HOD_JOBS=3`), off the machine's jobserver (`HOD_JOBSERVER_FIFO` set to
+a path that does not exist), `HOD_DEBUG_FLAGS` unset, so every compile
+carries `-g` (each log's header says `flags -g`):
+
+```
+env -u HOD_DEBUG_FLAGS HOD_JOBS=3 HOD_JOBSERVER_FIFO=<no such path> scripts/libcxx-hod-debug.sh control $D
+env -u HOD_DEBUG_FLAGS HOD_JOBS=3 HOD_JOBSERVER_FIFO=<no such path> HOD_SHIM=$S scripts/libcxx-hod-debug.sh strict $D
+python3 -I scripts/libcxx-hod-report.py $D/strict $D/strict.tsv $D/control.tsv
+```
+
+`$S` is a shim naming the frozen hod and kiln above. The suite is
+`llvmorg-22.1.8`, 9,247 tests.
+
+| | control (kiln + `llc`) | **strict at `cd6ef6bc`** |
+|---|---|---|
+| date (EST) | 2026-11-15 20:10:09 to 22:07:18 | 2026-11-15 20:47:25 to 22:27:36 |
+| total | 9,247 | 9,247 |
+| pass | 8,608 | 8,608 |
+| fail | 4 | 4 |
+| xfail | 46 | 46 |
+| xpass | 2 | 2 |
+| unsupported | 585 (24 driver) | 585 (24 driver) |
+| timeout | 2 | 2 |
+| killed, error | 0, 0 | 0, 0 |
+| wall time, `-j 3` | 7,027.3 s | 6,009.7 s |
+| `oom_kill` (cgroup `memory.events`) | 1 before, 1 after | 1 before, 1 after |
+| modules by hod | - | 7,226 of 7,226; 0 refused, 0 fallback, 0 outcome error |
+
+The two runs overlapped with each other and with the x86-64 runs on a
+shared host; the wall times are not a timing comparison. In strict, 7,218
+tests have objects, all of them built by hod, and 7,185 of those pass;
+the inputs are 392 bitcode and 6,834 text modules; hod's time summed over
+modules is 291.4 s.
+
+**Result: strict equals the `-g` control.** Two outcomes differ:
+
+- `std/atomics/atomics.types.operations/atomics.types.operations.wait/lost_wakeup.pass.cpp`:
+  PASS in the control (23.10 s), TIMEOUT in strict (22.79 s) at the 20 s
+  limit. Run alone at `HOD_JOBS=1`, twice per mode (2026-11-15 22:28 to
+  22:32 EST): at the 20 s limit, TIMEOUT in all four runs (control 21.80 s
+  and 21.44 s, strict 21.42 s and 21.23 s); at 120 s (`HOD_TIMEOUT=120`),
+  PASS in all four (control 25.35 s and 29.90 s, strict 24.97 s and
+  26.42 s). The test runs past the 20 s limit in both modes.
+- `ifstream.members/buffered_reads.pass.cpp`: TIMEOUT in the control,
+  PASS in strict.
+
+`offset_range.pass.cpp` times out in both modes. The failures (the four
+filesystem tests: `directory_iterator` and `recursive_directory_iterator`
+constructors, `fs.op.remove`, `fs.op.remove_all`) and the XPASSes
+(`rel_ops.depr_in_cxx20.verify.cpp`, `variant.hash/hash.depr.verify.cpp`)
+are the same in both modes. The two special modules of the 2026-11-14
+measurement below now pass in both modes:
+`map/PR28469_undefined_behavior_segfault.sh.cpp` (refused then,
+`debug:dbg-value-expr`) and `func.not_fn/not_fn.nttp.pass.cpp` (kiln's
+invalid `-g` module, FAIL in the control then).
+
+Not covered: hybrid was not run (strict refused nothing); the debug
+information quality (`cargo xtask debug trees`, below) was not sampled
+again at the candidate; only `-O0 -g` as the suite builds it. Record:
+`spec/landed/harness/WP-271.md`.
+
+## 2026-11-14 measurement (WP-210)
+
 WP-210: libc++'s test suite built with debug information (`-g`), the
 configuration of a development build, by kiln with `llc` (the control) and
 with hod in place of `llc` (hybrid: refused modules go to `llc`; strict: no

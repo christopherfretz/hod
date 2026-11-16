@@ -1,5 +1,67 @@
 # libc++ test suite through hod with `-g` (x86-64)
 
+## At the candidate cd6ef6bc (WP-271, 2026-11-15, control and strict, `-g`, whole suite under qemu)
+
+The 1.0 release candidate, hod `main` at `cd6ef6bc` (release binary,
+frozen copy, sha256
+`80138ec1411506d5b4048f1eac49e8b377f9eeedb21e70ae43e3c81ab094929c`),
+with kiln 1.2.0 at `8f93304ee`, LLVM `/usr/lib/llvm-22` behind the shim,
+target `x86_64-unknown-linux-gnu`. **The whole suite was executed**: all
+9,247 tests in 20 shards (`--shard K/20`, K = 1 to 20) per mode, every
+test binary run under `qemu-x86_64` on the AArch64 host, then the 20
+shards merged per mode. Every shard is `scripts/libcxx-hod-debug.sh` at
+`cd6ef6bc` with its x86-64 defaults (`--timeout 160
+--run-timeout-long 1920 --mem-limit 3072 --no-fail`), `-j 4`
+(`HOD_JOBS=4`), off the machine's jobserver, `HOD_DEBUG_FLAGS` unset, so
+every compile carries `-g`:
+
+```
+# for K in 1..20; control and strict ran as two streams side by side
+env -u HOD_DEBUG_FLAGS HOD_DEBUG_TARGET=x86_64 HOD_JOBS=4 HOD_JOBSERVER_FIFO=<no such path> scripts/libcxx-hod-debug.sh control $X --shard K/20
+env -u HOD_DEBUG_FLAGS HOD_DEBUG_TARGET=x86_64 HOD_JOBS=4 HOD_JOBSERVER_FIFO=<no such path> HOD_SHIM=$S scripts/libcxx-hod-debug.sh strict $X --shard K/20
+scripts/libcxx-hod-debug.sh merge $X control; scripts/libcxx-hod-debug.sh merge $X strict
+python3 -I scripts/libcxx-hod-report.py $X/strict $X/strict.tsv $X/control.tsv
+```
+
+| | control (kiln + `llc`) | **strict at `cd6ef6bc`** |
+|---|---|---|
+| date (EST) | 2026-11-15 20:48:13 to 22:53:16 | 2026-11-15 20:10:09 to 22:33:13 |
+| total | 9,247 | 9,247 |
+| pass | 8,607 | 8,607 |
+| fail | 6 | 6 |
+| xfail | 45 | 45 |
+| xpass | 3 | 3 |
+| unsupported | 585 | 585 |
+| timeout | 1 | 1 |
+| killed, error | 0, 0 | 0, 0 |
+| shards with exit 0 | 20 of 20 | 20 of 20 |
+| wall time, sum over shards | 7,167.4 s | 8,278.8 s |
+| `oom_kill` (cgroup `memory.events`) | 1 before, 1 after, every shard | 1 before, 1 after, every shard |
+| modules by hod | - | 7,226 of 7,226; 0 refused, 0 fallback, 0 outcome error |
+
+The two streams ran side by side, beside the native runs, on a shared
+host (load average 23 to 31); the wall times are not a timing comparison.
+In strict, 7,218 tests have objects, all of them built by hod, and 7,184
+of those pass; the inputs are 392 bitcode and 6,834 text modules; hod's
+time summed over modules is 338.7 s.
+
+**Result: strict equals the `-g` control, test by test: 0 changed
+outcomes** (the report and the per-shard joins agree), so nothing was
+rerun. The failures (the four filesystem tests,
+`fs.op.copy_file/copy_file_procfs.pass.cpp` and
+`syncstream/osyncstream/thread/several_threads.pass.cpp`), the XPASSes
+(`rel_ops.depr_in_cxx20.verify.cpp`, `std.manip/setfill_wchar_max.pass.cpp`,
+`variant.hash/hash.depr.verify.cpp`) and the timeout
+(`offset_range.pass.cpp`) are the same in both modes.
+
+Not covered: hybrid was not run (strict refused nothing); the debug
+information quality (`cargo xtask debug trees`, below) was not sampled
+again at the candidate; only `-O0 -g` as the suite builds it; the tests
+ran under qemu-user on an AArch64 host, not on x86-64 hardware. Record:
+`spec/landed/harness/WP-271.md`.
+
+## 2026-11-14 measurement (WP-210, census and shard 1 of 20)
+
 WP-210, x86-64 leg of `docs/status/libcxx-hod-debug.md`: libc++'s test
 suite built with debug information (`-g`) for `x86_64-unknown-linux-gnu`,
 by kiln with `llc` (the control) and with hod in place of `llc` (hybrid:

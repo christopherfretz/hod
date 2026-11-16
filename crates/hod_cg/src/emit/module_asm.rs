@@ -31,8 +31,8 @@ use hod_asm::module::{
 };
 use hod_ir::{Linkage, SymId, SymbolKind as IrKind, TlsModel};
 use hod_obj::{
-    A64Reloc, Binding, RelocKind, SectionId, Symbol, SymbolId, SymbolKind, SymbolPlace, Visibility,
-    X64Reloc,
+    A64Reloc, Binding, I386Reloc, RelocKind, SectionId, Symbol, SymbolId, SymbolKind, SymbolPlace,
+    Visibility, X64Reloc,
 };
 
 use super::section::{Found, Kind, NO_GROUP};
@@ -91,10 +91,12 @@ fn obj_type(t: SymbolType) -> SymbolKind {
 
 /// The object's kind of a relocation the text writes, for the target's
 /// architecture.
-fn reloc_kind(kind: AsmReloc, x64: bool) -> RelocKind {
+fn reloc_kind(kind: AsmReloc, arch: hod_ir::Arch) -> RelocKind {
     use hod_asm::x64::RefKind as X;
-    if !x64 {
-        return a64_reloc_kind(kind).into();
+    match arch {
+        hod_ir::Arch::X86_64 => {}
+        hod_ir::Arch::I386 => return i386_reloc_kind(kind).into(),
+        _ => return a64_reloc_kind(kind).into(),
     }
     let k = match kind {
         AsmReloc::X64(X::Pc32) => X64Reloc::Pc32,
@@ -109,16 +111,46 @@ fn reloc_kind(kind: AsmReloc, x64: bool) -> RelocKind {
         AsmReloc::Abs64 => X64Reloc::Abs64,
         AsmReloc::Abs32 => X64Reloc::Abs32,
         AsmReloc::Abs16 => X64Reloc::Abs16,
-        // The x86-64 assembler writes no AArch64 field.
-        AsmReloc::X64(X::None) | AsmReloc::Code(_) => X64Reloc::None,
+        // The x86-64 assembler writes no AArch64 or 32-bit field.
+        AsmReloc::X64(X::None) | AsmReloc::Code(_) | AsmReloc::X86(_) => X64Reloc::None,
     };
     k.into()
 }
 
+/// The 32-bit x86 relocation of a field (`spec/asm.md` §23). The kinds
+/// `hod_obj` has no name for are written by number: `R_386_GOT32` (3),
+/// `R_386_16` (20), `R_386_TLS_IE_32` (33), `R_386_TLS_LE_32` (34); the
+/// caller puts their addends in place ([`I386Reloc::field_size`] is
+/// unknown to the writer for them).
+fn i386_reloc_kind(kind: AsmReloc) -> I386Reloc {
+    use hod_asm::x86::RefKind as K;
+    match kind {
+        AsmReloc::X86(K::Abs32) | AsmReloc::Abs32 => I386Reloc::Abs32,
+        AsmReloc::X86(K::Pc32) => I386Reloc::Pc32,
+        AsmReloc::X86(K::Plt32) => I386Reloc::Plt32,
+        AsmReloc::X86(K::Got32) => I386Reloc::Other(3),
+        AsmReloc::X86(K::Got32X) => I386Reloc::Got32X,
+        AsmReloc::X86(K::GotOff) => I386Reloc::GotOff,
+        AsmReloc::X86(K::GotPc) => I386Reloc::GotPc,
+        AsmReloc::X86(K::TlsLe) => I386Reloc::TlsLe,
+        AsmReloc::X86(K::TlsLe32) => I386Reloc::Other(34),
+        AsmReloc::X86(K::TlsIe) => I386Reloc::TlsIe,
+        AsmReloc::X86(K::TlsIe32) => I386Reloc::Other(33),
+        AsmReloc::X86(K::TlsGotIe) => I386Reloc::TlsGotIe,
+        AsmReloc::X86(K::TlsGd) => I386Reloc::TlsGd,
+        AsmReloc::X86(K::TlsLdm) => I386Reloc::TlsLdm,
+        AsmReloc::X86(K::TlsLdo32) => I386Reloc::TlsLdo32,
+        AsmReloc::Abs16 => I386Reloc::Other(20),
+        // The 32-bit assembler writes no 64-bit field (`.quad` of a
+        // symbol is refused) and no AArch64 or x86-64 one.
+        AsmReloc::Abs64 | AsmReloc::X64(_) | AsmReloc::Code(_) => I386Reloc::None,
+    }
+}
+
 fn a64_reloc_kind(kind: AsmReloc) -> A64Reloc {
     match kind {
-        // The AArch64 assembler writes no x86-64 field.
-        AsmReloc::X64(_) => A64Reloc::None,
+        // The AArch64 assembler writes no x86 field.
+        AsmReloc::X64(_) | AsmReloc::X86(_) => A64Reloc::None,
         AsmReloc::Code(RefKind::Jump26) => A64Reloc::Jump26,
         AsmReloc::Code(RefKind::Call26) => A64Reloc::Call26,
         AsmReloc::Code(RefKind::Branch19) => A64Reloc::CondBr19,
@@ -129,6 +161,43 @@ fn a64_reloc_kind(kind: AsmReloc) -> A64Reloc {
         AsmReloc::Abs32 => A64Reloc::Abs32,
         AsmReloc::Abs16 => A64Reloc::Abs16,
     }
+}
+
+/// Puts the addend of each 32-bit relocation whose kind `hod_obj` writes
+/// by number ([`i386_reloc_kind`]) into its field, as `SHT_REL` keeps it,
+/// and leaves the relocation's own addend zero: the ELF32 writer stores
+/// addends of the kinds whose width it knows only.
+///
+/// # Errors
+/// `asm:operand/range` for an addend the field does not hold.
+fn i386_fields(code: &mut ModuleCode) -> CgResult<()> {
+    for s in &mut code.sections {
+        for r in &mut s.relocs {
+            if r.addend == 0 || i386_reloc_kind(r.kind).field_size().is_some() {
+                continue;
+            }
+            let width = if r.kind == AsmReloc::Abs16 { 2 } else { 4 };
+            let bits = 8 * width as u32;
+            if r.addend < -(1i64 << (bits - 1)) || r.addend >= 1i64 << bits {
+                return Err(refused(hod_asm::reason::operand::RANGE));
+            }
+            let at = usize::try_from(r.offset).map_err(|_| CgError::internal("a field offset"))?;
+            let Some(field) = s.bytes.get_mut(at..at + width) else {
+                return Err(CgError::internal("a relocation outside its section"));
+            };
+            field.copy_from_slice(&r.addend.to_le_bytes()[..width]);
+            r.addend = 0;
+        }
+    }
+    Ok(())
+}
+
+/// Whether a 32-bit thread-local field of the text is against symbol
+/// `sym` (an index into [`ModuleCode::symbols`]).
+fn tls_field(code: &ModuleCode, sym: usize) -> bool {
+    code.sections.iter().flat_map(|s| &s.relocs).any(|r| {
+        matches!(r.kind, AsmReloc::X86(k) if k.is_tls()) && r.target == Target::Symbol(sym as u32)
+    })
 }
 
 impl ModuleEmitter<'_> {
@@ -149,13 +218,16 @@ impl ModuleEmitter<'_> {
         let text = std::str::from_utf8(module.module_asm())
             .map_err(|_| refused(hod_asm::reason::other::LEXICAL))?;
         let mut code = ModuleCode::default();
-        let x64 = module.target().arch() == hod_ir::Arch::X86_64;
-        if x64 {
-            asm::assemble_module_x64(text, &mut code)
-        } else {
-            asm::assemble_module(text, Features::BASE, &mut code)
+        let arch = module.target().arch();
+        match arch {
+            hod_ir::Arch::X86_64 => asm::assemble_module_x64(text, &mut code),
+            hod_ir::Arch::I386 => asm::assemble_module_x86(text, &mut code),
+            _ => asm::assemble_module(text, Features::BASE, &mut code),
         }
         .map_err(|r| refused(r.0))?;
+        if arch == hod_ir::Arch::I386 {
+            i386_fields(&mut code)?;
+        }
         // A global of an explicit section that names a `@nobits` section
         // of the text's own: `llc` joins a zero one to it (and rejects an
         // initialized one); hod does not place a global in such a section.
@@ -192,7 +264,7 @@ impl ModuleEmitter<'_> {
                     }
                     Target::Section(j) => (self.obj.section_symbol(sections[j as usize]), r.addend),
                 };
-                self.obj.add_relocation(id, r.offset, reloc_kind(r.kind, x64), target, addend);
+                self.obj.add_relocation(id, r.offset, reloc_kind(r.kind, arch), target, addend);
             }
         }
         self.asm_deferred = Some(Box::new(deferred));
@@ -390,6 +462,11 @@ impl ModuleEmitter<'_> {
             }
             if let Some(t) = s.ty {
                 symbol.kind = obj_type(t);
+            } else if tls_field(code, ids.len()) {
+                // A thread-local field's symbol is `STT_TLS`, as LLVM's
+                // ELF writer marks it (32-bit x86 only: no x86-64 or
+                // AArch64 kind is one of these).
+                symbol.kind = SymbolKind::Tls;
             }
             let id = self.obj.add_symbol(symbol);
             // A symbol the text names is written even when nothing refers

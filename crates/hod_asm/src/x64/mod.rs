@@ -419,7 +419,7 @@ pub(crate) enum Prefix {
     Repne,
 }
 
-fn prefix(name: &str) -> Option<Prefix> {
+pub(crate) fn prefix(name: &str) -> Option<Prefix> {
     match name {
         "lock" => Some(Prefix::Lock),
         "rep" | "repe" | "repz" => Some(Prefix::Rep),

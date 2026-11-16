@@ -1,8 +1,8 @@
 //! `hod::compile_object` (`spec/cli.md` "The facade", WP-312): the
 //! object answered unwritten writes, through any sink, the bytes that
 //! `hod::compile_releasing` returns for the same compile, and answers the
-//! same refusals. Over every module of `tests/ir`, for both 64-bit
-//! targets, at one thread and at several.
+//! same refusals. Over every module of `tests/ir`, for every target
+//! (i686 included), at one thread and at several.
 
 use std::borrow::Cow;
 use std::io::Write;

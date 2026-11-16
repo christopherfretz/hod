@@ -74,6 +74,9 @@ pub fn cond_br(
 /// The type refusal of a condition that is no `Gpr` value; what the
 /// branches report.
 pub fn switch<'a>(cx: &mut FnCx<'a, X86>, switch: &Switch<'a>) -> CgResult<()> {
+    if crate::int::is_wide(cx, switch.cond) {
+        return crate::int::switch(cx, switch);
+    }
     if cx.class_of(switch.cond) != Class::Gpr {
         let ty = crate::common::value_ty(cx, switch.cond);
         return Err(crate::target::refusal_of(cx, ty));

@@ -31,7 +31,9 @@
 //! result in `edx:eax`. The 16 bytes keep `esp` 16-aligned at the call.
 
 use hod_cg::{CallTarget, CgResult, FnCx, FrameRef, Label, RuntimeFn, SymRef};
-use hod_ir::{Const, Inst, IntPredicate, MemFlags, Opcode, TypeId, Value, ValueKind};
+use hod_ir::{
+    Const, Inst, IntPredicate, Intrinsic, MemFlags, Opcode, Switch, TypeId, Value, ValueKind,
+};
 use hod_mc_x64 as mc;
 use hod_mc_x64::{Cond, Mem, Reg, Size};
 
@@ -45,9 +47,8 @@ use crate::target::X86;
 /// An encoder of `op r32, m32`.
 type RegMem = fn(Size, Reg, Mem) -> mc::Inst;
 
-/// An `i64` passed or returned by value, or the condition of a `switch`:
-/// what remains of WP-293's refusal until I6 (`abi.rs`) and the switch
-/// take 64-bit values.
+/// An `i64` passed or returned by value: what remains of WP-293's
+/// refusal until I6 (`abi.rs`) takes 64-bit values.
 pub const I64: &str = "x86:i64";
 /// An integer wider than 64 bits (`i65` and up, `i128`).
 pub const WIDE: &str = "x86:i64:wide";
@@ -396,8 +397,19 @@ fn signed(pred: IntPredicate) -> bool {
 /// only the carry, sign and overflow flags are read.
 fn compare(cx: &mut FnCx<'_, X86>, pred: IntPredicate, lhs: Value, rhs: Value) -> CgResult<Cond> {
     let bits = bits_of(cx, value_ty(cx, lhs))?;
-    let ext = if signed(pred) { Ext::Sign } else { Ext::Zero };
     let (a, b) = (cx.use_mem(lhs)?, cx.use_mem(rhs)?);
+    Ok(compare_slots(cx, pred, bits, a, b))
+}
+
+/// [`compare`] of the `bits`-bit integers at slots `a` and `b`.
+fn compare_slots(
+    cx: &mut FnCx<'_, X86>,
+    pred: IntPredicate,
+    bits: u32,
+    a: FrameRef,
+    b: FrameRef,
+) -> Cond {
+    let ext = if signed(pred) { Ext::Sign } else { Ext::Zero };
     if matches!(pred, IntPredicate::Eq | IntPredicate::Ne) {
         ld_hi(cx, ECX, a, bits, ext);
         ld_hi(cx, EDX, b, bits, ext);
@@ -405,7 +417,7 @@ fn compare(cx: &mut FnCx<'_, X86>, pred: IntPredicate, lhs: Value, rhs: Value) -
         op_m(cx, b, 0, |m| mc::xor_rm(Size::D, EAX, m));
         put(cx, mc::xor_rr(Size::D, ECX, EDX));
         put(cx, mc::or_rr(Size::D, EAX, ECX));
-        return Ok(alu::cond_of(pred));
+        return alu::cond_of(pred);
     }
     let (x, y, cond) = match pred {
         IntPredicate::Ult => (a, b, Cond::B),
@@ -422,7 +434,7 @@ fn compare(cx: &mut FnCx<'_, X86>, pred: IntPredicate, lhs: Value, rhs: Value) -
     ld(cx, EAX, x, 0);
     op_m(cx, y, 0, |m| mc::cmp_rm(Size::D, EAX, m));
     put(cx, mc::sbb_rr(Size::D, ECX, EDX));
-    Ok(cond)
+    cond
 }
 
 /// `%r = icmp <pred> %lhs, %rhs` of wide integers: the compare, `setcc`
@@ -547,6 +559,599 @@ pub fn cast<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, arg: Value) -> CgResult<
     let rd = cx.def_reg(inst)?;
     ld(cx, gp(rd), a, 0);
     cx.finish(inst, rd)
+}
+
+// ---- memory ----
+
+// ---- intrinsics (WP-306) ----
+
+/// The integer intrinsics lowered here when their result is wide.
+fn is_int_intrinsic(which: Intrinsic<'_>) -> bool {
+    use Intrinsic as I;
+    matches!(
+        which,
+        I::Bswap
+            | I::Ctpop
+            | I::Ctlz
+            | I::Cttz
+            | I::BitReverse
+            | I::Abs
+            | I::Smax
+            | I::Smin
+            | I::Umax
+            | I::Umin
+            | I::SaddSat
+            | I::UaddSat
+            | I::SsubSat
+            | I::UsubSat
+            | I::SshlSat
+            | I::UshlSat
+            | I::Fshl
+            | I::Fshr
+    )
+}
+
+/// Whether the call of intrinsic `which` as `inst` is this module's: one
+/// of the integer intrinsics with a result wider than 32 bits.
+#[inline]
+pub fn is_intrinsic(cx: &FnCx<'_, X86>, inst: Inst<'_>, which: Intrinsic<'_>) -> bool {
+    is_int_intrinsic(which) && wide_bits(cx, inst.ty()).is_some()
+}
+
+/// The mask of the low `bits` bits of a 32-bit word (`bits` 1 to 32).
+fn word_mask(bits: u32) -> u32 {
+    if bits >= 32 { u32::MAX } else { (1 << bits) - 1 }
+}
+
+/// `mov r, imm`.
+fn mov_imm(cx: &mut FnCx<'_, X86>, r: Reg, imm: u32) {
+    put(cx, mc::mov_ri(Size::D, r, i64::from(imm as i32)));
+}
+
+/// An immediate operand of a 32-bit instruction.
+fn imm(v: u32) -> i64 {
+    i64::from(v as i32)
+}
+
+/// `%r = call iN @llvm.<which>(...)`, `33 <= N <= 64` (`spec/codegen-x86.md`
+/// §8): the bit counts, byte and bit reversal, `abs`, min/max, the
+/// saturating arithmetic and shifts, the funnel shifts.
+///
+/// # Errors
+/// [`WIDE`]; what the operands report.
+pub fn intrinsic<'a>(
+    cx: &mut FnCx<'a, X86>,
+    inst: Inst<'a>,
+    which: Intrinsic<'a>,
+    args: &'a [Value],
+) -> CgResult<()> {
+    use Intrinsic as I;
+    let bits = bits_of(cx, inst.ty())?;
+    match (which, args) {
+        (I::Bswap | I::Ctpop | I::Ctlz | I::Cttz | I::BitReverse | I::Abs, &[x, ..]) => {
+            unary(cx, inst, which, bits, x)
+        }
+        (I::Smax | I::Smin | I::Umax | I::Umin, &[a, b]) => min_max(cx, inst, which, bits, a, b),
+        (I::SaddSat | I::SsubSat, &[a, b]) => signed_sat(cx, inst, which == I::SaddSat, bits, a, b),
+        (I::UaddSat | I::UsubSat, &[a, b]) => {
+            unsigned_sat(cx, inst, which == I::UaddSat, bits, a, b)
+        }
+        (I::SshlSat | I::UshlSat, &[a, b]) => shl_sat(cx, inst, which == I::SshlSat, bits, a, b),
+        (I::Fshl | I::Fshr, &[a, b, c]) => funnel(cx, inst, which == I::Fshl, bits, [a, b, c]),
+        _ => cx.bug("a wide integer intrinsic with the wrong operands"),
+    }
+}
+
+/// The population count of `r` in `r` (`t` written; flags written).
+fn pop32(cx: &mut FnCx<'_, X86>, r: Reg, t: Reg) {
+    put(cx, mc::mov_rr(Size::D, t, r));
+    put(cx, mc::shr_ri(Size::D, t, 1));
+    put(cx, mc::and_ri(Size::D, t, imm(0x5555_5555)));
+    put(cx, mc::sub_rr(Size::D, r, t));
+    put(cx, mc::mov_rr(Size::D, t, r));
+    put(cx, mc::and_ri(Size::D, t, imm(0x3333_3333)));
+    put(cx, mc::shr_ri(Size::D, r, 2));
+    put(cx, mc::and_ri(Size::D, r, imm(0x3333_3333)));
+    put(cx, mc::add_rr(Size::D, r, t));
+    put(cx, mc::mov_rr(Size::D, t, r));
+    put(cx, mc::shr_ri(Size::D, t, 4));
+    put(cx, mc::add_rr(Size::D, r, t));
+    put(cx, mc::and_ri(Size::D, r, imm(0x0f0f_0f0f)));
+    put(cx, mc::imul_rri(Size::D, r, r, imm(0x0101_0101)));
+    put(cx, mc::shr_ri(Size::D, r, 24));
+}
+
+/// The bits of `r` reversed, in `r` (`t` written; flags written).
+fn rev32(cx: &mut FnCx<'_, X86>, r: Reg, t: Reg) {
+    put(cx, mc::bswap(Size::D, r));
+    for (s, m) in [(4, 0x0f0f_0f0f), (2, 0x3333_3333), (1, 0x5555_5555)] {
+        put(cx, mc::mov_rr(Size::D, t, r));
+        put(cx, mc::shr_ri(Size::D, t, s));
+        put(cx, mc::and_ri(Size::D, t, imm(m)));
+        put(cx, mc::and_ri(Size::D, r, imm(m)));
+        put(cx, mc::shl_ri(Size::D, r, s));
+        put(cx, mc::or_rr(Size::D, r, t));
+    }
+}
+
+/// `edx:eax >>= k` for `k < 32` (`shrd`, `shr`); nothing for 0.
+fn shr_pair(cx: &mut FnCx<'_, X86>, k: u32) {
+    if k != 0 {
+        put(cx, mc::shrd_rri(Size::D, EAX, EDX, k as u8));
+        put(cx, mc::shr_ri(Size::D, EDX, k as u8));
+    }
+}
+
+/// A count (`ctlz`, `cttz`, `ctpop`) in `ecx` or `eax` as the result: the
+/// count in the low word, 0 in the high word.
+fn st_count(cx: &mut FnCx<'_, X86>, r: FrameRef, count: Reg) {
+    st(cx, count, r, 0);
+    st_imm(cx, r, 1, 0);
+}
+
+/// `bswap`, `ctpop`, `ctlz`, `cttz`, `bitreverse`, `abs` of a wide `x`.
+/// The counts branch (`bsr`/`bsf` of the word that decides); a reversal
+/// of `N < 64` bits reverses all 64 and shifts right by `64 - N`, which
+/// also drops the unspecified bits. `is_zero_poison` and
+/// `is_int_min_poison` are ignored: the defined result is computed.
+fn unary<'a>(
+    cx: &mut FnCx<'a, X86>,
+    inst: Inst<'a>,
+    which: Intrinsic<'a>,
+    bits: u32,
+    x: Value,
+) -> CgResult<()> {
+    use Intrinsic as I;
+    let a = cx.use_mem(x)?;
+    let r = cx.def_mem(inst)?;
+    let up = 64 - bits;
+    match which {
+        I::Bswap | I::BitReverse => {
+            ld(cx, EAX, a, 1);
+            ld(cx, EDX, a, 0);
+            if which == I::Bswap {
+                put(cx, mc::bswap(Size::D, EAX));
+                put(cx, mc::bswap(Size::D, EDX));
+            } else {
+                rev32(cx, EAX, ECX);
+                rev32(cx, EDX, ECX);
+            }
+            shr_pair(cx, up);
+            st_pair(cx, r, EAX, EDX);
+        }
+        I::Ctpop => {
+            ld(cx, EAX, a, 0);
+            pop32(cx, EAX, ECX);
+            ld_hi(cx, EDX, a, bits, Ext::Zero);
+            pop32(cx, EDX, ECX);
+            put(cx, mc::add_rr(Size::D, EAX, EDX));
+            st_count(cx, r, EAX);
+        }
+        I::Ctlz => {
+            // 64 for zero; the count of the high word if it is not zero,
+            // else 32 plus the low word's; less the 64 - N bits above.
+            let (low, done) = (cx.new_label(), cx.new_label());
+            ld_hi(cx, EDX, a, bits, Ext::Zero);
+            ld(cx, EAX, a, 0);
+            mov_imm(cx, ECX, 64);
+            put(cx, mc::test_rr(Size::D, EDX, EDX));
+            branch_cond(cx, Cond::E, low)?;
+            put(cx, mc::bsr_rr(Size::D, ECX, EDX));
+            put(cx, mc::xor_ri(Size::D, ECX, 31));
+            branch(cx, done)?;
+            cx.bind(low)?;
+            put(cx, mc::test_rr(Size::D, EAX, EAX));
+            branch_cond(cx, Cond::E, done)?;
+            put(cx, mc::bsr_rr(Size::D, ECX, EAX));
+            put(cx, mc::xor_ri(Size::D, ECX, 31));
+            put(cx, mc::add_ri(Size::D, ECX, 32));
+            cx.bind(done)?;
+            if up != 0 {
+                put(cx, mc::sub_ri(Size::D, ECX, imm(up)));
+            }
+            st_count(cx, r, ECX);
+        }
+        I::Cttz => {
+            // The low word's count, else 32 plus the high word's, whose
+            // bit N - 32 is set first (N for zero; 64 for a zero i64).
+            let (high, done) = (cx.new_label(), cx.new_label());
+            ld(cx, EAX, a, 0);
+            put(cx, mc::test_rr(Size::D, EAX, EAX));
+            branch_cond(cx, Cond::E, high)?;
+            put(cx, mc::bsf_rr(Size::D, ECX, EAX));
+            branch(cx, done)?;
+            cx.bind(high)?;
+            ld(cx, EDX, a, 1);
+            if bits < 64 {
+                put(cx, mc::or_ri(Size::D, EDX, imm(1 << (bits - 32))));
+            }
+            mov_imm(cx, ECX, 64);
+            put(cx, mc::test_rr(Size::D, EDX, EDX));
+            branch_cond(cx, Cond::E, done)?;
+            put(cx, mc::bsf_rr(Size::D, ECX, EDX));
+            put(cx, mc::add_ri(Size::D, ECX, 32));
+            cx.bind(done)?;
+            st_count(cx, r, ECX);
+        }
+        I::Abs => {
+            // (x ^ s) - s with s the sign: the minimum maps to itself.
+            ld_hi(cx, EDX, a, bits, Ext::Sign);
+            ld(cx, EAX, a, 0);
+            put(cx, mc::mov_rr(Size::D, ECX, EDX));
+            put(cx, mc::sar_ri(Size::D, ECX, 31));
+            put(cx, mc::xor_rr(Size::D, EAX, ECX));
+            put(cx, mc::xor_rr(Size::D, EDX, ECX));
+            put(cx, mc::sub_rr(Size::D, EAX, ECX));
+            put(cx, mc::sbb_rr(Size::D, EDX, ECX));
+            st_pair(cx, r, EAX, EDX);
+        }
+        _ => return cx.bug("a wide unary intrinsic without a lowering"),
+    }
+    Ok(())
+}
+
+/// `smax`, `smin`, `umax`, `umin`: the compare of the two, and a copy of
+/// the chosen operand on each side of a branch (as `select`).
+fn min_max<'a>(
+    cx: &mut FnCx<'a, X86>,
+    inst: Inst<'a>,
+    which: Intrinsic<'a>,
+    bits: u32,
+    lhs: Value,
+    rhs: Value,
+) -> CgResult<()> {
+    let pred = match which {
+        Intrinsic::Smax => IntPredicate::Sge,
+        Intrinsic::Smin => IntPredicate::Sle,
+        Intrinsic::Umax => IntPredicate::Uge,
+        _ => IntPredicate::Ule,
+    };
+    let (a, b) = (cx.use_mem(lhs)?, cx.use_mem(rhs)?);
+    let r = cx.def_mem(inst)?;
+    let cond = compare_slots(cx, pred, bits, a, b);
+    let (take_a, done) = (cx.new_label(), cx.new_label());
+    branch_cond(cx, cond, take_a)?;
+    copy(cx, r, b);
+    branch(cx, done)?;
+    cx.bind(take_a)?;
+    copy(cx, r, a);
+    cx.bind(done)?;
+    Ok(())
+}
+
+/// The signed bound of `N` bits on the side of the sign mask in `edx`
+/// (0: the maximum, -1: the minimum), into `edx:eax` (the high word
+/// sign-extended).
+fn signed_bound(cx: &mut FnCx<'_, X86>, bits: u32) {
+    put(cx, mc::mov_rr(Size::D, EAX, EDX));
+    put(cx, mc::not_r(Size::D, EAX));
+    put(cx, mc::xor_ri(Size::D, EDX, imm(word_mask(bits - 33))));
+}
+
+/// `sadd.sat`, `ssub.sat`: of 64 bits, `add`/`adc` (`sub`/`sbb`) and on
+/// overflow the bound of the true result's sign (the opposite of the
+/// wrapped sign); of fewer, the operands sign-extended (no 64-bit
+/// overflow is possible) and the bound when the sum does not fit `N` bits
+/// (its high word differs from itself sign-extended from `N - 32` bits).
+fn signed_sat<'a>(
+    cx: &mut FnCx<'a, X86>,
+    inst: Inst<'a>,
+    add: bool,
+    bits: u32,
+    lhs: Value,
+    rhs: Value,
+) -> CgResult<()> {
+    let (a, b) = (cx.use_mem(lhs)?, cx.use_mem(rhs)?);
+    let r = cx.def_mem(inst)?;
+    ld_hi(cx, ECX, b, bits, Ext::Sign);
+    ld_hi(cx, EDX, a, bits, Ext::Sign);
+    ld(cx, EAX, a, 0);
+    if add {
+        op_m(cx, b, 0, |m| mc::add_rm(Size::D, EAX, m));
+        put(cx, mc::adc_rr(Size::D, EDX, ECX));
+    } else {
+        op_m(cx, b, 0, |m| mc::sub_rm(Size::D, EAX, m));
+        put(cx, mc::sbb_rr(Size::D, EDX, ECX));
+    }
+    let done = cx.new_label();
+    if bits == 64 {
+        branch_cond(cx, Cond::No, done)?;
+        put(cx, mc::sar_ri(Size::D, EDX, 31));
+        put(cx, mc::not_r(Size::D, EDX));
+    } else {
+        put(cx, mc::mov_rr(Size::D, ECX, EDX));
+        alu::extend_to(cx, ECX, bits - 32, Ext::Sign);
+        put(cx, mc::cmp_rr(Size::D, ECX, EDX));
+        branch_cond(cx, Cond::E, done)?;
+        put(cx, mc::sar_ri(Size::D, EDX, 31));
+    }
+    signed_bound(cx, bits);
+    cx.bind(done)?;
+    st_pair(cx, r, EAX, EDX);
+    Ok(())
+}
+
+/// `uadd.sat`, `usub.sat`: the operands zero-extended, `add`/`adc`
+/// (`sub`/`sbb`); the bound (all ones, or 0) on a carry out of 64 bits, or
+/// for an add of fewer bits when bit `N` of the sum is set.
+fn unsigned_sat<'a>(
+    cx: &mut FnCx<'a, X86>,
+    inst: Inst<'a>,
+    add: bool,
+    bits: u32,
+    lhs: Value,
+    rhs: Value,
+) -> CgResult<()> {
+    let (a, b) = (cx.use_mem(lhs)?, cx.use_mem(rhs)?);
+    let r = cx.def_mem(inst)?;
+    ld_hi(cx, ECX, b, bits, Ext::Zero);
+    ld_hi(cx, EDX, a, bits, Ext::Zero);
+    ld(cx, EAX, a, 0);
+    if add {
+        op_m(cx, b, 0, |m| mc::add_rm(Size::D, EAX, m));
+        put(cx, mc::adc_rr(Size::D, EDX, ECX));
+    } else {
+        op_m(cx, b, 0, |m| mc::sub_rm(Size::D, EAX, m));
+        put(cx, mc::sbb_rr(Size::D, EDX, ECX));
+    }
+    let done = cx.new_label();
+    if add && bits < 64 {
+        put(cx, mc::test_ri(Size::D, EDX, imm(1 << (bits - 32))));
+        branch_cond(cx, Cond::E, done)?;
+    } else {
+        branch_cond(cx, Cond::Ae, done)?;
+    }
+    let bound = if add { u32::MAX } else { 0 };
+    mov_imm(cx, EAX, bound);
+    mov_imm(cx, EDX, bound);
+    cx.bind(done)?;
+    st_pair(cx, r, EAX, EDX);
+    Ok(())
+}
+
+/// `edx:eax <<= cl` (`shl`) or `>>= cl` (`lshr`, `ashr` by `signed`), for
+/// `cl < 64`: the pair instruction and the shift (which count modulo 32),
+/// then `test cl, 32` and the word move.
+fn shift_pair_cl(cx: &mut FnCx<'_, X86>, left: bool, signed: bool) -> CgResult<()> {
+    let done = cx.new_label();
+    if left {
+        put(cx, mc::shld_rrcl(Size::D, EDX, EAX));
+        put(cx, mc::shl_rcl(Size::D, EAX));
+    } else {
+        put(cx, mc::shrd_rrcl(Size::D, EAX, EDX));
+        put(cx, if signed { mc::sar_rcl(Size::D, EDX) } else { mc::shr_rcl(Size::D, EDX) });
+    }
+    put(cx, mc::test_ri(Size::B, ECX, 32));
+    branch_cond(cx, Cond::E, done)?;
+    if left {
+        put(cx, mc::mov_rr(Size::D, EDX, EAX));
+        mov_imm(cx, EAX, 0);
+    } else {
+        put(cx, mc::mov_rr(Size::D, EAX, EDX));
+        if signed {
+            put(cx, mc::sar_ri(Size::D, EDX, 31));
+        } else {
+            mov_imm(cx, EDX, 0);
+        }
+    }
+    cx.bind(done)
+}
+
+/// `sshl.sat`, `ushl.sat` by `k < N` (more is poison): the value moved to
+/// the top of 64 bits (`x << (64 - N)`, which drops the unspecified bits),
+/// shifted left by `k` and back right; when that differs from the moved
+/// value, the bound (of the value's sign, or all ones), else the shifted
+/// value moved back down. The moved value lives in a frame slot of its
+/// own; the shifted one in the result's (every operand is read first).
+fn shl_sat<'a>(
+    cx: &mut FnCx<'a, X86>,
+    inst: Inst<'a>,
+    signed: bool,
+    bits: u32,
+    lhs: Value,
+    rhs: Value,
+) -> CgResult<()> {
+    let up = 64 - bits;
+    let (a, k) = (cx.use_mem(lhs)?, cx.use_mem(rhs)?);
+    let top = cx.alloc_slot(8, 4)?;
+    let r = cx.def_mem(inst)?;
+    ld(cx, ECX, k, 0);
+    ld(cx, EAX, a, 0);
+    ld(cx, EDX, a, 1);
+    if up != 0 {
+        put(cx, mc::shld_rri(Size::D, EDX, EAX, up as u8));
+        put(cx, mc::shl_ri(Size::D, EAX, up as u8));
+    }
+    st_pair(cx, top, EAX, EDX);
+    shift_pair_cl(cx, true, signed)?;
+    st_pair(cx, r, EAX, EDX);
+    shift_pair_cl(cx, false, signed)?;
+    op_m(cx, top, 0, |m| mc::xor_rm(Size::D, EAX, m));
+    op_m(cx, top, 1, |m| mc::xor_rm(Size::D, EDX, m));
+    put(cx, mc::or_rr(Size::D, EAX, EDX));
+    let (bound, done) = (cx.new_label(), cx.new_label());
+    branch_cond(cx, Cond::Ne, bound)?;
+    ld(cx, EAX, r, 0);
+    ld(cx, EDX, r, 1);
+    shr_pair(cx, up);
+    st_pair(cx, r, EAX, EDX);
+    branch(cx, done)?;
+    cx.bind(bound)?;
+    if signed {
+        ld(cx, EDX, top, 1);
+        put(cx, mc::sar_ri(Size::D, EDX, 31));
+        signed_bound(cx, bits);
+    } else {
+        mov_imm(cx, EAX, u32::MAX);
+        mov_imm(cx, EDX, u32::MAX);
+    }
+    st_pair(cx, r, EAX, EDX);
+    cx.bind(done)
+}
+
+/// A word of a funnel shift's window: word `.1` of slot `.0`.
+type Word = (FrameRef, u32);
+
+/// One window of a funnel shift `[x, y, z]` by the count (`cl`, or the
+/// immediate `k < 32`): `first = op(x, y)` into word 2 of `scratch`,
+/// `second = op(y, z)` in `edx`, `op` being `shld` (`left`) or `shrd`.
+fn window(
+    cx: &mut FnCx<'_, X86>,
+    left: bool,
+    k: Option<u32>,
+    [x, y, z]: [Word; 3],
+    scratch: FrameRef,
+) {
+    let op = |cx: &mut FnCx<'_, X86>, dst: Reg, src: Reg| match (left, k) {
+        (true, None) => put(cx, mc::shld_rrcl(Size::D, dst, src)),
+        (false, None) => put(cx, mc::shrd_rrcl(Size::D, dst, src)),
+        (_, Some(0)) => {}
+        (true, Some(k)) => put(cx, mc::shld_rri(Size::D, dst, src, k as u8)),
+        (false, Some(k)) => put(cx, mc::shrd_rri(Size::D, dst, src, k as u8)),
+    };
+    ld(cx, EAX, x.0, x.1);
+    ld(cx, EDX, y.0, y.1);
+    op(cx, EAX, EDX);
+    st(cx, EAX, scratch, 2);
+    ld(cx, EAX, z.0, z.1);
+    op(cx, EDX, EAX);
+}
+
+/// `fshl`, `fshr` (`left`) of `N` bits by `c mod N`: `b` moved to the top
+/// of 64 bits (`B = b << (64 - N)`, kept in a frame slot of its own), then
+/// the 64-bit funnel shift of `a:B` by `k < N`, `fshr`'s result moved back
+/// down by `64 - N`. The 64-bit shift picks three words of `a:B` by bit 5
+/// of `k` (at compile time for a constant amount, else `test cl, 32` and
+/// a branch) and shifts them by `k mod 32` with `shld`/`shrd`. A variable
+/// amount of fewer than 64 bits is reduced modulo `N` by two `div`s
+/// (`edx:eax / N` of the high word, then of the low word).
+fn funnel<'a>(
+    cx: &mut FnCx<'a, X86>,
+    inst: Inst<'a>,
+    left: bool,
+    bits: u32,
+    [a, b, c]: [Value; 3],
+) -> CgResult<()> {
+    let up = 64 - bits;
+    let all = u64::MAX >> up;
+    let amount = const_u64(cx, c).map(|k| ((k & all) % u64::from(bits)) as u32);
+    let (sa, sb) = (cx.use_mem(a)?, cx.use_mem(b)?);
+    let sc = match amount {
+        Some(_) => None,
+        None => Some(cx.use_mem(c)?),
+    };
+    let s = cx.alloc_slot(12, 4)?;
+    let r = cx.def_mem(inst)?;
+    ld(cx, EAX, sb, 0);
+    ld(cx, EDX, sb, 1);
+    if up != 0 {
+        put(cx, mc::shld_rri(Size::D, EDX, EAX, up as u8));
+        put(cx, mc::shl_ri(Size::D, EAX, up as u8));
+    }
+    st_pair(cx, s, EAX, EDX);
+    let (a0, a1, b0, b1) = ((sa, 0), (sa, 1), (s, 0), (s, 1));
+    // [x, y, z] for k < 32 and for k >= 32.
+    let (small, large) =
+        if left { ([a1, a0, b1], [a0, b1, b0]) } else { ([b0, b1, a0], [b1, a0, a1]) };
+    match (amount, sc) {
+        (Some(k), _) => window(cx, left, Some(k % 32), if k < 32 { small } else { large }, s),
+        (None, Some(sc)) => {
+            if bits == 64 {
+                ld(cx, ECX, sc, 0);
+            } else {
+                ld_hi(cx, EAX, sc, bits, Ext::Zero);
+                put(cx, mc::xor_rr(Size::D, EDX, EDX));
+                mov_imm(cx, ECX, bits);
+                put(cx, mc::div_r(Size::D, ECX));
+                ld(cx, EAX, sc, 0);
+                put(cx, mc::div_r(Size::D, ECX));
+                put(cx, mc::mov_rr(Size::D, ECX, EDX));
+            }
+            let (big, join) = (cx.new_label(), cx.new_label());
+            put(cx, mc::test_ri(Size::B, ECX, 32));
+            branch_cond(cx, Cond::Ne, big)?;
+            window(cx, left, None, small, s);
+            branch(cx, join)?;
+            cx.bind(big)?;
+            window(cx, left, None, large, s);
+            cx.bind(join)?;
+        }
+        (None, None) => return cx.bug("a funnel shift without an amount"),
+    }
+    if left {
+        // hi = first, lo = second.
+        ld(cx, EAX, s, 2);
+        st_pair(cx, r, EDX, EAX);
+    } else {
+        // lo = first, hi = second.
+        ld(cx, EAX, s, 2);
+        shr_pair(cx, up);
+        st_pair(cx, r, EAX, EDX);
+    }
+    Ok(())
+}
+
+// ---- switch, ptradd index (WP-306) ----
+
+/// `switch` on an `i33`..`i64`: the low word in `eax`, the high word
+/// zero-extended in `edx`; per case `cmp eax, lo`·`jne next`·`cmp edx,
+/// hi`·`je case`; then the default.
+///
+/// # Errors
+/// [`WIDE`]; what the operand and the branches report.
+pub fn switch<'a>(cx: &mut FnCx<'a, X86>, switch: &Switch<'a>) -> CgResult<()> {
+    let bits = bits_of(cx, value_ty(cx, switch.cond))?;
+    let all = u64::MAX >> (64 - bits);
+    let case_value = |cx: &FnCx<'a, X86>, id| match cx.module.consts.get(id) {
+        Const::Int { value, .. } => value & all,
+        _ => 0,
+    };
+    if let Some(c) = const_u64(cx, switch.cond) {
+        let target = switch
+            .cases()
+            .find(|&(case, _)| case_value(cx, case) == c & all)
+            .map_or(switch.default, |(_, block)| block);
+        return crate::control::br(cx, target);
+    }
+    let a = cx.use_mem(switch.cond)?;
+    ld_hi(cx, EDX, a, bits, Ext::Zero);
+    ld(cx, EAX, a, 0);
+    for (case, block) in switch.cases() {
+        let value = case_value(cx, case);
+        let next = cx.new_label();
+        put(cx, mc::cmp_ri(Size::D, EAX, imm(value as u32)));
+        branch_cond(cx, Cond::Ne, next)?;
+        put(cx, mc::cmp_ri(Size::D, EDX, imm((value >> 32) as u32)));
+        let label = cx.block_label(block);
+        branch_cond(cx, Cond::E, label)?;
+        cx.bind(next)?;
+    }
+    crate::control::br(cx, switch.default)
+}
+
+/// Whether `index` is a `ptradd` index of this module (`i33`..`i64`).
+///
+/// # Errors
+/// [`WIDE`] for a wider index.
+pub fn index_ok(cx: &FnCx<'_, X86>, index: Value) -> CgResult<bool> {
+    if !is_wide(cx, index) {
+        return Ok(false);
+    }
+    bits_of(cx, value_ty(cx, index)).map(|_| true)
+}
+
+/// A `ptradd` index into `r`: a wide one's low word (the index truncated
+/// to the pointer's 32 bits, as `llc`), any other as `FnCx::put`.
+///
+/// # Errors
+/// What the operand reports.
+pub fn put_index(cx: &mut FnCx<'_, X86>, index: Value, r: hod_cg::PReg) -> CgResult<()> {
+    if !is_wide(cx, index) {
+        return cx.put(index, r);
+    }
+    let slot = cx.use_mem(index)?;
+    ld(cx, gp(r), slot, 0);
+    Ok(())
 }
 
 // ---- memory ----

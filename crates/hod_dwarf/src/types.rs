@@ -1560,7 +1560,7 @@ impl<'a> Writer<'a> {
         family: usize,
         name: &'a [u8],
     ) -> Result<(), Error> {
-        let field = |v: &DiIds<'a, DiSubprogram<'a>>| v.name();
+        let field = |v: DiIds<'a, DiSubprogram<'a>>| v.name();
         if matches!(family, fam::METHOD | fam::METHOD_QUALIFIED) {
             self.opt_name_of(plan.debug, n, name, field)
         } else {

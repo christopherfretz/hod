@@ -231,6 +231,7 @@ impl<'a> DebugStrings<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hod_ir::{DiFieldValue, DiId, DiKind, DiNamespace, DiNode};
 
     /// The hash spreads names that differ in a few digits over the
     /// buckets (by the low bits) and the tags (the top seven) as a random
@@ -285,9 +286,8 @@ mod tests {
 
     /// A store with namespaces named `names`, and each name's string read
     /// with its id.
-    fn store(names: &[&'static [u8]]) -> (hod_ir::DebugInfo, Vec<hod_ir::DiId>) {
-        use hod_ir::{DiFieldValue, DiKind, DiNode};
-        let mut d = hod_ir::DebugInfo::default();
+    fn store(names: &[&'static [u8]]) -> (DebugInfo, Vec<DiId>) {
+        let mut d = DebugInfo::default();
         let ids = names
             .iter()
             .map(|&name| {
@@ -299,8 +299,8 @@ mod tests {
         (d, ids)
     }
 
-    fn name<'a>(d: &'a hod_ir::DebugInfo, n: hod_ir::DiId) -> DiStr<'a> {
-        d.view::<hod_ir::DiNamespace>(n).unwrap().ids().name()
+    fn name(d: &DebugInfo, n: DiId) -> DiStr<'_> {
+        d.view::<DiNamespace>(n).unwrap().ids().name()
     }
 
     /// WP-318: a string of the store asked for by its id or by its bytes
@@ -308,6 +308,7 @@ mod tests {
     /// the store does not hold are pooled by their bytes alone; the
     /// indices and `.debug_str` are what the pool by bytes alone gives.
     #[test]
+    #[allow(clippy::many_single_char_names, reason = "two pools and two stores, side by side")]
     fn by_id_and_by_bytes_agree() {
         let (d, n) = store(&[b"int", b"x", b"y", b"a\0b"]);
         let mut p = DebugStrings::new();

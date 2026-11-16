@@ -14,8 +14,8 @@
 //! the writer needs is three side tables sorted by DIE.
 
 use hod_ir::{
-    DiFlags, DiId, DiKind, DiLabel, DiLocalVariable, DiLocation, DiNode, DiOp, DiSubprogram,
-    DiSubroutineType, ExprId, LocId, SpFlags,
+    DiFlags, DiId, DiIds, DiKind, DiLabel, DiLocalVariable, DiLocation, DiNode, DiOp, DiStr,
+    DiSubprogram, DiSubroutineType, ExprId, LocId, SpFlags,
 };
 
 use crate::Error;
@@ -998,6 +998,11 @@ impl<'a> UnitPlan<'a> {
     }
 }
 
+/// A subprogram's linkage name with its id (`Writer::strx_of`, WP-318).
+fn linkage_name<'a>(v: DiIds<'a, DiSubprogram<'a>>) -> DiStr<'a> {
+    v.linkage_name()
+}
+
 impl<'a> Writer<'a> {
     pub(crate) fn exprloc(&mut self) {
         write_uleb(&mut self.info, self.expr.len() as u64);
@@ -1075,9 +1080,7 @@ impl<'a> Writer<'a> {
                 write_uleb(&mut self.info, u64::from(sp.line));
             }
             if link {
-                self.strx_of::<DiSubprogram>(plan.debug, sp_id, sp.linkage_name, |v| {
-                    v.linkage_name()
-                })?;
+                self.strx_of(plan.debug, sp_id, sp.linkage_name, linkage_name)?;
             }
             self.ref4(spec);
             return Ok(());
@@ -1109,7 +1112,7 @@ impl<'a> Writer<'a> {
         self.addr_attrs(index, fd.code.size);
         self.exprloc();
         if link {
-            self.strx_of::<DiSubprogram>(plan.debug, sp_id, sp.linkage_name, |v| v.linkage_name())?;
+            self.strx_of(plan.debug, sp_id, sp.linkage_name, linkage_name)?;
         }
         if name {
             self.strx_of::<DiSubprogram>(plan.debug, sp_id, sp.name, |v| v.name())?;

@@ -792,11 +792,11 @@ impl<'a> Writer<'a> {
         debug: &'a DebugInfo,
         n: DiId,
         text: &'a [u8],
-        field: impl FnOnce(&DiIds<'a, R>) -> DiStr<'a>,
+        field: impl FnOnce(DiIds<'a, R>) -> DiStr<'a>,
     ) -> Result<(), Error> {
         match debug.view::<R>(n) {
             Some(v) => {
-                let s = field(&v.ids());
+                let s = field(v.ids());
                 debug_assert_eq!(s.text(), text, "the field read again is the decoded one");
                 self.strx_str(s)
             }
@@ -811,7 +811,7 @@ impl<'a> Writer<'a> {
         debug: &'a DebugInfo,
         n: DiId,
         text: &'a [u8],
-        field: impl FnOnce(&DiIds<'a, R>) -> DiStr<'a>,
+        field: impl FnOnce(DiIds<'a, R>) -> DiStr<'a>,
     ) -> Result<(), Error> {
         if text.is_empty() { Ok(()) } else { self.strx_of(debug, n, text, field) }
     }

@@ -318,7 +318,8 @@ operation that is no name of §16 is `asm:operand/option`; `prfm` and
 
 `assemble_module(text, features, &mut ModuleCode)` reads the module's
 text (AArch64 ELF; x86-64 reads it through `assemble_module_x64` since
-WP-204, §14) into sections, symbols and relocations, as
+WP-204, §14, i386 through `assemble_module_x86` since WP-307, §23) into
+sections, symbols and relocations, as
 `llc` (which emits module assembly before anything else) writes them.
 Text that is only symbol directives stays WP-075's (`spec/ir.md` §2.3).
 The emitter's side is `spec/codegen.md` §9.7.3.
@@ -1558,10 +1559,87 @@ vectors, aggregates, integers other than 1/8/16/32 bits, 64 only with
 `:goto` (`callbr`), `:call` (`invoke`, bundles), `:alternatives`; and the
 `asm:*` and `x86-mode:*` names above. Several direct outputs make a
 struct result whose `extractvalue` is `x86:aggregate` (I11) today.
-Module-level assembly stays refused for i386 (not wired).
+Module-level assembly is §23's (WP-307); the PIC and TLS specifiers it
+reads stay refused in a template.
 
 Tests: `crates/hod_asm/tests/llvm_mc_x86.rs` (150 bodies, 404 bytes and
 15 symbol fields equal `llvm-mc -triple=i686` 22's and 19's; the
 refusals), `crates/hod/tests/i386_asm.rs` (3 programs × LLVM 19, 22 ×
 CPU generic, pentium4: llc, hod and `Stress::ALL` runs equal under
 `qemu-i386`, ld, lld, mold; the refusals under both stress settings).
+
+## 23. Module-level assembly in 32-bit mode (`module.rs`, `x86.rs`, WP-307)
+
+### 23.1 What is read
+
+`assemble_module_x86` is §14's module assembler (`Isa::X86`): §9's
+sections, section stack, labels, symbol directives, data, alignment,
+fills and `.symver`, with §14's x86 spellings, and the instructions of
+§22 (`instruction_in`, `Mode::X86`). Differences from x86-64, each as
+`llvm-mc -triple=i686` (`llc` 19 and 22, default CPU) writes them:
+
+- Code sections align to 1 and pad with one-byte `nop`s (`0x90`): the
+  default i686 CPU has no long nop. (A module built with `-mcpu` of a CPU
+  that has one gets `llc`'s long nops; hod's padding is still `0x90`s.)
+- Data: `.long sym` is `R_386_32`, `.short`/`.word`/`.value sym`
+  `R_386_16`; `.quad sym` (an `llvm-mc` error) and `.byte sym` are
+  `asm:operand/symbol`.
+- An absolute symbol's value is written modulo 2^32 (`k = -1` is
+  `0xffffffff`, as `llc`'s).
+- A symbol that a TLS field names and no `.type` gives is `STT_TLS`.
+
+### 23.2 Instruction fields
+
+One symbol field per instruction: a memory displacement, an immediate
+(`$sym`, 32-bit fields only), or a branch or call target. Kinds:
+
+| written | kind |
+|---|---|
+| `sym`, `$sym` | `R_386_32` |
+| `call`/`jmp`/`jcc sym` | `R_386_PC32` (addend −4) |
+| `sym@PLT` as a branch or call target | `R_386_PLT32` |
+| `sym@GOT(%reg)` in a `mov` (`8B`) with a base register, no SIB | `R_386_GOT32X` |
+| `sym@GOT` anywhere else (`add`, no base, an index, `%esp`) | `R_386_GOT32` |
+| `sym@GOTOFF` | `R_386_GOTOFF` |
+| `_GLOBAL_OFFSET_TABLE_` (no specifier) | `R_386_GOTPC`, the addend plus the field's offset in the instruction |
+| `@ntpoff` / `@tpoff` | `R_386_TLS_LE` / `R_386_TLS_LE_32` |
+| `@indntpoff` / `@gotntpoff` / `@gottpoff` | `R_386_TLS_IE` / `R_386_TLS_GOTIE` / `R_386_TLS_IE_32` |
+| `@tlsgd` / `@tlsldm` / `@dtpoff` | `R_386_TLS_GD` / `R_386_TLS_LDM` / `R_386_TLS_LDO_32` |
+
+A specifier on an immediate is read as on a displacement (`$x@ntpoff`).
+`_GLOBAL_OFFSET_TABLE_` in data is `R_386_32`. Resolution follows §14:
+a branch to a local label in the section is filled in; an absolute or
+`@GOTOFF` field to a local label is relocated against its section with
+the label's offset in the addend; `@GOT` keeps the symbol (a `.L` name
+is `asm:operand/symbol`); a TLS field to a label of the text is
+`asm:symbol`. `SHT_REL`: every addend is written in place; for the
+kinds `hod_obj` has no field size for (`GOT32`, `TLS_LE_32`,
+`TLS_IE_32`, `R_386_16`) `hod_cg` writes it (`asm:operand/range` when it
+does not fit).
+
+### 23.3 Stays refused
+
+The x86-64 refusals under the same names (§9, §14; the shared
+`emit_asm.rs` tables are run on i386 too), §22's 32-bit-mode names
+(`asm:mnemonic/pushq`, `asm:operand/register` for 64-bit registers and
+`%rip`), and: `asm:operand/symbol` for a 16- or 8-bit symbol immediate
+and two symbol fields in one instruction; `asm:operand/specifier` for a
+specifier i686 does not have or not of the field (`@GOTPCREL`, `@PLT`
+outside a branch, `@GOTOFF` on a branch, a specifier on
+`_GLOBAL_OFFSET_TABLE_`, two specifiers); `asm:operand/syntax` for a
+specifier in data; `asm:operand/expression` for a difference of labels
+in a field (`$_GLOBAL_OFFSET_TABLE_+(.-1b)`).
+
+Linkers: mold links neither `R_386_TLS_LE_32` nor `R_386_TLS_IE_32`,
+lld not `R_386_TLS_IE_32` ("unknown relocation", for `llc`'s objects as
+for hod's); GNU ld links both.
+
+Tests: `hod_asm` `module::tests::i386_kinds`;
+`crates/hod_cg/tests/emit_asm.rs` `i386_reads_and_refuses_as_x86_64`;
+`crates/hod/tests/i386_module_asm.rs` (6 texts × non-PIC/PIC × LLVM 22,
+19: sections, symbols and relocations with their in-place addends equal
+`llc`'s; 3 programs whose module text and IR use each other's
+functions, data and thread-locals, and whose function-level assembly
+calls the module's text, run under `qemu-i386` by `llc`'s, hod's and
+`Stress::ALL` objects under GNU ld, lld and mold, non-PIC, PIE and
+shared, outputs equal `llc`'s; the refusals).

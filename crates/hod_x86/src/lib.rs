@@ -21,6 +21,7 @@ pub mod bytes;
 pub mod call;
 pub mod common;
 pub mod control;
+pub mod coro;
 pub mod dynstack;
 pub mod eh;
 pub mod frame;

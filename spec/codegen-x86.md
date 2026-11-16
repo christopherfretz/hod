@@ -194,7 +194,9 @@ their values).
 | `x86:varargs` | `va_start` outside a variadic function (§12.1) | — |
 | `x86:varargs:va-arg-type` | `va_arg` of an aggregate, a vector, an integer wider than 64 bits (§12.1) | — |
 | `x86:probe-stack` | a function with `"probe-stack"="inline-asm"` (§12.3) | — |
-| `x86:intrinsic` | any other intrinsic (the integer intrinsics of §4.1 and §8 are lowered; the overflow and small intrinsics of §13 and `eh.typeid.for` (§14) are lowered; still refused: every intrinsic none of them names) | per family |
+| `x86:intrinsic` | any other intrinsic (the integer intrinsics of §4.1 and §8 are lowered; the overflow and small intrinsics of §13, `eh.typeid.for` (§14) and the coroutine handle intrinsics of §15 are lowered; still refused: every intrinsic none of them names, including a coroutine body's) | per family |
+| `x86:coro-promise` | `llvm.coro.promise` whose alignment is not a constant power of two of at most 2^30, or whose direction is not a constant (§15) | — |
+| `coro:target` | a module with a coroutine body (`presplitcoroutine`), at the facade before any body is read (§15, `spec/codegen.md` §7.6) | WP-327 follow-up |
 | `x86:call` | a call with operand bundles, `callbr` | — |
 | `x86:blockaddress`, `x86:indirect-branch` | `blockaddress`, `indirectbr` | — |
 | `x86:stack-protector` | a function with a stack guard | — |
@@ -930,3 +932,39 @@ removed in front of the back end. `eh.typeid.for` is §14's.
   through the relocations. Which pad is not compared: where several
   `invoke`s unwind to one IR pad, `llc` has one landing address and hod
   one per `invoke`.
+
+## 15. Coroutines (`coro`, WP-327)
+
+The handle operations are lowered in any function, as LLVM's
+`coro-early` and `coro-cleanup` leave them on i386 (measured with `opt
+-passes='default<O0>'` + `llc`, 19 and 22). A coroutine body is not
+compiled yet: a module with `presplitcoroutine` is refused as
+`coro:target` at the facade (`spec/landed/codegen/WP-327.md` says why
+and what remains).
+
+- **The frame header.** The resume function's address is at offset 0
+  and the destroy function's at 4. Each is a `fastcc void(ptr frame)`
+  function: the frame in `ecx`, and the caller pops nothing.
+- **`coro.resume(p)` / `coro.destroy(p)`:** `mov r, [p + 0 | 4]`, then
+  the call sequence through `r` with `p` as the `fastcc` argument
+  (`FnCx::call_through`), as an `invoke` too.
+- **`coro.done(p)`:** `cmp dword [p], 0`, `sete` (into `cl` when the
+  result's register has no low byte), `movzx`.
+- **`coro.promise(p, align, from)`:** `lea r, [p ± alignTo(8, align)]`
+  (LLVM's `{ptr, ptr, i8}` field 2). The alignment is a constant power
+  of two of at most 2^30, and the direction is a constant; otherwise
+  `x86:coro-promise`.
+- **`coro.noop()`:** the address of `.LNoopCoro.Frame.Const`, 8 bytes
+  aligned to 8, two `R_386_32` words naming `__NoopCoro_ResumeDestroy`,
+  whose code is `ret`. The address is `lea r, [frame]` with `R_386_32`,
+  or under PIC it is formed from the GOT pointer with `R_386_GOTOFF`, as
+  `llc` writes it.
+- **The barrier rule (§11).** `coro.resume` and `coro.destroy` are
+  barriers: a `float` or `double` live across either is stored rounded
+  to its own width and loaded again after it. This is measured: `llc` 19
+  and 22 spill such a value as 8 bytes across both. Without the barrier,
+  `handles.ll` prints `0x0p+0` where `llc` prints `-0x1p-54`.
+
+Tests: `crates/hod/tests/i386_coro.rs` (`coro/handles.ll`, static and
+PIE, default CPU and `-mcpu=i686`, three linkers, plain and under
+`Stress::ALL`, against the `opt` + `llc` oracle).

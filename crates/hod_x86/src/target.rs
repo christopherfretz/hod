@@ -161,6 +161,8 @@ impl Target for X86 {
     /// `nop`, as `llc` pads i386 code.
     const PAD_BYTE: u8 = 0x90;
     const STACK_ALIGN: u32 = 16;
+    /// WP-327: `ret` (`crate::coro`).
+    const NOOP_CORO_FN: &'static [u8] = crate::coro::NOOP_FN;
 
     fn reg_info(&self) -> &RegInfo {
         &REG_INFO

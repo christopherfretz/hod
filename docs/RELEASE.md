@@ -289,4 +289,7 @@ said, in so many words, to cut 1.0:
 5. The gates of section 1 again on the bump commit (it changes only the
    version, so the evidence of `C` carries over to it).
 6. The tag (`v<version>` on the bump commit) is made by the owner, or on
-   the owner's word, and by no one else.
+   the owner's word, and by no one else. (1.0.0: the hosted CI run of the
+   bump commit found a defect of a test's driver, WP-280; its fix
+   follows the bump commit and the tag is on that last commit, after
+   the gates on it.)

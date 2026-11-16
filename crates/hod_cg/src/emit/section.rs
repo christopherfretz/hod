@@ -7,9 +7,9 @@
 use std::collections::HashMap;
 
 use hod_obj::elf::{
-    SHF_ALLOC, SHF_EXECINSTR, SHF_GNU_RETAIN, SHF_MERGE, SHF_STRINGS, SHF_TLS, SHF_WRITE,
-    SHF_X86_64_LARGE, SHT_FINI_ARRAY, SHT_INIT_ARRAY, SHT_NOBITS, SHT_NOTE, SHT_PREINIT_ARRAY,
-    SHT_PROGBITS,
+    SHF_ALLOC, SHF_EXCLUDE, SHF_EXECINSTR, SHF_GNU_RETAIN, SHF_MERGE, SHF_STRINGS, SHF_TLS,
+    SHF_WRITE, SHF_X86_64_LARGE, SHT_FINI_ARRAY, SHT_INIT_ARRAY, SHT_NOBITS, SHT_NOTE,
+    SHT_PREINIT_ARRAY, SHT_PROGBITS,
 };
 use hod_obj::{SectionId, SectionKind};
 
@@ -38,20 +38,24 @@ pub(crate) enum Kind {
     ThreadData,
     /// Zero-initialized thread-local data.
     ThreadBss,
+    /// A variable with an explicit section and `!exclude !{}`, neither
+    /// thread-local nor common (`SectionKind::getExclude`, §9.7.4,
+    /// WP-273): `SHF_EXCLUDE` without `SHF_ALLOC`.
+    Exclude,
 }
 
 impl Kind {
     /// `getELFSectionFlags`.
     pub(crate) const fn flags(self) -> u64 {
-        SHF_ALLOC
-            | match self {
-                Kind::Text => SHF_EXECINSTR,
-                Kind::ReadOnly => 0,
-                Kind::CString(_) => SHF_MERGE | SHF_STRINGS,
-                Kind::Const(_) => SHF_MERGE,
-                Kind::ReadOnlyWithRel | Kind::Data | Kind::Bss { .. } => SHF_WRITE,
-                Kind::ThreadData | Kind::ThreadBss => SHF_WRITE | SHF_TLS,
-            }
+        match self {
+            Kind::Exclude => SHF_EXCLUDE,
+            Kind::Text => SHF_ALLOC | SHF_EXECINSTR,
+            Kind::ReadOnly => SHF_ALLOC,
+            Kind::CString(_) => SHF_ALLOC | SHF_MERGE | SHF_STRINGS,
+            Kind::Const(_) => SHF_ALLOC | SHF_MERGE,
+            Kind::ReadOnlyWithRel | Kind::Data | Kind::Bss { .. } => SHF_ALLOC | SHF_WRITE,
+            Kind::ThreadData | Kind::ThreadBss => SHF_ALLOC | SHF_WRITE | SHF_TLS,
+        }
     }
 
     /// `getEntrySizeForKind`.
@@ -95,7 +99,9 @@ impl Kind {
             Kind::ThreadData => b".tdata",
             Kind::ThreadBss => b".tbss",
             Kind::Data => b".data",
-            Kind::ReadOnlyWithRel => b".data.rel.ro",
+            // `Exclude` is never placed by prefix (it needs an explicit
+            // section); LLVM's function ends on `.data.rel.ro`.
+            Kind::ReadOnlyWithRel | Kind::Exclude => b".data.rel.ro",
         }
     }
 }
@@ -269,7 +275,8 @@ impl Sections {
             Kind::Const(8) => 8,
             Kind::Const(16) => 9,
             Kind::Const(32) => 10,
-            Kind::Const(_) | Kind::CString(_) => return None,
+            // `Exclude` is only ever in an explicit section.
+            Kind::Const(_) | Kind::CString(_) | Kind::Exclude => return None,
         })
     }
 

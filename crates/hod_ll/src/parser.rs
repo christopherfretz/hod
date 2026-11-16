@@ -72,6 +72,9 @@ pub(crate) struct Parser<'a, 'm, L: Layering = NoLayer> {
     pub pending: Vec<Cow<'static, str>>,
     /// `!dbg` attachments of the entity being parsed.
     pub dbg: Vec<MdRef>,
+    /// The first `!exclude` of the entity being parsed and where it is
+    /// (`spec/ll.md` §3.3, WP-273).
+    pub exclude: Option<(MdRef, u32)>,
 
     /// Attribute groups, sorted by id.
     pub groups: Vec<AttrGroup>,
@@ -214,6 +217,7 @@ impl<'a, 'm, L: Layering> Parser<'a, 'm, L> {
             numbered_globals: Vec::new(),
             pending: scratch.pending,
             dbg: Vec::new(),
+            exclude: None,
             groups: Vec::new(),
             fa: FnAttrs::new(),
             fa_align: None,

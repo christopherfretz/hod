@@ -209,7 +209,12 @@ Read and not delivered, each because `spec/ir.md` says so:
   the defaults); `externally_initialized`; `no_sanitize_address`,
   `no_sanitize_hwaddress`, `sanitize_address_dyninit`; the attachments
   `!type`, `!vcall_visibility`, `!prof`, `!section_prefix`, `!annotation`
-  (`spec/ir.md` §2.2).
+  (`spec/ir.md` §2.2); `!exclude` on a function, and on a variable when
+  its node is a tuple with operands (WP-273: `llc` ignores both; a
+  variable's first `!exclude` whose node is a tuple without operands,
+  `!{}` or `distinct !{}`, is `Module::exclude`; one whose node is not a
+  tuple, or has a comment between its braces, is noted
+  `global-metadata:exclude`).
 - Every attribute `hod_ir`'s table classes as dropped (`spec/ir.md`
   §5.7), with its arguments.
 - In constant expressions: `inbounds`, `nuw`, `nusw` and `inrange(…)` on
@@ -237,7 +242,7 @@ anything has to, is given.
 | `personality-not-a-symbol` | a personality that is not the address of a symbol | no personality |
 | `global-code-model` | `code_model "…"` on a variable | nothing |
 | `global-sanitize-memtag` | `sanitize_memtag` on a variable | nothing |
-| `global-metadata:<kind>` | an attachment on a global value other than `!dbg` and the dropped ones | nothing |
+| `global-metadata:<kind>` | an attachment on a global value other than `!dbg`, `!exclude` and the dropped ones; `global-metadata:exclude` for a variable's first `!exclude` whose node is not a tuple (WP-273) | nothing |
 | `global-attributes` | kept attributes on a variable, in place or through a group | nothing |
 | `special-global:<name>` | a variable named `llvm.…` other than the four arrays of §5.9 (`llvm.global.annotations` outside section `llvm.metadata`) | the variable, as written |
 | `named-metadata:<name>` | module: named metadata other than those of §7 | nothing |

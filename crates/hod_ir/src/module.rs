@@ -457,6 +457,20 @@ impl<L: Layering> Module<L> {
         shared_mut::<L>(&mut self.shared, &mut self.fork).symbols.retain(sym, how)
     }
 
+    /// Marks variable `sym` as carrying `!exclude !{}` (§2.2, WP-273): an
+    /// attachment whose node has no operands. A new description of the
+    /// symbol clears the mark, so a producer marks it after describing
+    /// it.
+    ///
+    /// # Errors
+    /// `InvalidSymbol` when `sym` is not a variable.
+    ///
+    /// # Panics
+    /// If `sym` is not a symbol of this module.
+    pub fn exclude(&mut self, sym: SymId) -> IrResult<()> {
+        shared_mut::<L>(&mut self.shared, &mut self.fork).symbols.exclude(sym)
+    }
+
     /// The checks that need the whole module (§2.2 "End checks"); a
     /// producer calls it once, after the last symbol and constant.
     ///

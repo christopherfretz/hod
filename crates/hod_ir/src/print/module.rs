@@ -305,6 +305,9 @@ impl<'a, W: Write + ?Sized> Writer<'a, W> {
         if let Some(align) = align {
             write!(self.out, ", align {align}")?;
         }
+        if symbol.is_excluded() {
+            self.s(", !exclude !{}")?;
+        }
         self.dbg_variable(symbol.id())?;
         self.s("\n")
     }

@@ -369,6 +369,47 @@ define ptr @r() {
 }
 "#,
     },
+    Snippet {
+        // `!exclude !{}` (WP-273): with an explicit section, neither
+        // thread-local nor common, the variable's section has
+        // `SHF_EXCLUDE` without `SHF_ALLOC`; the type and the kinds a
+        // name implies stay those of the name; without a section, with
+        // operands, on a thread-local variable or a function, nothing
+        // changes.
+        name: "exclude",
+        flags: &[],
+        ir: r#"
+@__mason_meta = private constant [6 x i8] c"ab\00\FF\C3(", section ".mason.meta", align 8, !exclude !0
+@llvm.compiler.used = appending global [1 x ptr] [ptr @__mason_meta], section "llvm.metadata"
+@other = global i32 5
+@w = global i32 7, !exclude !0
+@c = constant i32 7, !exclude !0
+@zw = global [16 x i8] zeroinitializer, section ".zw", !exclude !0
+@zc = constant [16 x i8] zeroinitializer, !exclude !0
+@r = constant ptr @other, section ".rr", !exclude !0
+@tl = thread_local global i32 3, section ".mytls", !exclude !0
+$g = comdat any
+@g = linkonce_odr constant i32 9, section ".grp", comdat, !exclude !0
+@s1 = constant i32 1, section ".same", !exclude !0
+@s2 = constant i32 2, section ".same", !exclude !1
+@n1 = constant i32 1, section ".mixed", !exclude !0
+@n2 = constant i32 2, section ".mixed"
+@ne = constant i32 1, section ".ne", !exclude !2
+@first = constant i32 1, section ".first", !exclude !0, !exclude !2
+@bss = global i32 0, section ".bss.x", !exclude !0
+@ia = constant i32 1, section ".init_array.7", !exclude !0
+@nt = constant i32 1, section ".note.x", !exclude !0
+@u = internal constant [2 x i8] c"hi", section ".u", !exclude !0
+@llvm.used = appending global [1 x ptr] [ptr @u], section "llvm.metadata"
+@ext = external global i32, section ".ext", !exclude !0
+define ptr @f() section ".fx" !exclude !0 {
+  ret ptr @ext
+}
+!0 = !{}
+!1 = distinct !{}
+!2 = !{i32 1}
+"#,
+    },
 ];
 
 /// The module header of `arch` for `llc` of LLVM `major`.

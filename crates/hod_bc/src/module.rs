@@ -680,6 +680,9 @@ impl<'r, 'a> Build<'r, 'a> {
         for (index, &rec) in raw.globals.iter().enumerate() {
             let id = index as u64;
             dbg.clear();
+            // The first `!exclude` of a variable (WP-273): whether its
+            // node is a tuple without operands.
+            let mut exclude: Option<bool> = None;
             while let Some(&(value, kind, md_id, at)) = attached.get(next_attached) {
                 if value > id {
                     break;
@@ -692,6 +695,17 @@ impl<'r, 'a> Build<'r, 'a> {
                 match GlobalAttachment::of(name) {
                     GlobalAttachment::Debug => dbg.push(self.debug_node(md_id)),
                     GlobalAttachment::Dropped => {}
+                    // `llc` ignores it on a function.
+                    GlobalAttachment::Exclude if rec.code != mc::GLOBALVAR => {}
+                    GlobalAttachment::Exclude if exclude.is_some() => {}
+                    GlobalAttachment::Exclude => {
+                        if let Ok(ops) = self.tuple(md_id, at) {
+                            exclude = Some(ops.is_empty());
+                        } else {
+                            exclude = Some(false);
+                            self.notes.add(global_attachment_construct(name));
+                        }
+                    }
                     GlobalAttachment::Unsupported => {
                         self.notes.add(global_attachment_construct(name));
                     }
@@ -701,6 +715,11 @@ impl<'r, 'a> Build<'r, 'a> {
                 mc::GLOBALVAR => {
                     self.variable_dbg(index, &dbg, rec.pos)?;
                     self.variable(index, rec)?;
+                    if exclude == Some(true)
+                        && let Some(sym) = self.sym(index)
+                    {
+                        ir(rec.pos, self.module.exclude(sym))?;
+                    }
                 }
                 mc::FUNCTION => {
                     let defined = rec.ops(self.pool()).get(4) == Some(&0);

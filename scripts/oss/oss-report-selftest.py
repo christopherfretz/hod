@@ -42,7 +42,8 @@ TEXT = 'Which is: "inline_func"'
 ENTRY = ["abseil", "x86_64", "*", "*", TEST, "fails", TEXT, "out-of-line always_inline call", 'spec/cli.md "Always-inline"']
 
 
-def build(root, mode, status, output="", host="x86_64", target="aarch64", flavour="O0", leftovers=None):
+def build(root, mode, status, output="", host="x86_64", target="aarch64", flavour="O0", leftovers=None,
+          hod_path=None):
     d = os.path.join(root, "build", "abseil", f"{flavour}-{mode}")
     os.makedirs(os.path.join(d, "Testing", "Temporary"))
     passed = sum(1 for s in status.values() if s == "Passed")
@@ -51,6 +52,8 @@ def build(root, mode, status, output="", host="x86_64", target="aarch64", flavou
          "tests": {"passed": passed, "failed": len(status) - passed, "total": len(status)},
          "test_status": status, "tus": {"total": 1, "ok": 1, "failed": 0}, "leftovers": leftovers,
          "hod": None if mode == "llc" else {"objects": 1, "backends": {"hod": 1}, "not_offered": {}, "refusals": {}}}
+    if hod_path:
+        r["hod_path"] = hod_path
     with open(os.path.join(d, "report.json"), "w", encoding="utf-8") as f:
         json.dump(r, f)
     with open(os.path.join(d, "Testing", "Temporary", "LastTest.log"), "w", encoding="utf-8") as f:
@@ -157,8 +160,25 @@ def leftovers(tmp, ok):
     check("leftovers: the census shows them", "2 left running: absl_x_test" in log, log[-2000:])
 
 
+def carried(tmp, ok):
+    # `status --carried-from P` (docs/RELEASE.md section 5, rule 5): a row
+    # measured at P is carried over; a row at any other earlier hod is not.
+    for at, want in (("cafe1234", "carried over from cafe1234 (see release.md)"),
+                     ("beef5678", "no: measured before the candidate")):
+        root = os.path.join(tmp, f"carried-{at}")
+        build(root, "llc", ok)
+        build(root, "hod", ok, hod_path=f"/frozen/hod-{at}")
+        got, log = run(root, [], "status", "--candidate", "abcd0000", "--carried-from", "cafe1234")
+        row = next((ln for ln in log.splitlines() if ln.startswith("| abseil")), "")
+        check(f"carried over: a row at {at}", got == 0 and row.rstrip().endswith(f"| {want} |"), row or log[-2000:])
+    got, log = run(os.path.join(tmp, "carried-cafe1234"), [], "status", "--candidate", "abcd0000")
+    row = next((ln for ln in log.splitlines() if ln.startswith("| abseil")), "")
+    check("carried over: only with --carried-from", row.rstrip().endswith("| no: measured before the candidate |"),
+          row or log[-2000:])
+
+
 def main():
-    tmp = tempfile.mkdtemp(prefix="oss-report-selftest-")
+    tmp =tempfile.mkdtemp(prefix="oss-report-selftest-")
     try:
         ok = {TEST: "Passed", "other": "Passed"}
         bad = {TEST: "Failed", "other": "Passed"}
@@ -180,6 +200,7 @@ def main():
         got, log = run(root, [ENTRY[:5] + ["passes"] + ENTRY[6:]], "check")
         check("a malformed list: exit 2", got == 2 and "outcome" in log, log)
         leftovers(tmp, ok)
+        carried(tmp, ok)
     finally:
         shutil.rmtree(tmp)
     print(f"oss-report-selftest: {'FAILED: ' + ', '.join(FAILS) if FAILS else 'every case holds'}")

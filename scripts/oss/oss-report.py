@@ -13,7 +13,7 @@
                                     times (default 2) under the row's
                                     memory cap, appending the count of
                                     passes to the tree's reruns.jsonl
-  oss-report.py status [--out F] [--root DIR]... [--provenance F] [--candidate C]
+  oss-report.py status [--out F] [--root DIR]... [--provenance F] [--candidate C] [--carried-from P]
                                     docs/status/oss.md from every report
                                     (stdout without --out); with --root,
                                     the reports of each lane root named
@@ -22,7 +22,10 @@
                                     of hod commits, kiln commits and notes
                                     (scripts/oss/provenance-<target>.tsv);
                                     --candidate marks the rows measured at
-                                    another hod than the candidate's
+                                    another hod than the candidate's;
+                                    --carried-from marks those measured
+                                    at the previous candidate P as
+                                    carried over (RELEASE.md section 5)
   oss-report.py census [--out F]    the census page (the status rows and
                                     the refusals with their findings)
   oss-report.py check [--root DIR]...
@@ -392,6 +395,15 @@ def kiln_cell(*rs):
 # `status --candidate <commit>`: the release candidate's hod commit; a row
 # whose hod or strict build used another hod is marked as measured before it.
 CANDIDATE = None
+# `status --carried-from <commit>`: the previous candidate whose rows stand
+# for this one (docs/RELEASE.md section 5, rule 5): a row measured there is
+# marked as carried over instead of as measured before the candidate.
+CARRIED_FROM = None
+
+
+def same_commit(n, c):
+    n, c = n.lower(), c.lower()
+    return n.startswith(c) or c.startswith(n)
 
 
 def candidate_cell(*rs):
@@ -400,9 +412,11 @@ def candidate_cell(*rs):
         return "-"
     if CANDIDATE == "-":  # not chosen yet: every row is measured before it
         return "no: measured before the candidate"
-    c = CANDIDATE.lower()
-    at = all(n.lower().startswith(c) or c.startswith(n.lower()) for n in names)
-    return "yes" if at else "no: measured before the candidate"
+    if all(same_commit(n, CANDIDATE) for n in names):
+        return "yes"
+    if CARRIED_FROM and all(same_commit(n, CARRIED_FROM) for n in names):
+        return f"carried over from {CARRIED_FROM} (see release.md)"
+    return "no: measured before the candidate"
 
 
 def status_rows(reps, notes=None):
@@ -787,8 +801,10 @@ def main():
         s.add_argument("--provenance", help="the provenance file: hod commits of frozen copies, kiln, notes")
         s.add_argument("--candidate", help="the release candidate's hod commit: rows at another hod are marked"
                        " (`-`: not chosen yet, every row is marked)")
+        s.add_argument("--carried-from", help="the previous candidate's hod commit: its rows are marked as"
+                       " carried over (docs/RELEASE.md section 5, rule 5)")
     a = ap.parse_args()
-    global TARGET, CANDIDATE, EXPECTED
+    global TARGET, CANDIDATE, CARRIED_FROM, EXPECTED
     TARGET = a.target
     if a.cmd == "collect":
         return cmd_collect(a)
@@ -811,6 +827,7 @@ def main():
             reps = load_reports(oss)
         return cmd_check(a, reps, findings)
     CANDIDATE = a.candidate
+    CARRIED_FROM = a.carried_from
     if a.provenance:
         load_provenance(a.provenance)
     if a.root:
@@ -840,7 +857,11 @@ def main():
         "`kiln`: the kiln commit of the row's builds (the control's included)"
         + (f"; `at the candidate`: whether the hod and strict builds used the candidate's hod, "
            + ("which is not chosen yet" if CANDIDATE == "-" else f"`{CANDIDATE}`")
-           + " (a control does not depend on hod)." if CANDIDATE else "."),
+           + " (a control does not depend on hod)"
+           + (f"; `carried over from {CARRIED_FROM}`: measured at the previous candidate and standing"
+              " for this one under docs/RELEASE.md section 5, rule 5 (docs/status/release.md has the evidence)"
+              if CARRIED_FROM else "")
+           + "." if CANDIDATE else "."),
     ]
     hosts = sorted({r.get("host", "") for r in reps.values()} - {""})
     if hosts:

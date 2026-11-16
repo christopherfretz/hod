@@ -294,6 +294,39 @@ fn kilns_unit_comes_first_unchanged_and_hods_follows() {
     }
 }
 
+/// A `.mason.meta` whose size is not a multiple of 8 does not end with a
+/// whole unit: hod leaves it as `llc` writes it and puts its unit in a
+/// second section of that name.
+#[test]
+fn a_container_of_odd_size_is_left_alone() {
+    let text = "@m = private constant [6 x i8] c\"ab\\00\\FF\\C3(\", section \".mason.meta\", \
+                align 8, !exclude !{}\n";
+    for target in TARGETS {
+        let who = target.name();
+        let options = Options {
+            triple: Some(triple(target).to_owned()),
+            output_kind: OutputKind::Object,
+            ..Options::default()
+        };
+        let object = hod::compile_with(
+            text.as_bytes(),
+            &options,
+            &Settings::default(),
+            &mut Report::default(),
+        )
+        .unwrap_or_else(|e| panic!("hod: {e}"));
+        let all = sections(&object);
+        let metas: Vec<&Section> = all.iter().filter(|s| s.name == b".mason.meta").collect();
+        let [kiln, hod] = metas[..] else { panic!("{who}: two sections, found {}", metas.len()) };
+        let data = |s: &Section| object[s.offset as usize..][..s.size as usize].to_vec();
+        assert_eq!(data(kiln), b"ab\0\xff\xc3(", "{who}: the constant's bytes alone");
+        assert_eq!((hod.flags, hod.align), (SHF_EXCLUDE, 8), "{who}");
+        let units = units(&data(hod));
+        let [unit] = &units[..] else { panic!("{who}: one unit") };
+        check_hod_unit(unit, Model::Static, who);
+    }
+}
+
 #[test]
 fn the_unit_is_deterministic() {
     for target in TARGETS {

@@ -1426,8 +1426,11 @@ impl<'m> ModuleEmitter<'m> {
     /// hod's own `.mason.meta` unit (§9.7.5, WP-332), after every
     /// variable is placed: in the section an excluded variable of that
     /// name already made (kiln's container: its unit first, its bytes
-    /// unchanged), else in a new one; `SHT_PROGBITS`, flags exactly
-    /// `SHF_EXCLUDE`, alignment 8, no group, no relocation.
+    /// unchanged) when that section is aligned to 8 and its size is a
+    /// multiple of 8 (MT-10: then it ends with a whole unit), else in a
+    /// new section of its own, so that a section kiln made stays `llc`'s
+    /// byte for byte; `SHT_PROGBITS`, flags exactly `SHF_EXCLUDE`,
+    /// alignment 8, no group, no relocation.
     fn mason_unit(&mut self) -> CgResult<()> {
         let unit = mason::unit(crate::access::model_used(self.module, &self.options));
         let found = self.sections.explicit(
@@ -1439,7 +1442,16 @@ impl<'m> ModuleEmitter<'m> {
             mason::ALIGN,
         );
         let section = match found {
-            Found::Old(section) => section,
+            Found::Old(section)
+                if self.obj.section_align(section) >= mason::ALIGN
+                    && self.obj.section_size(section) % mason::ALIGN == 0 =>
+            {
+                section
+            }
+            Found::Old(section) => {
+                let kind = self.obj.section_kind(section);
+                self.obj.add_section(mason::SECTION, kind, 1).map_err(obj_err)?
+            }
             Found::New(new, pending) => {
                 let section = self.obj.add_section(mason::SECTION, new.kind, 1).map_err(obj_err)?;
                 self.sections.created(mason::SECTION, &pending, section, None);
@@ -1447,7 +1459,6 @@ impl<'m> ModuleEmitter<'m> {
             }
         };
         self.obj.raise_section_align(section, mason::ALIGN);
-        self.obj.align_to(section, mason::ALIGN, 0);
         self.obj.append(section, &unit);
         Ok(())
     }

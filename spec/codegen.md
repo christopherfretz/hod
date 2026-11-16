@@ -6983,10 +6983,12 @@ nothing else is left out for it.
   `sh_addralign` 8, in no group, no relocation section, never
   `SHF_GNU_RETAIN`. It is the section §9.7.4 made for excluded variables
   named `.mason.meta` with no group and not in `llvm.used` (kiln's
-  container, H-1) when the module has one, else a new section after
-  every other. The unit is appended once every variable is placed, at an
-  8-aligned offset: kiln's units come first and their bytes are
-  unchanged (H-2). (mortar's MT-10 reads a container as a sequence of
+  container, H-1) when the module has one whose alignment is at least 8
+  and whose size is a multiple of 8 (MT-10: it then ends with a whole
+  unit), else a new section of that name after every other (so a section
+  of another shape stays `llc`'s byte for byte, and hod never pads it).
+  The unit is appended once every variable is placed: kiln's units come
+  first and their bytes are unchanged (H-2). (mortar's MT-10 reads a container as a sequence of
   units and fixes no order between producers; this is hod's.)
 - The unit, 88 bytes, every integer little-endian in both ELF classes
   (MT-10): the header (`MASN`, major 1, minor 0, `unit_size` 88,

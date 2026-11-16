@@ -89,8 +89,8 @@ pub fn lower<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, site: &CallSite<'a>) ->
         Some(Intrinsic::StackSave | Intrinsic::StackRestore) => {
             unsupported(crate::frame::DYNAMIC_ALLOCA)
         }
-        Some(Intrinsic::ThreadLocalAddress | Intrinsic::ThreadPointer) => {
-            unsupported(crate::tls::TLS)
+        Some(which @ (Intrinsic::ThreadLocalAddress | Intrinsic::ThreadPointer)) => {
+            crate::tls::intrinsic(cx, inst, which, site.args())
         }
         Some(_) => unsupported(INTRINSIC),
     }

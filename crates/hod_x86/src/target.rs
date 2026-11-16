@@ -119,7 +119,7 @@ impl Target for X86 {
     }
 
     fn begin_function(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()> {
-        crate::pic::check_static(cx)?;
+        crate::pic::check(cx)?;
         frame::begin(cx)
     }
 
@@ -302,7 +302,7 @@ impl Target for X86 {
     }
 
     fn emit_call(&self, cx: &mut FnCx<'_, Self>, call: &CallEmit) -> CgResult<()> {
-        frame::emit_call(cx, call.target)
+        crate::pic::emit_call(cx, call.target)
     }
 
     fn dynamic_slot(

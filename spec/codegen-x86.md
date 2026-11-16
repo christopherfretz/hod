@@ -113,8 +113,6 @@ their values).
 | `x86:float` | a floating-point value, `fcmp`, `fneg` | I9 (`x87.rs`) |
 | `x86:vector` | a vector value, a vector `ptradd`, the element operations | I12 |
 | `x86:aggregate` | an aggregate value, `extractvalue`, `insertvalue`, a result in memory | I11 |
-| `x86:pic` | a relocation model other than static | I8 (`pic.rs`) |
-| `x86:tls` | a thread-local access, `llvm.threadlocal.address`, `llvm.thread.pointer` | I8 (`tls.rs`) |
 | `x86:eh` | `invoke`, `landingpad`, `resume`; a call that may unwind in a function that may unwind (no unwind tables) | I10 |
 | `x86:debug-info` | a module with debug information (`hod_cg`'s emitter) | I10 |
 | `x86:cf-protection` | `cf-protection-*` module flags (`hod_cg`'s `.note.gnu.property`) | — |
@@ -180,6 +178,129 @@ Still refused as `x86:i64`: such an integer passed or returned by value
 Intrinsics of these widths stay `x86:intrinsic`, as for every width: the
 `*.with.overflow` ones return the aggregate `{iN, i1}` (I11's
 `extractvalue`), and the bit counts and min/max are not lowered yet.
+
+## 9. Position-independent code and TLS (`pic`, `tls`; WP-299, design 0008 I8)
+
+### 9.1 The access choice
+
+Every symbol reference goes through `pic`: `common::sym_address` (an
+address in a register) is `pic::address`, `common::sym_inst` (a memory
+operand) is `pic::mem_inst`, `Target::emit_call` is `pic::emit_call`.
+The choice follows `llc` 19 and 22 (`X86Subtarget::classifyGlobalReference`
+for 32-bit ELF) on top of `hod_cg::sym_access`; functions and data alike:
+
+| relocation model | `dso_local` (local, hidden, protected, PIE definitions) | preemptible (declarations, default-visibility definitions in a shared object) |
+|---|---|---|
+| static, dynamic-no-pic: data, function address | `[sym]` / `lea rd, [sym]`, `R_386_32` | the same, `R_386_32` |
+| static: call | `call f`, `R_386_PC32` | `call f@PLT`, `R_386_PLT32`, no `ebx` |
+| PIC: data, function address | GOT pointer, `sym@GOTOFF(r)`, `R_386_GOTOFF` (addend folded) | GOT pointer, `mov r, sym@GOT(r)`, `R_386_GOT32X`, the addend added by `lea` |
+| PIC: call | `call f`, `R_386_PC32` | GOT pointer in `ebx`, `call f@PLT`, `R_386_PLT32` |
+
+A program (PIE) and a shared object differ only through `sym_access`
+(`dso_local` as LLVM implies it; a shared object's default-visibility
+definition is reached through its local alias, `hod_cg` §9.7). `nonlazybind`
+does not change the 32-bit call at `-O0` (`llc` 22 measured). Runtime
+functions are called as preemptible ones.
+
+### 9.2 The GOT pointer
+
+Computed where it is needed, never kept: `call .L` (`e8 00 00 00 00`, no
+relocation), `.L: pop r`, `lea r, [r + disp32]` with `R_386_GOTPC`
+against `_GLOBAL_OFFSET_TABLE_`, addend 3 (from `.L` to the field). `llc`
+writes the same call/pop with `addl` (no `__x86.get_pc_thunk.*` at
+`-O0`, both majors); `lea` keeps the flags. The sequence writes `r` and
+the word below `esp` only.
+
+- `pic::address` computes it in `rd` itself: it writes `rd` and nothing
+  else, flags kept, at any point of a lowering.
+- `pic::mem_inst` computes it in `eax` (a thread-local symbol's address
+  too, in every model): `eax` holds no value across instructions, and the
+  instruction built over the operand must not read `eax`, neither as its
+  register operand (a store of `al`/`ax`/`eax`, an operation, `xchg`,
+  `cmov`, two-operand `imul`, `xadd`, `bt*`, `shld`/`shrd` with `eax`)
+  nor implicitly (`mul`, `imul`, `div`, `idiv` of memory, `cmpxchg`,
+  `cmpxchg8b`). Such an instruction is an internal error
+  (`pic::reads_eax`), never emitted. No valid program reaches it today:
+  the only caller is `mem`'s load and store, whose register is a value's
+  or a temporary's, from the pool (`ebx`, `esi`, `edi`: `eax` is in
+  neither `pool` nor `holdable`, and a call's result is moved out of
+  `eax` at once, `hod_cg` §4.4) or `ecx`/`edx` (`scratch`);
+  `tests/data/i386/pic/eax.ll` stores call results, quotients and
+  arguments of each width to preemptible and hidden globals (also under
+  `Stress::ALL`). **A package that builds other instructions over a
+  symbol** (I7's `i64` halves, I9's x87 and SSE accesses, I11's atomics)
+  passes no `eax` operand and no instruction that uses `eax` implicitly:
+  it takes the symbol's address into another register
+  (`common::sym_address`) and addresses through it instead. The x87
+  escapes (`D8`..`DF`) and SSE forms name no general register and pass
+  the check.
+- `pic::emit_call` displaces the value `ebx` holds (`FnCx::take_reg`)
+  and computes it in `ebx` immediately before `call f@PLT` (i386 psABI).
+
+### 9.3 Tables and constants
+
+hod builds no jump tables (`switch` is a compare chain). There are no
+constant pools yet; I9's constants reach memory through `pic::mem_inst`
+with the pool's symbol, which gives `@GOTOFF` under PIC as `llc` does.
+
+### 9.4 Thread-local storage
+
+The thread pointer is `gs:[0]`. The model is `hod_cg::sym_access`'s
+(`TargetMachine::getTLSModel`: a program's are local or initial exec
+whatever `-ftls-model=` asks for; a shared object's are general or local
+dynamic unless initial exec is asked). Both ways in (a symbol operand,
+`llvm.threadlocal.address`) are `tls::address`, which writes `rd` only,
+the flags kept, except `llvm.threadlocal.address` of a dynamic model,
+lowered as a call (below); `llvm.thread.pointer` is `mov rd, gs:[0]`.
+
+| model | sequence | relocation |
+|---|---|---|
+| local exec | `mov rd, gs:[0]`; `lea rd, [rd + x@NTPOFF + addend]` | `R_386_TLS_LE` |
+| initial exec, static | `mov rd, [x@INDNTPOFF]` (`A1` for `eax`, else `8B` r/m=101) | `R_386_TLS_IE` |
+| initial exec, PIC | GOT pointer in `rd`; `mov rd, [rd + x@GOTNTPOFF]` (disp32) | `R_386_TLS_GOTIE` |
+| initial exec, then | `push t; mov t, gs:[0]; lea rd, [rd + t]; pop t`; `lea rd, [rd + addend]` (`t` = `ecx`, `edx` if `rd` is `ecx`) | — |
+| general dynamic | GOT pointer in `ebx`; `lea eax, [ebx*1 + x@TLSGD]` (`8D 04 1D`, SIB without base); `call ___tls_get_addr@PLT`; `mov rd, eax` | `R_386_TLS_GD`, `R_386_PLT32` |
+| local dynamic | GOT pointer in `ebx`; `lea eax, [ebx + x@TLSLDM]` (`8D 83`); `call ___tls_get_addr@PLT`; `lea rd, [eax + x@DTPOFF]` | `R_386_TLS_LDM`, `R_386_PLT32`, `R_386_TLS_LDO_32` |
+| dynamic, then | `lea rd, [rd + addend]` | — |
+
+The initial-exec loads are the forms GNU ld, lld and mold relax to local
+exec in a program; measured on linked programs (hod's objects): GNU ld
+and lld rewrite `mov rd, [rd + x@GOTNTPOFF]` and `mov rd, [x@INDNTPOFF]`
+into `mov rd, imm32` (`C7 C0+r`), mold keeps the GOT load (correct, not
+relaxed). An initial-exec access to a variable of a shared library is
+not relaxed by any linker and runs (`i386_tls.rs`).
+
+The dynamic models call `___tls_get_addr` (three underscores: the GNU
+entry with its argument in `eax`, `hod_cg::RuntimeFn::TlsGetAddrRegparm`)
+in the exact byte forms of `llc` 19 = 22 at `-O0` (design 0008 §3.3): the
+`lea` and the `call` adjacent, `ebx` the GOT pointer at the call, the
+relocations without addend. In a PIE GNU ld, lld and mold relax both to
+local or initial exec (no `___tls_get_addr` call is left in the linked
+`tls.c`). Under `RtLibUseGOT` (`clang -fno-plt`) `llc` writes `call
+*___tls_get_addr@GOT(%ebx)`; hod always writes the `@PLT` form, which the
+linkers accept and relax alike. The model is `hod_cg::sym_access`'s
+(`thread_local(<model>)`, the relocation model, `dso_local`, as `llc`).
+
+There are two ways in, as on x86-64:
+
+- `llvm.threadlocal.address` of a dynamic-model symbol is lowered as a
+  call: every register value displaced, `ebx` taken (`FnCx::take_reg`,
+  so the prologue saves it), the bare sequence, the result moved to the
+  result's register, the call recorded as a call site.
+- A dynamic-model symbol as a plain operand (`common::sym_address`, or
+  `pic::mem_inst` into `eax`) keeps `sym_address`'s contract (writes `rd`
+  only, flags kept, at any point of a lowering): `pushfd`; `lea esp,
+  [esp - (size - 4)]`; `eax`, `ecx`, `edx`, `ebx` but `rd` stored at
+  `[esp + gpr_at + 4i]`; `xmm0`..`xmm7` stored by `movups` at `[esp +
+  16i]` when the function has used an `xmm` register so far (none holds
+  a value otherwise; size 160, `gpr_at` 128; without them size 32,
+  `gpr_at` 0); the sequence; the result in `rd`; the restores; `lea esp,
+  [esp + size - 4]`; `popfd`. `esp` is 16-aligned at the call (it is in
+  a body, outgoing areas being multiples of 16); the CFA is `ebp`-based,
+  so no CFI row changes. The x87 stack must be empty there, as at any
+  call: a lowering that keeps x87 values on the stack across a symbol
+  materialization must not let that symbol be a dynamic-model
+  thread-local.
 
 ## 10. Inline assembly (`asm`, WP-301)
 

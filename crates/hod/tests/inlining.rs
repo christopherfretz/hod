@@ -1027,7 +1027,7 @@ fn frame_intrinsics_and_setjmp_behave_as_opt_inlined_them() {
         return;
     };
     // Not i686, whose back end refuses debug information (`x86:debug-info`)
-    // and `setjmp`'s `returns_twice` calls through PIC (`x86:pic`).
+    // (PIC it has compiled since WP-299).
     for target in [hod_testutil::Target::Aarch64, hod_testutil::Target::X86_64] {
         let dir = Scratch::new(&format!("hod-inlining-frame-{}", target.name()));
         let Some(toolchain) = Toolchain::for_target(&dir, target) else { continue };

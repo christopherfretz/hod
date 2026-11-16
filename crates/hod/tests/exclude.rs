@@ -32,8 +32,8 @@ const EXAMPLE: &str = include_str!("../../hod_cg/tests/data/exclude/mason_meta.l
 const BYTES: [u8; 16] =
     [b'M', b'M', b'v', b'1', 0, 0xff, 0xc3, b'(', 0x80, 0xfe, 0xff, 0, 0xe2, 0x82, 0, b'z'];
 
-/// The targets of this file: not i686, whose back end refuses PIC
-/// (`x86:pic`) and whose objects are ELF32, which [`sections`] does not read.
+/// The targets of this file: not i686, whose objects are ELF32, which
+/// [`sections`] does not read (its back end has compiled PIC since WP-299).
 const TARGETS: [Target; 2] = [Target::Aarch64, Target::X86_64];
 
 const SHT_PROGBITS: u32 = 1;

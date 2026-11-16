@@ -201,9 +201,12 @@ fn relocations(path: &Path, section: &str) -> Vec<(String, i64)> {
     found
 }
 
-/// Each function's sequence and range is relocated against the section
-/// symbol of its code plus its offset there, with or without
-/// `-function-sections`; the object verifies.
+/// Each sequence and range is relocated against the section symbol of
+/// its code plus its offset there: one sequence per function with
+/// `-function-sections`, and without it one for the run of functions
+/// in `.text`, at the first function's offset (every function of
+/// `prog.ll` has a subprogram and rows, `spec/dwarf.md` 4.5); the
+/// object verifies.
 #[test]
 fn relocated_against_section_symbols() {
     let Some((dwarfdump, nm)) = dwarf_tools() else { return };
@@ -215,17 +218,14 @@ fn relocated_against_section_symbols() {
         let mut line = relocations(&path, ".rela.debug_line");
         line.retain(|(s, _)| !s.starts_with(".debug"));
         let functions = support::functions(&nm, &path);
-        assert_eq!(line.len(), functions.len(), "one sequence per function: {line:?}");
-        let expected: Vec<(String, i64)> = functions
-            .iter()
-            .map(|(name, address, _)| {
-                if function_sections {
-                    (format!(".text.{name}"), 0)
-                } else {
-                    (".text".to_owned(), *address as i64)
-                }
-            })
-            .collect();
+        assert!(functions.len() > 1, "{functions:?}");
+        let expected: Vec<(String, i64)> = if function_sections {
+            functions.iter().map(|(name, _, _)| (format!(".text.{name}"), 0)).collect()
+        } else {
+            let first = functions.iter().map(|(_, address, _)| *address).min().unwrap();
+            vec![(".text".to_owned(), first as i64)]
+        };
+        assert_eq!(line.len(), expected.len(), "one sequence per run: {line:?}");
         let mut sorted = line.clone();
         sorted.sort_by_key(|(s, a)| (s.clone(), *a));
         let mut expected_sorted = expected.clone();

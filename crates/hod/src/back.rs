@@ -12,8 +12,8 @@
 
 use std::fmt;
 use std::ops::Range;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 use hod_cg::{CgError, Chunk, ModuleEmitter, Scratch, compile_function};
 use hod_ir::{Arch, Body, FnStr, Module, SymbolKind};
@@ -220,56 +220,165 @@ fn check_function_features(arch: Arch, string: &str) -> Result<(), (&'static str
     }
 }
 
-/// What one worker made: chunk index, then the chunk or the first
-/// function of it that failed.
-type Made = Vec<(usize, Result<Chunk, (usize, Failure)>)>;
+/// One chunk made: its code, or the first function of it that failed.
+type Made = Result<Chunk, (usize, Failure)>;
 
-/// A worker: takes the next chunk until none is left or a function before
-/// it failed.
-fn work(
-    module: &Module,
-    groups: &[Option<Group>],
-    bodies: &[Body],
+/// What the threads of a parallel compile share: the chunks and how far
+/// they have been taken, the first function known to have failed, and
+/// the chunks made but not yet laid out.
+struct Work<'a> {
+    module: &'a Module,
+    groups: &'a [Option<Group>],
+    bodies: &'a [Body],
     options: hod_cg::Options,
-    chunks: &[Range<usize>],
-    next: &AtomicUsize,
-    first_failure: &AtomicUsize,
-) -> Made {
-    // The forced panics of the containment tests: on a worker, or on the
-    // calling thread once the workers are started (both before any chunk
-    // is taken, so that the site is met whatever the threads' timing).
-    #[cfg(test)]
-    crate::contain::fault::hit(crate::contain::fault::Site::Worker);
-    #[cfg(test)]
-    crate::contain::fault::hit(crate::contain::fault::Site::Codegen);
-    let mut scratch = Scratch::new();
-    let mut made = Vec::new();
-    loop {
-        let index = next.fetch_add(1, Ordering::Relaxed);
-        // Chunks are taken in module order: once one starts after a
-        // failure, every later one does.
-        let Some(range) = chunks.get(index) else { break };
-        if range.start > first_failure.load(Ordering::Relaxed) {
-            break;
-        }
-        let mut chunk = Chunk::new();
-        let mut result = Ok(());
-        for at in range.clone() {
-            // A function after a known failure cannot be the answer.
-            if at > first_failure.load(Ordering::Relaxed) {
-                break;
-            }
-            if let Err(failure) =
-                compile_one(module, groups, &bodies[at], options, &mut scratch, &mut chunk)
-            {
-                first_failure.fetch_min(at, Ordering::Relaxed);
-                result = Err((at, failure));
-                break;
-            }
-        }
-        made.push((index, result.map(|()| chunk)));
+    chunks: Vec<Range<usize>>,
+    next: AtomicUsize,
+    first_failure: AtomicUsize,
+    board: Mutex<Board>,
+    /// Signalled when a chunk is put on the board or a worker breaks.
+    posted: Condvar,
+}
+
+/// The chunks the workers made, by chunk index, until the calling thread
+/// takes them to lay them out.
+struct Board {
+    made: Vec<Option<Made>>,
+    /// A worker ended in a panic: what it took will never be posted.
+    broken: bool,
+}
+
+impl Work<'_> {
+    /// The next chunk to compile, or `None` once every chunk is taken or
+    /// the next one starts after a known failure. Chunks are taken in
+    /// module order: once one starts after a failure, every later one
+    /// does, and none of them can hold the answer.
+    fn take(&self) -> Option<usize> {
+        let index = self.next.fetch_add(1, Ordering::Relaxed);
+        let range = self.chunks.get(index)?;
+        (range.start <= self.first_failure.load(Ordering::Relaxed)).then_some(index)
     }
-    made
+
+    /// Chunk `index` compiled with `scratch`.
+    fn compile(&self, index: usize, scratch: &mut Scratch) -> Made {
+        let mut chunk = Chunk::new();
+        for at in self.chunks[index].clone() {
+            // A function after a known failure cannot be the answer: the
+            // chunk stays short, and the failure is laid out before it.
+            if at > self.first_failure.load(Ordering::Relaxed) {
+                break;
+            }
+            if let Err(failure) = compile_one(
+                self.module,
+                self.groups,
+                &self.bodies[at],
+                self.options,
+                scratch,
+                &mut chunk,
+            ) {
+                self.first_failure.fetch_min(at, Ordering::Relaxed);
+                return Err((at, failure));
+            }
+        }
+        Ok(chunk)
+    }
+
+    fn board(&self) -> MutexGuard<'_, Board> {
+        // Nothing panics while the board is held.
+        self.board.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn post(&self, index: usize, made: Made) {
+        self.board().made[index] = Some(made);
+        self.posted.notify_one();
+    }
+
+    /// A worker thread: compiles the chunks it takes and posts them.
+    fn work(&self) {
+        // Breaks the board if this thread unwinds, so that the calling
+        // thread does not wait for a chunk it will never get.
+        struct Breaks<'b>(&'b Work<'b>);
+        impl Drop for Breaks<'_> {
+            fn drop(&mut self) {
+                if std::thread::panicking() {
+                    self.0.board().broken = true;
+                    self.0.posted.notify_one();
+                }
+            }
+        }
+        let _breaks = Breaks(self);
+        // The forced panic of the containment tests on a worker (before
+        // any chunk is taken, so that it is met whatever the timing).
+        #[cfg(test)]
+        crate::contain::fault::hit(crate::contain::fault::Site::Worker);
+        let mut scratch = Scratch::new();
+        while let Some(index) = self.take() {
+            let made = self.compile(index, &mut scratch);
+            self.post(index, made);
+        }
+    }
+
+    /// The calling thread: lays out the chunks in module order as they
+    /// are made, and compiles chunks itself while the next one to lay out
+    /// is not ready. Returns as `compile_bodies` does; on a worker's panic,
+    /// `Ok(Ok(()))` (the panic is the answer, raised when it is joined).
+    fn lay_out(
+        &self,
+        emitter: &mut ModuleEmitter<'_>,
+    ) -> Result<Result<(), CgError>, (usize, Failure)> {
+        // The forced panic of the containment tests on the calling thread
+        // once the workers are started, before any chunk is taken.
+        #[cfg(test)]
+        crate::contain::fault::hit(crate::contain::fault::Site::Codegen);
+        let mut scratch = Scratch::new();
+        let mut laid_out = Ok(());
+        let mut taking = true;
+        for index in 0..self.chunks.len() {
+            let made = loop {
+                let mut board = self.board();
+                if let Some(made) = board.made[index].take() {
+                    break made;
+                }
+                if board.broken {
+                    // The others stop at their next function.
+                    self.first_failure.store(0, Ordering::Relaxed);
+                    return Ok(Ok(()));
+                }
+                if taking {
+                    drop(board);
+                    match self.take() {
+                        Some(mine) => {
+                            let made = self.compile(mine, &mut scratch);
+                            if mine == index {
+                                break made;
+                            }
+                            self.board().made[mine] = Some(made);
+                        }
+                        None => taking = false,
+                    }
+                } else {
+                    // Every chunk is taken; the one laid out next is a
+                    // worker's, posted when made (the failure that ends
+                    // the taking is in this chunk or before it).
+                    drop(self.posted.wait(board).unwrap_or_else(PoisonError::into_inner));
+                }
+            };
+            match made {
+                // Every function before it compiled: this is the first
+                // failure in module order.
+                Err(failure) => return Err(failure),
+                // Once the emitter has refused, the rest of the chunks
+                // are still awaited (not added), so that a function's
+                // refusal is the answer as when every chunk was compiled
+                // first. Each chunk's tables are freed once it is added.
+                Ok(mut chunk) => {
+                    if laid_out.is_ok() {
+                        laid_out = emitter.add_chunk(&mut chunk);
+                    }
+                }
+            }
+        }
+        Ok(laid_out)
+    }
 }
 
 /// The work, in IR instructions, of each chunk the calling thread compiles
@@ -318,6 +427,12 @@ fn compile_serial(
 /// Compiles every body into chunks in module order, on `workers` threads,
 /// and adds them to `emitter` in that order.
 ///
+/// With more than one, the calling thread lays the chunks out in module
+/// order while the workers make the later ones (WP-304: laying out is
+/// serial, and on a module with debug information it takes as long as
+/// the parallel compile it used to follow), and compiles chunks itself
+/// whenever the next one is not ready.
+///
 /// # Errors
 /// The first function in module order that failed, with its index; then
 /// the emitter's error.
@@ -334,15 +449,24 @@ fn compile_bodies(
         return compile_serial(module, groups, bodies, options, emitter);
     }
     let chunks = plan(bodies, (work_size / (workers * CHUNKS_PER_WORKER)).max(1));
-    let next = AtomicUsize::new(0);
-    let first_failure = AtomicUsize::new(usize::MAX);
-    let run = || work(module, groups, bodies, options, &chunks, &next, &first_failure);
+    let work = Work {
+        module,
+        groups,
+        bodies,
+        options,
+        board: Mutex::new(Board { made: chunks.iter().map(|_| None).collect(), broken: false }),
+        chunks,
+        next: AtomicUsize::new(0),
+        first_failure: AtomicUsize::new(usize::MAX),
+        posted: Condvar::new(),
+    };
     // A panic on any of these threads reaches the caller of
     // `generate_with` only after `scope` has joined every one of them
     // (`spec/cli.md` "Embedding").
     #[cfg(test)]
     let plan = crate::contain::fault::current();
-    let mut made = std::thread::scope(|scope| {
+    std::thread::scope(|scope| {
+        let work = &work;
         let helpers: Vec<_> = (1..workers)
             .map(|_| {
                 #[cfg(test)]
@@ -350,43 +474,18 @@ fn compile_bodies(
                 scope.spawn(move || {
                     #[cfg(test)]
                     let _worker = crate::contain::fault::enter_worker(plan);
-                    run()
+                    work.work();
                 })
             })
             .collect();
-        let mut made = run();
+        let laid_out = work.lay_out(emitter);
         for helper in helpers {
-            match helper.join() {
-                Ok(more) => made.extend(more),
-                Err(panic) => std::panic::resume_unwind(panic),
+            if let Err(panic) = helper.join() {
+                std::panic::resume_unwind(panic);
             }
         }
-        made
-    });
-    made.sort_unstable_by_key(|&(index, _)| index);
-    let mut chunks = Vec::with_capacity(made.len());
-    let mut failed: Option<(usize, Failure)> = None;
-    for (_, result) in made {
-        match result {
-            Ok(chunk) => chunks.push(chunk),
-            Err((at, failure)) => {
-                if failed.as_ref().is_none_or(|&(first, _)| at < first) {
-                    failed = Some((at, failure));
-                }
-            }
-        }
-    }
-    if let Some(failure) = failed {
-        return Err(failure);
-    }
-    // Each chunk's tables are freed once it is added, as the object grows.
-    let mut laid_out = Ok(());
-    for mut chunk in chunks {
-        if laid_out.is_ok() {
-            laid_out = emitter.add_chunk(&mut chunk);
-        }
-    }
-    Ok(laid_out)
+        laid_out
+    })
 }
 
 /// A code-generation error as a decline (`spec/cli.md` "The back half"):

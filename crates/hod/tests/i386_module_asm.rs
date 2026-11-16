@@ -358,6 +358,31 @@ impl Tools {
         command.args(driver).args(flags).args(inputs).arg("-o").arg(out);
         checked(&format!("{} link of {}", linker.0, out.display()), &mut command);
     }
+
+    /// Links `object` with the driver as `shape` says (a non-PIE
+    /// executable, a PIE, or a shared library that a PIE uses) and
+    /// returns the program, named `tag`.
+    fn link_shape(
+        &self,
+        scratch: &Scratch,
+        linker: &(&str, PathBuf),
+        shape: &str,
+        driver: &Path,
+        object: &Path,
+        tag: &str,
+    ) -> PathBuf {
+        let exe = scratch.join(tag);
+        match shape {
+            "exe" => self.link(scratch, linker, &["-no-pie"], &[driver, object], &exe),
+            "pie" => self.link(scratch, linker, &["-pie"], &[driver, object], &exe),
+            _ => {
+                let lib = scratch.join(format!("lib{tag}.so"));
+                self.link(scratch, linker, &["-shared"], &[object], &lib);
+                self.link(scratch, linker, &["-pie"], &[driver, &lib], &exe);
+            }
+        }
+        exe
+    }
 }
 
 // spec/asm.md §23: programs whose module assembly and IR use each
@@ -428,26 +453,7 @@ fn module_assembly_programs_run_as_llc_s() {
                     let mut results = Vec::new();
                     for (who, object) in &built {
                         let tag = format!("{label}-{shape}-{who}-{}", linker.0);
-                        let exe = scratch.join(&tag);
-                        match *shape {
-                            "exe" => {
-                                tools.link(
-                                    &scratch,
-                                    linker,
-                                    &["-no-pie"],
-                                    &[&driver, object],
-                                    &exe,
-                                );
-                            }
-                            "pie" => {
-                                tools.link(&scratch, linker, &["-pie"], &[&driver, object], &exe);
-                            }
-                            _ => {
-                                let lib = scratch.join(format!("lib{tag}.so"));
-                                tools.link(&scratch, linker, &["-shared"], &[object], &lib);
-                                tools.link(&scratch, linker, &["-pie"], &[&driver, &lib], &exe);
-                            }
-                        }
+                        let exe = tools.link_shape(&scratch, linker, shape, &driver, object, &tag);
                         results.push((*who, run(&tools.qemu, &exe)));
                         programs_built += 1;
                     }

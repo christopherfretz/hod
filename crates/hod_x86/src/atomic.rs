@@ -41,8 +41,9 @@
 //! [`LIBATOMIC`]: a size other than 1, 2, 4, 8 bytes, or an access below
 //! its natural alignment (`llc` calls libatomic's generic routines:
 //! `hod_cg`'s runtime table has their 64-bit signatures only).
-//! [`FLOAT_OP`]: `fadd`, `fsub`, `fmax`, `fmin` (and the other floating
-//! operations). [`OP`]: `uinc_wrap`, `udec_wrap`, `usub_cond`,
+//! [`FLOAT_OP`]: `fmax`, `fmin` (and the other floating operations but
+//! `fadd` and `fsub`, which are loops around an x87 operation, see
+//! `rmw_float`): `llc` calls libm's `fmax`/`fmin` inside its loop. [`OP`]: `uinc_wrap`, `udec_wrap`, `usub_cond`,
 //! `usub_sat`. [`TYPE`]: another type (`x86_fp80`, vectors, ...).
 
 use hod_cg::{CgResult, FnCx, FrameRef, Label};
@@ -51,7 +52,7 @@ use hod_ir::{
     X86Features,
 };
 use hod_mc_x64 as mc;
-use hod_mc_x64::{Cond, Mem, Reg, Size};
+use hod_mc_x64::{Cond, FpSize, Mem, Reg, Size, X87Size};
 
 use crate::common::{
     EAX, ECX, EDX, ESP, branch_cond, frame_inst, gp, load_gpr, put, store_gpr, unsupported,
@@ -246,6 +247,7 @@ fn check_op(op: RmwOp, s: Shape) -> CgResult<()> {
         {
             Ok(())
         }
+        RmwOp::FAdd | RmwOp::FSub if s.float => Ok(()),
         RmwOp::UIncWrap | RmwOp::UDecWrap | RmwOp::USubCond | RmwOp::USubSat => unsupported(OP),
         _ => unsupported(FLOAT_OP),
     }
@@ -266,6 +268,9 @@ pub fn rmw<'a>(
 ) -> CgResult<()> {
     let s = shape(cx, inst.ty(), mem.align())?;
     check_op(op, s)?;
+    if matches!(op, RmwOp::FAdd | RmwOp::FSub) {
+        return rmw_float(cx, inst, op, ptr, value, s);
+    }
     if s.bytes == 8 {
         return rmw_wide(cx, inst, op, ptr, value);
     }
@@ -309,6 +314,62 @@ pub fn rmw<'a>(
     let rd = cx.def_reg(inst)?;
     from_eax(cx, gp(rd), size);
     cx.finish(inst, rd)
+}
+
+/// `atomicrmw fadd`/`fsub` of `float` (4 bytes) or `double` (8 bytes),
+/// as `llc`'s loop (measured, 19 and 22, `-O0`): the old bits pushed,
+/// `fld` at the type, `fadd`/`fsub` the operand's slot, `fstp` at the
+/// type (the new value rounded to it, as `llc` stores it), the new bits
+/// popped into `ecx` (`ecx:ebx` at 8 bytes), `lock cmpxchg` /
+/// `lock cmpxchg8b`, `jne` back. The x87 stack is empty before and after;
+/// `esp` moves inside the sequence only (the frame is `ebp`-based, §3).
+fn rmw_float<'a>(
+    cx: &mut FnCx<'a, X86>,
+    inst: Inst<'a>,
+    op: RmwOp,
+    ptr: Value,
+    value: Value,
+    s: Shape,
+) -> CgResult<()> {
+    let wide = s.bytes == 8;
+    let (w, fp) = if wide { (X87Size::D, FpSize::D) } else { (X87Size::S, FpSize::S) };
+    if wide {
+        cx.take_reg(crate::reg::gpr(EBX))?;
+    }
+    let v = cx.use_mem(value)?;
+    let p = pointer(cx, ptr)?;
+    put(cx, mc::mov_rm(Size::D, EAX, Mem::base(p, 0)));
+    if wide {
+        put(cx, mc::mov_rm(Size::D, EDX, Mem::base(p, 4)));
+    }
+    let again = cx.new_label();
+    cx.bind(again)?;
+    if wide {
+        put(cx, mc::push_r(EDX));
+    }
+    put(cx, mc::push_r(EAX));
+    put(cx, mc::fld_m(w, Mem::base(ESP, 0)));
+    if op == RmwOp::FAdd {
+        frame_inst(cx, v, |m| mc::fadd_m(fp, m));
+    } else {
+        frame_inst(cx, v, |m| mc::fsub_m(fp, m));
+    }
+    put(cx, mc::fstp_m(w, Mem::base(ESP, 0)));
+    if wide {
+        put(cx, mc::pop_r(EBX));
+        put(cx, mc::pop_r(ECX));
+        locked(cx, mc::cmpxchg8b_m(Mem::base(p, 0)));
+    } else {
+        put(cx, mc::pop_r(ECX));
+        locked(cx, mc::cmpxchg_mr(Size::D, Mem::base(p, 0), ECX));
+    }
+    branch_cond(cx, Cond::Ne, again)?;
+    let dst = cx.def_mem(inst)?;
+    store_gpr(cx, EAX, dst, 4);
+    if wide {
+        store_gpr(cx, EDX, dst.offset_by(4), 4);
+    }
+    Ok(())
 }
 
 /// `ecx` = `op(ecx, edx)` at `size` (the cmpxchg loop's body).

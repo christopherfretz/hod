@@ -18,6 +18,9 @@
 //!   the values; landing pads in functions with dynamic `alloca`s and
 //!   `stacksave`/`stackrestore`; `memcpy` with an `i64` length in a pad;
 //!   an atomic loop inside a `try`.
+//! - `fatomic.ll`: `atomicrmw fadd`/`fsub` of `float` and `double`
+//!   (`spec/codegen-x86.md` §12.2): rounding, signed zeros, infinities,
+//!   a NaN, results used and unused, an x87 value live across the loops.
 //!
 //! Each is built by `llc` 19 and 22 and by hod (plain and under
 //! `Stress::ALL` at the default CPU), at CPU `generic` (no `cmov`) and
@@ -59,4 +62,9 @@ fn overflow_atomics_and_varargs_together() {
 #[test]
 fn exceptions_with_aggregates_dynamic_stack_and_atomics() {
     run_all("eh.ll", &["-lstdc++"]);
+}
+
+#[test]
+fn float_atomicrmw_add_and_sub() {
+    run_all("fatomic.ll", &[]);
 }

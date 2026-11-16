@@ -181,7 +181,7 @@ their values).
 | `x86:cf-protection` | `cf-protection-*` module flags (`hod_cg`'s `.note.gnu.property`) | — |
 | `x86:atomic:no-cx8` | an 8-byte atomic operation on a CPU without `cmpxchg8b` (§12.2) | — |
 | `x86:atomic:libatomic` | an atomic access of another size than 1, 2, 4, 8 bytes or below its natural alignment (§12.2) | — |
-| `x86:atomic:float-op` | `atomicrmw` `fadd`, `fsub`, `fmax`, `fmin` and the other floating operations (§12.2) | — |
+| `x86:atomic:float-op` | `atomicrmw` `fmax`, `fmin` and the other floating operations; `fadd` and `fsub` are lowered since join D (§12.2) | — |
 | `x86:atomic:op` | `atomicrmw` `uinc_wrap`, `udec_wrap`, `usub_cond`, `usub_sat` | — |
 | `x86:atomic:type` | an atomic value of another type (`x86_fp80`, vectors) | — |
 | `x86:inline-asm:<detail>` | what inline assembly does not take (§10, `spec/asm.md` §22.5) | I13 (`asm.rs`) |
@@ -691,16 +691,22 @@ The orderings are TSO's, as `hod_x64`.
   at offset 0 and the flag at `field_offset(ty, 1)`; `extractvalue` of
   it reads that slot (`atomic::extract`, its own arm in `target.rs`).
   The general aggregate `extractvalue` must use the same layout.
+- `atomicrmw fadd`/`fsub` of `float` or `double` (join D): `llc`'s loop
+  (measured, 19 and 22, `-O0`). The old bits (`eax`, `edx:eax` at 8
+  bytes) are pushed and `fld` at the type, `fadd`/`fsub` reads the
+  operand's slot, `fstp` at the type stores the new value rounded to it,
+  and the bits are popped into `ecx` (`ecx:ebx`), then `lock cmpxchg`
+  (`lock cmpxchg8b`), `jne` back. The x87 stack is empty before and
+  after. The result is the old bits, stored to the result's slot.
 
 Refused: `x86:atomic:no-cx8` (an 8-byte operation on `i386`/`i486`,
 which have no `cmpxchg8b`: `llc` calls libatomic's `__atomic_*_8`);
 `x86:atomic:libatomic` (a size other than 1, 2, 4, 8 bytes, or an access
 below its natural alignment: `llc` calls libatomic's generic routines,
 which `hod_cg`'s runtime table does not have with 32-bit `size_t`);
-`x86:atomic:float-op` (`atomicrmw` `fadd`, `fsub`, `fmax`, `fmin` and the
-other floating operations; `llc` writes a `cmpxchg` loop around the x87
-operation, or a call of `fmaxf`/`fmax`/`fminf`/`fmin`, and stores the
-value rounded to the type); `x86:atomic:op` (`uinc_wrap`, `udec_wrap`,
+`x86:atomic:float-op` (`atomicrmw` `fmax`, `fmin` and the other floating
+operations except `fadd` and `fsub`: `llc` calls
+`fmaxf`/`fmax`/`fminf`/`fmin` inside its `cmpxchg` loop); `x86:atomic:op` (`uinc_wrap`, `udec_wrap`,
 `usub_cond`, `usub_sat`); `x86:atomic:type` (another type: `x86_fp80`,
 vectors).
 

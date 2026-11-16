@@ -150,6 +150,7 @@ impl Target for X86 {
 
     fn begin_function(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()> {
         crate::pic::check(cx)?;
+        crate::dynstack::check(cx)?;
         frame::begin(cx)
     }
 
@@ -231,7 +232,9 @@ impl Target for X86 {
                     refuse(cx, ty)
                 }
             }
-            InstKind::Alloca { .. } => unsupported(frame::DYNAMIC_ALLOCA),
+            InstKind::Alloca { count, elem_size, align } => {
+                crate::dynstack::alloca(cx, inst, count, elem_size, align)
+            }
             InstKind::PtrAdd(add) => mem::ptr_add(cx, inst, &add),
             InstKind::ExtractValue { .. } | InstKind::InsertValue { .. } => unsupported(AGGREGATE),
             InstKind::Select { cond, if_true, if_false } if gpr => {
@@ -362,7 +365,7 @@ impl Target for X86 {
         size: u64,
         align: u64,
     ) -> CgResult<()> {
-        frame::dynamic_slot(cx, ptr, size, align)
+        crate::dynstack::dynamic_slot(cx, ptr, size, align)
     }
 
     fn enter_guard(&self, _cx: &mut FnCx<'_, Self>) -> CgResult<()> {

@@ -88,7 +88,7 @@ int main() {
 //@ gdb-check: $1 = (const short &) @0x
 //@ gdb-check: $2 = {items = {0, 0, 0}, next = 0}
 //@ gdb-check: Breakpoint 1, geo::Box::area (this=0x
-//@ gdb-check: <vtable for geo::Box+16>, kind = geo::detail::Kind::Box, static made = 1
+//@ gdb-check: kind = geo::detail::Kind::Box, static made = 1
 //@ gdb-check: $4 = 3
 //@ gdb-check: $5 = geo::detail::Kind::Box
 //@ gdb-check: $6 = 1

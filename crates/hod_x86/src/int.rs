@@ -1170,7 +1170,7 @@ pub fn switch<'a>(cx: &mut FnCx<'a, X86>, switch: &Switch<'a>) -> CgResult<()> {
             .cases()
             .find(|&(case, _)| case_value(cx, case) == c & all)
             .map_or(switch.default, |(_, block)| block);
-        return crate::control::br(cx, target);
+        return crate::control::folded_br(cx, target);
     }
     let a = cx.use_mem(switch.cond)?;
     ld_hi(cx, EDX, a, bits, Ext::Zero);

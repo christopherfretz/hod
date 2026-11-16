@@ -25,7 +25,7 @@ refusal table of `spec/codegen-x86.md` §7) belong to WP-293's owner of
 | `control.rs` | WP-293 | terminators | — | — | — |
 | `call.rs` | WP-293 | call checks, intrinsic dispatch | I10 (`check`), I11 (varargs), I13 (inline asm) | `check`, `lower` | `x86:eh`, `x86:varargs`, `x86:inline-asm` |
 | `abi.rs` | **I6** | `assign` | I7, I9, I11 (their types' parts) | `assign`, `odd` | `x86:abi:cc`, `x86:abi:attr` |
-| `int.rs` | **I7** | wide integers (`i64` in two registers or memory) | — | new; `target.rs` arms for `Mem`-class integers | `x86:i64` |
+| `int.rs` | **I7** (WP-298) | integers of 33 to 64 bits, class `Mem`, half by half from their slots; libgcc division | — | `target.rs` arms for `Mem`-class integers, `materialize_mem` | `x86:i64` (but arguments, results, `switch`, intrinsics); refuses `x86:i64:wide` |
 | `pic.rs` | **I8** | GOT, `R_386_GOTPC`/`GOTOFF`/`GOT32X`, PLT calls from PIC | — | `check_static` (becomes the access choice) | `x86:pic` |
 | `tls.rs` | **I8** | `%gs` TLS models | — | `address` | `x86:tls` |
 | `x87.rs` | **I9** | floating point on the x87 stack | — | new; `target.rs` arms | `x86:float` |

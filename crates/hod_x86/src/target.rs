@@ -23,7 +23,7 @@ use hod_mc_x64::Size;
 
 use crate::common::{self, gp, put, unsupported};
 use crate::reg::{EAX, EBX, ECX, EDI, EDX, ESI, xmm};
-use crate::{abi, alu, call, control, frame, mem};
+use crate::{abi, alu, call, control, frame, int, mem};
 
 /// A vector value: design 0008's I12.
 pub const VECTOR: &str = "x86:vector";
@@ -145,6 +145,24 @@ impl Target for X86 {
         let gpr = abi::is_gpr(cx.types(), inst.ty());
         match inst.kind() {
             InstKind::Binary { lhs, rhs } if gpr => alu::binary(cx, inst, lhs, rhs),
+            InstKind::Binary { lhs, rhs } if int::is_wide(cx, inst.result()) => {
+                int::binary(cx, inst, lhs, rhs)
+            }
+            InstKind::Unary { arg }
+                if int::is_wide(cx, inst.result()) && inst.opcode() == Opcode::Freeze =>
+            {
+                int::freeze(cx, inst, arg)
+            }
+            InstKind::Cast { arg } if int::is_cast(cx, inst, arg) => int::cast(cx, inst, arg),
+            InstKind::ICmp { pred, lhs, rhs } if int::is_wide(cx, lhs) => {
+                int::icmp(cx, inst, pred, lhs, rhs)
+            }
+            InstKind::Store { value, ptr, mem } if int::is_wide(cx, value) => {
+                int::store(cx, inst, value, ptr, mem)
+            }
+            InstKind::Select { cond, if_true, if_false } if int::is_wide(cx, inst.result()) => {
+                int::select(cx, inst, cond, if_true, if_false)
+            }
             InstKind::Unary { arg } if gpr && inst.opcode() != Opcode::FNeg => {
                 alu::freeze(cx, inst, arg)
             }
@@ -160,6 +178,9 @@ impl Target for X86 {
             InstKind::FCmp { .. } => unsupported(crate::x87::FLOAT),
             InstKind::Load { ptr, mem } if gpr => mem::load(cx, inst, ptr, mem),
             InstKind::Load { mem, .. } if mem.ordering().is_some() => unsupported(mem::ATOMIC),
+            InstKind::Load { ptr, mem } if int::is_wide(cx, inst.result()) => {
+                int::load(cx, inst, ptr, mem)
+            }
             InstKind::Store { value, ptr, mem } => {
                 let ty = common::value_ty(cx, value);
                 if mem.ordering().is_some() {
@@ -246,9 +267,12 @@ impl Target for X86 {
     fn materialize_mem(
         &self,
         cx: &mut FnCx<'_, Self>,
-        _dst: FrameRef,
+        dst: FrameRef,
         value: Value,
     ) -> CgResult<()> {
+        if int::is_wide(cx, value) {
+            return int::materialize_mem(cx, dst, value);
+        }
         let ty = common::value_ty(cx, value);
         refuse(cx, ty)
     }

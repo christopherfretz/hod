@@ -42,6 +42,9 @@ use crate::common::{
 };
 use crate::target::X86;
 
+/// An encoder of `op r32, m32`.
+type RegMem = fn(Size, Reg, Mem) -> mc::Inst;
+
 /// An `i64` passed or returned by value, or the condition of a `switch`:
 /// what remains of WP-293's refusal until I6 (`abi.rs`) and the switch
 /// take 64-bit values.
@@ -179,14 +182,13 @@ pub fn binary<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, lhs: Value, rhs: Value
             let r = cx.def_mem(inst)?;
             ld(cx, EAX, a, 0);
             ld(cx, EDX, a, 1);
-            let (low, high): (fn(Size, Reg, Mem) -> mc::Inst, fn(Size, Reg, Mem) -> mc::Inst) =
-                match op {
-                    Opcode::Add => (mc::add_rm, mc::adc_rm),
-                    Opcode::Sub => (mc::sub_rm, mc::sbb_rm),
-                    Opcode::And => (mc::and_rm, mc::and_rm),
-                    Opcode::Or => (mc::or_rm, mc::or_rm),
-                    _ => (mc::xor_rm, mc::xor_rm),
-                };
+            let (low, high): (RegMem, RegMem) = match op {
+                Opcode::Add => (mc::add_rm, mc::adc_rm),
+                Opcode::Sub => (mc::sub_rm, mc::sbb_rm),
+                Opcode::And => (mc::and_rm, mc::and_rm),
+                Opcode::Or => (mc::or_rm, mc::or_rm),
+                _ => (mc::xor_rm, mc::xor_rm),
+            };
             op_m(cx, b, 0, |m| low(Size::D, EAX, m));
             op_m(cx, b, 1, |m| high(Size::D, EDX, m));
             st_pair(cx, r, EAX, EDX);
@@ -291,16 +293,13 @@ fn shift<'a>(
     };
     ld(cx, ECX, count, 0);
     let done = cx.new_label();
-    match op {
-        Opcode::Shl => {
-            put(cx, mc::shld_rrcl(Size::D, EDX, EAX));
-            put(cx, mc::shl_rcl(Size::D, EAX));
-        }
-        _ => {
-            put(cx, mc::shrd_rrcl(Size::D, EAX, EDX));
-            let s = if op == Opcode::AShr { mc::sar_rcl } else { mc::shr_rcl };
-            put(cx, s(Size::D, EDX));
-        }
+    if op == Opcode::Shl {
+        put(cx, mc::shld_rrcl(Size::D, EDX, EAX));
+        put(cx, mc::shl_rcl(Size::D, EAX));
+    } else {
+        put(cx, mc::shrd_rrcl(Size::D, EAX, EDX));
+        let s = if op == Opcode::AShr { mc::sar_rcl } else { mc::shr_rcl };
+        put(cx, s(Size::D, EDX));
     }
     put(cx, mc::test_ri(Size::B, ECX, 32));
     branch_cond(cx, Cond::E, done)?;
@@ -336,10 +335,12 @@ fn push_operand(cx: &mut FnCx<'_, X86>, slot: FrameRef, bits: u32, ext: Ext) {
 }
 
 /// Calls runtime function `func` with the pushed 16 bytes of arguments
-/// and pops them: the result is in `edx:eax`.
+/// and pops them: the result is in `edx:eax`. The call is `pic`'s: in
+/// PIC, through the PLT with the GOT pointer in `ebx` (`spec/codegen-x86.md`
+/// §9.2), as `llc` calls these.
 fn call_pushed(cx: &mut FnCx<'_, X86>, func: RuntimeFn) -> CgResult<()> {
     let start = cx.offset();
-    crate::frame::emit_call(cx, CallTarget::Sym(SymRef::Runtime(func)))?;
+    crate::pic::emit_call(cx, CallTarget::Sym(SymRef::Runtime(func)))?;
     cx.record_call_site(start, cx.offset() - start);
     put(cx, mc::add_ri(Size::D, ESP, 16));
     Ok(())

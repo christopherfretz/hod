@@ -16,7 +16,8 @@ use hod_testutil::{LLVM_MAJORS, Scratch, linkers};
 
 mod i386_support;
 use i386_support::{
-    TRIPLE, checked, clang_module, llc_object, llvm_tool, run, stressed_object, tool,
+    TRIPLE, checked, clang_module, cpu_features, llc_object, llvm_tool, run_with_features,
+    stressed_object, tool,
 };
 
 /// The programs (C, or IR written by hand).
@@ -24,26 +25,6 @@ const PROGRAMS: [&str; 3] = ["arith.c", "bitint.c", "select.ll"];
 
 /// The CPU variants: none (`generic`: no `cmov`) and `pentium4`.
 const CPUS: [(&str, &[&str]); 2] = [("generic", &[]), ("p4", &["-march=pentium4"])];
-
-/// The QEMU features a run of `cpu`'s program needs (the emulated CPU
-/// has no SSE: `llc` uses it under `pentium4`).
-fn features(cpu: &str) -> &'static [&'static str] {
-    if cpu == "p4" { &["mmx", "sse", "sse2"] } else { &[] }
-}
-
-/// What running `exe` under `qemu-i386` with `features` did: its status
-/// and output (`i386_support::run` with the CPU's features).
-fn run_cpu(qemu: &Path, exe: &Path, features: &[&str]) -> (Option<i32>, Vec<u8>) {
-    if features.is_empty() {
-        return run(qemu, exe);
-    }
-    let target = Target::I686;
-    let mut command = Command::new(qemu);
-    command.args(target.emulator_args_with(&target.sysroot(), features)).arg(exe);
-    let outcome = hod_testutil::run_with(&mut command, &[], hod_testutil::DEFAULT_TIMEOUT);
-    assert!(!outcome.timed_out(), "{} timed out", exe.display());
-    (outcome.status.and_then(|s| s.code()), outcome.stdout)
-}
 
 fn data(program: &str) -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/i386/i64").join(program)
@@ -75,7 +56,7 @@ fn i64_programs_run_as_llc_s() {
         for program in PROGRAMS {
             for (cpu, flags) in CPUS {
                 let name = format!("{program}-{major}-{cpu}");
-                let ll = if program.ends_with(".ll") {
+                let ll = if Path::new(program).extension().is_some_and(|e| e == "ll") {
                     let text = std::fs::read_to_string(data(program)).unwrap();
                     let text = if flags.is_empty() {
                         text
@@ -105,7 +86,7 @@ fn i64_programs_run_as_llc_s() {
                             linkers::driver_flags(scratch.path(), linker, path);
                         command.args(flags).arg("-no-pie").arg(object).arg("-o").arg(&exe);
                         checked(&format!("{linker} link of {name} ({who})"), &mut command);
-                        results.push(run_cpu(&qemu, &exe, features(cpu)));
+                        results.push(run_with_features(&qemu, &exe, cpu_features(cpu)));
                     }
                     assert!(
                         results[0].1.ends_with(b"done\n"),

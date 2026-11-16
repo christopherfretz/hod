@@ -161,7 +161,18 @@ through `ecx`). Wider than 64 bits is refused as `x86:i64:wide`.
   `__divdi3`, `__umoddi3`, `__moddi3` (`R_386_PLT32`), made by `int`
   itself: divisor then dividend pushed high word first (extended), the
   result in `edx:eax`, `add esp, 16`. These four symbols are undefined
-  in an object that divides 64-bit integers.
+  in an object that divides 64-bit integers. The call is `pic::emit_call`
+  (§9.1): under PIC through the PLT with the GOT pointer in `ebx`, as
+  `llc` does; a libgcc linked as a shared library (`-lgcc_s`) is reached
+  through a real PLT entry, which reads `ebx`.
+- Symbols (§9): a wide integer's memory is addressed through a register
+  only: `load`/`store` of a symbol take its address into `eax`
+  (`common::sym_address`, i.e. `pic::address` or `tls::address`, which
+  write `eax` alone) before any word is moved through `ecx`/`edx`; a
+  thread-local symbol's address is the pointer operand's register (a
+  value materialized as any other). Nothing of `int` builds an
+  instruction through `pic::mem_inst`, so its `eax` rule is never met;
+  a `ptrtoint` constant goes through `ecx` (`common::materialize_const`).
 - `icmp`: equality as `xor` of each half and `or` of the two; order as
   `cmp` of the low halves and `sbb` of the high halves, operands swapped
   for `>` and `<=` so that only carry, sign and overflow are read; then
@@ -227,8 +238,10 @@ the word below `esp` only.
   `eax` at once, `hod_cg` §4.4) or `ecx`/`edx` (`scratch`);
   `tests/data/i386/pic/eax.ll` stores call results, quotients and
   arguments of each width to preemptible and hidden globals (also under
-  `Stress::ALL`). **A package that builds other instructions over a
-  symbol** (I7's `i64` halves, I9's x87 and SSE accesses, I11's atomics)
+  `Stress::ALL`). I7's `i64` halves (§8) do not use `mem_inst`: they
+  address a symbol through `eax` taken by `common::sym_address` first.
+  **A package that builds other instructions over a
+  symbol** (I9's x87 and SSE accesses, I11's atomics)
   passes no `eax` operand and no instruction that uses `eax` implicitly:
   it takes the symbol's address into another register
   (`common::sym_address`) and addresses through it instead. The x87
@@ -236,6 +249,10 @@ the word below `esp` only.
   the check.
 - `pic::emit_call` displaces the value `ebx` holds (`FnCx::take_reg`)
   and computes it in `ebx` immediately before `call f@PLT` (i386 psABI).
+  It is the one way to call a symbol: `hod_cg`'s call sequence
+  (`Target::emit_call`) and the calls a lowering makes itself (§8's
+  libgcc divisions) alike; only `tls`'s `___tls_get_addr` sequence, which
+  sets `ebx` itself, calls `frame::emit_call` directly.
 
 ### 9.3 Tables and constants
 
@@ -311,3 +328,16 @@ assembled in 32-bit mode by `hod_asm::x86`, the outputs stored back.
 The rules, the constraint letters, the register order and every
 refusal (`x86:inline-asm:<detail>`, `asm:*`, `x86-mode:*`) are
 `spec/asm.md` §22. Record: `spec/landed/asm/WP-301.md`.
+
+With §8 and §9: an `A` operand of 33 to 64 bits is a §8 value (its
+frame slot, low word in `eax`, high word in `edx`), as input, output
+(`=A`, `=&A`) and tied (`+A`). A memory operand or a pointer that is a
+symbol (a global or a thread-local of any model) is evaluated before
+the operands are placed (step 1), as any value: its address comes from
+`common::sym_address` under the function's relocation model, so the
+template sees a register, never a relocation of PIC or TLS. A template
+that writes `ebx` (a clobber or an operand) is followed by PLT calls
+that compute the GOT pointer again (§9.2: it is never kept).
+Module-level assembly with code or data stays refused for i386
+(`module:asm`: `hod_asm` has no 32-bit module assembler); text of
+symbol directives only is written as on the other targets.

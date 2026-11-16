@@ -895,8 +895,9 @@ fn through_the_shim(kiln: &Path, llvm: &Path) {
     }
 
     // Code hod generates: strict mode succeeds.
-    // Not i686: not yet tried there (its back end has compiled kiln's PIC
-    // module since WP-299; what else the module needs is not checked).
+    // Not i686: kiln (as of its commit 8f93304e) refuses the
+    // target itself ("unsupported target 'i686-unknown-linux-gnu' (kiln
+    // supports aarch64 and x86_64 Linux)"), whatever flag it is given.
     for target in [Target::Aarch64, Target::X86_64] {
         shimmed.hod_builds_integers(target);
     }

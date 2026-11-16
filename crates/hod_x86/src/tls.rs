@@ -78,15 +78,6 @@ use crate::common::{EAX, ECX, EDX, ESP, gp, put};
 use crate::pic::{add_addend, got_pointer, put_reloc};
 use crate::target::X86;
 
-/// The refusal of every thread-local access before WP-299; no lowering
-/// returns it any more (kept for the names tests refer to).
-pub const TLS: &str = "x86:tls";
-
-/// The refusal of a general- or local-dynamic access before
-/// `___tls_get_addr` was a run-time function; no lowering returns it any
-/// more (kept for the names tests refer to).
-pub const DYNAMIC: &str = "x86:tls:dynamic";
-
 /// `ebx`, the GOT pointer at the call.
 const EBX: Reg = Reg::Rbx;
 

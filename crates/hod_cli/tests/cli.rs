@@ -482,7 +482,9 @@ fn reasons_reach_the_log() {
             "x86_64-unknown-linux-gnu",
         ),
         // WP-286, WP-293: 32-bit x86 is compiled by `hod_x86`, which
-        // refuses an `i64` (design 0008's I7); x32 stays another target.
+        // refuses an `i64` argument or result (design 0008's I6; I7,
+        // WP-298, took the other 64-bit operations); x32 stays another
+        // target.
         (
             &["-filetype=obj"],
             b"target triple = \"i686-unknown-linux-gnu\"\n\

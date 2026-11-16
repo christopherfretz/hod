@@ -36,6 +36,11 @@ jobs:
         with: { cache-key: "${{ inputs.cache-key }}" }
       - uses: ./.github/actions/kiln
         with: { build: "true" }
+      # mortar at the pinned commit (the mortar action, WP-310), built
+      # once per commit and architecture and saved here; the test jobs
+      # restore it.
+      - uses: ./.github/actions/mortar
+        with: { build: "true", save: "true" }
   # The quick gate (`cargo xtask ci --quick`), one job per step group so
   # they run in parallel: every step but `roundtrip`, which needs the
   # corpus, build output of the development machine that a hosted runner
@@ -90,6 +95,8 @@ jobs:
           cache-key: "${{ inputs.cache-key }}"
           save-cache: "${{ matrix.part == 'harness' }}"
       - uses: ./.github/actions/kiln
+      # The kiln job saved mortar's entry: a miss fails here.
+      - uses: ./.github/actions/mortar
       # WP-229, WP-238: on the x86-64 lane the AVX-512 execution tests of
       # the `x64` part run natively when this runner's processor has the
       # features, else (when the repository variable HOD_CI_SDE is 1, which
@@ -128,4 +135,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/hod-ci
         with: { cache-key: "${{ inputs.cache-key }}" }
+      # Not after the kiln job: on a miss this job builds mortar itself
+      # (about two minutes) and does not save it (the kiln job does).
+      - uses: ./.github/actions/mortar
+        with: { build: "true" }
       - run: cargo xtask ci --quick --step irdiff

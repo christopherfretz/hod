@@ -1,0 +1,71 @@
+name: mortar
+description: >
+  The mortar linker, the fifth linker of the matrix (docs/status/linkers.md
+  "mortar", WP-281, WP-310), installed in /opt/mortar and named by
+  HOD_MORTAR for every later step. mortar is built from its public
+  repository at the commit hod_testutil::linkers::MORTAR_COMMIT pins (the
+  one place it is written; scripts/mortar-commit.sh prints it) with
+  `cargo build --release -p mortar`, and kept in the Actions cache under
+  that commit and the runner's architecture: one build per commit and
+  architecture. Any failure (the commit, the checkout, the build, a cache
+  miss where a build is not allowed, the binary not running) fails this
+  step and the job, never a silent skip of mortar's cells. Run after the
+  hod-ci action (it needs Rust).
+inputs:
+  build:
+    description: >
+      "true" in a job that builds mortar on a cache miss; any other job
+      fails on a miss (it runs after the job that builds and saves it).
+    required: false
+    default: "false"
+  save:
+    description: '"true" in the one job per lane that saves the cache entry after a build.'
+    required: false
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - id: rev
+      name: mortar's commit
+      shell: bash
+      run: |
+        commit="$(scripts/mortar-commit.sh)"
+        echo "commit=$commit" >> "$GITHUB_OUTPUT"
+        echo "mortar commit $commit"
+    - id: cache
+      uses: actions/cache/restore@v4
+      with:
+        path: /opt/mortar
+        key: mortar-${{ steps.rev.outputs.commit }}-${{ runner.arch }}
+        fail-on-cache-miss: ${{ inputs.build != 'true' }}
+    - if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/checkout@v4
+      with:
+        repository: christopherfretz/mortar
+        ref: ${{ steps.rev.outputs.commit }}
+        path: .ci/mortar-src
+        persist-credentials: false
+    # mortar's own rust-toolchain.toml asks for 1.95.0, the toolchain the
+    # hod-ci action installs; mortar's crate graph has no third-party
+    # crate, so nothing is downloaded.
+    - if: steps.cache.outputs.cache-hit != 'true'
+      name: cargo build --release -p mortar
+      shell: bash
+      run: |
+        cd .ci/mortar-src
+        git config --global --add safe.directory "$PWD"
+        test "$(git rev-parse HEAD)" = "${{ steps.rev.outputs.commit }}"
+        CARGO_TARGET_DIR="$PWD/target" cargo build --release -p mortar
+        mkdir -p /opt/mortar
+        cp target/release/mortar /opt/mortar/mortar
+    - if: steps.cache.outputs.cache-hit != 'true' && inputs.save == 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: /opt/mortar
+        key: mortar-${{ steps.rev.outputs.commit }}-${{ runner.arch }}
+    - name: HOD_MORTAR
+      shell: bash
+      run: |
+        test -x /opt/mortar/mortar
+        /opt/mortar/mortar --version
+        echo "HOD_MORTAR=/opt/mortar/mortar" >> "$GITHUB_ENV"

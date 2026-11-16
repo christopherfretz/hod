@@ -2011,7 +2011,8 @@ cargo xtask corpus capture [--target <arch>] [--source kiln|gcc-torture|all]
                            [--kiln-repo <dir>] [--torture <dir>] [--limit <N>]
                            [-j <N>] [--force] [--retry-skipped]
 cargo xtask corpus verify  [--target <arch>] [-j <N>] [--hod <binary>] [--strict]
-                           [--manifest-only] [--keep] [-v] [<corpus dir>]
+                           [--linker <name>]... [--manifest-only] [--keep] [-v]
+                           [<corpus dir>]
 cargo xtask corpus census  [--target <arch>] [--report <file>] [<corpus dir>]
 cargo xtask corpus reasons [--target <arch>] [options] [<corpus dir>]
 cargo xtask corpus compare [--target <arch>] [--against <dir>]
@@ -2431,7 +2432,9 @@ used and not committed.
    Each difference is one `MANIFEST <entry>: <what>` line.
 2. **irdiff.** For each LLVM major of the corpus, newest first, one
    `irdiff` run over that major's group directories, in hybrid mode
-   (`--strict` for strict), with the workspace's hod (or `--hod`); results
+   (`--strict` for strict), with the workspace's hod (or `--hod`) and
+   every linker found (or those `--linker` names, as `irdiff`'s
+   `--linker`, WP-310); results
    in `<build>/corpus/verify-llvm<N>-<mode>.tsv` (`irdiff`'s records,
    before step 3). `--manifest-only` stops after step 1 and the list's
    check that each row names a test of the corpus.

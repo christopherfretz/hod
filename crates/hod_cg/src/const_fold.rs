@@ -16,15 +16,15 @@
 //! 3. If such a block lost its last predecessor, LLVM's
 //!    `removeUnreachableBlocks` walks the function from the entry
 //!    (`markAliveBlocks`): it ends a block at a `noreturn` call, at a call
-//!    through `undef`, and at a store to `undef`; folds a terminator on a
-//!    constant (`br`, `switch`); and deletes every block it did not reach.
-//!    Otherwise `llc`'s later pass deletes the blocks no longer reachable.
-//!    The walk's other rewrites (a store to or a call/`invoke` through
-//!    `null`, an `invoke` through `undef`, an `invoke` of a `nounwind` or
-//!    `noreturn` callee, an `indirectbr` on a `blockaddress`) are not
-//!    modelled: hod keeps the instruction as written with all its edges,
-//!    so it emits a superset of `llc`'s blocks (WP-269). The folding
-//!    never refuses a function.
+//!    or `invoke` through, and at a store to, `undef` or `null`; drops the
+//!    normal edge of an `invoke` of a `noreturn` callee and the unwind edge
+//!    of one of a `nounwind` callee (which becomes a call, WP-270); turns
+//!    an `indirectbr` on a `blockaddress` into a `br`; folds a terminator
+//!    on a constant (`br`, `switch`); and deletes every block it did not
+//!    reach. Otherwise `llc`'s later pass deletes the blocks no longer
+//!    reachable. What hod cannot decide as `llc` does it keeps as written
+//!    with all its edges, a superset of `llc`'s blocks ([`Lci::alive_invoke`],
+//!    [`Lci::alive_terminator`]). The folding never refuses a function.
 //!
 //! The result is per instruction an [`Action`], and the set of blocks
 //! emitted. A function without those calls costs a look at its call
@@ -32,8 +32,9 @@
 //! before (only the dead operands of the folded calls are left out).
 
 use hod_ir::{
-    BlockId, Body, CallSite, Callee, Const, FnAttrs, Inst, InstId, InstKind, IntPredicate,
-    Intrinsic, Module, Opcode, SymbolKind, TailKind, TypeId, TypeKind, Value, ValueKind,
+    BlockId, Body, BranchProtection, CallSite, Callee, Const, FnAttrs, Inst, InstId, InstKind,
+    IntPredicate, Intrinsic, Module, Opcode, SymbolKind, TailKind, TypeId, TypeKind, Value,
+    ValueKind,
 };
 
 use crate::error::CgResult;
@@ -51,6 +52,23 @@ pub enum Action {
     Jump(BlockId),
     /// A terminator lowered as `unreachable` (the block ends before it).
     Unreachable,
+    /// An `invoke` lowered as a `call` without its unwind edge (`llc`'s
+    /// `changeToCall`), followed by a `br` to the block, or by nothing
+    /// (`None`: its normal destination became `llc`'s new block that
+    /// holds only `unreachable`).
+    Call(Option<BlockId>),
+    /// An `invoke` of a `noreturn` callee that keeps its unwind edge; its
+    /// normal destination became `llc`'s new block that holds only
+    /// `unreachable`, so nothing follows the call and no `phi` is stored.
+    NoNormal,
+}
+
+impl Action {
+    /// Whether the instruction is lowered (as written, or as the call an
+    /// `invoke` became).
+    pub fn emits(self) -> bool {
+        matches!(self, Action::Emit | Action::Call(_) | Action::NoNormal)
+    }
 }
 
 /// What hod knows of an instruction's replacement.
@@ -205,6 +223,32 @@ fn callee_has(module: &Module, site: &CallSite<'_>, flag: u32) -> bool {
         SymbolKind::Function { attrs, .. } => module.fn_attrs(attrs).has(flag),
         _ => false,
     }
+}
+
+/// `Function::nullPointerIsDefined`: `null_pointer_is_valid` on the function.
+fn null_is_valid(module: &Module, body: &Body) -> bool {
+    match module.symbol(body.symbol()).kind() {
+        SymbolKind::Function { attrs, .. } => {
+            module.fn_attrs(attrs).has(FnAttrs::NULL_POINTER_IS_VALID)
+        }
+        _ => false,
+    }
+}
+
+/// `canSimplifyInvokeNoUnwind`: the personality does not catch
+/// asynchronous exceptions (`isAsynchronousEHPersonality`: the two SEH
+/// classes). The module flag `eh-asynch` that also forbids it is one
+/// `classify` refuses, so it never reaches here.
+fn simplifies_nounwind(module: &Module, body: &Body) -> bool {
+    let SymbolKind::Function { personality: Some(personality), .. } =
+        module.symbol(body.symbol()).kind()
+    else {
+        return true;
+    };
+    !matches!(
+        module.symbol(personality).name(),
+        b"_except_handler3" | b"_except_handler4" | b"__C_specific_handler"
+    )
 }
 
 /// `CallBase::doesNotReturn`: on the call, on the called function, or
@@ -689,9 +733,12 @@ impl Lci {
     fn succs(&self, body: &Body, block: BlockId) -> Vec<BlockId> {
         let term = body.block(block).terminator();
         match self.action[term.id().index()] {
-            Action::Jump(target) => vec![target],
-            Action::Unreachable => Vec::new(),
-            _ => term.successors().collect(),
+            Action::Jump(target) | Action::Call(Some(target)) => vec![target],
+            Action::Unreachable | Action::Call(None) => Vec::new(),
+            Action::NoNormal => {
+                term.call().and_then(|site| site.unwind_dest()).into_iter().collect()
+            }
+            Action::Emit | Action::Drop => term.successors().collect(),
         }
     }
 
@@ -736,10 +783,8 @@ impl Lci {
             for inst in block.insts() {
                 match inst.kind() {
                     InstKind::Call(site) if inst.opcode() == Opcode::Call => {
-                        // A call through `null` is kept as written
-                        // (WP-269); `llc` would end the block here.
                         if let Callee::Value(callee) = site.callee()
-                            && ptr_kind(module, callee) == Ptr::Undef
+                            && Self::invalid_target(module, body, callee)
                         {
                             stop = Some(inst.id());
                             break;
@@ -752,9 +797,9 @@ impl Lci {
                             break;
                         }
                     }
-                    // A store to `null` is kept as written (WP-269).
+                    // Atomic or not; a volatile store is never touched.
                     InstKind::Store { ptr, mem, .. }
-                        if !mem.is_volatile() && ptr_kind(module, ptr) == Ptr::Undef =>
+                        if !mem.is_volatile() && Self::invalid_target(module, body, ptr) =>
                     {
                         stop = Some(inst.id());
                         break;
@@ -776,14 +821,85 @@ impl Lci {
         }
     }
 
-    /// Step 3 at the terminator of `b`: `ConstantFoldTerminator`. An
-    /// `invoke` (through `null` or `undef`, of a `nounwind` or `noreturn`
-    /// callee) and an `indirectbr` on a `blockaddress` are kept as
-    /// written with all their edges (WP-269): `llc` rewrites them, hod
-    /// emits them as it does outside the folding.
+    /// Whether an access through `value` is undefined, so that `llc`
+    /// ends the block there: `undef`/`poison`, or `null` in an address
+    /// space where the function does not define it (`NullPointerIsDefined`:
+    /// address space 0 without `null_pointer_is_valid`).
+    fn invalid_target(module: &Module, body: &Body, value: Value) -> bool {
+        match ptr_kind(module, value) {
+            Ptr::Undef => true,
+            Ptr::Null => {
+                let TypeKind::Ptr { addr_space } =
+                    module.types.kind(body.value_type(module, value))
+                else {
+                    return false;
+                };
+                addr_space == 0 && !null_is_valid(module, body)
+            }
+            Ptr::Other => false,
+        }
+    }
+
+    /// Step 3 at an `invoke` that ends `b`, before `ConstantFoldTerminator`
+    /// (which changes neither an `invoke` nor the `br` it may become).
+    /// Through `null` (address space 0, as LLVM asks) or `undef`: the
+    /// block ends there. Of a `noreturn` callee whose normal destination
+    /// does not start with `unreachable`: the edge goes (`llc` gives it a
+    /// new destination holding only `unreachable`). Of a `nounwind`
+    /// callee, under a personality that is not asynchronous: the unwind
+    /// edge goes and the `invoke` is a `call`, except an unused `invoke`
+    /// without side effects, which becomes a `br` alone; hod cannot tell
+    /// the latter (it keeps no memory effects), so an `invoke` that may be
+    /// one (`willreturn` on the call or the callee, and no user that is
+    /// not replaced) keeps its unwind edge as written. An intrinsic or
+    /// inline-assembly callee is kept as written.
+    fn alive_invoke(&mut self, module: &Module, body: &Body, b: BlockId) {
+        let term = body.block(b).terminator();
+        let t = term.id().index();
+        let InstKind::Call(site) = term.kind() else { return };
+        let (Some(normal), Some(unwind)) = (site.normal_dest(), site.unwind_dest()) else {
+            return;
+        };
+        let Callee::Value(callee) = site.callee() else { return };
+        if matches!(ptr_kind(module, callee), Ptr::Undef)
+            || (ptr_kind(module, callee) == Ptr::Null && !null_is_valid(module, body))
+        {
+            self.end_block(module, body, b, term.id());
+            return;
+        }
+        if matches!(callee.kind(), ValueKind::Asm(_)) || site.intrinsic().is_some() {
+            return;
+        }
+        let mut normal_gone = false;
+        if no_return(module, &site)
+            && body.block(normal).insts().next().map(Inst::opcode) != Some(Opcode::Unreachable)
+        {
+            self.remove_pred(module, body, normal, b.raw());
+            normal_gone = true;
+        }
+        let no_unwind = site.is_nounwind() || callee_has(module, &site, FnAttrs::NOUNWIND);
+        let may_be_pure = (site.is_will_return()
+            || callee_has(module, &site, FnAttrs::WILL_RETURN))
+            && self.users[self.user_start[t] as usize..self.user_start[t + 1] as usize]
+                .iter()
+                .all(|&u| self.lat[u as usize] != Lat::Kept);
+        if no_unwind && !may_be_pure && simplifies_nounwind(module, body) {
+            self.remove_pred(module, body, unwind, b.raw());
+            self.action[t] = Action::Call(if normal_gone { None } else { Some(normal) });
+        } else if normal_gone {
+            self.action[t] = Action::NoNormal;
+        }
+    }
+
+    /// Step 3 at the terminator of `b`: the `invoke` rewrites
+    /// ([`Lci::alive_invoke`]), then `ConstantFoldTerminator`.
     fn alive_terminator(&mut self, module: &Module, body: &Body, b: BlockId) {
         let term = body.block(b).terminator();
         let t = term.id().index();
+        if term.opcode() == Opcode::Invoke && self.action[t] == Action::Emit {
+            self.alive_invoke(module, body, b);
+            return;
+        }
         match term.kind() {
             // `ConstantFoldTerminator`.
             InstKind::CondBr { cond, if_true, if_false } if self.action[t] == Action::Emit => {
@@ -820,6 +936,36 @@ impl Lci {
                     }
                     self.action[t] = Action::Jump(dest);
                 }
+            }
+            // `indirectbr blockaddress(@f, %bb)` is `br label %bb`, or
+            // `unreachable` when `%bb` is not listed. LLVM then destroys
+            // the `blockaddress` if nothing else uses it, and `%bb` stops
+            // being address-taken: under `cf-protection-branch` or BTI its
+            // landing instruction would go, which hod cannot tell (it
+            // does not count a constant's uses), so there it keeps the
+            // `indirectbr` as written.
+            InstKind::IndirectBr { addr, .. } => {
+                let marks = BranchProtection::CET_IBT | BranchProtection::BTI;
+                if module.props.branch_protection.bits() & marks != 0 {
+                    return;
+                }
+                let Some(Const::BlockAddr { func, block }) =
+                    addr.as_const().map(|id| module.consts.get(id))
+                else {
+                    return;
+                };
+                if func != body.symbol() {
+                    return;
+                }
+                let mut kept = false;
+                for s in term.successors() {
+                    if s == block && !kept {
+                        kept = true;
+                    } else {
+                        self.remove_pred(module, body, s, b.raw());
+                    }
+                }
+                self.action[t] = if kept { Action::Jump(block) } else { Action::Unreachable };
             }
             _ => {}
         }
@@ -858,7 +1004,7 @@ impl Lci {
             let range = block.inst_range();
             for inst in block.insts() {
                 let i = inst.id().index();
-                if get(&self.bits, 0, i) || (active && self.action[i] != Action::Emit) {
+                if get(&self.bits, 0, i) || (active && !self.action[i].emits()) {
                     continue;
                 }
                 let phi = inst.opcode() == Opcode::Phi;
@@ -894,7 +1040,7 @@ impl Lci {
                 let folded = get(&self.bits, 0, i);
                 if self.uses[i] != 0
                     || inst.ty() == TypeId::VOID
-                    || (active && self.action[i] != Action::Emit)
+                    || (active && !self.action[i].emits())
                     || !(if folded { active } else { removable(inst) })
                 {
                     continue;

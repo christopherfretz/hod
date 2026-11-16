@@ -309,7 +309,8 @@ fn lower_cast<'a>(
 /// an instruction lowered as usual.
 fn folded(cx: &mut FnCx<'_, X64>, inst: Inst<'_>) -> Option<CgResult<()>> {
     match cx.fold_action(inst) {
-        FoldAction::Emit => None,
+        // A rewritten `invoke` is the call sequence's (WP-270).
+        FoldAction::Emit | FoldAction::Call(_) | FoldAction::NoNormal => None,
         FoldAction::Drop => Some(Ok(())),
         FoldAction::Jump(target) => Some(term::br(cx, target)),
         FoldAction::Unreachable => Some(term::unreachable(cx)),

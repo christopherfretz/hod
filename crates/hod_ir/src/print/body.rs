@@ -791,6 +791,7 @@ impl<'a, W: Write + ?Sized> Writer<'a, W> {
             (call.is_always_inline(), " alwaysinline"),
             (call.is_noinline(), " noinline"),
             (call.is_nocf_check(), " nocf_check"),
+            (call.is_will_return(), " willreturn"),
         ] {
             self.s(if on { word } else { "" })?;
         }

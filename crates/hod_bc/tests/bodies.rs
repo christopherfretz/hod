@@ -380,7 +380,14 @@ fn convergent_is_read_kept_and_printed() {
         let dialect = hod_ir::Dialect::new(major).unwrap();
         module.print(&mut printed, dialect, &bodies).unwrap();
         let sites = printed.lines().filter(|line| line.contains("call ")).collect::<Vec<_>>();
-        let flagged = sites.iter().filter(|line| line.ends_with(" convergent")).count();
+        // `willreturn` is a kept call-site flag too since WP-270, printed
+        // after `convergent` (the group `#0` has both).
+        let flagged = sites
+            .iter()
+            .filter(|line| {
+                line.ends_with(" convergent") || line.ends_with(" convergent willreturn")
+            })
+            .count();
         assert_eq!((sites.len(), flagged), (3, 2), "{printed}");
         let groups = printed.lines().filter(|line| line.starts_with("attributes #"));
         assert_eq!(groups.filter(|line| line.contains("convergent")).count(), 2, "{printed}");

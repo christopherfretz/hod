@@ -368,6 +368,8 @@ pub(crate) const CALL_ALWAYS_INLINE: u16 = 1 << 6;
 pub(crate) const CALL_NOINLINE: u16 = 1 << 7;
 /// `nocf_check` on the call site (WP-184).
 pub(crate) const CALL_NO_CF_CHECK: u16 = 1 << 8;
+/// `willreturn` on the call site (WP-270).
+pub(crate) const CALL_WILL_RETURN: u16 = 1 << 9;
 
 /// The record of one call, `invoke` or `callbr`. 44 bytes.
 ///
@@ -1958,6 +1960,12 @@ impl<'a> CallSite<'a> {
         self.data().flags & CALL_NO_CF_CHECK != 0
     }
 
+    /// `willreturn` on the call (`spec/ir.md` §5.7, WP-270).
+    #[inline]
+    pub fn is_will_return(&self) -> bool {
+        self.data().flags & CALL_WILL_RETURN != 0
+    }
+
     /// Whether the return value or any argument has an attribute.
     #[inline]
     pub fn has_param_attrs(&self) -> bool {
@@ -2067,6 +2075,7 @@ impl fmt::Debug for CallSite<'_> {
             .field("nounwind", &self.is_nounwind())
             .field("returns_twice", &self.returns_twice())
             .field("nocf_check", &self.is_nocf_check())
+            .field("will_return", &self.is_will_return())
             .field("convergent", &self.is_convergent())
             .field("always_inline", &self.is_always_inline())
             .field("noinline", &self.is_noinline());

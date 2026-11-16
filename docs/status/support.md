@@ -39,7 +39,7 @@ skipped (`docs/design/0007-avx512.md` §4.4).
 | `init` | 10 | 6 | 3 | 1 | 6 | 3 | 1 |
 | `function` | 6 | 6 | 0 | 0 | 6 | 0 | 0 |
 | `cc` | 26 | 8 | 6 | 12 | 6 | 11 | 9 |
-| `attr` | 62 | 36 | 23 | 3 | 35 | 24 | 3 |
+| `attr` | 64 | 38 | 23 | 3 | 37 | 24 | 3 |
 | `type` | 15 | 12 | 0 | 3 | 13 | 0 | 2 |
 | `inst` | 67 | 60 | 0 | 7 | 60 | 0 | 7 |
 | `mem` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
@@ -51,7 +51,7 @@ skipped (`docs/design/0007-avx512.md` §4.4).
 | `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 1032 | 373 | 11 | 648 | 782 | 10 | 240 |
-| total | 1358 | 596 | 58 | 704 | 1007 | 61 | 290 |
+| total | 1360 | 598 | 58 | 704 | 1009 | 61 | 290 |
 
 ## `module`
 
@@ -284,6 +284,8 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:convergent` | supported | supported | constrains transformations only, and hod makes none (§5.7); `bundle:convergencectrl` and the `llvm.experimental.convergence.*` intrinsics stay refused |
 | `attr:noredzone` | supported | supported | hod keeps no data below the stack pointer (`spec/codegen.md` §5) |
 | `attr:nocf_check` | supported | supported | on x86-64 under `cf-protection-branch`: no `endbr64` at the function's entry; an indirect call with it is refused as `x64:nocf-check-indirect-call` (no `notrack` encoding); no code elsewhere, as `llc` (WP-184) |
+| `attr:willreturn` | supported | supported | read only by the constant fold's `invoke` rewrite (`spec/codegen.md` §5.6.8, WP-270); no code otherwise |
+| `attr:null_pointer_is_valid` | supported | supported | read only by the constant fold: an access through `null` does not end its block (`spec/codegen.md` §5.6.8, WP-270); no code otherwise |
 | `attr:target-cpu` | supported | supported | the code is ARMv8.0 on AArch64 and the x86-64 base set on x86-64, which every CPU runs |
 | `attr:target-features` | supported | supported | each feature judged by code generation (`spec/codegen.md` §5.5.2, §5.6.2) |
 | `attr:tune-cpu` | supported | supported | tuning only: hod does not tune |

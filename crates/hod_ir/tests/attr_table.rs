@@ -55,7 +55,7 @@ fn parse(list: &'static str) -> Vec<Listed> {
 }
 
 /// §5.7 "kept": the keyword attributes that have a representation.
-const KEPT_KEYWORDS: [&str; 38] = [
+const KEPT_KEYWORDS: [&str; 40] = [
     "align",
     "alignstack",
     "alwaysinline",
@@ -71,6 +71,7 @@ const KEPT_KEYWORDS: [&str; 38] = [
     "noredzone",
     "noreturn",
     "nounwind",
+    "null_pointer_is_valid",
     "preallocated",
     "presplitcoroutine",
     "returns_twice",
@@ -93,6 +94,7 @@ const KEPT_KEYWORDS: [&str; 38] = [
     "swifterror",
     "swiftself",
     "uwtable",
+    "willreturn",
     "zeroext",
 ];
 
@@ -117,7 +119,7 @@ const REJECTED_KEYWORDS: [&str; 15] = [
 ];
 
 /// §5.7 "dropped": the keyword attributes only an optimizer reads.
-const DROPPED_KEYWORDS: [&str; 49] = [
+const DROPPED_KEYWORDS: [&str; 47] = [
     "allocalign",
     "allockind",
     "allocptr",
@@ -154,7 +156,6 @@ const DROPPED_KEYWORDS: [&str; 49] = [
     "nosanitize_coverage",
     "nosync",
     "noundef",
-    "null_pointer_is_valid",
     "optnone",
     "optsize",
     "range",
@@ -164,7 +165,6 @@ const DROPPED_KEYWORDS: [&str; 49] = [
     "skipprofile",
     "speculatable",
     "vscale_range",
-    "willreturn",
     "writable",
     "writeonly",
 ];

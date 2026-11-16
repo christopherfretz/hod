@@ -846,6 +846,16 @@ const ATTR_FLAG: [SupportRow; FnAttrs::FLAG_NAMES.len()] = [
         ON,
         "on x86-64 under `cf-protection-branch`: no `endbr64` at the function's entry; an indirect call with it is refused as `x64:nocf-check-indirect-call` (no `notrack` encoding); no code elsewhere, as `llc` (WP-184)",
     ),
+    both(
+        "attr:willreturn",
+        ON,
+        "read only by the constant fold's `invoke` rewrite (`spec/codegen.md` §5.6.8, WP-270); no code otherwise",
+    ),
+    both(
+        "attr:null_pointer_is_valid",
+        ON,
+        "read only by the constant fold: an access through `null` does not end its block (`spec/codegen.md` §5.6.8, WP-270); no code otherwise",
+    ),
 ];
 
 /// In `FnStr::ALL` order.

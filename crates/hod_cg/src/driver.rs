@@ -362,6 +362,23 @@ impl<'a, T: Target> FnCx<'a, T> {
             for (index, seen) in self.s.reachable.iter_mut().enumerate() {
                 *seen &= self.s.fold.reached(BlockId::new(index as u32));
             }
+            // WP-270: `llc` writes no personality and no LSDA for a
+            // function whose landing pads all went (`MF->getLandingPads()`
+            // is empty), under a personality it knows to do nothing
+            // without them; under another it writes both anyway, so hod
+            // keeps them (`spec/eh.md` §1.1).
+            if self.has_pads
+                && crate::emit::known_personality(self.module, self.body.symbol())
+                && !self.s.reachable.iter().enumerate().any(|(index, &seen)| {
+                    seen && body
+                        .block(BlockId::new(index as u32))
+                        .non_phis()
+                        .next()
+                        .is_some_and(|first| matches!(first.kind(), InstKind::LandingPad(_)))
+                })
+            {
+                self.has_pads = false;
+            }
         }
         // WP-095: an `indirectbr` only in unreachable blocks still takes
         // the function's block addresses (`llc` keeps their labels).
@@ -684,7 +701,11 @@ impl<'a, T: Target> FnCx<'a, T> {
         match self.s.fold.action(inst.id()) {
             crate::const_fold::Action::Jump(target) => return self.phi_stores(target),
             crate::const_fold::Action::Unreachable => return Ok(()),
-            crate::const_fold::Action::Emit | crate::const_fold::Action::Drop => {}
+            // An `invoke`'s (rewritten or not) are the call sequence's.
+            crate::const_fold::Action::Emit
+            | crate::const_fold::Action::Drop
+            | crate::const_fold::Action::Call(_)
+            | crate::const_fold::Action::NoNormal => {}
         }
         let own = callbr_result(inst);
         for succ in inst.successors() {

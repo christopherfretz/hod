@@ -24,6 +24,7 @@ pub mod int;
 pub mod mem;
 pub mod pic;
 pub mod reg;
+pub mod sse;
 pub mod target;
 pub mod tls;
 pub mod x87;

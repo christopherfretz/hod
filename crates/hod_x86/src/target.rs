@@ -174,6 +174,7 @@ impl Target for X86 {
         }
         let gpr = abi::is_gpr(cx.types(), inst.ty());
         match inst.kind() {
+            _ if crate::sse::owns(cx, inst) => crate::sse::lower(cx, inst),
             _ if crate::x87::owns(cx, inst) => crate::x87::lower(cx, inst),
             InstKind::Binary { lhs, rhs } if gpr => alu::binary(cx, inst, lhs, rhs),
             InstKind::Binary { lhs, rhs } if int::is_wide(cx, inst.result()) => {
@@ -309,6 +310,9 @@ impl Target for X86 {
     ) -> CgResult<()> {
         if int::is_wide(cx, value) {
             return int::materialize_mem(cx, dst, value);
+        }
+        if crate::sse::is_sse(cx, common::value_ty(cx, value)) {
+            return crate::sse::materialize_mem(cx, dst, value);
         }
         // Floating point; any other type is refused by its family there.
         crate::x87::materialize_mem(cx, dst, value)

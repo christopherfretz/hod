@@ -119,7 +119,7 @@ their values).
 | `x86:debug-info` | a module with debug information (`hod_cg`'s emitter) | I10 |
 | `x86:cf-protection` | `cf-protection-*` module flags (`hod_cg`'s `.note.gnu.property`) | — |
 | `x86:atomic` | an ordered load or store, `fence`, `cmpxchg`, `atomicrmw` | I11 |
-| `x86:inline-asm` | a call of inline assembly | I13 |
+| `x86:inline-asm:<detail>` | what inline assembly does not take (§10, `spec/asm.md` §22.5) | I13 (`asm.rs`) |
 | `x86:abi:cc` | a calling convention other than C | I6 (`abi.rs`) |
 | `x86:abi:attr` | `byval`, `sret`, `inreg`, `nest`, the Swift attributes, `inalloca`, `preallocated`, `alignstack` | I6 (`abi.rs`) |
 | `x86:abi:musttail` | a `musttail` call | I6 |
@@ -180,3 +180,13 @@ Still refused as `x86:i64`: such an integer passed or returned by value
 Intrinsics of these widths stay `x86:intrinsic`, as for every width: the
 `*.with.overflow` ones return the aggregate `{iN, i1}` (I11's
 `extractvalue`), and the bit counts and min/max are not lowered yet.
+
+## 10. Inline assembly (`asm`, WP-301)
+
+A call of inline assembly is `crate::asm::call` (`call::lower`'s asm
+arm): the operands placed in the six general registers, memory or
+immediates as the constraints ask, the template substituted and
+assembled in 32-bit mode by `hod_asm::x86`, the outputs stored back.
+The rules, the constraint letters, the register order and every
+refusal (`x86:inline-asm:<detail>`, `asm:*`, `x86-mode:*`) are
+`spec/asm.md` §22. Record: `spec/landed/asm/WP-301.md`.

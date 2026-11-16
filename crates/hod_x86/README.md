@@ -29,7 +29,7 @@ refusal table of `spec/codegen-x86.md` §7) belong to WP-293's owner of
 | `pic.rs` | **I8** | GOT, `R_386_GOTPC`/`GOTOFF`/`GOT32X`, PLT calls from PIC | — | `check_static` (becomes the access choice) | `x86:pic` |
 | `tls.rs` | **I8** | `%gs` TLS models | — | `address` | `x86:tls` |
 | `x87.rs` | **I9** | floating point on the x87 stack | — | new; `target.rs` arms | `x86:float` |
-| `hod_asm` (32-bit) | **I13** | inline assembly in 32-bit mode | — | `call::lower`'s asm arm | `x86:inline-asm` |
+| `asm.rs`, `hod_asm::x86` | **I13** (WP-301) | inline assembly in 32-bit mode (`spec/asm.md` §22) | — | `call::lower`'s asm arm | `x86:inline-asm` (now `x86:inline-asm:<detail>`) |
 
 Outside the crate, `hod_cg` refuses `x86:debug-info` (`emit/mod.rs`,
 removed by I10 with the unwind tables in `emit/unwind.rs`) and

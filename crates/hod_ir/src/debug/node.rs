@@ -803,6 +803,16 @@ macro_rules! nodes {
                 }
             }
 
+            /// What kind of value the field at `index` of
+            /// [`DiKind::fields`] holds; `None` past the end.
+            #[inline]
+            pub fn field_shape_at(self, index: usize) -> Option<DiShape> {
+                match self {
+                    DiKind::Undefined => None,
+                    $( DiKind::$variant => <$name>::SHAPES.get(index).copied(), )*
+                }
+            }
+
             pub(crate) const fn from_code(code: u8) -> DiKind {
                 match code {
                     $( $code => DiKind::$variant, )*
@@ -886,6 +896,39 @@ macro_rules! nodes {
                     )*
                     None
                 }
+
+                /// [`Self::set`] by the field's position in
+                /// [`DiKind::fields`]: `None` past the end.
+                #[allow(unused_assignments, unused_mut, reason = "the last field's position is not read; a kind may have no field")]
+                #[inline]
+                fn set_at(&mut self, index: usize, value: DiFieldValue<'a>) -> Option<bool> {
+                    let mut at = 0usize;
+                    $(
+                        if nodes!(@second $tag, index == 0) {
+                            let tag = <u16 as Field<'_>>::assign(value);
+                            self.tag = tag.unwrap_or(self.tag);
+                            return Some(tag.is_some());
+                        }
+                        at = 1;
+                    )?
+                    $(
+                        if index == at {
+                            let value = Field::assign(value);
+                            if let Some(value) = value {
+                                self.$field = value;
+                            }
+                            return Some(value.is_some());
+                        }
+                        at += 1;
+                    )*
+                    None
+                }
+
+                /// The shapes of [`DiKind::fields`], in their order.
+                const SHAPES: &'static [DiShape] = &[
+                    $(nodes!(@second $tag, DiShape::UInt),)?
+                    $(<$fty as Field<'a>>::SHAPE,)*
+                ];
 
                 fn shape(field: &[u8]) -> Option<DiShape> {
                     $(
@@ -978,6 +1021,13 @@ macro_rules! nodes {
                 match self {
                     DiNode::Undefined => None,
                     $( DiNode::$variant(node) => node.set(field, value), )*
+                }
+            }
+
+            fn set_field_at(&mut self, index: usize, value: DiFieldValue<'a>) -> Option<bool> {
+                match self {
+                    DiNode::Undefined => None,
+                    $( DiNode::$variant(node) => node.set_at(index, value), )*
                 }
             }
 
@@ -1423,6 +1473,24 @@ nodes! {
     }
 }
 
+impl DiKind {
+    /// The position in [`DiKind::fields`] of the field LLVM calls
+    /// `field`; `None` for a field the kind's record does not have.
+    /// The search starts at `hint` and wraps around: a producer that
+    /// reads fields in the record's order (LLVM writes them so) passes
+    /// the position after the last one found and compares once.
+    #[inline]
+    pub fn field_index(self, field: &[u8], hint: usize) -> Option<usize> {
+        let fields = self.fields();
+        let start = if hint < fields.len() { hint } else { 0 };
+        let same = |known: &&str| known.len() == field.len() && known.as_bytes() == field;
+        if let Some(at) = fields[start..].iter().position(same) {
+            return Some(start + at);
+        }
+        fields[..start].iter().position(same)
+    }
+}
+
 impl<'a> DiNode<'a> {
     /// A node of `kind` as LLVM's parser starts one: every field at
     /// LLVM's default for an omitted field. That differs from
@@ -1494,6 +1562,31 @@ impl<'a> DiNode<'a> {
         )
     }
 
+    /// [`DiNode::set`] by the field's position in [`DiKind::fields`]
+    /// ([`DiKind::field_index`]): the way a producer that has looked the
+    /// name up once sets it without comparing it again. The older
+    /// spellings of a subprogram's flags are no position: they go
+    /// through [`DiNode::set`].
+    ///
+    /// # Errors
+    /// As [`DiNode::set`]; the same messages for the same field.
+    #[inline]
+    pub fn set_at(&mut self, index: usize, value: DiFieldValue<'a>) -> IrResult<()> {
+        match self.set_field_at(index, value) {
+            Some(true) => Ok(()),
+            done => self.set_at_failed(index, value, done.is_some()),
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn set_at_failed(&self, index: usize, value: DiFieldValue<'a>, shape: bool) -> IrResult<()> {
+        let kind = self.kind();
+        let what = if shape { "cannot be" } else { "is not a field hod_ir has; it was given" };
+        let field = kind.fields().get(index).map_or_else(|| format!("#{index}"), |f| (*f).into());
+        err(IrErrorKind::InvalidDebugInfo, format!("{}.{field} {what} {value:?}", kind.llvm_name()))
+    }
+
     /// Whether LLVM requires the node to be `distinct`: a compile unit,
     /// and a subprogram that is a definition.
     pub fn must_be_distinct(&self) -> bool {
@@ -1508,6 +1601,47 @@ impl<'a> DiNode<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// WP-290: a field by position is the field by name: the same
+    /// position from every hint, the same shape, the same node after a
+    /// set and the same error after a refused one.
+    #[test]
+    fn fields_by_position_are_fields_by_name() {
+        let values = [
+            DiFieldValue::UInt(7),
+            DiFieldValue::UInt(u64::MAX),
+            DiFieldValue::Int(-3),
+            DiFieldValue::Bool(true),
+            DiFieldValue::Str(b"text"),
+            DiFieldValue::Node(None),
+            DiFieldValue::List(&[]),
+        ];
+        for &kind in DiKind::ALL {
+            let fields = kind.fields();
+            for (index, field) in fields.iter().enumerate() {
+                for hint in 0..=fields.len() + 1 {
+                    assert_eq!(kind.field_index(field.as_bytes(), hint), Some(index), "{field}");
+                }
+                assert_eq!(kind.field_shape_at(index), kind.field_shape(field.as_bytes()));
+                for value in values {
+                    let mut by_name = DiNode::llvm_default(kind);
+                    let mut by_index = by_name;
+                    let named = by_name.set(field.as_bytes(), value);
+                    let indexed = by_index.set_at(index, value);
+                    assert_eq!(named, indexed, "{kind:?}.{field} = {value:?}");
+                    assert_eq!(by_name, by_index, "{kind:?}.{field} = {value:?}");
+                }
+            }
+            assert_eq!(kind.field_index(b"colour", 0), None);
+            assert_eq!(kind.field_index(b"", 3), None);
+            assert_eq!(kind.field_shape_at(fields.len()), None);
+            assert!(
+                DiNode::llvm_default(kind).set_at(fields.len(), DiFieldValue::UInt(0)).is_err()
+            );
+        }
+        // The older spellings of a subprogram's flags have no position.
+        assert_eq!(DiKind::Subprogram.field_index(b"isDefinition", 0), None);
+    }
 
     /// §6.2: kinds have stable codes, LLVM names and field lists.
     #[test]

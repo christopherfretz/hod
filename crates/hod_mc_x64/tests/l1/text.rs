@@ -368,3 +368,45 @@ pub fn bad_imms(size: Size) -> Vec<i64> {
 pub fn llvm_checks_imm(size: Size) -> bool {
     size == Size::Q
 }
+
+/// The 32-bit form of a line of 64-bit assembly whose instruction
+/// [`Mode::X86`](hod_mc_x64::Mode::X86) admits (WP-285): the 64-bit
+/// registers `rax`..`rdi` become `eax`..`edi` (they can only be address
+/// registers or the 64-bit default operand of `push`, `pop`, `call`,
+/// `jmp`, ...), the memory operand of `push`/`pop`/`call`/`jmp` is a
+/// `dword`, and `pushfq`/`popfq` are `pushfd`/`popfd`.
+pub fn to_i386(asm: &str) -> String {
+    const WIDE: [(&str, &str); 10] = [
+        ("rax", "eax"),
+        ("rcx", "ecx"),
+        ("rdx", "edx"),
+        ("rbx", "ebx"),
+        ("rsp", "esp"),
+        ("rbp", "ebp"),
+        ("rsi", "esi"),
+        ("rdi", "edi"),
+        ("pushfq", "pushfd"),
+        ("popfq", "popfd"),
+    ];
+    let mut out = String::with_capacity(asm.len());
+    let mut word = String::new();
+    let flush = |word: &mut String, out: &mut String| {
+        let to = WIDE.iter().find(|(from, _)| from == word).map_or(word.as_str(), |(_, to)| to);
+        out.push_str(to);
+        word.clear();
+    };
+    for c in asm.chars() {
+        if c.is_ascii_alphanumeric() || c == '_' || c == '$' || c == '.' {
+            word.push(c);
+        } else {
+            flush(&mut word, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut word, &mut out);
+    let mnemonic = out.split_whitespace().next().unwrap_or("");
+    if matches!(mnemonic, "push" | "pop" | "call" | "jmp") {
+        out = out.replace("qword ptr", "dword ptr");
+    }
+    out
+}

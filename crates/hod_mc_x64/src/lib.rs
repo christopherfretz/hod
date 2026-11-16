@@ -3,6 +3,9 @@
 //!
 //! Contract: `spec/mc-x64.md`. Role in the pipeline: `docs/ARCHITECTURE.md`.
 //!
+//! The constructors encode for 64-bit mode; [`Mode::X86`] takes their
+//! result to 32-bit mode (`i386`), or refuses it ([`mode`]).
+//!
 //! The crate knows nothing about the IR, object files or assembly text. Its
 //! consumer is a single-pass code generator, so every constructor is a plain
 //! `const fn` returning a small `Copy` value, [`Inst`]: up to 15 bytes, the
@@ -163,3 +166,7 @@ pub use x87::*;
 // EVEX and the opmask instructions (WP-208).
 pub mod evex;
 pub use evex::*;
+
+// The 32-bit mode (WP-285).
+pub mod mode;
+pub use mode::{Mode, ModeError};

@@ -196,7 +196,7 @@ checked! {
     /// 32-bit form the low half, zero-extended), a write reads it.
     pub fn segbase_r / try_segbase_r(op: SegBase, size: Size, r: Reg)
     requires dq(size);
-    { digit_r(Op::two(0xae).rep(0xf3).sized(size, 0), op as u8, size, r) }
+    { digit_r(Op::two(0xae).rep(0xf3).sized(size, 0), op as u8, size, r).x64_only() }
 
     /// `RDSSPD r32`/`RDSSPQ r64` (`F3 [REX.W] 0F 1E /1`, register operand,
     /// CET shadow stacks): the shadow-stack pointer into `r`; a `nop`
@@ -397,6 +397,7 @@ checked! {
         inst.push(w << 7 | (!v.code() & 15) << 3 | pp);
         inst.push(opcode);
         inst.push(0xc0 | dst.low() << 3 | rm.low());
-        inst
+        // `W1` reads and writes 64-bit registers: 64-bit mode only.
+        if w == 1 { inst.x64_only() } else { inst }
     }
 }

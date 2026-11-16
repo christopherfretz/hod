@@ -16,6 +16,18 @@ const SITE_ABS64: u8 = 5;
 const SITE_MASK: u8 = 7;
 const FLAG_REX: u8 = 8;
 const FLAG_LOCKABLE: u8 = 16;
+/// The memory operand is RIP-relative (`ModRM mod=00 r/m=101`): an
+/// absolute `disp32` in 32-bit mode, so [`Mode::X86`](crate::Mode::X86)
+/// refuses it.
+pub(crate) const FLAG_RIP: u8 = 32;
+/// The memory operand is an absolute address in its 64-bit form, `SIB`
+/// with neither base nor index (`ModRM.r/m=100`, `SIB=25`), which
+/// [`Mode::X86`](crate::Mode::X86) rewrites to `r/m=101` without `SIB`.
+pub(crate) const FLAG_ABS: u8 = 64;
+/// The instruction exists only in 64-bit mode although its bytes carry
+/// no REX prefix (`RDFSBASE r32`, a VEX `W1` form with a 64-bit general
+/// register).
+pub(crate) const FLAG_X64: u8 = 128;
 
 /// One encoded instruction: up to 15 bytes, in order.
 ///
@@ -143,6 +155,52 @@ impl Inst {
             Fixup::Abs32U => SITE_ABS32U,
             Fixup::Abs64 => SITE_ABS64,
         };
+    }
+
+    /// Records one of the mode flags ([`FLAG_RIP`], [`FLAG_ABS`],
+    /// [`FLAG_X64`]).
+    #[inline]
+    pub(crate) const fn mark(&mut self, flag: u8) {
+        self.flags |= flag;
+    }
+
+    /// The same instruction marked as existing only in 64-bit mode.
+    #[inline]
+    pub(crate) const fn x64_only(mut self) -> Self {
+        self.flags |= FLAG_X64;
+        self
+    }
+
+    /// The raw flags, for [`Mode`](crate::Mode).
+    #[inline]
+    pub(crate) const fn flags(&self) -> u8 {
+        self.flags
+    }
+
+    /// Removes the byte at `at`, keeping the site and the lock position
+    /// on the bytes they named.
+    pub(crate) const fn remove(mut self, at: usize) -> Self {
+        let mut i = at;
+        while i + 1 < self.len as usize {
+            self.bytes[i] = self.bytes[i + 1];
+            i += 1;
+        }
+        self.len -= 1;
+        self.bytes[self.len as usize] = 0;
+        if self.site as usize > at {
+            self.site -= 1;
+        }
+        if self.lock_at as usize > at {
+            self.lock_at -= 1;
+        }
+        self
+    }
+
+    /// Replaces the byte at `at`.
+    #[inline]
+    pub(crate) const fn set(mut self, at: usize, b: u8) -> Self {
+        self.bytes[at] = b;
+        self
     }
 
     #[inline]
@@ -488,13 +546,16 @@ const fn mem_operand(out: &mut Acc, reg: u8, m: Mem) {
         (Base::Rip, _) => {
             out.push(reg | 0b101);
             out.mark_site(SITE_REL32);
+            out.flags |= FLAG_RIP;
             out.push_imm(disp as u32, 4);
         }
         (Base::None, index) => {
             out.push(reg | 0b100);
-            let sib = match index {
-                Some((i, s)) => (s as u8) << 6 | i.reg().low() << 3 | 0b101,
-                None => 0b00_100_101,
+            let sib = if let Some((i, s)) = index {
+                (s as u8) << 6 | i.reg().low() << 3 | 0b101
+            } else {
+                out.flags |= FLAG_ABS;
+                0b00_100_101
             };
             out.push(sib);
             if m.is_abs32() {

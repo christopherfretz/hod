@@ -42,7 +42,11 @@ mod x87;
 // EVEX (WP-208).
 mod evex;
 
+// The 32-bit mode (WP-285).
+mod i386_forms;
+
 use harness::Batch;
+use hod_mc_x64::Mode;
 
 /// A sweep: its spec section and the function adding its cases.
 type Group = (&'static str, fn(&mut Batch));
@@ -90,19 +94,40 @@ pub const GROUPS: &[Group] = &[
 ];
 
 fn check(group: &str) {
+    check_in(group, Mode::X64);
+}
+
+/// Runs a sweep with every instruction passed through `mode`, checked at
+/// that mode's `llvm-mc` triple.
+fn check_in(group: &str, mode: Mode) {
     let (label, build) = GROUPS.iter().find(|(label, _)| *label == group).expect("a group name");
-    let mut batch = Batch::default();
+    let mut batch = Batch::for_mode(mode);
     build(&mut batch);
     batch.check(label);
 }
 
+/// Each sweep's test at `x86_64`, and the same sweep in 32-bit mode at
+/// `i686` in `i386::` (WP-285).
 macro_rules! differential {
-    ($($test:ident => $group:literal;)*) => {$(
-        #[test]
-        fn $test() {
-            check($group);
+    ($($test:ident => $group:literal;)*) => {
+        $(
+            #[test]
+            fn $test() {
+                check($group);
+            }
+        )*
+        /// The sweeps in 32-bit mode ([`Mode::X86`]): what the mode admits
+        /// has `llvm-mc -triple=i686`'s bytes, what it refuses `llvm-mc`
+        /// refuses at that triple (WP-285).
+        mod i386 {
+            $(
+                #[test]
+                fn $test() {
+                    super::check_in($group, hod_mc_x64::Mode::X86);
+                }
+            )*
         }
-    )*};
+    };
 }
 
 differential! {

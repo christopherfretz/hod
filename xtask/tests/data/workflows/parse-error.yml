@@ -1,0 +1,9 @@
+# A parse error: the flow sequence is never closed.
+on:
+  push:
+    branches: [main
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo one

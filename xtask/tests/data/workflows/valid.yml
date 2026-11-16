@@ -1,0 +1,27 @@
+# Valid: `on` stays a string key (YAML 1.2), a reusable-workflow job,
+# `needs` as a name and as a list, flow mappings.
+name: valid
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  lane:
+    uses: ./.github/workflows/ci-lane.yml
+    with: { runner: ubuntu-24.04, cache-key: ci }
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo yes
+  check:
+    needs: [lane, build]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: done
+        run: test "${{ needs.build.result }}" = success
+  last:
+    needs: check
+    runs-on: ubuntu-24.04
+    steps: [{ run: "true" }]

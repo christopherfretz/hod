@@ -1,0 +1,9 @@
+# A step with neither `run` nor `uses` (`with` lost its `uses` line).
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: setup
+        with: { cache-key: ci }

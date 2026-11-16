@@ -34,12 +34,14 @@ runs:
         esac
         apt-get update -qq
         apt-get install -y -qq --no-install-recommends \
-          ca-certificates curl git build-essential procps time xz-utils file python3 \
+          ca-certificates curl git build-essential procps time xz-utils file python3 python3-yaml \
           binutils clang-19 llvm-19 lld-19 libc++-19-dev libc++abi-19-dev \
           clang-22 llvm-22 lld-22 mold gdb gdb-multiarch lldb-19 qemu-user \
           csmith libcsmith-dev \
           "gcc-$cross" "g++-$cross" "binutils-$cross" \
           "libc6-dev-$arch-cross" "libstdc++-14-dev-$arch-cross" >/dev/null
+        # python3-yaml: the YAML parser of the gate's `workflows` step and
+        # of its tests in xtask (WP-265).
         # csmith: the random programs of `cargo xtask fuzz` (WP-154). Its
         # header is a package of its own that csmith only recommends.
         # csmith writes `platform.info` into its current directory even

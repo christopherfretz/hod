@@ -74,8 +74,10 @@ pub fn cargo_step(args: &[&str]) -> bool {
 
 /// The steps of `cargo xtask ci`, in the order they run (`spec/harness.md`
 /// "ci"): the quick gate's, then [`FULL_ONLY`].
-pub const STEPS: [&str; 9] = [
+pub const STEPS: [&str; 11] = [
     "fmt",
+    "scripts",
+    "workflows",
     "clippy",
     "test",
     "irdiff",
@@ -190,6 +192,10 @@ fn run_one(step: &str, args: &Args) -> StepResult {
     let passed = |ok: bool| if ok { StepResult::Passed } else { StepResult::Failed };
     match step {
         "fmt" => passed(cargo_step(&["fmt", "--all", "--check"])),
+        // WP-265: the real-project report's self-test and the shell
+        // scripts' syntax; the hosted workflow files through a YAML parser.
+        "scripts" => crate::scripts::scripts_gate(&root(), hod_testutil::tools_required()),
+        "workflows" => crate::scripts::workflows_gate(&root(), &[], hod_testutil::tools_required()),
         // spec/cli.md "Embedding": the facade without its readers, as a
         // program that builds `hod_ir` itself takes it. Part of the
         // `clippy` step, so every lane that lints runs it.
@@ -217,6 +223,12 @@ fn run_one(step: &str, args: &Args) -> StepResult {
             _ => unreachable!("Args::parse accepts only the gate's steps, not '{step}'"),
         },
     }
+}
+
+/// The workspace this harness was built from.
+fn root() -> std::path::PathBuf {
+    let xtask = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    xtask.parent().unwrap_or(xtask).to_path_buf()
 }
 
 /// The L4 step of the gate (spec/harness.md "irdiff", "In the gate"): the
@@ -337,7 +349,7 @@ fn corpus_gate(_: &str) -> StepResult {
 
 /// The steps of the quick gate the hosted CI lane runs
 /// (`.github/workflows/ci-lane.yml`, `spec/harness.md` "CI").
-pub const HOSTED_STEPS: [&str; 4] = ["fmt", "clippy", "test", "irdiff"];
+pub const HOSTED_STEPS: [&str; 6] = ["fmt", "scripts", "workflows", "clippy", "test", "irdiff"];
 
 /// The quick gate's steps the hosted lane does not run: `roundtrip` needs
 /// the corpus, which is build output made on the development machine

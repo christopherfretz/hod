@@ -8,7 +8,8 @@ its tests, "Test directives"), `corpus`, `roundtrip`, `bench`, `debug` and the g
 ## ci
 
 `cargo xtask ci [--quick]` is the gate (`docs/VALIDATION.md` "Gates"): in
-order `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --
+order `cargo fmt --all --check`, then `scripts` and `workflows` (below),
+`cargo clippy --workspace --all-targets --
 -D warnings`, `cargo test --workspace --quiet --no-fail-fast` (every failing test
 binary in one log), then the `irdiff` runs of
 "irdiff", "In the gate" (the quick gate's include a few seeds for the
@@ -29,6 +30,31 @@ failed)`, or `not run (full gate only)` under `--quick`) and its wall
 time, and the total, also when a step failed; it ends with `ci: ok` and
 exit status 0 only if every step passed or was skipped. Tests:
 `xtask::ci::tests::the_full_gates_steps`, `the_gates_table`.
+
+**`scripts` and `workflows`** (WP-265, `xtask::scripts`; seconds, in the
+quick gate too). `scripts` runs `python3 -I
+scripts/oss/oss-report-selftest.py` (the self-test of the real-project
+report's list of expected results, "Real projects") and fails when it
+exits non-zero; then it parses, without running, every shell script under
+`scripts/` with the shell its first line names (`sh -n` for `#!/bin/sh`,
+which is dash on Debian; `bash -n` for a `bash` shebang and for a `.sh`
+file without a shebang, a file to `source`), and fails when one does not
+parse. `workflows` runs `python3 -I scripts/check-workflows.py`, which
+parses every `.github/workflows/*.yml` and `.github/actions/*/action.yml`
+with PyYAML (`python3-yaml`) and fails on a parse error, a key given twice
+in one mapping, or a structural fault GitHub reports only when the
+workflow next runs: a workflow without `on` or `jobs`; a job with neither
+`runs-on` nor `uses`; a job with `runs-on` and no list of steps; a
+`needs` naming no job of the file; a step (of a job or of a composite
+action) with neither `run` nor `uses`; an action without `runs.using`.
+The loader reads booleans as YAML 1.2 does (only `true`/`false`), as
+GitHub does: under PyYAML's default YAML 1.1 the key `on` would be the
+boolean `true`. Without PyYAML the checker exits 3 and the step is
+skipped (`workflows: skipped: no PyYAML: apt-get install python3-yaml;
+under HOD_REQUIRE_TOOLS=1 this fails`), a failure under
+`HOD_REQUIRE_TOOLS=1`; a missing `python3` or shell likewise. Tests:
+`xtask::scripts::tests`, `xtask/tests/workflows_check.rs` (fixtures in
+`xtask/tests/data/workflows/`, one fault each).
 
 **A step that needs build output or tools** follows one rule. What it
 needs and does not find is a note and the step passes with what there is
@@ -66,7 +92,7 @@ links no dylib), and a second failure of the step, fails the gate.
 `xtask::ci::tests::retries_only_missing_crates_once`,
 `retries_a_crate_seen_only_as_rmeta_once`.
 
-`--step <name>` (repeatable; `fmt`, `clippy`, `test`, `irdiff`,
+`--step <name>` (repeatable; `fmt`, `scripts`, `workflows`, `clippy`, `test`, `irdiff`,
 `roundtrip`, `debug-x86_64`, `debug-aarch64`, `corpus-aarch64`,
 `corpus-x86_64`; WP-251 replaced `debug` by the two `debug-<arch>`)
 runs only the named steps, in the gate's order
@@ -105,7 +131,8 @@ kiln's lanes). Its rules:
 2. **The reference environment.** Every job runs in
    `buildpack-deps:trixie` (Debian 13, as the development container) set
    up by `.github/actions/hod-ci`: clang, llvm and lld 19 and 22, binutils,
-   mold, gdb, gdb-multiarch, lldb-19, `qemu-user`, `csmith` with `libcsmith-dev` (its header), the other
+   mold, gdb, gdb-multiarch, lldb-19, `qemu-user`, `csmith` with `libcsmith-dev` (its header),
+   `python3-yaml` (the `workflows` step's parser), the other
    architecture's GNU cross gcc, g++, binutils, C library and libstdc++,
    Rust 1.95.0 and the cargo cache (one per architecture, saved by the
    `test harness` job).
@@ -118,7 +145,7 @@ kiln's lanes). Its rules:
    `/opt/kiln` and get `HOD_KILN=/opt/kiln/bin/kiln++`. hod records
    kiln's revision only there.
 5. **The steps.** The lane's jobs `lints` (`--step fmt`, `--step
-   clippy`), `test <part>` (`--step test --part <part>`, one job per
+   scripts`, `--step workflows`, `--step clippy`), `test <part>` (`--step test --part <part>`, one job per
    part of `xtask::ci::TEST_PARTS`, so that no job runs much over 15
    minutes; `CAP_SYS_PTRACE` for the debuggers) and `irdiff` (`--step
    irdiff`) run `cargo xtask ci --quick` with those steps, in parallel:

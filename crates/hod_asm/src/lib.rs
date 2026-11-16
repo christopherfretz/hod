@@ -32,5 +32,6 @@ pub mod reason;
 pub mod template;
 pub mod text;
 pub mod x64;
+pub mod x86;
 
 pub use reason::Refusal;

@@ -3,8 +3,8 @@
 //! with the cross C library, and run under `qemu-i386`: the exit status
 //! and the output equal those of the same module compiled by `llc` 19 and
 //! 22 (`-O0 -global-isel=0 -fast-isel=0`). Each C program is compiled to
-//! IR by the clang of the same major, without PIC (hod's i386 back end is
-//! static only, `x86:pic`).
+//! IR by the clang of the same major, without PIC (the static relocation
+//! model of milestone A; PIC and PIE runs are `i386_pic.rs`'s, WP-299).
 //!
 //! Each program is also compiled under `hod_cg::Stress::ALL` (the
 //! `min_pool` stress mode among them) and must run the same.

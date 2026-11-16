@@ -27,7 +27,7 @@ refusal table of `spec/codegen-x86.md` §7) belong to WP-293's owner of
 | `abi.rs` | **I6** | `assign` | I7, I9, I11 (their types' parts) | `assign`, `odd` | `x86:abi:cc`, `x86:abi:attr` |
 | `int.rs` | **I7** | wide integers (`i64` in two registers or memory) | — | new; `target.rs` arms for `Mem`-class integers | `x86:i64` |
 | `pic.rs` | **I8** (WP-299) | the access choice (`address`, `mem_inst`, `emit_call`), the GOT pointer, `R_386_GOTPC`/`GOTOFF`/`GOT32X`, PLT calls with `ebx` | I9 (constants through `mem_inst`) | — | `x86:pic` (removed) |
-| `tls.rs` | **I8** (WP-299) | `%gs` TLS: local and initial exec, `llvm.thread.pointer` | whoever adds `___tls_get_addr` to `hod_cg` | `address` (the dynamic models) | `x86:tls` (removed); `x86:tls:dynamic` stays |
+| `tls.rs` | **I8** (WP-299) | `%gs` TLS: all four models (general and local dynamic through `___tls_get_addr`), `llvm.thread.pointer` | — | — | `x86:tls`, `x86:tls:dynamic` (removed) |
 | `x87.rs` | **I9** | floating point on the x87 stack | — | new; `target.rs` arms | `x86:float` |
 | `hod_asm` (32-bit) | **I13** | inline assembly in 32-bit mode | — | `call::lower`'s asm arm | `x86:inline-asm` |
 

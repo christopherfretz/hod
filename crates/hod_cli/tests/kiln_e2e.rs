@@ -895,8 +895,8 @@ fn through_the_shim(kiln: &Path, llvm: &Path) {
     }
 
     // Code hod generates: strict mode succeeds.
-    // Not i686: kiln's module there is PIC, which its back end refuses
-    // (`x86:pic`).
+    // Not i686: not yet tried there (its back end has compiled kiln's PIC
+    // module since WP-299; what else the module needs is not checked).
     for target in [Target::Aarch64, Target::X86_64] {
         shimmed.hod_builds_integers(target);
     }

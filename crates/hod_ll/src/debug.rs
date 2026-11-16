@@ -28,34 +28,54 @@ use crate::lexer::Tok;
 use crate::meta::{MdKind, MdRef};
 use crate::parser::{Parser, ir};
 
-/// The fields LLVM's parser requires (`LLParser`'s `REQUIRED`), by
-/// kind; `DILocation`'s `scope` is checked where locations are read.
-const REQUIRED: &[(DiKind, &str)] = &[
-    (DiKind::File, "filename"),
-    (DiKind::File, "directory"),
-    (DiKind::Enumerator, "name"),
-    (DiKind::Enumerator, "value"),
-    (DiKind::DerivedType, "tag"),
-    (DiKind::DerivedType, "baseType"),
-    (DiKind::CompositeType, "tag"),
-    (DiKind::SubroutineType, "types"),
-    (DiKind::CompileUnit, "file"),
-    (DiKind::LexicalBlock, "scope"),
-    (DiKind::LexicalBlockFile, "scope"),
-    (DiKind::LexicalBlockFile, "discriminator"),
-    (DiKind::Namespace, "scope"),
-    (DiKind::TemplateTypeParameter, "type"),
-    (DiKind::TemplateValueParameter, "value"),
-    (DiKind::GlobalVariableExpression, "var"),
-    (DiKind::GlobalVariableExpression, "expr"),
-    (DiKind::LocalVariable, "scope"),
-    (DiKind::ImportedEntity, "tag"),
-    (DiKind::ImportedEntity, "scope"),
-    (DiKind::Label, "scope"),
-    (DiKind::Label, "name"),
-    (DiKind::Label, "file"),
-    (DiKind::Label, "line"),
-];
+/// The fields LLVM's parser requires of a node of `kind` (`LLParser`'s
+/// `REQUIRED`); `DILocation`'s `scope` is checked where locations are
+/// read.
+fn required(kind: DiKind) -> &'static [&'static str] {
+    match kind {
+        DiKind::File => &["filename", "directory"],
+        DiKind::Enumerator => &["name", "value"],
+        DiKind::DerivedType => &["tag", "baseType"],
+        DiKind::CompositeType => &["tag"],
+        DiKind::SubroutineType => &["types"],
+        DiKind::CompileUnit => &["file"],
+        DiKind::LexicalBlock | DiKind::Namespace | DiKind::LocalVariable => &["scope"],
+        DiKind::LexicalBlockFile => &["scope", "discriminator"],
+        DiKind::TemplateTypeParameter => &["type"],
+        DiKind::TemplateValueParameter => &["value"],
+        DiKind::GlobalVariableExpression => &["var", "expr"],
+        DiKind::ImportedEntity => &["tag", "scope"],
+        DiKind::Label => &["scope", "name", "file", "line"],
+        _ => &[],
+    }
+}
+
+/// The kind with a record in `hod_ir` that the metadata index found:
+/// `DiKind::named` of the same name, without comparing it again.
+fn record_kind(kind: MdKind) -> Option<DiKind> {
+    Some(match kind {
+        MdKind::GlobalVariableExpression => DiKind::GlobalVariableExpression,
+        MdKind::Subrange => DiKind::Subrange,
+        MdKind::Enumerator => DiKind::Enumerator,
+        MdKind::BasicType => DiKind::BasicType,
+        MdKind::DerivedType => DiKind::DerivedType,
+        MdKind::CompositeType => DiKind::CompositeType,
+        MdKind::SubroutineType => DiKind::SubroutineType,
+        MdKind::File => DiKind::File,
+        MdKind::CompileUnit => DiKind::CompileUnit,
+        MdKind::Subprogram => DiKind::Subprogram,
+        MdKind::LexicalBlock => DiKind::LexicalBlock,
+        MdKind::LexicalBlockFile => DiKind::LexicalBlockFile,
+        MdKind::Namespace => DiKind::Namespace,
+        MdKind::TemplateTypeParameter => DiKind::TemplateTypeParameter,
+        MdKind::TemplateValueParameter => DiKind::TemplateValueParameter,
+        MdKind::GlobalVariable => DiKind::GlobalVariable,
+        MdKind::LocalVariable => DiKind::LocalVariable,
+        MdKind::Label => DiKind::Label,
+        MdKind::ImportedEntity => DiKind::ImportedEntity,
+        _ => return None,
+    })
+}
 
 /// What a numbered metadata node became.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -276,8 +296,7 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
                 // A tuple named as a node is defined by `define_tuples`.
                 Handle::Node(_) if node.kind == MdKind::Tuple => {}
                 Handle::Node(id) => {
-                    let name = kind_name(self.src, node.span);
-                    let made = self.node_body(name, node.span, &mut scratch)?;
+                    let made = self.node_body(node.kind, node.span, &mut scratch)?;
                     let debug = &mut self.module.debug;
                     let result = made.define(debug, id, &scratch, self.src, node.distinct);
                     ir(node.span.start, result)?;
@@ -604,7 +623,7 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
         let lists = scratch.lists.len();
         let strs = scratch.strs.len();
         let src = self.src;
-        let made = self.node_body(kind_name(src, span), span, scratch)?;
+        let made = self.node_body(kind, span, scratch)?;
         let id = made.add(&mut self.module.debug, &scratch.fields[fields..], scratch, src);
         let id = ir(at, id)?;
         scratch.fields.truncate(fields);
@@ -619,19 +638,22 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
     /// its parentheses, `span`, into `scratch.fields`.
     fn node_body(
         &mut self,
-        name: &'a [u8],
+        md: MdKind,
         span: Span,
         scratch: &mut DebugScratch,
     ) -> PResult<Made<'a>> {
-        // A kind with a record is mapped (`di_kind`); the table is asked
-        // only about the others.
-        let Some(kind) = DiKind::named(name).filter(|_| name.starts_with(b"DI")) else {
+        // A kind with a record is mapped (`di_kind`), and the index has
+        // named it already; the text and the table are asked only about
+        // the others.
+        let Some(kind) = record_kind(md) else {
+            let name = kind_name(self.src, span);
             if di_kind(name).is_none() {
                 let at = span.start - 2 - name.len() as u32;
                 return fail(LlErrorKind::Syntax, at, "expected metadata type");
             }
             return Ok(Made { kind: None, name, first: scratch.fields.len() });
         };
+        let name = kind.llvm_name().as_bytes();
         let first = scratch.fields.len();
         // The fields met, for LLVM's two rules: none twice, and the
         // required ones present. The record's fields by position (at most
@@ -692,10 +714,7 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
                 self.expect(Tok::Comma, "expected ',' between fields")?;
             }
         }
-        for &(required, field) in REQUIRED {
-            if required != kind {
-                continue;
-            }
+        for &field in required(kind) {
             let present = match kind.field_index(field.as_bytes(), 0) {
                 Some(index) => met & (1 << index) != 0,
                 None => seen[..count].contains(&field.as_bytes()),
@@ -1126,5 +1145,33 @@ impl DebugMap {
     /// The handle of the node at `position` in the metadata index.
     pub(crate) fn handle(&self, position: usize) -> Handle {
         self.handles.get(position).copied().unwrap_or(Handle::None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// WP-290: the index's kind is the kind `DiKind::named` finds for
+    /// every kind with a record, and none for the others; every required
+    /// field has a position in its record.
+    #[test]
+    fn record_kinds_and_required_fields() {
+        for &kind in DiKind::ALL {
+            let name = kind.llvm_name().as_bytes();
+            let md = MdKind::from_name(name);
+            let expected = DiKind::named(name).filter(|_| name.starts_with(b"DI"));
+            assert_eq!(record_kind(md), expected, "{kind:?}");
+            for field in required(kind) {
+                assert!(kind.field_index(field.as_bytes(), 0).is_some(), "{kind:?}.{field}");
+            }
+        }
+        for name in
+            [&b"DIModule"[..], b"DILocation", b"DIStringType", b"DIFuture", b"GenericDINode"]
+        {
+            assert_eq!(record_kind(MdKind::from_name(name)), None);
+        }
+        assert_eq!(required(DiKind::Label), ["scope", "name", "file", "line"]);
+        assert!(required(DiKind::Subprogram).is_empty());
     }
 }

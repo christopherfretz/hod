@@ -536,6 +536,11 @@ The calling thread is one of those threads: it lays the chunks out in
 module order as they are made and compiles while the next one is not
 ("The back half", step 5).
 
+Before that, the index scan of a text module runs on
+`hod_ll::scan_threads(size, n)` of them (`spec/ll.md` §4.4: one per MiB
+of text, at most 8); under a jobserver its tokens come from the same one
+request described below, and stay held for reading and code generation.
+
 The same threads also read the bodies (`hod_ll::parse_bodies_on`,
 `hod_bc::read_bodies_on`) when `read_threads` allows more than one: at most
 `READ_MAX_THREADS` (4), one per `READ_BYTES_PER_THREAD` (128 KiB) of body

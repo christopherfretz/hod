@@ -9,6 +9,8 @@
 //! `module`, `attributes`, `uselistorder`, `uselistorder_bb`, and ends
 //! where the next one begins: line ends mean nothing, as in LLVM.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use crate::Span;
 use crate::error::{Fail, LlErrorKind, PResult, fail};
 use crate::kw::Kw;
@@ -106,52 +108,228 @@ struct Scanner<'a> {
 /// Indexes `src`.
 pub(crate) fn scan(src: &[u8]) -> PResult<Index> {
     let mut scanner = Scanner { lx: Lexer::new(src), index: Index::default() };
-    let mut token = scanner.next()?;
-    loop {
-        token = match token.kind {
-            Tok::Eof => return Ok(scanner.index),
-            Tok::Global | Tok::GlobalQuoted | Tok::GlobalId => {
-                scanner.expect(Tok::Equal, "expected '=' after a global name")?;
-                let start = scanner.lx.pos() as u32;
-                let next = scanner.rest_of_entity()?;
-                scanner.push_item(ItemKind::Assign, token, start, next.start);
-                next
+    let token = scanner.next()?;
+    scanner.run(token, usize::MAX)?;
+    Ok(scanner.index)
+}
+
+/// The fewest bytes of source a piece of a parallel scan has: a smaller
+/// one costs about what starting and joining its thread does
+/// (`spec/ll.md` §4.4, measured in `spec/landed/ll/WP-303.md`).
+pub const SCAN_BYTES_PER_THREAD: usize = 1 << 20;
+
+/// The most threads a scan runs on.
+pub const SCAN_MAX_THREADS: usize = 8;
+
+/// The bytes of source of a piece of a parallel scan: the threads take
+/// pieces in turn, so that one whose text is slower to scan (many small
+/// entities) does not leave the others waiting.
+pub const SCAN_PIECE_BYTES: usize = 256 << 10;
+
+/// How many threads [`scan_on`] scans `len` bytes of source with, when
+/// `granted` may run: one per [`SCAN_BYTES_PER_THREAD`], at most
+/// [`SCAN_MAX_THREADS`] and `granted`, at least one. A pure function of
+/// the two.
+#[must_use]
+pub fn scan_threads(len: usize, granted: usize) -> usize {
+    granted.min(SCAN_MAX_THREADS).min(len / SCAN_BYTES_PER_THREAD).max(1)
+}
+
+/// What one piece of a parallel scan found: the start of the first token
+/// it met (the entity it began at), what it indexed, and how it ended:
+/// at the token that begins the first entity at or after its stop, at
+/// the end of the source (`None`), or at an error.
+struct Piece {
+    first: u32,
+    index: Index,
+    end: PResult<Option<Token>>,
+}
+
+/// Indexes `src` on up to `threads` threads (`spec/ll.md` §4.4): the
+/// result, errors included, is that of [`scan`].
+///
+/// The source is cut about every [`SCAN_PIECE_BYTES`] at line starts
+/// that look like the start of an entity; the threads (the calling one
+/// among them) take the pieces in turn and scan each from its cut up to
+/// the first entity at or after the next cut, and the pieces are joined
+/// in source order. A piece is kept only if it began at the very token
+/// the piece before it ended at: a scan from an entity's first token is
+/// a function of the source and that token alone, so the piece is then
+/// what the serial scan finds there. Any other piece is scanned again,
+/// from that token, on the calling thread; so is everything after the
+/// first piece that ended at an error, which is the error.
+pub(crate) fn scan_on(src: &[u8], threads: usize) -> PResult<Index> {
+    scan_split(src, scan_threads(src.len(), threads), SCAN_PIECE_BYTES)
+}
+
+/// [`scan_on`] on exactly `threads` threads (fewer when there are fewer
+/// pieces), with pieces of about `piece_bytes`.
+fn scan_split(src: &[u8], threads: usize, piece_bytes: usize) -> PResult<Index> {
+    // `cuts[k]` is where piece `k + 1` begins; piece 0 begins at 0.
+    let mut cuts = Vec::new();
+    let mut target = piece_bytes;
+    while threads > 1 && target < src.len() {
+        let Some(cut) = cut_at(src, target) else { break };
+        cuts.push(cut);
+        target = cut + piece_bytes;
+    }
+    if cuts.is_empty() {
+        return scan(src);
+    }
+    let start = |piece: usize| if piece == 0 { 0 } else { cuts[piece - 1] };
+    let stop = |piece: usize| cuts.get(piece).copied().unwrap_or(usize::MAX);
+    let next = AtomicUsize::new(0);
+    let take = || {
+        let mut done = Vec::new();
+        loop {
+            let piece = next.fetch_add(1, Ordering::Relaxed);
+            if piece > cuts.len() {
+                return done;
             }
-            Tok::Local | Tok::LocalQuoted | Tok::LocalId => {
-                scanner.expect(Tok::Equal, "expected '=' after a type name")?;
-                scanner.expect_word(Kw::Type, "expected 'type' after the name")?;
-                let start = scanner.lx.pos() as u32;
-                let next = scanner.rest_of_entity()?;
-                scanner.index.types.push(TypeEnt { name: token, start, end: next.start });
-                next
-            }
-            Tok::Comdat | Tok::ComdatQuoted => {
-                scanner.expect(Tok::Equal, "expected '=' after a comdat name")?;
-                scanner.expect_word(Kw::Comdat, "expected 'comdat' here")?;
-                let kind = scanner.expect(Tok::Word, "expected a comdat selection kind")?;
-                scanner.index.comdats.push(ComdatEnt { name: token, kind });
-                scanner.next()?
-            }
-            Tok::Meta => {
-                scanner.expect(Tok::Equal, "expected '=' after a metadata name")?;
-                scanner.expect(Tok::Exclaim, "expected '!' here")?;
-                let open = scanner.expect(Tok::LBrace, "expected '{' here")?;
-                let span = scanner.group(open)?;
-                scanner.index.named.push(NamedEnt { name: token, span });
-                scanner.next()?
-            }
-            Tok::Exclaim => scanner.node(token)?,
-            Tok::SummaryId => {
-                scanner.expect(Tok::Equal, "expected '=' after a summary id")?;
-                scanner.rest_of_entity()?
-            }
-            Tok::Word => scanner.keyword(token)?,
-            _ => return fail(LlErrorKind::Syntax, token.start, "expected a top-level entity"),
+            done.push((piece, scan_piece(src, start(piece), stop(piece))));
+        }
+    };
+    let mut pieces: Vec<Option<Piece>> = (0..=cuts.len()).map(|_| None).collect();
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (1..threads.min(cuts.len() + 1)).map(|_| scope.spawn(take)).collect();
+        let mut done = take();
+        for worker in workers {
+            done.extend(worker.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)));
+        }
+        for (piece, found) in done {
+            pieces[piece] = Some(found);
+        }
+    });
+    let mut pieces = pieces.into_iter().flatten();
+    let first = pieces.next().expect("piece 0 is scanned");
+    let mut index = first.index;
+    let mut end = first.end;
+    for (at, piece) in pieces.enumerate() {
+        let token = match end {
+            Err(error) => return Err(error),
+            Ok(None) => break,
+            Ok(Some(token)) => token,
         };
+        if piece.first == token.start {
+            index.append(piece.index);
+            end = piece.end;
+        } else {
+            let mut scanner = Scanner { lx: Lexer::new(src), index };
+            scanner.lx.set_pos(token.end as usize);
+            end = scanner.run(token, stop(at + 1));
+            index = scanner.index;
+        }
+    }
+    end.map(|_| index)
+}
+
+/// Scans `src` from `from` up to the first entity at or after `stop`.
+fn scan_piece(src: &[u8], from: usize, stop: usize) -> Piece {
+    let mut scanner = Scanner { lx: Lexer::new(src), index: Index::default() };
+    scanner.lx.set_pos(from);
+    let token = scanner.lx.next_token();
+    let first = token.start;
+    let end = if token.kind == Tok::Error {
+        fail(LlErrorKind::Lex, token.start, scanner.lx.error())
+    } else {
+        scanner.run(token, stop)
+    };
+    Piece { first, index: scanner.index, end }
+}
+
+/// The first line start at or after `target` whose first byte is `!` or
+/// `@`, or that begins with `define `: where a piece of a parallel scan
+/// begins. Any offset would be correct (a piece that began elsewhere
+/// than an entity is scanned again); these are where one most often
+/// begins in LLVM's text.
+fn cut_at(src: &[u8], target: usize) -> Option<usize> {
+    let mut at = target;
+    loop {
+        let line = at + src.get(at..)?.iter().position(|&byte| byte == b'\n')? + 1;
+        match src.get(line) {
+            Some(b'!' | b'@') => return Some(line),
+            Some(b'd') if src[line..].starts_with(b"define ") => return Some(line),
+            Some(_) => at = line,
+            None => return None,
+        }
+    }
+}
+
+impl Index {
+    /// Adds what `later`, the index of the text after this one's, holds.
+    fn append(&mut self, mut later: Index) {
+        if later.triple.is_some() {
+            self.triple = later.triple;
+        }
+        if later.datalayout.is_some() {
+            self.datalayout = later.datalayout;
+        }
+        self.module_asm.append(&mut later.module_asm);
+        self.types.append(&mut later.types);
+        self.comdats.append(&mut later.comdats);
+        self.groups.append(&mut later.groups);
+        self.items.append(&mut later.items);
+        self.nodes.append(&mut later.nodes);
+        self.named.append(&mut later.named);
     }
 }
 
 impl Scanner<'_> {
+    /// The scan from `token`, the first of an entity, to the end of the
+    /// source, or only up to the first entity that begins at or after
+    /// `stop`, whose first token is the answer. One body for the serial
+    /// scan and the pieces, out of line, so that what it calls is inlined
+    /// into it as into the serial scan before WP-303.
+    #[inline(never)]
+    fn run(&mut self, mut token: Token, stop: usize) -> PResult<Option<Token>> {
+        let scanner = self;
+        loop {
+            if token.start as usize >= stop && token.kind != Tok::Eof {
+                return Ok(Some(token));
+            }
+            token = match token.kind {
+                Tok::Eof => return Ok(None),
+                Tok::Global | Tok::GlobalQuoted | Tok::GlobalId => {
+                    scanner.expect(Tok::Equal, "expected '=' after a global name")?;
+                    let start = scanner.lx.pos() as u32;
+                    let next = scanner.rest_of_entity()?;
+                    scanner.push_item(ItemKind::Assign, token, start, next.start);
+                    next
+                }
+                Tok::Local | Tok::LocalQuoted | Tok::LocalId => {
+                    scanner.expect(Tok::Equal, "expected '=' after a type name")?;
+                    scanner.expect_word(Kw::Type, "expected 'type' after the name")?;
+                    let start = scanner.lx.pos() as u32;
+                    let next = scanner.rest_of_entity()?;
+                    scanner.index.types.push(TypeEnt { name: token, start, end: next.start });
+                    next
+                }
+                Tok::Comdat | Tok::ComdatQuoted => {
+                    scanner.expect(Tok::Equal, "expected '=' after a comdat name")?;
+                    scanner.expect_word(Kw::Comdat, "expected 'comdat' here")?;
+                    let kind = scanner.expect(Tok::Word, "expected a comdat selection kind")?;
+                    scanner.index.comdats.push(ComdatEnt { name: token, kind });
+                    scanner.next()?
+                }
+                Tok::Meta => {
+                    scanner.expect(Tok::Equal, "expected '=' after a metadata name")?;
+                    scanner.expect(Tok::Exclaim, "expected '!' here")?;
+                    let open = scanner.expect(Tok::LBrace, "expected '{' here")?;
+                    let span = scanner.group(open)?;
+                    scanner.index.named.push(NamedEnt { name: token, span });
+                    scanner.next()?
+                }
+                Tok::Exclaim => scanner.node(token)?,
+                Tok::SummaryId => {
+                    scanner.expect(Tok::Equal, "expected '=' after a summary id")?;
+                    scanner.rest_of_entity()?
+                }
+                Tok::Word => scanner.keyword(token)?,
+                _ => return fail(LlErrorKind::Syntax, token.start, "expected a top-level entity"),
+            };
+        }
+    }
+
     fn next(&mut self) -> PResult<Token> {
         let token = self.lx.next_token();
         if token.kind == Tok::Error {
@@ -526,7 +704,100 @@ pub(crate) fn parse_u64(digits: &[u8]) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_u32, parse_u64};
+    use super::{parse_u32, parse_u64, scan, scan_split};
+
+    /// The serial scan's answer and that of a scan in pieces of
+    /// `piece_bytes` on `threads` threads, as text.
+    fn both(src: &[u8], threads: usize, piece_bytes: usize) -> (String, String) {
+        (format!("{:?}", scan(src)), format!("{:?}", scan_split(src, threads, piece_bytes)))
+    }
+
+    /// The texts: every seed of `tests/ir` and every `.ll` of this
+    /// crate's test data, debug information among them.
+    fn texts() -> Vec<(String, Vec<u8>)> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut texts = Vec::new();
+        for dir in
+            [root.join("../../tests/ir"), root.join("tests/data"), root.join("tests/data/debug")]
+        {
+            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            let mut paths: Vec<_> = entries.flatten().map(|entry| entry.path()).collect();
+            paths.sort();
+            for path in paths {
+                if path.extension().is_some_and(|ext| ext == "ll") {
+                    texts.push((path.display().to_string(), std::fs::read(&path).unwrap()));
+                }
+            }
+        }
+        assert!(texts.len() > 50, "the seeds are found");
+        texts
+    }
+
+    /// §4.4: a scan in pieces is the serial scan, for every text, piece
+    /// size and thread count.
+    #[test]
+    fn pieces_are_the_serial_scan() {
+        for (name, src) in texts() {
+            for (threads, piece) in [(2, 64), (3, 200), (8, 1000), (4, 4096), (24, 97)] {
+                let (serial, pieces) = both(&src, threads, piece);
+                assert_eq!(serial, pieces, "{name}, {threads} threads, pieces of {piece}");
+            }
+        }
+    }
+
+    /// §4.4: with an error, the first in source order is the answer, at
+    /// the same offset and with the same message: a stray byte or an
+    /// unclosed bracket put at many places of a text with debug
+    /// information, one or two at a time.
+    #[test]
+    fn pieces_report_the_first_error() {
+        let texts = texts();
+        let (name, src) = texts
+            .iter()
+            .filter(|(_, src)| src.windows(13).any(|w| w == b"DICompileUnit"))
+            .max_by_key(|(_, src)| src.len())
+            .expect("a text with debug information");
+        let step = src.len() / 61 + 1;
+        for at in (0..src.len()).step_by(step) {
+            for (bad, second) in
+                [(b'`', None), (b'{', None), (b'"', None), (b'`', Some(at + step / 2))]
+            {
+                let mut text = src.clone();
+                text[at] = bad;
+                if let Some(second) = second.filter(|&second| second < text.len()) {
+                    text[second] = b'`';
+                }
+                for (threads, piece) in [(2, 128), (8, 700)] {
+                    let (serial, pieces) = both(&text, threads, piece);
+                    assert_eq!(serial, pieces, "{name}: {bad:?} at {at}, {threads} threads");
+                }
+            }
+            let (serial, pieces) = both(&src[..at], 4, 300);
+            assert_eq!(serial, pieces, "{name} cut at {at}");
+        }
+    }
+
+    /// §4.4: pieces that begin inside a comment, a string or an entity
+    /// (a line start that looks like an entity and is not one) are
+    /// scanned again.
+    #[test]
+    fn pieces_that_begin_inside_are_scanned_again() {
+        use std::fmt::Write as _;
+        let mut text = String::from("target triple = \"aarch64-unknown-linux-gnu\"\n");
+        for n in 0..200 {
+            let _ = write!(
+                text,
+                "!{n} = !{{i32 {n}}}\n/* a comment\n!{n} = !{{}}\n@x = */\n\
+                 @g{n} = global [2 x i8] c\"!\\0A\"\n\
+                 define void @f{n}(\n!7 = i32 1) {{\n  ret void\n}}\n"
+            );
+        }
+        for (threads, piece) in [(2, 10), (5, 33), (8, 150)] {
+            let (serial, pieces) = both(text.as_bytes(), threads, piece);
+            assert!(serial.starts_with("Ok("), "{serial}");
+            assert_eq!(serial, pieces, "{threads} threads, pieces of {piece}");
+        }
+    }
 
     /// §2.4: decimal numbers, at every length around the one up to which
     /// no digit is tested for overflow, against `str::parse`.

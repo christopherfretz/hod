@@ -355,7 +355,8 @@ the body.
 
 ### 4.3 Phases
 
-In this order, each over its entries of the index:
+In this order, each over its entries of the index (§4.4 is how the scan
+before them may run):
 
 1. Target: the triple (or the default), then the data layout check.
 2. `module asm`.
@@ -371,6 +372,37 @@ In this order, each over its entries of the index:
 9. The end of the debug information (`Module::finish_debug`, §7.4).
 10. The end checks: a global that was used and never defined is an error
    at its first use; then `Module::verify_symbols`.
+
+### 4.4 The scan on several threads (WP-303)
+
+`parse_module_on(source, &ParseOptions, threads)` is `parse_module` with
+the index scan of §4.1 on `scan_threads(source.len(), threads)` threads,
+the calling one among them: one per `SCAN_BYTES_PER_THREAD` (1 MiB) of
+source, at most `SCAN_MAX_THREADS` (8) and `threads`, at least one. At
+one thread it is the serial scan, the same code. Its result is that of
+`parse_module` in every respect: the same index, so the same module, ids
+and tables; for a text with errors, the same error (the first in source
+order, at the same offset, with the same message). The rule that makes
+it so:
+
+- The source is cut about every `SCAN_PIECE_BYTES` (256 KiB), each cut at
+  the first line start at or after the mark whose first byte is `!` or
+  `@` or that begins with `define `. The threads take the pieces in turn;
+  a piece is scanned from its cut, as §4.1 scans from the start of the
+  source, until the first token that begins an entity at or after the
+  next cut, the end of the source, or an error.
+- The pieces are joined in source order. A piece is kept only if the
+  first token it lexed starts where the token that ended the piece
+  before it starts: a scan from the first token of an entity depends on
+  the source and that token alone. Any other piece is scanned again on
+  the calling thread, from that token to the next cut. The first piece
+  in order that ended at an error ends the scan with that error.
+- Joining appends each kept piece's entries per kind; a later triple or
+  data layout replaces an earlier one, as in the serial scan.
+
+The phases of §4.3 stay serial. Measured in `spec/landed/ll/WP-303.md`:
+the scan of a 16 MB `-g` text takes 11.6 ms on one thread, 6.4 on two,
+3.7 on four and 2.2 on eight.
 
 ## 5. Entities
 

@@ -12,7 +12,7 @@ use crate::attrs::AttrMemo;
 use crate::consts::{BlockLabels, LabelKey};
 use crate::debug::{DebugMap, DebugScratch};
 use crate::error::{Fail, LlErrorKind, PResult, fail, ir_fail};
-use crate::index::{Index, scan};
+use crate::index::{Index, scan, scan_on};
 use crate::kw::Kw;
 use crate::lexer::{Lexer, MAX_SOURCE_BYTES, Recording, Tok, Token, unescape};
 use crate::meta::{MdRef, MetadataIndex, Upgrade};
@@ -131,11 +131,16 @@ pub(crate) fn ir<T>(at: u32, result: IrResult<T>) -> PResult<T> {
 }
 
 /// Parses `src` (`spec/ll.md` §4).
-pub(crate) fn run<'a>(src: &'a [u8], options: &ParseOptions) -> PResult<ParsedModule<'a>> {
+/// The index scan runs on up to `threads` threads (§4.4).
+pub(crate) fn run<'a>(
+    src: &'a [u8],
+    options: &ParseOptions,
+    threads: usize,
+) -> PResult<ParsedModule<'a>> {
     if src.len() > MAX_SOURCE_BYTES {
         return fail(LlErrorKind::Limit, 0, "source is larger than MAX_SOURCE_BYTES");
     }
-    let index = scan(src)?;
+    let index = if threads > 1 { scan_on(src, threads)? } else { scan(src)? };
     let target = target_of(src, &index, options)?;
     let mut module = Module::new(target);
     let mut parser = Parser::new(src, &mut module, index, None, Scratch::default());

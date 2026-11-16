@@ -14,8 +14,8 @@
 //! the writer needs is three side tables sorted by DIE.
 
 use hod_ir::{
-    DiFlags, DiId, DiKind, DiLocation, DiNode, DiOp, DiSubprogram, DiSubroutineType, ExprId, LocId,
-    SpFlags,
+    DiFlags, DiId, DiKind, DiLocalVariable, DiLocation, DiNode, DiOp, DiSubprogram,
+    DiSubroutineType, ExprId, LocId, SpFlags,
 };
 
 use crate::Error;
@@ -833,8 +833,8 @@ impl<'a> UnitPlan<'a> {
             };
             if class == 0
                 && !inlined
-                && let DiNode::LocalVariable(n) = self.debug.node(v.node)
-                && has(n.flags, DiFlags::OBJECT_POINTER)
+                && let Some(n) = self.debug.view::<DiLocalVariable>(v.node)
+                && has(n.flags(), DiFlags::OBJECT_POINTER)
             {
                 let fd = &mut self.funcs[func as usize];
                 if fd.object_pointer != NONE {
@@ -1134,7 +1134,7 @@ impl<'a> Writer<'a> {
         kind: Kind,
         node: DiId,
         what: LocalWhat,
-        v: &hod_ir::DiLocalVariable<'a>,
+        v: &DiLocalVariable<'a>,
     ) -> Result<(), Error> {
         let b = u32::from;
         // WP-162: a location list (§6.23), or none.

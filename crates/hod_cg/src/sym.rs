@@ -98,6 +98,10 @@ runtime_fns! {
     UnwindResume = "_Unwind_Resume": (PTR) -> VOID;
     /// `void *__tls_get_addr(tls_index *)`: the general-dynamic TLS helper.
     TlsGetAddr = "__tls_get_addr": (PTR) -> PTR;
+    /// `void *___tls_get_addr(tls_index *)` (three underscores): the
+    /// i386 GNU entry with its argument in `eax`, the one the i386
+    /// general- and local-dynamic sequences call (WP-299).
+    TlsGetAddrRegparm = "___tls_get_addr": (PTR) -> PTR;
     /// `void __stack_chk_fail(void)`: a stack guard that changed
     /// (WP-183, §5.6.24); it does not return.
     StackChkFail = "__stack_chk_fail": () -> VOID;

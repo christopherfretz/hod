@@ -43,15 +43,15 @@ use std::fmt;
 
 use hod_obj::elf::SHF_ALLOC;
 use hod_obj::{
-    A64Reloc, Binding, GroupKind, Object, RelocKind, SectionId, SectionKind, Symbol, SymbolId,
-    SymbolKind, Visibility, X64Reloc,
+    Binding, GroupKind, Object, SectionId, SectionKind, Symbol, SymbolId, SymbolKind, Visibility,
 };
 
 use leb::{Sink, sleb, uleb};
 pub use leb::{uleb_len, write_sleb, write_uleb};
 pub use lsda::{CallSite, Clause, FuncLsda, LsdaOptions, NO_PAD, Pad, write_lsdas};
 pub use target::{
-    AARCH64, AARCH64_LARGE, CfiTarget, X86_64, X86_64_LARGE, for_arch, for_model, pe,
+    AARCH64, AARCH64_LARGE, CfiTarget, I386, X86_64, X86_64_LARGE, for_arch, for_machine,
+    for_model, pe,
 };
 
 /// A DWARF call-frame instruction, as data (`spec/codegen.md` §9.3,
@@ -673,7 +673,7 @@ fn write_cie(
 /// The output depends only on the set of FDEs, not on the order of the
 /// slice (§5). On an error `obj` is unchanged.
 pub fn write_eh_frame(obj: &mut Object, fdes: &[Fde<'_>]) -> Result<Option<SectionId>, Error> {
-    write_eh_frame_for(obj, fdes, for_arch(obj.arch()))
+    write_eh_frame_for(obj, fdes, for_machine(obj.machine(), false))
 }
 
 /// [`write_eh_frame`] with the encodings of `target`, which must be one
@@ -762,20 +762,23 @@ pub fn write_eh_frame_for(
 }
 
 /// The alignment of `.debug_frame` and of each of its entries: the
-/// address size (`MCDwarf`'s `EmitCIE`/`EmitFDE` for a non-EH frame).
-const DEBUG_FRAME_ALIGN: usize = 8;
+/// address size (`MCDwarf`'s `EmitCIE`/`EmitFDE` for a non-EH frame;
+/// 4 on 32-bit x86, WP-314).
+const fn debug_frame_align(target: &CfiTarget) -> usize {
+    target.address_size as usize
+}
 
 /// Appends `.debug_frame`'s CIE (`spec/eh.md` §10): DWARF 4's format
 /// (`CIE_id` `0xffffffff`, version 4, no augmentation, the address and
 /// segment selector sizes), the target's factors, return address column
-/// and initial instructions, padded with `DW_CFA_nop` to 8.
+/// and initial instructions, padded with `DW_CFA_nop` to the address size.
 fn write_debug_cie(out: &mut Vec<u8>, target: &CfiTarget) {
     let start = out.len();
     out.extend_from_slice(&[0; 4]); // length
     out.extend_from_slice(&0xffff_ffffu32.to_le_bytes()); // CIE_id
     out.push(4); // version
     out.push(0); // augmentation ""
-    out.push(8); // address_size
+    out.push(target.address_size); // address_size
     out.push(0); // segment_selector_size
     write_uleb(out, u64::from(target.code_align));
     write_sleb(out, i64::from(target.data_align));
@@ -784,7 +787,7 @@ fn write_debug_cie(out: &mut Vec<u8>, target: &CfiTarget) {
         // The table's initial instructions always factor.
         let _ = write_op(out, target, op);
     }
-    pad(out, DEBUG_FRAME_ALIGN);
+    pad(out, debug_frame_align(target));
     patch_length(out, start);
 }
 
@@ -812,7 +815,8 @@ pub fn write_debug_frame(obj: &mut Object, fdes: &[Fde<'_>]) -> Result<Option<Se
     if let Some(f) = fdes.iter().find(|f| f.personality.is_some() || f.lsda.is_some()) {
         return Err(Error::PersonalityInDebugFrame { order: f.order });
     }
-    let target = for_arch(obj.arch());
+    let target = for_machine(obj.machine(), false);
+    let address = usize::from(target.address_size);
     // One CIE, without `B` as in `llc` (`MCDwarf` emits a new CIE for a
     // new key only in `.eh_frame`), but the FDEs sorted as `layout` sorts
     // them: those without the B key first (§10.2), each part by `order`.
@@ -829,29 +833,25 @@ pub fn write_debug_frame(obj: &mut Object, fdes: &[Fde<'_>]) -> Result<Option<Se
         let mut stage = Staging::new();
         stage.bytes(&[0; 4]); // length, patched below
         stage.bytes(&[0; 4]); // CIE_pointer: the CIE at 0, relocated
-        stage.bytes(&[0; 8]); // initial_location, relocated
-        stage.bytes(&u64::from(fde.size).to_le_bytes()); // address_range
+        stage.bytes(&[0; 8][..address]); // initial_location, relocated
+        stage.bytes(&u64::from(fde.size).to_le_bytes()[..address]); // address_range
         write_rows(&mut out, &mut stage, target, fde)?;
         stage.flush(&mut out);
-        pad(&mut out, DEBUG_FRAME_ALIGN);
+        pad(&mut out, debug_frame_align(target));
         patch_length(&mut out, start);
     }
     if u32::try_from(out.len()).is_err() {
         return Err(Error::TooLarge);
     }
-    let (abs32, abs64) = match obj.arch() {
-        hod_obj::Arch::AArch64 => {
-            (RelocKind::A64(A64Reloc::Abs32), RelocKind::A64(A64Reloc::Abs64))
-        }
-        hod_obj::Arch::X86_64 => (RelocKind::X64(X64Reloc::Abs32), RelocKind::X64(X64Reloc::Abs64)),
-    };
-    let section = obj.add_section(b".debug_frame", SectionKind::Debug, DEBUG_FRAME_ALIGN as u64)?;
+    let (abs32, address_reloc) = (target.abs32_reloc, target.abs_reloc);
+    let align = debug_frame_align(target) as u64;
+    let section = obj.add_section(b".debug_frame", SectionKind::Debug, align)?;
     let own = obj.section_symbol(section);
     obj.append_owned(section, out);
     obj.reserve(0, 0, 2 * relocs.len(), 0);
     for (at, fde) in relocs {
         obj.add_relocation(section, at as u64, abs32, own, 0);
-        obj.add_relocation(section, at as u64 + 4, abs64, fde.start, fde.start_addend);
+        obj.add_relocation(section, at as u64 + 4, address_reloc, fde.start, fde.start_addend);
     }
     Ok(Some(section))
 }
@@ -864,7 +864,9 @@ pub fn write_debug_frame(obj: &mut Object, fdes: &[Fde<'_>]) -> Result<Option<Se
 /// one. Returns the slot's symbol, the [`Fde::personality`] of the
 /// functions that use the routine.
 pub fn personality_ref(obj: &mut Object, personality: SymbolId) -> Result<SymbolId, Error> {
-    let target = for_arch(obj.arch());
+    let target = for_machine(obj.machine(), false);
+    // The slot is an address: 8 bytes, 4 on 32-bit x86 (WP-314).
+    let size = target.address_size;
     let routine = obj.string(obj.symbol(personality).name).to_vec();
     let mut name = Vec::with_capacity(routine.len() + 7);
     name.extend_from_slice(b"DW.ref.");
@@ -872,16 +874,16 @@ pub fn personality_ref(obj: &mut Object, personality: SymbolId) -> Result<Symbol
     let mut section_name = Vec::with_capacity(name.len() + 6);
     section_name.extend_from_slice(b".data.");
     section_name.extend_from_slice(&name);
-    let section = obj.add_section(&section_name, SectionKind::Data, 8)?;
+    let section = obj.add_section(&section_name, SectionKind::Data, u64::from(size))?;
     let name = obj.add_string(&name)?;
     let slot = obj.add_symbol(
-        Symbol::defined(name, SymbolKind::Object, section, 0, 8)
+        Symbol::defined(name, SymbolKind::Object, section, 0, u64::from(size))
             .with_binding(Binding::Weak)
             .with_visibility(Visibility::Hidden),
     );
     let group = obj.add_group(slot, GroupKind::Comdat);
     obj.add_group_member(group, section)?;
-    obj.append_zeros(section, 8);
+    obj.append_zeros(section, u64::from(size));
     obj.add_relocation(section, 0, target.abs_reloc, personality, 0);
     Ok(slot)
 }

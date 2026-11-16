@@ -1,7 +1,7 @@
 //! The per-target constants of `.eh_frame` (`spec/eh.md` §2).
 
 use hod_obj::elf::{SHT_PROGBITS, SHT_X86_64_UNWIND};
-use hod_obj::{A64Reloc, Arch, RelocKind, X64Reloc};
+use hod_obj::{A64Reloc, Arch, I386Reloc, Machine, RelocKind, X64Reloc};
 
 use crate::Op;
 
@@ -21,8 +21,14 @@ pub mod pe {
 /// Linux position-independent code (`spec/eh.md` §2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CfiTarget {
-    /// The architecture.
-    pub arch: Arch,
+    /// The machine (WP-314: a field `machine`, so that 32-bit x86, which
+    /// has no [`Arch`], has a table).
+    pub machine: Machine,
+    /// The size of an address: of a type-info stub, a `DW.ref` slot and
+    /// `.debug_frame`'s locations and ranges (8, or 4 on 32-bit x86).
+    pub address_size: u8,
+    /// The 4-byte absolute relocation (`.debug_frame`'s CIE pointer).
+    pub abs32_reloc: RelocKind,
     /// The CIE's code alignment factor.
     pub code_align: u32,
     /// The CIE's data alignment factor.
@@ -46,7 +52,8 @@ pub struct CfiTarget {
     /// The size of the personality and LSDA pointers, which their encodings
     /// imply.
     pub pointer_size: u8,
-    /// The absolute pointer-sized relocation of a `DW.ref` slot.
+    /// The absolute address-sized relocation of a `DW.ref` slot, a
+    /// type-info stub and a `.debug_frame` location.
     pub abs_reloc: RelocKind,
     /// The section's `sh_type`.
     pub section_type: u32,
@@ -58,7 +65,9 @@ pub struct CfiTarget {
 /// AArch64 Linux: `sp` is DWARF 31, `x30` holds the return address,
 /// instructions are 4 bytes but `llc` keeps the code alignment factor at 1.
 pub const AARCH64: CfiTarget = CfiTarget {
-    arch: Arch::AArch64,
+    machine: Machine::AArch64,
+    address_size: 8,
+    abs32_reloc: RelocKind::A64(A64Reloc::Abs32),
     code_align: 1,
     data_align: -4,
     return_address: 30,
@@ -88,7 +97,9 @@ pub const AARCH64_LARGE: CfiTarget = CfiTarget {
 /// x86-64 Linux: `rsp` is DWARF 7, the return address column is 16 (`rip`),
 /// and at entry the return address is at `CFA - 8` with `CFA = rsp + 8`.
 pub const X86_64: CfiTarget = CfiTarget {
-    arch: Arch::X86_64,
+    machine: Machine::X86_64,
+    address_size: 8,
+    abs32_reloc: RelocKind::X64(X64Reloc::Abs32),
     code_align: 1,
     data_align: -8,
     return_address: 16,
@@ -120,6 +131,44 @@ pub const X86_64_LARGE: CfiTarget = CfiTarget {
     pointer_size: 8,
     ..X86_64
 };
+
+/// 32-bit x86 Linux (WP-314, design 0008 §1.6): `esp` is DWARF 4, the
+/// return address column is 8 (`eip`), at entry `CFA = esp + 4` and the
+/// return address is at `CFA - 4`. The encodings are those `llc` 19 and
+/// 22 write under PIC (`-relocation-model=pic`): FDE locations, the LSDA
+/// and the type-info entries `pcrel|sdata4`, the personality
+/// `indirect|pcrel|sdata4` through its `DW.ref` slot, all relocated by
+/// `R_386_PC32`; hod writes them under every model, as on x86-64 (`llc`'s
+/// static encodings are absolute, `R_386_32`: both are correct in a
+/// static link, and the PC-relative ones also in a PIE or a shared
+/// object). The section is `SHT_PROGBITS`, aligned to 4.
+pub const I386: CfiTarget = CfiTarget {
+    machine: Machine::I386,
+    address_size: 4,
+    abs32_reloc: RelocKind::I386(I386Reloc::Abs32),
+    code_align: 1,
+    data_align: -4,
+    return_address: 8,
+    initial: &[Op::DefCfa { reg: 4, offset: 4 }, Op::Offset { reg: 8, cfa_offset: -4 }],
+    fde_encoding: pe::PCREL | pe::SDATA4,
+    personality_encoding: pe::INDIRECT | pe::PCREL | pe::SDATA4,
+    lsda_encoding: pe::PCREL | pe::SDATA4,
+    pc_reloc: RelocKind::I386(I386Reloc::Pc32),
+    pointer_reloc: RelocKind::I386(I386Reloc::Pc32),
+    pointer_size: 4,
+    abs_reloc: RelocKind::I386(I386Reloc::Abs32),
+    section_type: SHT_PROGBITS,
+    section_align: 4,
+};
+
+/// The table for `machine`, under the large code model when `large`
+/// (64-bit machines only: [`for_model`]); [`I386`] for 32-bit x86.
+pub const fn for_machine(machine: Machine, large: bool) -> &'static CfiTarget {
+    match machine.arch() {
+        Some(arch) => for_model(arch, large),
+        None => &I386,
+    }
+}
 
 impl CfiTarget {
     /// The size of an FDE's initial location and range: 8 for

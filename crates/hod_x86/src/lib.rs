@@ -19,6 +19,7 @@ pub mod bytes;
 pub mod call;
 pub mod common;
 pub mod control;
+pub mod eh;
 pub mod frame;
 pub mod int;
 pub mod mem;

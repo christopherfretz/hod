@@ -464,8 +464,10 @@ pub fn write_lsdas(
     if funcs.is_empty() {
         return Ok(Vec::new());
     }
-    let target = crate::target::for_model(obj.arch(), options.large);
+    let target = crate::target::for_machine(obj.machine(), options.large);
     let pointer_size = usize::from(target.pointer_size);
+    // A stub holds an address: 8 bytes, 4 on 32-bit x86 (WP-314).
+    let stub_size = u64::from(target.address_size);
     let mut by_order: Vec<u32> = (0..funcs.len() as u32).collect();
     if !by_order.is_sorted_by_key(|&i| funcs[i as usize].order) {
         by_order.sort_unstable_by_key(|&i| funcs[i as usize].order);
@@ -515,14 +517,14 @@ pub fn write_lsdas(
         named.sort_by(|&a, &b| name(a).cmp(name(b)).then(a.cmp(&b)));
         let section = match options.stubs {
             Some(s) => s,
-            None => obj.add_section(b".data", SectionKind::Data, 8)?,
+            None => obj.add_section(b".data", SectionKind::Data, stub_size)?,
         };
-        obj.raise_section_align(section, 8);
-        obj.align_to(section, 8, 0);
+        obj.raise_section_align(section, stub_size);
+        obj.align_to(section, stub_size, 0);
         let mut offsets = vec![0i64; types.len()];
         obj.reserve(0, 0, named.len(), 0);
         for &t in &named {
-            let at = obj.append_zeros(section, 8);
+            let at = obj.append_zeros(section, stub_size);
             obj.add_relocation(section, at, target.abs_reloc, t, 0);
             offsets[types.binary_search(&t).unwrap_or(0)] = at as i64;
         }

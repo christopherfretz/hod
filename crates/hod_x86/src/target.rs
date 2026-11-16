@@ -164,9 +164,7 @@ impl Target for X86 {
     fn lower<'a>(&self, cx: &mut FnCx<'a, Self>, inst: Inst<'a>) -> CgResult<()> {
         match cx.fold_action(inst) {
             // An `invoke` the fold turns into a call, or one that loses
-            // its normal edge, is still an `invoke` here: `call::check`
-            // refuses every one as `x86:eh` until I10 gives the target
-            // unwind tables and honours the two actions.
+            // its normal edge, is the call sequence's (WP-270, WP-314).
             FoldAction::Emit | FoldAction::Call(_) | FoldAction::NoNormal => {}
             FoldAction::Drop => return Ok(()),
             FoldAction::Jump(target) => return control::br(cx, target),
@@ -224,6 +222,12 @@ impl Target for X86 {
             }
             InstKind::Alloca { .. } => unsupported(frame::DYNAMIC_ALLOCA),
             InstKind::PtrAdd(add) => mem::ptr_add(cx, inst, &add),
+            InstKind::ExtractValue { agg, offset } if crate::eh::owns_aggregate(cx, inst) => {
+                crate::eh::extract_value(cx, inst, agg, offset)
+            }
+            InstKind::InsertValue { agg, value, offset } if crate::eh::owns_aggregate(cx, inst) => {
+                crate::eh::insert_value(cx, inst, agg, value, offset)
+            }
             InstKind::ExtractValue { .. } | InstKind::InsertValue { .. } => unsupported(AGGREGATE),
             InstKind::Select { cond, if_true, if_false } if gpr => {
                 alu::select(cx, inst, cond, if_true, if_false)
@@ -235,7 +239,8 @@ impl Target for X86 {
             | InstKind::Select { .. } => refuse(cx, inst.ty()),
             InstKind::Call(site) => call::lower(cx, inst, &site),
             InstKind::VaArg { .. } => unsupported(call::VARARGS),
-            InstKind::LandingPad(_) | InstKind::Resume { .. } => unsupported(call::EH),
+            InstKind::LandingPad(pad) => crate::eh::landing_pad(cx, inst, &pad),
+            InstKind::Resume { value } => crate::eh::resume(cx, value),
             InstKind::Br { target } => control::br(cx, target),
             InstKind::CondBr { cond, if_true, if_false } => {
                 control::cond_br(cx, cond, if_true, if_false)

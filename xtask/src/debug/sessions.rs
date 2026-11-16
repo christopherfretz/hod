@@ -358,6 +358,47 @@ fn test_name(path: &Path) -> String {
     path.strip_prefix(&root).unwrap_or(path).display().to_string()
 }
 
+/// The kiln++ front end, or `None` with a note. kiln is a front end of
+/// this harness, not a tool of the gate: missing, it is not required.
+/// WP-329: kiln++ refuses `--target=i686-*` ("kiln supports `aarch64` and
+/// `x86_64` Linux"): on i686 it is no front end and its units are SKIP.
+fn kiln_frontend(options: &Options, arch: Arch, report: &mut Report) -> Option<PathBuf> {
+    if arch == Arch::I686 {
+        report.notes.push("kiln++ does not compile for i686: its units are SKIP".to_owned());
+        return None;
+    }
+    let kiln = options
+        .kiln
+        .clone()
+        .unwrap_or_else(|| crate::corpus::capture_defaults(&options.build_dir).kiln);
+    if kiln.is_file() {
+        return Some(kiln);
+    }
+    report.notes.push(format!("kiln++ ('{}') not found", kiln.display()));
+    None
+}
+
+/// WP-329: whether the linker `name` links programs of `arch`: wild and
+/// mortar do not link this lane's i686 programs (dynamic PIE),
+/// `hod_testutil::linkers::EXCEPTIONS` case `elf-i386`; a note, or an
+/// error when `--linker` asked for it.
+fn links_i686(
+    arch: Arch,
+    name: &str,
+    options: &Options,
+    report: &mut Report,
+) -> Result<bool, String> {
+    if arch != Arch::I686 || hod_testutil::linkers::links(name, hod_testutil::target::Target::I686)
+    {
+        return Ok(true);
+    }
+    if options.linkers.iter().any(|l| l == name) {
+        return Err(format!("the linker '{name}' does not link i686 programs (elf-i386)"));
+    }
+    report.notes.push(format!("the linker `{name}` does not link i686 (elf-i386)"));
+    Ok(false)
+}
+
 /// Finds the tools of a run, with notes for what is missing.
 fn find_tools(options: &Options, report: &mut Report) -> Result<(Tools, Vec<Debugger>), String> {
     use crate::irdiff::tools::{REQUIRED_LINKERS, Search, find_driver_for, find_linker_for};
@@ -379,19 +420,8 @@ fn find_tools(options: &Options, report: &mut Report) -> Result<(Tools, Vec<Debu
             }
         }
     }
-    let kiln = options
-        .kiln
-        .clone()
-        .unwrap_or_else(|| crate::corpus::capture_defaults(&options.build_dir).kiln);
-    if arch == Arch::I686 {
-        // WP-329: kiln++ refuses `--target=i686-*` ("kiln supports aarch64
-        // and x86_64 Linux"): its units are SKIP ("no kiln").
-        report.notes.push("kiln++ does not compile for i686: its units are SKIP".to_owned());
-    } else if kiln.is_file() {
+    if let Some(kiln) = kiln_frontend(options, arch, report) {
         frontends.push(("kiln".to_owned(), kiln));
-    } else {
-        // kiln is a front end of this harness, not a tool of the gate.
-        missing(format!("kiln++ ('{}')", kiln.display()), false, report);
     }
     let mut llc = Vec::new();
     for major in [19, 22] {
@@ -407,16 +437,7 @@ fn find_tools(options: &Options, report: &mut Report) -> Result<(Tools, Vec<Debu
     let mut linkers = Vec::new();
     for name in crate::irdiff::LINKER_NAMES {
         let wanted = options.linkers.is_empty() || options.linkers.iter().any(|l| l == name);
-        if !wanted {
-            continue;
-        }
-        // WP-329: wild and mortar do not link this lane's i686 programs
-        // (dynamic PIE), `hod_testutil::linkers::EXCEPTIONS` case `elf-i386`.
-        if arch == Arch::I686 && !hod_testutil::linkers::links(name, hod_testutil::target::Target::I686) {
-            if options.linkers.iter().any(|l| l == name) {
-                return Err(format!("the linker '{name}' does not link i686 programs (elf-i386)"));
-            }
-            report.notes.push(format!("the linker `{name}` does not link i686 (elf-i386)"));
+        if !wanted || !links_i686(arch, name, options, report)? {
             continue;
         }
         match find_linker_for(name, arch, &search) {

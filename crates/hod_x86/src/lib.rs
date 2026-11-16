@@ -19,6 +19,7 @@ pub mod atomic;
 pub mod bits;
 pub mod bytes;
 pub mod call;
+pub mod cet;
 pub mod common;
 pub mod control;
 pub mod dynstack;

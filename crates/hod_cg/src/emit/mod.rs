@@ -82,9 +82,6 @@ pub mod unsupported {
     /// WP-293: a 32-bit x86 module with debug information (design 0008,
     /// package I10).
     pub const X86_DEBUG_INFO: &str = "x86:debug-info";
-    /// WP-293: a 32-bit x86 module with `cf-protection-branch` or
-    /// `cf-protection-return` (no `endbr32`, no ELF32 property note).
-    pub const X86_CF_PROTECTION: &str = "x86:cf-protection";
     /// A compile unit with a node the DIE writer does not write yet
     /// (`spec/dwarf.md` §6.5).
     pub const DEBUG_DIE: &str = "debug:die-unsupported";
@@ -471,9 +468,14 @@ impl<'m> ModuleEmitter<'m> {
         let bits = self.module.props.branch_protection.bits();
         let on = |bit: u8, feature: u32| if bits & bit != 0 { feature } else { 0 };
         let Some(arch) = self.obj.machine().arch() else {
-            // WP-293: no `endbr32`, no ELF32 property note (WP-284).
-            if bits != 0 {
-                return Err(CgError::unsupported(unsupported::X86_CF_PROTECTION));
+            // WP-324: i386, the same property as x86-64's (the target
+            // marks indirect-branch targets with `endbr32`), padded to 4.
+            let features = on(Bp::CET_IBT, elf::GNU_PROPERTY_X86_FEATURE_1_IBT)
+                | on(Bp::CET_SHSTK, elf::GNU_PROPERTY_X86_FEATURE_1_SHSTK);
+            if features != 0 {
+                let word = features.to_le_bytes();
+                let properties = [(elf::GNU_PROPERTY_X86_FEATURE_1_AND, &word[..])];
+                elf::add_gnu_properties(&mut self.obj, &properties).map_err(obj_err)?;
             }
             return Ok(());
         };

@@ -386,7 +386,14 @@ impl Target for X86 {
     }
 
     fn emit_call(&self, cx: &mut FnCx<'_, Self>, call: &CallEmit) -> CgResult<()> {
-        crate::pic::emit_call(cx, call.target, call.callee_pop)
+        crate::pic::emit_call(cx, call.target, call.callee_pop)?;
+        crate::cet::after_call(cx, call.target); // WP-324
+        Ok(())
+    }
+
+    fn branch_target(&self, cx: &mut FnCx<'_, Self>, _at: hod_cg::BranchTarget) -> CgResult<()> {
+        crate::cet::landing(cx); // WP-324
+        Ok(())
     }
 
     fn dynamic_slot(

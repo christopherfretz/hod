@@ -79,6 +79,7 @@ pub fn final_size(size: u32) -> CgResult<u32> {
 /// None today.
 pub fn begin(cx: &mut FnCx<'_, X86>) -> CgResult<()> {
     reset_function();
+    crate::cet::entry(cx); // WP-324: `endbr32` before the frame
     put(cx, mc::push_r(EBP));
     cx.cfi(CfiOp::DefCfaOffset(8));
     cx.cfi(CfiOp::Offset { reg: DWARF_EBP, cfa_offset: -8 });

@@ -178,7 +178,7 @@ their values).
 | `x86:frame-depth` | `llvm.frameaddress`/`returnaddress` deeper than 256 frames (§13.5) | — |
 | `x86:eh:landingpad`, `x86:eh:landingpad-clause`, `x86:eh:resume`, `x86:eh:typeid` | a `landingpad` or `resume` of a type other than `{ ptr, i32 }`; a clause that is not a symbol, `null` or an array of them; `llvm.eh.typeid.for` of a non-symbol (§14; `x86:eh` itself removed by WP-314) | — |
 | `x86:debug-info` | a module with debug information (`hod_cg`'s emitter) | I10 |
-| `x86:cf-protection` | `cf-protection-*` module flags (`hod_cg`'s `.note.gnu.property`) | — |
+| `x86:nocf-check-indirect-call` | an indirect `nocf_check` call in a module with `cf-protection-branch` (needs `notrack`; §17; `x86:cf-protection` removed by WP-324) | — |
 | `x86:atomic:no-cx8` | an 8-byte atomic operation on a CPU without `cmpxchg8b` (§12.2) | — |
 | `x86:atomic:libatomic` | an atomic access of another size than 1, 2, 4, 8 bytes or below its natural alignment (§12.2) | — |
 | `x86:atomic:float-op` | `atomicrmw` `fmax`, `fmin` and the other floating operations; `fadd` and `fsub` are lowered since join D (§12.2) | — |
@@ -1021,3 +1021,45 @@ Evidence: `tests/i386_ssp.rs`: `ssp/smash.c` with `-fstack-protector`,
 buffer, several slots, the low guard, an `i64` result, a `float` result)
 every build aborts with `*** stack smashing detected ***` and SIGABRT,
 as `llc`'s.
+
+## 17. Control-flow protection (`cet`, WP-324)
+
+The module flags `cf-protection-branch` and `cf-protection-return`
+(clang's `-fcf-protection=`) compile; `x86:cf-protection` is gone.
+
+- **The property note.** `hod_cg`'s emitter writes `.note.gnu.property`
+  for i386 as for x86-64: one `NT_GNU_PROPERTY_TYPE_0` note owned by
+  `GNU` with `GNU_PROPERTY_X86_FEATURE_1_AND` (`0xc0000002`), bit IBT (1)
+  for `cf-protection-branch`, bit SHSTK (2) for `cf-protection-return`.
+  In ELF32 the property array is padded to 4 bytes and the section is
+  aligned to 4 (`hod_obj`'s `add_gnu_properties`, the padding the
+  machine's address size): 28 bytes, `llc`'s byte for byte.
+- **`endbr32`** (`F3 0F 1E FB`) when the module has
+  `cf-protection-branch`, where `llc` 19 and 22 put it
+  (`X86IndirectBranchTracking`): first in every function but a
+  `nocf_check` one, before `push ebp`; at every block whose address is
+  taken and every landing pad (`Target::branch_target`, which `hod_cg`
+  also calls at an `invoke`'s pad stub); right after a direct call of a
+  function declared `returns_twice`. hod's places are a superset of
+  `llc`'s: `llc` leaves the entry of a local function whose address is
+  not taken unmarked, and puts one marker per landing pad where hod has
+  one at the stub and one at the pad. `endbr32` is a no-op outside a CET
+  process.
+- **`cf-protection-return`** changes no code: hod's returns go to the
+  address its calls pushed.
+- **Refused**: an indirect call with `nocf_check` in a module with
+  `cf-protection-branch` needs the `notrack` prefix, which the encoder
+  lacks (`x86:nocf-check-indirect-call`, as on x86-64). Without the flag
+  `nocf_check` changes nothing. hod makes no jump table, so it has no
+  `notrack` jump.
+
+Evidence: `tests/i386_cet.rs`: `cet/cet.c` and `cet/throw.cpp` built
+with `-fcf-protection=full` run as `llc`'s (static and PIE, GNU ld, lld
+and mold, `llc` 19 and 22, also under `Stress::ALL`); the note's bytes,
+type, flags and alignment are `llc`'s and `llvm-readelf -n` reads `x86
+feature: IBT, SHSTK` in both; per function hod has at least `llc`'s
+`endbr32` count, one at every entry where `llc` has one, one after each
+`setjmp` call and none at the `nocf_check` function's entry; a
+freestanding program linked `-nostdlib -static` keeps the property
+through GNU ld, lld and mold when every object has it and loses it when
+one does not, as with `llc`'s objects.

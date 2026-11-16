@@ -28,6 +28,7 @@ pub fn check(cx: &FnCx<'_, X86>, inst: Inst<'_>, site: &CallSite<'_>) -> CgResul
     if inst.opcode() == hod_ir::Opcode::CallBr || site.bundle_count() != 0 {
         return unsupported(CALL);
     }
+    crate::cet::check_call(cx, site)?; // WP-324
     crate::abi::check_call(cx, site)
 }
 

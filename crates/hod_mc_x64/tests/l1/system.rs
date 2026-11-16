@@ -13,6 +13,7 @@ pub fn build(b: &mut Batch) {
     }
     emit!(b, int3(), "int3");
     emit!(b, endbr64(), "endbr64");
+    emit!(b, endbr32(), "endbr32");
     for len in 1..=15 {
         emit!(b, try_nop(len), ".nops {len}, {len}");
     }

@@ -819,7 +819,11 @@ impl<'a> Writer<'a> {
         Ok(())
     }
 
-    /// Sorts and merges the unit's code spans into `self.spans`.
+    /// Sorts the unit's code spans into `self.spans`, merging those that
+    /// overlap. Spans that only touch stay two ranges (WP-305, §6.17):
+    /// each span is a run of functions, and `llc` starts a range where a
+    /// run ends even when the next run starts at that address (AArch64,
+    /// which has no padding between functions).
     pub(crate) fn spans(&mut self, code: &[CodeSpan], symbols: u32) -> Result<(), Error> {
         self.spans.clear();
         for (i, s) in code.iter().enumerate() {
@@ -839,7 +843,7 @@ impl<'a> Writer<'a> {
             if out > 0 {
                 let last = &mut self.spans[out - 1];
                 let end = last.addend as u64 + last.size;
-                if last.symbol == s.symbol && s.addend as u64 <= end {
+                if last.symbol == s.symbol && (s.addend as u64) < end {
                     last.size = end.max(s.addend as u64 + s.size) - last.addend as u64;
                     continue;
                 }

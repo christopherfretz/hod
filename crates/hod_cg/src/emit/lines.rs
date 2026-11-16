@@ -262,27 +262,27 @@ impl<'m> DebugLines<'m> {
         // nor a range for it (§5.7), and it ends the line sequence before
         // it (`DwarfDebug::skippedNonDebugFunction`, §5.6).
         let Some(sp) = subprogram else {
-            self.end_sequence();
+            self.break_run();
             return Ok(());
         };
         let Some((unit, scope)) = self.unit_of(sp) else {
-            self.end_sequence();
+            self.break_run();
             return Ok(());
         };
         if size == 0 {
             self.end_sequence();
             return Ok(());
         }
-        // WP-296 (§5.6): a function of another unit ends the sequence of
-        // the last one, as `DwarfCompileUnit::addRange` terminates the
-        // previous unit's line table.
-        if self.line_open != Some(unit) {
-            self.end_sequence();
-        }
         let symbol = obj.section_symbol(section);
         let addend = offset as i64;
         let code = CodeSpan { symbol, addend, size: u64::from(size) };
-        self.unit_span(unit, code);
+        // WP-305 (§5.6, §6.17): the line sequence continues only where
+        // the unit's range does, as `DwarfCompileUnit::addRange`
+        // terminates the previous unit's line table whenever it starts a
+        // range.
+        if !self.unit_span(unit, code) {
+            self.end_sequence();
+        }
 
         // The DIEs (§6.4).
         self.scopes.clear();
@@ -366,12 +366,25 @@ impl<'m> DebugLines<'m> {
         }
     }
 
+    /// A function without a subprogram of a written unit was placed: it
+    /// ends the run of functions before it, both the unit's range and the
+    /// line sequence (WP-305, `spec/dwarf.md` §5.6, §6.17), as
+    /// `DwarfDebug::skippedNonDebugFunction` terminates the line table
+    /// and forgets the previous unit.
+    fn break_run(&mut self) {
+        self.prev_span = None;
+        self.end_sequence();
+    }
+
     /// Adds `code` to the code of `unit` as `DwarfCompileUnit::addRange`
-    /// does (WP-136, `spec/dwarf.md` §6.17): a function of the same unit
-    /// as the last function with a span, in the same section, extends
-    /// that span to its end, over the padding (and any function without
-    /// a subprogram) between them; otherwise it starts a span.
-    fn unit_span(&mut self, unit: usize, code: CodeSpan) {
+    /// does (WP-136, WP-305, `spec/dwarf.md` §6.17): a function of the
+    /// same unit as the last function with a span, in the same section,
+    /// with no function without a subprogram placed between them
+    /// ([`Self::break_run`]), extends that span to its end, over the
+    /// padding between them; otherwise it starts a span. Whether it
+    /// extended the last span: the one rule for both the unit's range and
+    /// the line sequence (§5.6).
+    fn unit_span(&mut self, unit: usize, code: CodeSpan) -> bool {
         let prev = self.prev_span.replace((unit, code.symbol));
         let spans = &mut self.units[unit].code;
         if prev == Some((unit, code.symbol))
@@ -381,9 +394,10 @@ impl<'m> DebugLines<'m> {
         {
             let end = (code.addend - last.addend) as u64 + code.size;
             last.size = last.size.max(end);
-            return;
+            return true;
         }
         spans.push(code);
+        false
     }
 
     /// Writes `.debug_line` and the DIEs of every unit that has code or

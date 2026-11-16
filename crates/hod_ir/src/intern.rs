@@ -59,11 +59,18 @@ impl Hasher64 {
         }
     }
 
-    /// The 32-bit hash. The multiplication pushes entropy upward, so the
-    /// high half is the well-mixed one.
+    /// The 32-bit hash. The multiplication pushes entropy upward: bit `i`
+    /// of the state depends only on bits `0..=i` of the last word mixed
+    /// in, so the state's low bits, and even the high half's low bits
+    /// (what [`InternTable`] indexes with), are blind to a last word that
+    /// differs only in its top bytes (`.str.123` against `.str.124`, the
+    /// bit patterns of `double`s). Folding the high half down and
+    /// multiplying once more makes every bit of the result depend on
+    /// every bit of the state.
     #[inline]
     pub(crate) fn finish(self) -> u32 {
-        (self.state >> 32) as u32
+        let s = self.state;
+        ((s ^ (s >> 32)).wrapping_mul(Self::K) >> 32) as u32
     }
 }
 
@@ -660,6 +667,39 @@ mod tests {
         let mut b = Hasher64::new(1);
         b.pair(2, 1);
         assert_ne!(a.finish(), b.finish());
+    }
+
+    /// The low bits of the hash, which pick a table slot, see the top
+    /// bytes of the last word: keys that differ only there (the names
+    /// `.str.100` to `.str.999`, one 8-byte word each, and `double` bit
+    /// patterns, whose low mantissa bits are zero) spread over the slots
+    /// instead of piling into a few probe chains (WP-291).
+    #[test]
+    fn hash_low_bits_see_the_top_of_the_last_word() {
+        let distinct_low = |hashes: &[u32], bits: u32| {
+            let mut seen: Vec<u32> = hashes.iter().map(|h| h & ((1 << bits) - 1)).collect();
+            seen.sort_unstable();
+            seen.dedup();
+            seen.len()
+        };
+        let names: Vec<u32> = (100..1000)
+            .map(|n| {
+                let mut h = Hasher64::new(0x5eed);
+                h.bytes(format!(".str.{n}").as_bytes());
+                h.finish()
+            })
+            .collect();
+        // 900 keys into 1024 slots: a uniform hash fills about 600.
+        assert!(distinct_low(&names, 10) > 500, "{}", distinct_low(&names, 10));
+        let doubles: Vec<u32> = (0..1000)
+            .map(|n| {
+                let mut h = Hasher64::new(2);
+                h.word(7);
+                h.word((f64::from(n) / 1024.0 + 0.5).to_bits());
+                h.finish()
+            })
+            .collect();
+        assert!(distinct_low(&doubles, 10) > 500, "{}", distinct_low(&doubles, 10));
     }
 
     /// §1 `TableFull`: ids and pool positions stop at the `u32` limit.

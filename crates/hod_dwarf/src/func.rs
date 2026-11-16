@@ -949,7 +949,7 @@ impl<'a> UnitPlan<'a> {
             // gets `DW_AT_abstract_origin` only, no template parameters
             // (WP-230: §6.33).
             if self.inline.die(sp_id).is_none() {
-                self.seal_definition(i)?; // before the return type (WP-094: §6.13)
+                self.seal_definition(i, &sp)?; // before the return type (WP-094: §6.13)
             }
             // One with an abstract instance names it instead (WP-085).
             if sp.declaration.is_none()
@@ -1047,7 +1047,8 @@ impl<'a> Writer<'a> {
         }
         let decl_of = |file: Option<DiId>, line: u32| Writer::decl_of(plan, sp_id, file, line);
         if let Some(decl) = sp.declaration {
-            let DiNode::Subprogram(d) = plan.debug.node(decl) else {
+            // WP-320: three fields of the declaration read, not decoded.
+            let Some(d) = plan.debug.view::<DiSubprogram>(decl) else {
                 return Err(bad(sp_id, "declaration"));
             };
             if let Some(t) = plan.definition_type(sp_id, sp)? {
@@ -1058,12 +1059,12 @@ impl<'a> Writer<'a> {
             }
             let spec = plan.die_of(decl).ok_or(bad(sp_id, "declaration"))?;
             let file = sp.file.and_then(|f| plan.file_index(f));
-            let decl_file = d.file.and_then(|f| plan.file_index(f));
+            let decl_file = d.file().and_then(|f| plan.file_index(f));
             let new_file = file != decl_file;
-            let new_line = sp.line != d.line;
+            let new_line = sp.line != d.line();
             // `llc`: the definition's linkage name unless it is the
             // declaration's.
-            let link = !sp.linkage_name.is_empty() && sp.linkage_name != d.linkage_name;
+            let link = !sp.linkage_name.is_empty() && sp.linkage_name != d.linkage_name();
             let mask =
                 b(fd.object_pointer != NONE) | b(new_file) << 1 | b(new_line) << 2 | b(link) << 3;
             let family = crate::call_sites::family(fam::SUBPROGRAM_MEMBER, fd.calls);

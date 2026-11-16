@@ -115,11 +115,11 @@ impl UnitPlan<'_> {
     /// What `finishSubprogramDefinitions` adds to definition `i` of the
     /// plan before its return type: its type beside a specification, then
     /// its template parameters (§6.11).
-    pub(crate) fn seal_definition(&mut self, i: usize) -> Result<(), Error> {
+    /// `sp` is its node, decoded by the caller (WP-320).
+    pub(crate) fn seal_definition(&mut self, i: usize, sp: &DiSubprogram<'_>) -> Result<(), Error> {
         let die = self.funcs[i].die;
         let sp_id = self.dies[die as usize].node;
-        let DiNode::Subprogram(sp) = self.debug.node(sp_id) else { return Ok(()) };
-        if let Some(t) = self.definition_type(sp_id, &sp)? {
+        if let Some(t) = self.definition_type(sp_id, sp)? {
             self.reference_type(sp_id, "type", t)?;
         }
         self.add_template_params(die, sp.template_params)

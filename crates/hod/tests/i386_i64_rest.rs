@@ -200,21 +200,17 @@ fn i64_switch_ptradd_and_intrinsics_compile() {
     }
 }
 
-/// The overflow intrinsics return `{i64, i1}`, an aggregate: their
-/// results are read with `extractvalue`, refused as `x86:aggregate` until
-/// design 0008's I11 (as for `{i32, i1}`).
+/// The overflow intrinsics return `{i64, i1}`, an aggregate, read with
+/// `extractvalue`: refused until WP-315 (design 0008 I11), which runs them
+/// at every width (`i386_agg.rs`).
 #[test]
-fn overflow_intrinsics_stay_refused() {
+fn overflow_intrinsics_compile() {
     for which in ["sadd", "umul"] {
         let case = format!(
             "define void @f(ptr %p) {{\n  %a = load i64, ptr %p\n  \
              %r = call {{i64, i1}} @llvm.{which}.with.overflow.i64(i64 %a, i64 %a)\n  \
              %v = extractvalue {{i64, i1}} %r, 0\n  store i64 %v, ptr %p\n  ret void\n}}"
         );
-        let error = refusal(&case).unwrap_or_else(|| panic!("compiled:\n{case}"));
-        assert!(
-            error.contains("x86:aggregate") || error.contains("x86:intrinsic"),
-            "{case}\n{error}"
-        );
+        assert_eq!(refusal(&case), None, "{case}");
     }
 }

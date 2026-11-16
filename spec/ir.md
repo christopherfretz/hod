@@ -1437,6 +1437,17 @@ that holds LLVM's names; it also takes the older spellings of a
 subprogram's flags (`isLocal`, `isDefinition`, `isOptimized`,
 `virtuality`).
 
+A field of a kind's record also has a position: its place in
+`DiKind::fields()` (a tagged kind's `tag` first). `DiKind::field_index(field,
+hint)` is the position of the field LLVM calls `field`, looked for from
+`hint` onward and then before it, so a reader that passes the last
+position plus one finds fields written in the record's order with one
+comparison each; `DiKind::field_shape_at(index)` is the shape there; and
+`DiNode::set_at(index, value)` is `set` by position, with the same
+results and the same errors. A field found in the record is mapped
+(§6.9): a reader need not also ask `di_field` for it. The older
+spellings have no position and go through `set` (WP-290).
+
 For a reader of LLVM's text and for the printer, each field says what it
 holds and gives its value back by name: `DiKind::field_shape(field)` is
 the field's `DiShape` (a number, a signed number, an optional number, a

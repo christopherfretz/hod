@@ -1,0 +1,10 @@
+# A composite action whose second step has neither `run` nor `uses`.
+name: bad
+description: a fixture
+runs:
+  using: composite
+  steps:
+    - run: echo one
+      shell: bash
+    - name: two
+      shell: bash

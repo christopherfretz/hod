@@ -1,0 +1,7 @@
+# A job without `runs-on` (misspelt `run-on`).
+on: push
+jobs:
+  build:
+    run-on: ubuntu-24.04
+    steps:
+      - run: echo one

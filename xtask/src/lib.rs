@@ -20,6 +20,7 @@ pub mod fuzz;
 pub mod irdiff;
 #[cfg(unix)]
 pub mod roundtrip;
+pub mod scripts;
 #[cfg(unix)]
 pub mod shim;
 #[cfg(unix)]

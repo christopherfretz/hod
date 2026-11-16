@@ -51,6 +51,11 @@ jobs:
       - uses: ./.github/actions/hod-ci
         with: { cache-key: "${{ inputs.cache-key }}" }
       - run: cargo xtask ci --quick --step fmt
+      # WP-265: the real-project report's self-test and `sh -n`/`bash -n`
+      # over scripts/; the workflow files through PyYAML (python3-yaml,
+      # installed by the hod-ci action).
+      - run: cargo xtask ci --quick --step scripts
+      - run: cargo xtask ci --quick --step workflows
       - run: cargo xtask ci --quick --step clippy
   # The test step in parts (xtask::ci::TEST_PARTS, checked against this
   # file by `the_hosted_lane_runs_the_quick_gates_steps`), one job each,

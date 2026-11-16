@@ -61,9 +61,11 @@ pub const SSE: &str = "x86:float:sse";
 pub const I64_CAST: &str = "x86:float:i64-cast";
 /// A floating-point intrinsic this package does not lower.
 pub const INTRINSIC: &str = "x86:float:intrinsic";
-/// A cast between floating types that is no `fpext`/`fptrunc` (a
-/// `bitcast` of a floating value).
+/// A cast of a floating value that §11 does not lower (no IR that the
+/// verifier accepts reaches it since the i386 join E lowers `bitcast`).
 pub const CAST: &str = "x86:float:cast";
+/// A `bitcast` between `x86_fp80` and `i80`.
+pub const FP80_CAST: &str = "x86:float:fp80-cast";
 
 /// One of the three x87 types.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1121,6 +1123,44 @@ fn cast<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, arg: Value) -> CgResult<()> 
         }
         Opcode::SIToFP | Opcode::UIToFP => from_int(cx, inst, arg),
         Opcode::FPToSI | Opcode::FPToUI => to_int(cx, inst, arg),
+        Opcode::BitCast => bitcast(cx, inst, arg, from),
+        _ => unsupported(CAST),
+    }
+}
+
+/// `bitcast` between `float` and `i32` or `double` and `i64` (§11): the
+/// same bytes through the homes. A floating home holds the value rounded
+/// to its type, never the 80-bit copy: a bitcast takes the type's bits
+/// (`llc` at `generic`: `fstps (%esp); movl (%esp), %eax` of a product,
+/// measured, 19 and 22). The result of a cast to a floating type has no
+/// 80-bit copy (its users load its home), and no bits pass through the
+/// stack, so a signalling NaN pattern is kept. Not a barrier (no branch,
+/// no call in `llc`). `x86_fp80` from or to `i80`:
+/// [`FP80_CAST`]; a vector on either side: its family's refusal.
+fn bitcast<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, arg: Value, from: TypeId) -> CgResult<()> {
+    let to = inst.ty();
+    let (fp_ty, other) = if is_fp(cx, from) { (from, to) } else { (to, from) };
+    if matches!(cx.types().kind(other), TypeKind::Vector { .. }) {
+        return Err(crate::target::refusal_of(cx, other));
+    }
+    let fp = fp_of(cx, fp_ty)?;
+    match (fp, cx.types().int_bits(other)) {
+        (Fp::F32, Some(32)) if is_fp(cx, from) => {
+            let src = cx.use_mem(arg)?;
+            let rd = cx.def_reg(inst)?;
+            frame_inst(cx, src, |m| mc::mov_rm(Size::D, gp(rd), m));
+            cx.finish(inst, rd)
+        }
+        (Fp::F32, Some(32)) => {
+            let r = cx.use_reg(arg)?;
+            let dst = cx.def_mem(inst)?;
+            frame_inst(cx, dst, |m| mc::mov_mr(Size::D, m, gp(r)));
+            Ok(())
+        }
+        // The `i64` side is §8's slot of two words, low first: the
+        // `double`'s memory image.
+        (Fp::F64, Some(64)) => copy_of(cx, inst, arg, fp),
+        (Fp::F80, _) => unsupported(FP80_CAST),
         _ => unsupported(CAST),
     }
 }
@@ -1175,8 +1215,9 @@ fn from_int<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, arg: Value) -> CgResult<
 /// `sitofp`/`uitofp` of an `i64` (§8's slot, low word first): `fild
 /// qword` of the slot, exact at 80 bits; unsigned, `2^64` added when the
 /// high bit is set (as `llc`: `fadd` of a `float` chosen by the sign,
-/// here `0x5F800000` or 0 built in `ecx` without a branch). The result
-/// keeps its 80-bit copy for its run.
+/// here `0x5F800000` or 0 built in `ecx` without a branch). A signed
+/// result keeps its 80-bit copy for its run; an unsigned one is rounded
+/// (as `llc`).
 fn from_i64<'a>(
     cx: &mut FnCx<'a, X86>,
     inst: Inst<'a>,
@@ -1196,7 +1237,9 @@ fn from_i64<'a>(
         put(cx, mc::faddp(St::St1));
         above(cx, 16);
     }
-    result(cx, inst, fp, true)
+    // Unsigned, `llc` rounds the sum to the type at once (`fstps`/`flds`,
+    // `fstpl`/`fldl`; measured, 19 and 22): no 80-bit copy.
+    result(cx, inst, fp, signed)
 }
 
 /// `fptosi` to an `i64`: as [`to_int`], `fistp qword` into the result's

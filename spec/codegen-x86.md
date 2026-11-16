@@ -173,7 +173,8 @@ their values).
 | `x86:float:bfloat`, `x86:float:fp128` | a value of those types | — |
 | `x86:float:i64-cast` | a conversion between a floating type and an integer of 33 to 63 or more than 64 bits (§11; `fptoui` to `i64` is lowered since the i386 join C) | — |
 | `x86:float:intrinsic` | a floating-point intrinsic §11 does not lower | — |
-| `x86:float:cast` | a `bitcast` of a floating value, another cast not in §11 | — |
+| `x86:float:cast` | a cast of a floating value not in §11 (no verified IR reaches it since the i386 join E lowers `bitcast`) | — |
+| `x86:float:fp80-cast` | a `bitcast` between `x86_fp80` and `i80` | — |
 | `x86:vector` | a vector `ptradd` (§17) | I12 |
 | `x86:vector:no-sse2` | a vector in a function without SSE2 (§17) | — |
 | `x86:vector:wide` | a vector of more than 16 bytes passed or returned | — |
@@ -639,7 +640,18 @@ a mask), `fistp qword` under the truncating control word, the flag
 exactly below `2^64`; a NaN, `+inf`, values from `2^64` give 0; negative
 values below -1 give what `fistp` gives (`0x8000000000000000` when out
 of range). A conversion between a floating type and an integer of 33 to
-63 or more than 64 bits is `x86:float:i64-cast`.
+63 or more than 64 bits is `x86:float:i64-cast`. `uitofp` of an `i64`
+is rounded to its type at once (`llc`: `fstps`/`flds`, measured 19 and
+22): no 80-bit copy; `sitofp` of an `i64` keeps one.
+
+**`bitcast`** (i386 join E) between `float` and `i32`, `double` and
+`i64` (§8's slot): the same bytes through the homes. The floating home
+holds the value rounded to its type, so a cast takes the bits of the
+rounded value, never the 80-bit copy (`llc` at `generic`: `fstps
+(%esp); movl (%esp), %eax` of a product); a cast to a floating type has
+no 80-bit copy, and no bits pass through the x87 stack (a signalling
+NaN pattern is kept). Not a barrier. `x86_fp80` from or to `i80`:
+`x86:float:fp80-cast`; a vector on either side: the vector's refusal.
 
 **libm.** `frem` is `fmodf`/`fmod`/`fmodl`; `sin`, `cos`, `tan`, `asin`,
 `acos`, `atan`, `atan2`, `sinh`, `cosh`, `tanh`, `exp`, `exp2`, `exp10`,

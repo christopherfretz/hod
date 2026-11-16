@@ -16,6 +16,13 @@
 //!   `alloca`), `sse_atomic.ll` (float atomics in SSE2 functions): run as
 //!   `llc`'s, static and PIE, every linker, plain and under `Stress::ALL`.
 //!   `sse_dbg.c` (`-g` at SSE2): hod's DIE tree equals `llc`'s.
+//!   `sse_lanes.ll`: edge values through every lane of §17's operations,
+//!   and an `x86_fp80` live across vector code. `sse_atomic_bits.ll`:
+//!   8-byte atomic loads and stores keep every bit pattern class (hod's
+//!   `fild`/`fistp` against `llc`'s `movq` at SSE2).
+//! - Stage 3, `x87_bitcast.ll`: `bitcast` between `float`/`i32` and
+//!   `double`/`i64` without SSE (the rounded value's bits, signalling NaN
+//!   patterns kept); the refusals that remain keep their names.
 //!
 //! A missing tool is skipped with a note, unless `HOD_REQUIRE_TOOLS=1`.
 
@@ -261,4 +268,58 @@ fn debug_info_of_sse2_functions_equals_llc() {
     let runs = lane.check(&scratch, "sse_dbg.c", &Source::C(&path, flags), build);
     assert!(compared > 0 && runs > 0, "nothing was compared or run");
     eprintln!("i386 join E sse_dbg.c: {compared} DIE trees equal llc's, {runs} runs equal llc's");
+}
+
+#[test]
+fn vector_lanes_with_edge_values_run_as_llc_s() {
+    ll_program("sse_lanes.ll", &[]);
+}
+
+#[test]
+fn eight_byte_atomics_keep_every_bit_pattern() {
+    ll_program("sse_atomic_bits.ll", &[]);
+}
+
+// ---- Stage 3: `bitcast` on the x87 path ----
+
+#[test]
+fn bitcast_between_floats_and_integers_on_the_x87_path() {
+    ll_program("x87_bitcast.ll", &[]);
+}
+
+/// hod's refusal of the function `body` at `cpu`.
+fn refusal(cpu: &str, body: &str) -> String {
+    let text = format!(
+        "target triple = \"{TRIPLE}\"\n{body}\n\
+         attributes #0 = {{ nounwind \"target-cpu\"=\"{cpu}\" }}\n"
+    );
+    let options = Options {
+        output_kind: OutputKind::Object,
+        triple: Some(TRIPLE.into()),
+        relocation_model: Some(RelocModel::Static),
+        ..Options::default()
+    };
+    hod::compile(text.as_bytes(), &options).expect_err(body).to_string()
+}
+
+#[test]
+fn casts_and_atomics_the_join_still_refuses_keep_their_names() {
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            "generic",
+            "define void @f(double %x, ptr %p) #0 {\n %v = bitcast double %x to <2 x i32>\n \
+             store <2 x i32> %v, ptr %p\n ret void\n}",
+            "x86:vector:no-sse2",
+        ),
+        (
+            "pentium4",
+            "define void @f(ptr %p, ptr %q) #0 {\n %v = load atomic <2 x i32>, ptr %p seq_cst, align 8\n \
+             store <2 x i32> %v, ptr %q\n ret void\n}",
+            "x86:atomic:type",
+        ),
+    ];
+    for (cpu, body, name) in cases {
+        let error = refusal(cpu, body);
+        assert!(error.contains(&format!("'{name}'")), "{body}: {error}");
+    }
 }

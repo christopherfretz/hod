@@ -222,7 +222,7 @@ fn fcmp_predicates_run_as_llc_s() {
 }
 
 /// The shapes of `shapes-*.ll`, in order (the driver prints one line each).
-const SHAPES: [&str; 45] = [
+const SHAPES: [&str; 46] = [
     "single",
     "twice",
     "twice_sep",
@@ -268,6 +268,7 @@ const SHAPES: [&str; 45] = [
     "memset_big",
     "fold_const",
     "frem_const_between",
+    "bitcast_between",
 ];
 
 /// The shapes where `llc`'s own result depends on its register

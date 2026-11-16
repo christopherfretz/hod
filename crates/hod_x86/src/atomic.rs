@@ -21,7 +21,11 @@
 //! - **load**: `fild qword [p]` · `fistp qword [result]`, as `llc` writes
 //!   it without SSE2 (an aligned 8-byte x87 access is single-copy
 //!   atomic; the 64-bit integer survives the round trip exactly). With
-//!   SSE2 `llc` uses `movq`; hod keeps the x87 pair (I12 may change it).
+//!   SSE2 `llc` uses `movq`; hod keeps the x87 pair: one 8-byte access
+//!   either way, and the same value for every pattern (`fild` of a
+//!   64-bit integer is exact, `fistp` of an integral value is exact in
+//!   every rounding mode; `tests/i386_join_e.rs`
+//!   `eight_byte_atomics_keep_every_bit_pattern`).
 //! - **store**: `fild qword [value]` · `fistp qword [p]`, then the fence
 //!   of a `seq_cst` store.
 //! - **`atomicrmw`**, **`cmpxchg`**: `lock cmpxchg8b [p]` (loop): the old

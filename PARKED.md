@@ -34,7 +34,16 @@ Branch `wp/317-i386-sse2`, worktree `.worktrees/wp-317`, build dir
    Proposal: vectors stay class `Mem` like scalars (the 64-bit back
    end's lane code as the model, operations through `xmm6`/`xmm7`), and
    `abi.rs` gets the `xmm` places from a function of `sse.rs`.
-3. Evidence not yet gathered: irdiff i686 full tier (`cargo xtask irdiff
+3. Evidence gathered in session 1: all 15 `i386*` test binaries of `-p
+   hod` pass with `HOD_REQUIRE_TOOLS=1`; `i386_sse`: ops 24 runs, x87
+   `arith.c` 12, fcmp 12, shapes 270 lines, mixed 6, all equal `llc`;
+   x87 shapes unchanged (288 equal `llc`, 72 equal the model);
+   `cargo test -p hod_x86 -p hod_cg -p hod_mc_x64` green; fmt clean;
+   clippy clean except `crates/hod/tests/i386_module_asm.rs:367`
+   (`too_many_lines`, file unchanged from base: not this package's).
+   The irdiff harness has no tier-wide CPU flag (only the per-seed
+   `;@ llc-args: -mcpu=` directive).
+   Evidence not yet gathered: irdiff i686 full tier (`cargo xtask irdiff
    --target i686 --llvm 22` and `--llvm 19`) before/after; compare-binaries
    against `31400b11` (base built into
    `/Volumes/AgentWork/hod-helper/.build/target-wp-317-base`).

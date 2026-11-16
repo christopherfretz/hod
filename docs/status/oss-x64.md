@@ -80,7 +80,8 @@ Notes:
 3. range_v3: one translation unit (`view/tokenize.cpp`) fails to compile upstream in every build, the control's included (clang 19 rejects it too); every object the strict build makes is hod's.
 4. A test that runs an x86-64 program itself rather than through ctest (a death test re-executing `/proc/self/exe`, a python test script) fails under qemu in the control and in hod's builds alike: the comparison with the control holds, the absolute count does not (googletest's 45 of 63).
 5. glog -O0: `logging` is a thread race of the test under qemu, failing and passing in the control and in strict alike (the lane's A/B runs); not a miscompile.
-6. ctre has no ctest tests: its build (the compile-time tests) is the measurement.
+6. zlib: one of 37 objects is not offered to hod by kiln (`infcover.c`, `coverage`); the strict build is marked `failed (0 TUs)`. `-O0 -g` strict at e98267c0: `zlib_static_example` failed once with "gzread err:" (it and `zlib_example` write `test/foo.gz` in the same directory under parallel ctest); run alone under qemu it passed 5 of 5 (the lane's notes; no rerun is recorded in the tree). projects.toml's test step for zlib now runs `ctest -j1`.
+7. ctre has no ctest tests: its build (the compile-time tests) is the measurement.
 
 ## Refusal census (hybrid builds)
 

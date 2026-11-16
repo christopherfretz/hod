@@ -5,7 +5,7 @@
 //! ABI, AMD64 Architecture Processor Supplement", section "Relocation
 //! Types".
 
-use crate::model::Arch;
+use crate::model::{Arch, Machine};
 
 /// Declares a relocation-kind enum: one variant per named relocation with
 /// its ELF type number and psABI name, plus `Other(u32)`.
@@ -184,21 +184,73 @@ reloc_kinds! {
     }
 }
 
-/// A relocation kind of either architecture.
+reloc_kinds! {
+    /// 32-bit x86 relocations ("System V ABI, Intel386 Architecture
+    /// Processor Supplement", "Relocation Types", and its TLS and
+    /// `GOT32X` additions): the set `docs/design/0008-i386.md` section 3.2
+    /// says hod writes. Written as `Elf32_Rel`, the addend in the section
+    /// bytes ([`I386Reloc::field_size`]).
+    I386Reloc {
+        None = 0, "R_386_NONE";
+        Abs32 = 1, "R_386_32";
+        Pc32 = 2, "R_386_PC32";
+        Plt32 = 4, "R_386_PLT32";
+        GotOff = 9, "R_386_GOTOFF";
+        GotPc = 10, "R_386_GOTPC";
+        TlsIe = 15, "R_386_TLS_IE";
+        TlsGotIe = 16, "R_386_TLS_GOTIE";
+        TlsLe = 17, "R_386_TLS_LE";
+        TlsGd = 18, "R_386_TLS_GD";
+        TlsLdm = 19, "R_386_TLS_LDM";
+        TlsLdo32 = 32, "R_386_TLS_LDO_32";
+        Got32X = 43, "R_386_GOT32X";
+    }
+}
+
+impl I386Reloc {
+    /// The width in bytes of the field the relocation patches, which holds
+    /// its addend in an `SHT_REL` object: 4 for every named kind but
+    /// `None` (0); `None` for `Other`, whose width the writer does not
+    /// know (such a relocation may only have addend zero).
+    pub const fn field_size(self) -> Option<u8> {
+        match self {
+            Self::None => Some(0),
+            Self::Other(_) => None,
+            _ => Some(4),
+        }
+    }
+}
+
+/// A relocation kind of any architecture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RelocKind {
     /// An AArch64 relocation.
     A64(A64Reloc),
     /// An x86-64 relocation.
     X64(X64Reloc),
+    /// A 32-bit x86 relocation.
+    I386(I386Reloc),
 }
 
 impl RelocKind {
-    /// The architecture the kind belongs to.
+    /// The 64-bit architecture the kind belongs to.
+    ///
+    /// # Panics
+    /// For an [`RelocKind::I386`] kind, which has no [`Arch`]: use
+    /// [`RelocKind::machine`].
     pub const fn arch(self) -> Arch {
+        match self.machine().arch() {
+            Some(arch) => arch,
+            None => panic!("an i386 relocation has no `Arch`: use `RelocKind::machine`"),
+        }
+    }
+
+    /// The machine the kind belongs to.
+    pub const fn machine(self) -> Machine {
         match self {
-            Self::A64(_) => Arch::AArch64,
-            Self::X64(_) => Arch::X86_64,
+            Self::A64(_) => Machine::AArch64,
+            Self::X64(_) => Machine::X86_64,
+            Self::I386(_) => Machine::I386,
         }
     }
 
@@ -207,14 +259,21 @@ impl RelocKind {
         match self {
             Self::A64(kind) => kind.elf_type(),
             Self::X64(kind) => kind.elf_type(),
+            Self::I386(kind) => kind.elf_type(),
         }
     }
 
     /// The kind `arch` gives to an ELF relocation type number.
     pub const fn from_elf_type(arch: Arch, number: u32) -> Self {
-        match arch {
-            Arch::AArch64 => Self::A64(A64Reloc::from_elf_type(number)),
-            Arch::X86_64 => Self::X64(X64Reloc::from_elf_type(number)),
+        Self::for_machine(Machine::from_arch(arch), number)
+    }
+
+    /// The kind `machine` gives to an ELF relocation type number.
+    pub const fn for_machine(machine: Machine, number: u32) -> Self {
+        match machine {
+            Machine::AArch64 => Self::A64(A64Reloc::from_elf_type(number)),
+            Machine::X86_64 => Self::X64(X64Reloc::from_elf_type(number)),
+            Machine::I386 => Self::I386(I386Reloc::from_elf_type(number)),
         }
     }
 
@@ -223,7 +282,14 @@ impl RelocKind {
         match self {
             Self::A64(kind) => kind.elf_name(),
             Self::X64(kind) => kind.elf_name(),
+            Self::I386(kind) => kind.elf_name(),
         }
+    }
+}
+
+impl From<I386Reloc> for RelocKind {
+    fn from(kind: I386Reloc) -> Self {
+        Self::I386(kind)
     }
 }
 
@@ -278,6 +344,13 @@ mod tests {
             X64Reloc::elf_name,
             "R_X86_64_",
         );
+        check(
+            I386Reloc::NAMED,
+            I386Reloc::elf_type,
+            I386Reloc::from_elf_type,
+            I386Reloc::elf_name,
+            "R_386_",
+        );
     }
 
     /// The numbers the code generator depends on first, against the psABI
@@ -295,6 +368,29 @@ mod tests {
         assert_eq!(X64Reloc::Abs64.elf_type(), 1);
         assert_eq!(X64Reloc::Plt32.elf_type(), 4);
         assert_eq!(X64Reloc::RexGotPcrelX.elf_type(), 42);
+        // Design 0008 section 3.2, each checked against `llvm-mc
+        // -triple=i686-linux-gnu` and `llvm-readelf -r` (WP-284).
+        let i386 = [
+            (I386Reloc::Abs32, 1),
+            (I386Reloc::Pc32, 2),
+            (I386Reloc::Plt32, 4),
+            (I386Reloc::GotOff, 9),
+            (I386Reloc::GotPc, 10),
+            (I386Reloc::TlsIe, 15),
+            (I386Reloc::TlsGotIe, 16),
+            (I386Reloc::TlsLe, 17),
+            (I386Reloc::TlsGd, 18),
+            (I386Reloc::TlsLdm, 19),
+            (I386Reloc::TlsLdo32, 32),
+            (I386Reloc::Got32X, 43),
+        ];
+        for (kind, number) in i386 {
+            assert_eq!(kind.elf_type(), number, "{kind:?}");
+            assert_eq!(kind.field_size(), Some(4), "{kind:?}");
+        }
+        assert_eq!(I386Reloc::NAMED.len(), i386.len() + 1);
+        assert_eq!(I386Reloc::None.field_size(), Some(0));
+        assert_eq!(I386Reloc::Other(3).field_size(), None);
     }
 
     #[test]
@@ -307,5 +403,9 @@ mod tests {
         assert_eq!(kind.arch(), Arch::X86_64);
         assert_eq!(kind.elf_type(), 2);
         assert_eq!(RelocKind::from(A64Reloc::Call26).elf_name(), Some("R_AARCH64_CALL26"));
+        let kind = RelocKind::for_machine(Machine::I386, 2);
+        assert_eq!(kind, RelocKind::I386(I386Reloc::Pc32));
+        assert_eq!(kind.machine(), Machine::I386);
+        assert_eq!(RelocKind::from(X64Reloc::Pc32).machine(), Machine::X86_64);
     }
 }

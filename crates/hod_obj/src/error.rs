@@ -25,6 +25,11 @@ pub enum Limit {
     // WP-061: compressed sections.
     /// A section to compress holds 4 GiB or more.
     CompressedBytes,
+    // WP-284: ELF32.
+    /// In an ELF32 object, a value does not fit its 32-bit field: a
+    /// symbol's value or size, a section's flags, size or alignment, or a
+    /// file offset (the file would reach 4 GiB).
+    Elf32Field,
 }
 
 /// Why a symbol cannot be written.
@@ -120,6 +125,28 @@ pub enum Error {
         /// The section.
         section: SectionId,
     },
+    // WP-284: ELF32 and `SHT_REL`.
+    /// A relocation of an `SHT_REL` (ELF32) object whose addend cannot be
+    /// stored in the section bytes: a nonzero addend for a kind with no
+    /// field of known width (`R_386_NONE`, `Other`), an addend outside
+    /// `-2^31 ..= 2^32 - 1` for a 4-byte field, or a nonzero addend on a
+    /// section that is already compressed. Never truncated. (A field that
+    /// does not lie wholly inside its section is
+    /// [`Error::RelocationOutOfBounds`].)
+    AddendNotRepresentable {
+        /// The section.
+        section: SectionId,
+        /// The relocation's offset.
+        offset: u64,
+        /// The addend given.
+        addend: i64,
+    },
+    /// Something the 64-bit writer writes that has no ELF32 form here yet
+    /// (a GNU property note, `docs/design/0008-i386.md` section 3.5).
+    NotInElf32 {
+        /// What was asked for.
+        what: &'static str,
+    },
 }
 
 impl fmt::Display for Error {
@@ -147,6 +174,7 @@ impl fmt::Display for Error {
                     Limit::Groups => "too many groups",
                     Limit::FileBytes => "the file is too large",
                     Limit::CompressedBytes => "a section to compress holds 4 GiB or more",
+                    Limit::Elf32Field => "a value does not fit its 32-bit field of an ELF32 object",
                 };
                 f.write_str(what)
             }
@@ -192,6 +220,13 @@ impl fmt::Display for Error {
                 "section #{} cannot be compressed: it is loaded, has no file space or is compressed",
                 section.index()
             ),
+            Self::AddendNotRepresentable { section, offset, addend } => write!(
+                f,
+                "addend {addend} of the relocation at offset {offset:#x} in section #{} \
+                 cannot be stored in the section bytes of an `SHT_REL` object",
+                section.index()
+            ),
+            Self::NotInElf32 { what } => write!(f, "{what} is not written in an ELF32 object"),
         }
     }
 }

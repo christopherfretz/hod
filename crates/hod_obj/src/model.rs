@@ -11,13 +11,63 @@ use crate::reloc::RelocKind;
 /// "No entry" in the index chains.
 pub(crate) const NONE: u32 = u32::MAX;
 
-/// The target architecture of an object.
+/// The target architecture of a 64-bit object. [`Machine`] adds 32-bit
+/// x86; `Arch` keeps its two variants so that code matching on it stays
+/// exhaustive until every back end handles the third.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Arch {
     /// 64-bit Arm, little-endian.
     AArch64,
     /// x86-64.
     X86_64,
+}
+
+/// The ELF machine of an object, which also decides its class: the two
+/// [`Arch`]es (ELFCLASS64, `SHT_RELA`) and 32-bit x86 (ELFCLASS32,
+/// `EM_386`, `SHT_REL` with the addends in the section bytes).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Machine {
+    /// 64-bit Arm, little-endian (`EM_AARCH64`).
+    AArch64,
+    /// x86-64 (`EM_X86_64`).
+    X86_64,
+    /// 32-bit x86 (`EM_386`), `i686-*-linux-gnu`.
+    I386,
+}
+
+impl Machine {
+    /// The machine of a 64-bit architecture.
+    pub const fn from_arch(arch: Arch) -> Self {
+        match arch {
+            Arch::AArch64 => Self::AArch64,
+            Arch::X86_64 => Self::X86_64,
+        }
+    }
+
+    /// The architecture, for a 64-bit machine; `None` for [`Machine::I386`].
+    pub const fn arch(self) -> Option<Arch> {
+        match self {
+            Self::AArch64 => Some(Arch::AArch64),
+            Self::X86_64 => Some(Arch::X86_64),
+            Self::I386 => None,
+        }
+    }
+
+    /// Whether objects are ELFCLASS32 (with `SHT_REL` relocations).
+    pub const fn is_elf32(self) -> bool {
+        matches!(self, Self::I386)
+    }
+
+    /// The size in bytes of an address: 8, or 4 for [`Machine::I386`].
+    pub const fn address_size(self) -> u8 {
+        if self.is_elf32() { 4 } else { 8 }
+    }
+}
+
+impl From<Arch> for Machine {
+    fn from(arch: Arch) -> Self {
+        Self::from_arch(arch)
+    }
 }
 
 macro_rules! id_type {
@@ -312,6 +362,11 @@ impl SectionData {
     pub(crate) fn size(&self) -> u64 {
         if self.kind.is_nobits() { self.nobits_size } else { self.data.len() as u64 }
     }
+
+    /// Whether the section is `SHF_COMPRESSED`.
+    pub(crate) fn compressed(&self) -> bool {
+        matches!(self.kind, SectionKind::Elf { sh_flags, .. } if sh_flags & crate::elf::SHF_COMPRESSED != 0)
+    }
 }
 
 impl SectionKind {
@@ -347,7 +402,7 @@ pub(crate) struct GroupData {
 /// Methods that take an id panic when the id was not issued by this object.
 #[derive(Debug)]
 pub struct Object {
-    pub(crate) arch: Arch,
+    pub(crate) machine: Machine,
     pub(crate) flags: u32,
     pub(crate) stack_note: StackNote,
     /// Symbol names, each followed by a NUL, after one leading NUL: the
@@ -370,8 +425,14 @@ pub struct Object {
 impl Object {
     /// An empty object for `arch`.
     pub fn new(arch: Arch) -> Self {
+        Self::for_machine(Machine::from_arch(arch))
+    }
+
+    /// An empty object for `machine`; [`Machine::I386`] makes an
+    /// ELFCLASS32 object.
+    pub fn for_machine(machine: Machine) -> Self {
         Self {
-            arch,
+            machine,
             flags: 0,
             stack_note: StackNote::NonExecutable,
             strings: vec![0],
@@ -386,9 +447,21 @@ impl Object {
         }
     }
 
-    /// The architecture.
+    /// The architecture of a 64-bit object.
+    ///
+    /// # Panics
+    /// For an object of [`Machine::I386`], which has no [`Arch`]: code that
+    /// can meet one asks [`Object::machine`].
     pub fn arch(&self) -> Arch {
-        self.arch
+        match self.machine.arch() {
+            Some(arch) => arch,
+            None => panic!("an i386 object has no `Arch`: use `Object::machine`"),
+        }
+    }
+
+    /// The machine (and with it the ELF class).
+    pub fn machine(&self) -> Machine {
+        self.machine
     }
 
     /// Sets the processor-specific flags of the file header (`e_flags`).
@@ -738,8 +811,16 @@ impl Object {
         addend: i64,
     ) {
         let kind = kind.into();
-        if kind.arch() != self.arch {
+        if kind.machine() != self.machine {
             self.defer(Error::RelocationArchMismatch { section, kind });
+            return;
+        }
+        // An `SHT_REL` object keeps the addend in the section bytes, which
+        // a compressed section no longer exposes (`compress_section` puts
+        // the addends of the relocations it has into the data first).
+        if self.machine.is_elf32() && addend != 0 && self.sections[section.0 as usize].compressed()
+        {
+            self.defer(Error::AddendNotRepresentable { section, offset, addend });
             return;
         }
         // The last index is `NONE`.
@@ -783,7 +864,7 @@ impl Object {
             next = entry.next;
             Some(Relocation {
                 offset: entry.offset,
-                kind: RelocKind::from_elf_type(self.arch, entry.r_type),
+                kind: RelocKind::for_machine(self.machine, entry.r_type),
                 symbol: SymbolId(entry.symbol),
                 addend: entry.addend,
             })

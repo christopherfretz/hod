@@ -1,5 +1,6 @@
-//! The ELF64 little-endian relocatable writer. Contract: `spec/object.md`
-//! "ELF writer".
+//! The ELF little-endian relocatable writer: ELF64 with `SHT_RELA` for
+//! AArch64 and x86-64, ELF32 with `SHT_REL` for i386 (WP-284). Contract:
+//! `spec/object.md` "ELF writer" and "ELF32".
 //!
 //! [`write`] and [`to_vec`] first check the object and compute the whole
 //! file layout ([`Layout`]), then emit the file front to back. Nothing is
@@ -20,9 +21,10 @@ pub use conventions::{
 
 use crate::error::{Error, Limit, SymbolProblem, WriteError};
 use crate::model::{
-    Arch, Binding, GroupKind, NONE, Object, RelocEntry, SectionData, SectionId, SectionKind,
+    Binding, GroupKind, Machine, NONE, Object, RelocEntry, SectionData, SectionId, SectionKind,
     StackNote, Symbol, SymbolId, SymbolKind, SymbolPlace, Visibility,
 };
+use crate::reloc::I386Reloc;
 
 // Section types (`sh_type`), ELF gABI "Sections".
 /// Inactive section header.
@@ -104,17 +106,40 @@ const ELFOSABI_GNU: u8 = 3;
 const EM_X86_64: u16 = 62;
 const EM_AARCH64: u16 = 183;
 
-const EHDR_SIZE: u64 = 64;
-const SHDR_SIZE: u64 = 64;
-const SYM_SIZE: u64 = 24;
-const RELA_SIZE: u64 = 24;
+const EM_386: u16 = 3;
+
+/// The record sizes and alignments of one ELF class.
+#[derive(Clone, Copy, Debug)]
+struct Form {
+    /// ELFCLASS32, with `SHT_REL` relocations and the addends in the
+    /// section bytes (WP-284).
+    elf32: bool,
+    ehdr: u64,
+    shdr: u64,
+    sym: u64,
+    /// `Elf64_Rela` or `Elf32_Rel`.
+    reloc: u64,
+    /// The alignment of the relocation sections, `.symtab` and the
+    /// section header table.
+    align: u64,
+    /// `.rela` or `.rel`.
+    prefix: &'static [u8],
+}
+
+const ELF64: Form =
+    Form { elf32: false, ehdr: 64, shdr: 64, sym: 24, reloc: 24, align: 8, prefix: b".rela" };
+const ELF32: Form =
+    Form { elf32: true, ehdr: 52, shdr: 40, sym: 16, reloc: 8, align: 4, prefix: b".rel" };
+
+const fn form_of(machine: Machine) -> Form {
+    if machine.is_elf32() { ELF32 } else { ELF64 }
+}
 
 /// Offsets of the writer's own names at the start of `.shstrtab`.
 const SHSTRTAB_HEAD: &[u8] = b"\0.symtab\0.strtab\0.shstrtab\0";
 const NAME_SYMTAB: u32 = 1;
 const NAME_STRTAB: u32 = 9;
 const NAME_SHSTRTAB: u32 = 17;
-const RELA_PREFIX: &[u8] = b".rela";
 
 /// Rejects a section kind the writer cannot honor.
 pub(crate) fn check_kind(kind: SectionKind) -> Result<(), Error> {
@@ -230,6 +255,7 @@ struct NamePlan {
 /// emitted.
 #[derive(Debug)]
 struct Layout {
+    form: Form,
     os_abi: u8,
     /// ELF index of `SectionId(0)`; the groups come before it.
     first_section: u32,
@@ -262,18 +288,21 @@ fn align_up(value: u64, align: u64) -> Result<u64, Error> {
 
 /// Checks the sections and places their contents after the file header.
 /// `first_rela` is the ELF index the first relocation section will have.
-fn plan_sections(obj: &Object, first_rela: u64) -> Result<SectionPlan, Error> {
+fn plan_sections(obj: &Object, form: Form, first_rela: u64) -> Result<SectionPlan, Error> {
     let mut plan = SectionPlan {
         offsets: Vec::with_capacity(obj.sections.len()),
         rela_index: Vec::with_capacity(obj.sections.len()),
         name_has_rela: vec![false; obj.section_names.len()],
         rela_count: 0,
         reloc_total: 0,
-        end: EHDR_SIZE,
+        end: form.ehdr,
         uses_gnu_abi: false,
     };
     for (index, sec) in obj.sections.iter().enumerate() {
-        check_section(SectionId(index as u32), sec)?;
+        check_section(SectionId(index as u32), sec, form)?;
+        if form.elf32 {
+            check_elf32_section(obj, SectionId(index as u32), sec)?;
+        }
         if sec.reloc_count == 0 {
             plan.rela_index.push(0);
         } else {
@@ -343,6 +372,7 @@ fn plan_symbols(obj: &Object, first_section: u64) -> Result<SymbolPlan, Error> {
 /// name once, behind `.rela` when a section of that name has relocations.
 fn plan_names(
     obj: &Object,
+    prefix: &[u8],
     name_has_rela: &[bool],
     need_shndx: bool,
     has_stack: bool,
@@ -364,7 +394,7 @@ fn plan_names(
     let mut size = head.len() as u64;
     for (name, &has_rela) in obj.section_names.iter().zip(name_has_rela) {
         if has_rela {
-            size += RELA_PREFIX.len() as u64;
+            size += prefix.len() as u64;
         }
         offsets.push(size as u32);
         size += name.len() as u64 + 1;
@@ -383,18 +413,20 @@ impl Layout {
         // Section header order: null, groups, sections, the stack note,
         // relocation sections, `.symtab`, `.symtab_shndx`, `.strtab`,
         // `.shstrtab`.
+        let form = form_of(obj.machine);
         let first_section = 1 + obj.groups.len() as u64;
         let has_stack = obj.stack_note != StackNote::Omit;
         let stack_index = first_section + obj.sections.len() as u64;
         let first_rela = stack_index + u64::from(has_stack);
-        let sections = plan_sections(obj, first_rela)?;
+        let sections = plan_sections(obj, form, first_rela)?;
         let symtab_index = first_rela + sections.rela_count;
         let symbols = plan_symbols(obj, first_section)?;
         let shnum = symtab_index + 3 + u64::from(symbols.need_shndx);
         let Ok(shnum) = u32::try_from(shnum) else {
             return Err(Error::TooLarge(Limit::Sections));
         };
-        let names = plan_names(obj, &sections.name_has_rela, symbols.need_shndx, has_stack)?;
+        let names =
+            plan_names(obj, form.prefix, &sections.name_has_rela, symbols.need_shndx, has_stack)?;
 
         // One word of flags per group, then each member and its relocations.
         let group_words: u64 =
@@ -404,14 +436,24 @@ impl Layout {
         // `.symtab`, `.symtab_shndx`, `.strtab`, `.shstrtab`, headers.
         let symbol_count = u64::from(symbols.count);
         let groups_off = align_up(sections.end, 4)?;
-        let relas_off = align_up(groups_off + 4 * group_words, 8)?;
-        let symtab_off = relas_off + RELA_SIZE * sections.reloc_total;
-        let shndx_off = symtab_off + SYM_SIZE * symbol_count;
+        let relas_off = align_up(groups_off + 4 * group_words, form.align)?;
+        let symtab_off = relas_off + form.reloc * sections.reloc_total;
+        let shndx_off = symtab_off + form.sym * symbol_count;
         let strtab_off = shndx_off + if symbols.need_shndx { 4 * symbol_count } else { 0 };
         let shstrtab_off = strtab_off + obj.strings.len() as u64;
-        let shdr_off = align_up(shstrtab_off + names.size, 8)?;
+        let shdr_off = align_up(shstrtab_off + names.size, form.align)?;
+        let file_size = shdr_off + form.shdr * u64::from(shnum);
+        if form.elf32 {
+            // Every offset and size is below the file's size; `Elf32_Rel`
+            // numbers its symbol in 24 bits.
+            if file_size > u64::from(u32::MAX) || symbols.count >= 1 << 24 {
+                return Err(Error::TooLarge(Limit::Elf32Field));
+            }
+            check_elf32_symbols(obj, &symbols)?;
+        }
 
         Ok(Self {
+            form,
             os_abi: if sections.uses_gnu_abi || symbols.uses_gnu_abi { ELFOSABI_GNU } else { 0 },
             first_section: first_section as u32,
             stack_index: has_stack.then_some(stack_index as u32),
@@ -430,7 +472,7 @@ impl Layout {
             strtab_off,
             shstrtab_off,
             shdr_off,
-            file_size: shdr_off + SHDR_SIZE * u64::from(shnum),
+            file_size,
         })
     }
 
@@ -453,7 +495,118 @@ impl Layout {
     }
 }
 
-fn check_section(section: SectionId, sec: &SectionData) -> Result<(), Error> {
+/// The checks only an ELF32 object has: the section's header fields fit
+/// 32 bits, and each relocation's addend can be stored in its field
+/// ([`add_addends`]).
+fn check_elf32_section(obj: &Object, section: SectionId, sec: &SectionData) -> Result<(), Error> {
+    let (_, flags, entsize) = header_fields(sec.kind);
+    let narrow = |value: u64| u32::try_from(value).is_ok();
+    if !(narrow(flags) && narrow(entsize) && narrow(sec.align()) && narrow(sec.size())) {
+        return Err(Error::TooLarge(Limit::Elf32Field));
+    }
+    // A compressed section's addends were put into the data before it was
+    // compressed (`compress_section`); a later one is refused when it is
+    // added.
+    let compressed = sec.compressed();
+    each_reloc(obj, sec, |entry| {
+        // `Elf32_Rel` has eight bits for the type.
+        if entry.r_type > 0xff {
+            return Err(Error::TooLarge(Limit::Elf32Field));
+        }
+        if compressed || entry.addend == 0 {
+            return Ok(());
+        }
+        let width = field_width(section, entry)?;
+        let at = entry.offset;
+        if at.checked_add(width).is_none_or(|end| end > sec.size()) {
+            return Err(Error::RelocationOutOfBounds { section, offset: at });
+        }
+        Ok(())
+    })
+}
+
+/// The width of the field of a relocation with a nonzero addend in an
+/// `SHT_REL` object, or why its addend cannot be stored.
+fn field_width(section: SectionId, entry: &RelocEntry) -> Result<u64, Error> {
+    let refuse =
+        Error::AddendNotRepresentable { section, offset: entry.offset, addend: entry.addend };
+    match I386Reloc::from_elf_type(entry.r_type).field_size() {
+        Some(4) if (-(1i64 << 31)..1i64 << 32).contains(&entry.addend) => Ok(4),
+        _ => Err(refuse),
+    }
+}
+
+/// `field := field + addend`, modulo 2^32, little-endian, at `at`.
+fn add_addend(data: &mut [u8], at: usize, addend: i64) {
+    let field: &mut [u8; 4] = (&mut data[at..at + 4]).try_into().expect("a checked 4-byte field");
+    *field = u32::from_le_bytes(*field).wrapping_add(addend as u32).to_le_bytes();
+}
+
+/// Calls `each` for every relocation of a section, in the order they were
+/// added.
+fn each_reloc<E>(
+    obj: &Object,
+    sec: &SectionData,
+    mut each: impl FnMut(&RelocEntry) -> Result<(), E>,
+) -> Result<(), E> {
+    let mut next = sec.reloc_head;
+    for _ in 0..sec.reloc_count {
+        let entry = &obj.relocs[next as usize];
+        each(entry)?;
+        next = entry.next;
+    }
+    Ok(())
+}
+
+/// Adds the addends of a section's relocations into `data`, a copy of its
+/// bytes, for an `SHT_REL` object; whether any was nonzero. The section
+/// passed [`check_elf32_section`] (or [`addends_into`] checks it first).
+pub(crate) fn add_addends(obj: &Object, sec: &SectionData, data: &mut [u8]) -> bool {
+    let mut any = false;
+    let Ok(()) = each_reloc::<Infallible>(obj, sec, |entry| {
+        if entry.addend != 0 {
+            add_addend(data, entry.offset as usize, entry.addend);
+            any = true;
+        }
+        Ok(())
+    });
+    any
+}
+
+/// The bytes of a section of an `SHT_REL` object with its relocations'
+/// addends added in, for `compress_section`; `None` when every addend is
+/// zero (the bytes are the section's own).
+///
+/// # Errors
+/// As the writer's checks of the section ([`check_elf32_section`]).
+pub(crate) fn addends_into(obj: &Object, section: SectionId) -> Result<Option<Vec<u8>>, Error> {
+    let sec = &obj.sections[section.0 as usize];
+    check_elf32_section(obj, section, sec)?;
+    let mut nonzero = false;
+    let Ok(()) = each_reloc::<Infallible>(obj, sec, |entry| {
+        nonzero |= entry.addend != 0;
+        Ok(())
+    });
+    if !nonzero {
+        return Ok(None);
+    }
+    let mut data = sec.data.clone();
+    add_addends(obj, sec, &mut data);
+    Ok(Some(data))
+}
+
+/// Each written symbol's value and size fit an `Elf32_Sym`.
+fn check_elf32_symbols(obj: &Object, symbols: &SymbolPlan) -> Result<(), Error> {
+    let narrow = |value: u64| u32::try_from(value).is_ok();
+    for (symbol, &index) in obj.symbols.iter().zip(&symbols.index) {
+        if index != 0 && !(narrow(symbol.value) && narrow(symbol.size)) {
+            return Err(Error::TooLarge(Limit::Elf32Field));
+        }
+    }
+    Ok(())
+}
+
+fn check_section(section: SectionId, sec: &SectionData, form: Form) -> Result<(), Error> {
     if sec.kind.is_nobits() {
         if !sec.data.is_empty() {
             return Err(Error::DataInNobits { section });
@@ -466,7 +619,7 @@ fn check_section(section: SectionId, sec: &SectionData) -> Result<(), Error> {
     // uncompressed data (WP-061).
     let bound = match sec.kind {
         SectionKind::Elf { sh_flags, .. } if sh_flags & SHF_COMPRESSED != 0 => {
-            crate::compress::uncompressed_size(&sec.data)
+            crate::compress::uncompressed_size(&sec.data, form.elf32)
         }
         _ => sec.size(),
     };
@@ -674,12 +827,61 @@ impl Shdr {
             .u64(self.entsize)
             .done()
     }
+
+    /// The `Elf32_Shdr`; every field was checked to fit (`Layout::new`).
+    fn encode32(self) -> [u8; 40] {
+        Record::new()
+            .u32(self.name)
+            .u32(self.kind)
+            .u32(self.flags as u32)
+            .u32(0) // sh_addr
+            .u32(self.offset as u32)
+            .u32(self.size as u32)
+            .u32(self.link)
+            .u32(self.info)
+            .u32(self.align as u32)
+            .u32(self.entsize as u32)
+            .done()
+    }
+
+    fn put<S: Sink>(self, form: Form, out: &mut S) -> Result<(), S::Error> {
+        if form.elf32 { out.put(&self.encode32()) } else { out.put(&self.encode()) }
+    }
+}
+
+/// The `Elf32_Ehdr` (WP-284).
+fn file_header32(obj: &Object, layout: &Layout) -> [u8; 52] {
+    let escaped = |value: u32, escape: u16| {
+        if value >= SHN_LORESERVE { escape } else { value as u16 }
+    };
+    Record::new()
+        .raw(*b"\x7fELF")
+        .u8(1) // ELFCLASS32
+        .u8(1) // ELFDATA2LSB
+        .u8(1) // EV_CURRENT
+        .u8(layout.os_abi)
+        .raw([0; 8]) // ABI version, padding
+        .u16(1) // ET_REL
+        .u16(EM_386)
+        .u32(1) // EV_CURRENT
+        .u32(0) // e_entry
+        .u32(0) // e_phoff
+        .u32(layout.shdr_off as u32)
+        .u32(obj.flags)
+        .u16(ELF32.ehdr as u16)
+        .u16(0) // e_phentsize
+        .u16(0) // e_phnum
+        .u16(ELF32.shdr as u16)
+        .u16(escaped(layout.shnum, 0))
+        .u16(escaped(layout.shstrtab_index, SHN_XINDEX))
+        .done()
 }
 
 fn file_header(obj: &Object, layout: &Layout) -> [u8; 64] {
-    let machine = match obj.arch {
-        Arch::AArch64 => EM_AARCH64,
-        Arch::X86_64 => EM_X86_64,
+    let machine = match obj.machine {
+        Machine::AArch64 => EM_AARCH64,
+        Machine::X86_64 => EM_X86_64,
+        Machine::I386 => EM_386,
     };
     // ELF gABI "ELF Header": counts and indices that do not fit sixteen
     // bits are stored in section header zero.
@@ -700,16 +902,49 @@ fn file_header(obj: &Object, layout: &Layout) -> [u8; 64] {
         .u64(0) // e_phoff
         .u64(layout.shdr_off)
         .u32(obj.flags)
-        .u16(EHDR_SIZE as u16)
+        .u16(ELF64.ehdr as u16)
         .u16(0) // e_phentsize
         .u16(0) // e_phnum
-        .u16(SHDR_SIZE as u16)
+        .u16(ELF64.shdr as u16)
         .u16(escaped(layout.shnum, 0))
         .u16(escaped(layout.shstrtab_index, SHN_XINDEX))
         .done()
 }
 
-fn symbol_record(layout: &Layout, symbol: &Symbol) -> [u8; 24] {
+/// Writes one symbol in the object's class.
+fn put_symbol<S: Sink>(layout: &Layout, symbol: &Symbol, out: &mut S) -> Result<(), S::Error> {
+    if !layout.form.elf32 {
+        return out.put(&symbol_record(layout, symbol));
+    }
+    let (info, other) = symbol_info(symbol);
+    // `Elf32_Sym`: the value and size come before the other fields;
+    // both were checked to fit (`check_elf32_symbols`).
+    let record: [u8; 16] = Record::new()
+        .u32(symbol.name.0)
+        .u32(symbol.value as u32)
+        .u32(symbol.size as u32)
+        .u8(info)
+        .u8(other)
+        .u16(layout.shndx(symbol.place).0)
+        .done();
+    out.put(&record)
+}
+
+/// Writes one relocation in the object's class: an `Elf64_Rela`, or an
+/// `Elf32_Rel` (`r_info = symbol << 8 | type`, the addend in the section).
+fn put_reloc<S: Sink>(layout: &Layout, entry: &RelocEntry, out: &mut S) -> Result<(), S::Error> {
+    if !layout.form.elf32 {
+        return out.put(&rela_record(layout, entry));
+    }
+    let symbol = layout.symbols.index[entry.symbol as usize];
+    debug_assert!(symbol != 0, "layout: a referenced symbol was omitted");
+    let record: [u8; 8] =
+        Record::new().u32(entry.offset as u32).u32(symbol << 8 | entry.r_type).done();
+    out.put(&record)
+}
+
+/// `st_info` and `st_other`.
+fn symbol_info(symbol: &Symbol) -> (u8, u8) {
     let binding = match symbol.binding {
         Binding::Local => 0,
         Binding::Global => 1,
@@ -729,10 +964,15 @@ fn symbol_record(layout: &Layout, symbol: &Symbol) -> [u8; 24] {
         Visibility::Hidden => 2,
         Visibility::Protected => 3,
     };
+    (binding << 4 | kind, symbol.other | visibility)
+}
+
+fn symbol_record(layout: &Layout, symbol: &Symbol) -> [u8; 24] {
+    let (info, other) = symbol_info(symbol);
     Record::new()
         .u32(symbol.name.0)
-        .u8(binding << 4 | kind)
-        .u8(symbol.other | visibility)
+        .u8(info)
+        .u8(other)
         .u16(layout.shndx(symbol.place).0)
         .u64(symbol.value)
         .u64(symbol.size)
@@ -767,12 +1007,26 @@ fn symbols_in_order<E>(
 }
 
 fn emit<S: Sink>(obj: &Object, layout: &Layout, out: &mut S) -> Result<(), S::Error> {
-    out.put(&file_header(obj, layout))?;
+    if layout.form.elf32 {
+        out.put(&file_header32(obj, layout))?;
+    } else {
+        out.put(&file_header(obj, layout))?;
+    }
 
-    // Section contents.
+    // Section contents; in an `SHT_REL` object, with each relocation's
+    // addend added into its field.
+    let mut patched: Vec<u8> = Vec::new();
     for (sec, &offset) in obj.sections.iter().zip(&layout.sections.offsets) {
         if !sec.data.is_empty() {
             out.pad_to(offset)?;
+            if layout.form.elf32 && sec.reloc_count != 0 && !sec.compressed() {
+                patched.clear();
+                patched.extend_from_slice(&sec.data);
+                if add_addends(obj, sec, &mut patched) {
+                    out.put(&patched)?;
+                    continue;
+                }
+            }
             out.put(&sec.data)?;
         }
     }
@@ -809,12 +1063,12 @@ fn emit<S: Sink>(obj: &Object, layout: &Layout, out: &mut S) -> Result<(), S::Er
             }
             order.sort_by_key(|&index| obj.relocs[index as usize].offset);
             for &index in &order {
-                out.put(&rela_record(layout, &obj.relocs[index as usize]))?;
+                put_reloc(layout, &obj.relocs[index as usize], out)?;
             }
         } else {
             for _ in 0..sec.reloc_count {
                 let entry = &obj.relocs[next as usize];
-                out.put(&rela_record(layout, entry))?;
+                put_reloc(layout, entry, out)?;
                 next = entry.next;
             }
         }
@@ -823,8 +1077,8 @@ fn emit<S: Sink>(obj: &Object, layout: &Layout, out: &mut S) -> Result<(), S::Er
 
     // `.symtab`, `.symtab_shndx`, `.strtab`, `.shstrtab`.
     debug_assert!(out.position() == layout.symtab_off, "layout: relocation sizes");
-    out.put(&[0; 24])?;
-    symbols_in_order(obj, layout, |symbol| out.put(&symbol_record(layout, symbol)))?;
+    out.put(&[0; 24][..layout.form.sym as usize])?;
+    symbols_in_order(obj, layout, |symbol| put_symbol(layout, symbol, out))?;
     if layout.shndx_index.is_some() {
         debug_assert!(out.position() == layout.shndx_off, "layout: symbol table size");
         out.put(&[0; 4])?;
@@ -838,7 +1092,7 @@ fn emit<S: Sink>(obj: &Object, layout: &Layout, out: &mut S) -> Result<(), S::Er
     out.put(&layout.names.head)?;
     for (name, &has_rela) in obj.section_names.iter().zip(&layout.sections.name_has_rela) {
         if has_rela {
-            out.put(RELA_PREFIX)?;
+            out.put(layout.form.prefix)?;
         }
         out.put(name)?;
         out.put(&[0])?;
@@ -867,7 +1121,8 @@ fn emit_section_headers<S: Sink>(
         link: escaped(layout.shstrtab_index),
         ..Shdr::default()
     };
-    out.put(&null.encode())?;
+    let form = layout.form;
+    null.put(form, out)?;
 
     let mut offset = layout.groups_off;
     for (index, group) in obj.groups.iter().enumerate() {
@@ -883,7 +1138,7 @@ fn emit_section_headers<S: Sink>(
             entsize: 4,
             ..Shdr::default()
         };
-        out.put(&header.encode())?;
+        header.put(form, out)?;
         offset += size;
     }
 
@@ -907,7 +1162,7 @@ fn emit_section_headers<S: Sink>(
             entsize,
             ..Shdr::default()
         };
-        out.put(&header.encode())?;
+        header.put(form, out)?;
     }
 
     if layout.stack_index.is_some() {
@@ -920,7 +1175,7 @@ fn emit_section_headers<S: Sink>(
             align: 1,
             ..Shdr::default()
         };
-        out.put(&header.encode())?;
+        header.put(form, out)?;
     }
 
     let mut offset = layout.relas_off;
@@ -928,19 +1183,19 @@ fn emit_section_headers<S: Sink>(
         if sec.reloc_count == 0 {
             continue;
         }
-        let size = RELA_SIZE * u64::from(sec.reloc_count);
+        let size = form.reloc * u64::from(sec.reloc_count);
         let header = Shdr {
-            name: layout.names.offsets[sec.name as usize] - RELA_PREFIX.len() as u32,
-            kind: SHT_RELA,
+            name: layout.names.offsets[sec.name as usize] - form.prefix.len() as u32,
+            kind: if form.elf32 { SHT_REL } else { SHT_RELA },
             flags: SHF_INFO_LINK | group_flag(sec),
             offset,
             size,
             link: layout.symtab_index,
             info: layout.section_index(index as u32),
-            align: 8,
-            entsize: RELA_SIZE,
+            align: form.align,
+            entsize: form.reloc,
         };
-        out.put(&header.encode())?;
+        header.put(form, out)?;
         offset += size;
     }
 
@@ -949,19 +1204,20 @@ fn emit_section_headers<S: Sink>(
 
 /// The headers of `.symtab`, `.symtab_shndx`, `.strtab` and `.shstrtab`.
 fn emit_table_headers<S: Sink>(obj: &Object, layout: &Layout, out: &mut S) -> Result<(), S::Error> {
+    let form = layout.form;
     let symbol_count = u64::from(layout.symbols.count);
     let symtab = Shdr {
         name: NAME_SYMTAB,
         kind: SHT_SYMTAB,
         offset: layout.symtab_off,
-        size: SYM_SIZE * symbol_count,
+        size: form.sym * symbol_count,
         link: layout.strtab_index,
         info: layout.symbols.first_global,
-        align: 8,
-        entsize: SYM_SIZE,
+        align: form.align,
+        entsize: form.sym,
         ..Shdr::default()
     };
-    out.put(&symtab.encode())?;
+    symtab.put(form, out)?;
     if layout.shndx_index.is_some() {
         let shndx = Shdr {
             name: layout.names.shndx,
@@ -973,7 +1229,7 @@ fn emit_table_headers<S: Sink>(obj: &Object, layout: &Layout, out: &mut S) -> Re
             entsize: 4,
             ..Shdr::default()
         };
-        out.put(&shndx.encode())?;
+        shndx.put(form, out)?;
     }
     let strtab = Shdr {
         name: NAME_STRTAB,
@@ -983,7 +1239,7 @@ fn emit_table_headers<S: Sink>(obj: &Object, layout: &Layout, out: &mut S) -> Re
         align: 1,
         ..Shdr::default()
     };
-    out.put(&strtab.encode())?;
+    strtab.put(form, out)?;
     let shstrtab = Shdr {
         name: NAME_SHSTRTAB,
         kind: SHT_STRTAB,
@@ -992,7 +1248,7 @@ fn emit_table_headers<S: Sink>(obj: &Object, layout: &Layout, out: &mut S) -> Re
         align: 1,
         ..Shdr::default()
     };
-    out.put(&shstrtab.encode())
+    shstrtab.put(form, out)
 }
 
 /// The size in bytes of the file [`write`] and [`to_vec`] produce.

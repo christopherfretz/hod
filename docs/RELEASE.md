@@ -205,13 +205,28 @@ the set, so:
    and from `scripts/oss/provenance-<target>.tsv`).
 2. A row measured at an earlier hod than the candidate says so (the page
    is generated with `--candidate C`: its `at the candidate` cell is
-   `no: measured before the candidate`); it is never presented as
-   measured at the candidate.
+   `no: measured before the candidate`, or the carried-over text of
+   rule 5); it is never presented as measured at the candidate.
 3. The candidate re-runs the strict build and tests (`--modes strict
    --strict`) of as many rows as fit, in this order: LLVM and Clang,
    DuckDB, gRPC, Boost, abseil, then the rest.
 4. A control (kiln + `llc`) is reused when kiln's pin and the project's
    revision are unchanged: it does not depend on hod.
+5. A row measured at the previous candidate stands for the candidate
+   (it is carried over) when all of these hold: the owner agreed to it
+   for that move of the candidate; the row's result had no refusal, no
+   decline, no link failure and no test difference against its control;
+   the frozen hod binaries of the two candidates emit byte-identical
+   objects over the whole corpus on both targets, plain and PIC (and,
+   where a project's modules or objects of both builds exist, over
+   those too); everything the change between the two commits touches is
+   measured again at the candidate; and the row names the commit it was
+   measured at and says that it is carried over (the page is generated
+   with `--carried-from <previous candidate>`: its `at the candidate`
+   cell is `carried over from <commit> (see release.md)`). This was used
+   once, for the move from `e98267c0` to `cd6ef6bc` (the owner's
+   decision of 2026-11-15); `docs/status/release.md` lists the rows and
+   the evidence.
 
 ## 6. Random programs (L10)
 
@@ -250,7 +265,8 @@ does not depend on them) and its numbers are of runs at `C`.
 
 ## 8. The version (only on the owner's word)
 
-When `docs/status/release.md` has every row `met at C` and the owner has
+When `docs/status/release.md` has every row met at C, by a marked
+carried-over row (section 5), or in the tagged commit, and the owner has
 said, in so many words, to cut 1.0:
 
 1. `Cargo.toml` (workspace root), `[workspace.package]`:

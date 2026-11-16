@@ -299,7 +299,9 @@ Results: `docs/status/oss.md` and, for x86-64, `docs/status/oss-x64.md`
 (generated; `status --root` reads several lanes' roots, `--provenance
 scripts/oss/provenance-<target>.tsv` adds the hod and kiln commits a
 report does not carry and the lanes' notes, `--candidate` marks the rows
-measured before the candidate: `docs/RELEASE.md` section 7 has each
+measured before the candidate and `--carried-from` the rows carried
+over from the previous candidate under `docs/RELEASE.md` section 5's
+rule 5: `docs/RELEASE.md` section 7 has each
 page's one command); LLVM and Clang, built by their
 own scripts (`scripts/oss/llvm/`), are in `docs/status/oss-llvm.md`. The
 refused modules are kept

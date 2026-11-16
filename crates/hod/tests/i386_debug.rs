@@ -12,9 +12,11 @@
 //! `ranges`), under `spec/dwarf.md`'s rules only: a `DW_OP_fbreg` is
 //! compared by its operation (§6.4), and a `byval` argument is described
 //! through the pointer hod saved (`DW_OP_fbreg o, DW_OP_deref`, §6.17).
-//! The line rows: the `is_stmt` and `prologue_end` rows (line, column)
-//! equal `llc`'s, or differ exactly as the same source's x86-64 rows of
-//! hod and `llc` differ (a 64-bit rule, not an i386 one); every (line,
+//! The line rows: hod's `epilogue_begin` rows follow the epilogue rule
+//! (`spec/codegen.md` §4, `spec/dwarf.md` §5.4 and §5.2: one per
+//! function, at its `ret`'s location, after the last block, `is_stmt` when
+//! that block ends on another line, as after a landing pad); the other
+//! `is_stmt` and `prologue_end` rows (line, column) equal `llc`'s; every (line,
 //! column) of `llc`'s but line 0 is one of hod's (§5.7: hod has more
 //! columns where `llc`'s selection folds instructions; §5.7 P2: `llc`'s
 //! line-0 rows of the blocks it makes). The two refusals that remain
@@ -134,27 +136,65 @@ fn stmts(rows: &[(String, String, String)]) -> [Vec<(String, String)>; 2] {
     [flagged(rows, "is_stmt"), flagged(rows, "prologue_end")]
 }
 
-/// The x86-64 objects of `source` by clang, `llc` and hod: their
-/// statement rows, hod's and `llc`'s.
-fn x86_64_stmts(
-    scratch: &Scratch,
-    tools: [&Path; 3],
-    source: &Path,
-    label: &str,
-) -> [[Vec<(String, String)>; 2]; 2] {
-    let [clang, llc, dwarfdump] = tools;
-    let ll = scratch.join(format!("{label}-x64.ll"));
-    let mut front = Command::new(clang);
-    front.args(["--target=x86_64-linux-gnu", "-O0", "-g", "-S", "-emit-llvm", "-o"]);
-    checked(&format!("clang {label} x86-64"), front.arg(&ll).arg(source));
-    let llc_o = scratch.join(format!("{label}-x64-llc.o"));
-    let mut back = Command::new(llc);
-    back.args(["-O0", "-global-isel=0", "-fast-isel=0", "-filetype=obj", "-o"]);
-    checked(&format!("llc {label} x86-64"), back.arg(&llc_o).arg(&ll));
-    let text = std::fs::read(&ll).unwrap();
-    let hod = hod_object(&text, "x86_64-unknown-linux-gnu", false).unwrap();
-    let hod_o = scratch.write(&format!("{label}-x64-hod.o"), &hod);
-    [&hod_o, &llc_o].map(|o| stmts(&rows(&dump(dwarfdump, &["--debug-line"], o))))
+/// The (line, column) of each defined function's one `ret`, in the order
+/// of the module (the order hod places them): the `DILocation` the `ret`
+/// carries. clang at `-O0` writes one `ret` per function.
+fn ret_locations(ll: &str) -> Vec<(String, String)> {
+    let field = |text: &str, key: &str| {
+        text.split(key).nth(1).map_or("0".to_owned(), |rest| {
+            rest.chars().take_while(char::is_ascii_digit).collect::<String>()
+        })
+    };
+    let location = |id: &str| {
+        let head = format!("{id} = !DILocation(");
+        let text = ll.lines().find(|l| l.starts_with(&head)).expect("the ret's DILocation");
+        (field(text, "line: "), field(text, "column: "))
+    };
+    let mut out = Vec::new();
+    let mut rets: Option<Vec<String>> = None;
+    for line in ll.lines() {
+        if line.starts_with("define ") && line.contains("!dbg !") {
+            rets = Some(Vec::new());
+        } else if line == "}" {
+            if let Some(rets) = rets.take() {
+                assert_eq!(rets.len(), 1, "one `ret` per function: {rets:?}");
+                out.push(location(&rets[0]));
+            }
+        } else if let Some(rets) = rets.as_mut()
+            && line.trim_start().starts_with("ret ")
+        {
+            let id = line.rsplit("!dbg ").next().expect("a located `ret`").trim();
+            rets.push(id.to_owned());
+        }
+    }
+    out
+}
+
+/// The epilogue rule (`spec/codegen.md` §4: the one epilogue is emitted
+/// at the function's end and every `ret` but the last block's branches to
+/// it; `spec/dwarf.md` §5.4: with one `ret`, the epilogue row has its
+/// location; §5.2: `epilogue_begin` on it, `is_stmt` when its line differs
+/// from the last non-zero line written). hod's `epilogue_begin` rows, in
+/// order, are at `rets` and each is `is_stmt` exactly by §5.2.
+fn epilogue_rule(label: &str, rows: &[(String, String, String)], rets: &[(String, String)]) {
+    let has = |flags: &str, flag: &str| flags.split(' ').any(|f| f == flag);
+    let epilogues: Vec<usize> =
+        (0..rows.len()).filter(|&i| has(&rows[i].2, "epilogue_begin")).collect();
+    let at: Vec<(String, String)> =
+        epilogues.iter().map(|&i| (rows[i].0.clone(), rows[i].1.clone())).collect();
+    assert_eq!(at, rets, "{label}: hod's epilogue rows are not at the `ret`s' locations");
+    for &i in &epilogues {
+        let last = rows[..i].iter().rev().map(|r| &r.0).find(|l| *l != "0");
+        let stmt = last != Some(&rows[i].0);
+        assert_eq!(has(&rows[i].2, "is_stmt"), stmt, "{label}: epilogue row {:?}", rows[i]);
+    }
+}
+
+/// The statement rows but those of an epilogue (whose rows follow the
+/// epilogue rule in hod's and each `llc` target's own way).
+fn stmts_but_epilogue(rows: &[(String, String, String)]) -> [Vec<(String, String)>; 2] {
+    let kept: Vec<_> = rows.iter().filter(|r| !r.2.contains("epilogue_begin")).cloned().collect();
+    stmts(&kept)
 }
 
 /// Every program, both majors, static and PIC: verified, the DIE trees
@@ -162,7 +202,7 @@ fn x86_64_stmts(
 #[test]
 fn trees_and_rows_equal_llc() {
     let mut objects = 0;
-    let mut inherited = Vec::new();
+    let mut epilogue_stmts = Vec::new();
     for major in LLVM_MAJORS {
         let (Some(clang), Some(llc), Some(dwarfdump)) = (
             llvm_tool(major, "clang"),
@@ -207,23 +247,20 @@ fn trees_and_rows_equal_llc() {
                 for pair in pairs(&l).into_iter().filter(|p| p.0 != "0") {
                     assert!(hod_pairs.contains(&pair), "{label}: llc's row {pair:?} not in hod's");
                 }
-                let (h, l) = (stmts(&h), stmts(&l));
-                if h != l {
-                    let tools = [clang.as_path(), llc.as_path(), dwarfdump.as_path()];
-                    let [h64, l64] = x86_64_stmts(&scratch, tools, &data(source), &label);
-                    assert!(
-                        h == h64 && l == l64,
-                        "{label}: statement rows differ, not as on x86-64:\nhod {h:?}\nllc {l:?}"
-                    );
-                    inherited.push(label);
+                let rets = ret_locations(&String::from_utf8_lossy(&text));
+                epilogue_rule(&label, &h, &rets);
+                let (hs, ls) = (stmts_but_epilogue(&h), stmts_but_epilogue(&l));
+                assert_eq!(hs, ls, "{label}: statement rows differ");
+                if stmts(&h) != stmts(&l) {
+                    epilogue_stmts.push(label);
                 }
                 objects += 1;
             }
         }
     }
     eprintln!(
-        "i386 debug: {objects} objects verified, trees and rows equal llc's; rows as on \
-         x86-64: {inherited:?}"
+        "i386 debug: {objects} objects verified, trees and rows equal llc's; an epilogue \
+         row of hod's is a statement where llc's is not (§5.2/§5.4 rule): {epilogue_stmts:?}"
     );
 }
 

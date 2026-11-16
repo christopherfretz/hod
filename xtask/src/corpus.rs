@@ -63,6 +63,7 @@ through irdiff in hybrid mode, with each LLVM the corpus was captured for.
   -j <N>, --jobs <N>   tests run at once (default 3, at most 16)
   --hod <binary>       the hod to test (default: build this workspace's)
   --strict             run irdiff in strict mode instead
+  --linker <name>      bfd, lld, mold, wild or mortar; repeatable (default: every one found)
   --expected <file>    the list of expected refusals and undefined entries
                        (default: docs/status/corpus-expected.tsv of this
                        workspace); its rows of the corpus's target apply
@@ -263,6 +264,17 @@ pub fn parse_verify(args: &[String], options: &mut verify::Options) -> Result<()
             "-j" | "--jobs" => options.config.jobs = jobs(value(args, &mut index, arg)?)?,
             "--hod" => options.config.hod = Some(PathBuf::from(value(args, &mut index, arg)?)),
             "--strict" => options.config.mode = Mode::Strict,
+            "--linker" => {
+                let text = value(args, &mut index, arg)?;
+                if !irdiff::directives::LINKER_NAMES.contains(&text) {
+                    return Err(format!(
+                        "unknown linker '{text}': expected bfd, lld, mold, wild or mortar"
+                    ));
+                }
+                if !options.config.linkers.iter().any(|name| name == text) {
+                    options.config.linkers.push(text.to_owned());
+                }
+            }
             "--expected" => {
                 options.expected = Some(absolute(Path::new(value(args, &mut index, arg)?)));
             }
@@ -656,6 +668,11 @@ mod tests {
         assert_eq!((options.config.mode, options.config.jobs), (Mode::Strict, 5));
         assert_eq!(options.config.hod.as_deref(), Some(Path::new("/h")));
         assert!(options.manifest_only && options.config.keep && options.config.verbose);
+        assert!(options.config.linkers.is_empty());
+        // WP-310: the linkers of the runs, as irdiff's `--linker`.
+        let linkers = parse(&["--linker", "mortar", "--linker", "bfd", "--linker", "mortar"]);
+        assert_eq!(linkers.unwrap().config.linkers, ["mortar", "bfd"]);
+        assert!(parse(&["--linker", "gold"]).unwrap_err().contains("unknown linker 'gold'"));
         assert!(parse(&["/a", "/b"]).unwrap_err().contains("more than one"));
         assert!(parse(&["--nope"]).unwrap_err().contains("unknown option"));
     }

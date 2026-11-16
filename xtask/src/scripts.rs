@@ -152,5 +152,29 @@ mod tests {
         assert_eq!(named("scripts/libcxx-hod-kiln.sh"), Some("sh"));
         assert_eq!(named("scripts/oss/llvm/build.sh"), Some("bash"));
         assert_eq!(named("scripts/oss/kiln-cc"), None);
+        assert_eq!(named("scripts/mortar-commit.sh"), Some("bash"));
+    }
+
+    // WP-310: the hosted lanes' mortar action builds the commit this
+    // script prints, which must be `MORTAR_COMMIT` (the one place it is
+    // written); a checkout without the constant is an error, not a guess.
+    #[cfg(unix)]
+    #[test]
+    fn the_mortar_commit_script_prints_the_pin() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let script = root.join("scripts/mortar-commit.sh");
+        let run = |arg: &Path| {
+            let mut command = Command::new("bash");
+            command.arg(&script).arg(arg);
+            hod_testutil::run_with(&mut command, b"", hod_testutil::DEFAULT_TIMEOUT)
+        };
+        let outcome = run(&root);
+        assert!(outcome.success(), "{}", String::from_utf8_lossy(&outcome.stderr));
+        let printed = String::from_utf8(outcome.stdout).unwrap();
+        assert_eq!(printed, format!("{}\n", hod_testutil::linkers::MORTAR_COMMIT));
+        let empty = root.join("xtask/src");
+        let outcome = run(&empty);
+        assert!(!outcome.success() && outcome.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&outcome.stderr).contains("no MORTAR_COMMIT"));
     }
 }

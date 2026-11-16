@@ -313,6 +313,12 @@ fn barrier(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
             }
             _ => false,
         },
+        // `fptoui` to `i64` chooses its subtrahend with a branch.
+        InstKind::Cast { .. } if inst.opcode() == Opcode::FPToUI => {
+            cx.types().int_bits(inst.ty()) == Some(64)
+                && !features(cx).has(X86Features::CMOV)
+                && !folded(cx, inst, FOLD_DEPTH)
+        }
         InstKind::Select { cond, if_true, if_false } => {
             let bits = cx.types().int_bits(inst.ty());
             let constants = bits.is_some()
@@ -1177,15 +1183,37 @@ fn from_i64<'a>(
 }
 
 /// `fptosi` to an `i64`: as [`to_int`], `fistp qword` into the result's
-/// slot. `fptoui` to an `i64` stays [`I64_CAST`].
+/// slot. `fptoui` to an `i64` as `llc` (measured, 19 and 22, `-O0`):
+/// `x` compared with `2^63` (`fucomip`, or `fucomp`, `fnstsw`, `sahf`);
+/// the flag `2^63 <= x` or unordered (`setbe`, in `edx`); `x - 2^63`
+/// for the flag, else `x - 0`, truncated by `fistp qword`; the flag
+/// `xor`ed into bit 31 of the high word. `llc` chooses the subtrahend
+/// with a branch without `cmov` ([`barrier`]), here a mask in `ecx`.
 fn to_i64<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, arg: Value, fp: Fp) -> CgResult<()> {
-    if inst.opcode() == Opcode::FPToUI {
-        return unsupported(I64_CAST);
-    }
+    let unsigned = inst.opcode() == Opcode::FPToUI;
     push(cx, arg, fp, inst)?;
     let inst = cx.body.inst(inst.id());
     let r = cx.def_mem(inst)?;
     below(cx, 16);
+    if unsigned {
+        put(cx, mc::mov_mi(Size::D, sp(12), TWO_63));
+        put(cx, mc::fld_m(X87Size::S, sp(12)));
+        if features(cx).has(X86Features::CMOV) {
+            put(cx, mc::fucomip(St::St1));
+        } else {
+            put(cx, mc::fucomp(St::St1));
+            put(cx, mc::fnstsw_ax());
+            put(cx, mc::sahf());
+        }
+        put(cx, mc::setcc_r(Cond::Be, EDX));
+        put(cx, mc::movzx_rr(Size::D, EDX, Size::B, EDX));
+        put(cx, mc::mov_rr(Size::D, ECX, EDX));
+        put(cx, mc::neg_r(Size::D, ECX));
+        put(cx, mc::and_ri(Size::D, ECX, TWO_63));
+        put(cx, mc::mov_mr(Size::D, sp(12), ECX));
+        put(cx, mc::fsub_m(mc::FpSize::S, sp(12)));
+        put(cx, mc::shl_ri(Size::D, EDX, 31));
+    }
     put(cx, mc::fnstcw_m(sp(0)));
     put(cx, mc::movzx_rm(Size::D, ECX, Size::W, sp(0)));
     put(cx, mc::or_ri(Size::D, ECX, 0xc00));
@@ -1196,11 +1224,17 @@ fn to_i64<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, arg: Value, fp: Fp) -> CgR
     // The result's slot is addressed from `ebp`.
     for at in [0, 4] {
         put(cx, mc::mov_rm(Size::D, ECX, sp(4 + at)));
+        if unsigned && at == 4 {
+            put(cx, mc::xor_rr(Size::D, ECX, EDX));
+        }
         frame_inst(cx, r.offset_by(at as u32), |m| mc::mov_mr(Size::D, m, ECX));
     }
     above(cx, 16);
     Ok(())
 }
+
+/// `2^63` as a `float` (`0x5F000000`), `llc`'s bound of `fptoui` to `i64`.
+const TWO_63: i64 = 0x5F00_0000;
 
 /// `fptosi`/`fptoui`: rounding toward zero around `fistp` (`fnstcw`,
 /// `or 0xC00`, `fldcw`, `fistp`, `fldcw` of the saved word), of 64 bits

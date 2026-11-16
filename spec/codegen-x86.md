@@ -171,7 +171,7 @@ their values).
 | `x86:float` | a floating-point value in a register where §11 takes none (arguments and results are I6's since the join) | — |
 | `x86:float:half`, `x86:float:bfloat`, `x86:float:fp128` | a value of those types | — |
 | `x86:float:sse` | a `float` operation with SSE, a `double` one with SSE2 (`llc` uses `xmm`) | I12 |
-| `x86:float:i64-cast` | `fptoui` to `i64`; a conversion between a floating type and an integer wider than 64 bits (§11) | — |
+| `x86:float:i64-cast` | a conversion between a floating type and an integer of 33 to 63 or more than 64 bits (§11; `fptoui` to `i64` is lowered since the i386 join C) | — |
 | `x86:float:intrinsic` | a floating-point intrinsic §11 does not lower | — |
 | `x86:float:cast` | a `bitcast` of a floating value, another cast not in §11 | — |
 | `x86:vector` | a vector value, a vector `ptradd`, the element operations | I12 |
@@ -508,8 +508,8 @@ and an `llvm.memset` of more than 64 (shorter ones are written inline);
 `frem` and the libm intrinsics (calls); an integer division wider than
 32 bits (`__divdi3` and kin); without `cmov`, a `select` on a variable
 condition unless its type is `i1` or it chooses between two integer
-constants (`llc` branches: the block splits); and, without `cmov`, the
-integer intrinsics below. *Integer intrinsics* (measured with `llc` 19
+constants (`llc` branches: the block splits); without `cmov`, an
+`fptoui` to `i64` (see "Conversions") and the integer intrinsics below. *Integer intrinsics* (measured with `llc` 19
 and 22 at widths 1 to 64, CPU `generic`; with `cmov`, `i686`,
 `pentiumpro`, `pentium4`, none branches), at a result of `N` bits:
 `ctlz` with zero defined at `N` >= 2 and with zero poison at `N` > 32;
@@ -587,7 +587,10 @@ path: `llc` folds an invalid operation to `+qNaN` (`0x7FF8000000000000`,
 NaN operand's payload, where the x87 gives `-qNaN` (`0xFFF8...`) for an
 invalid operation: no shape compares a NaN. `frem`, the intrinsics and
 the other folded operations are computed at run time (equal for
-`float`; not measured apart for `double`).
+`float`; for `double` measured in the i386 join C: `frem`, `fma`,
+`minnum`, `maxnum`, `sqrt` and the libm routines over signed zeros,
+infinities, NaNs, subnormals and halfway cases run as `llc`'s,
+`crates/hod/tests/data/i386/join_c/libm.c`).
 
 **Compares.** `fcmp` puts the operands as the predicate needs (`olt`,
 `ole`, `ugt`, `uge` swapped) and compares `st0` with `st1`: with `cmov`
@@ -611,8 +614,18 @@ bits (64 for an unsigned `i32`), `fldcw` of the saved word. With §8's
 `uitofp` adds `2^64` as a `float` (`0x5F800000`, chosen by the sign of
 the high word: `sar 31`, `and`) with `faddp` (`llc`'s sequence);
 `fptosi` to `i64` is `fistp qword` under the truncating control word.
-`fptoui` to `i64` and an integer wider than 64 bits are
-`x86:float:i64-cast`.
+`fptoui` to `i64` (i386 join C) is `llc`'s sequence (measured, 19 and
+22 alike): `x` compared with `2^63` (a `float` `0x5F000000`; `fucomip`
+with `cmov`, else `fucomp`, `fnstsw ax`, `sahf`), the flag "`2^63 <=
+x` or unordered" (`setbe`), `x - 2^63` under the flag and `x - 0`
+otherwise (`llc` chooses with `fcmov`, or without `cmov` with a branch,
+so it is a barrier there: its operand is read rounded; hod chooses with
+a mask), `fistp qword` under the truncating control word, the flag
+`xor`ed into bit 31 of the high word. So `2^63` and above convert
+exactly below `2^64`; a NaN, `+inf`, values from `2^64` give 0; negative
+values below -1 give what `fistp` gives (`0x8000000000000000` when out
+of range). A conversion between a floating type and an integer of 33 to
+63 or more than 64 bits is `x86:float:i64-cast`.
 
 **libm.** `frem` is `fmodf`/`fmod`/`fmodl`; `sin`, `cos`, `tan`, `asin`,
 `acos`, `atan`, `atan2`, `sinh`, `cosh`, `tanh`, `exp`, `exp2`, `exp10`,

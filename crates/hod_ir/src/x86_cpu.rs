@@ -212,7 +212,7 @@ impl fmt::Display for UnknownCpu {
     }
 }
 
-/// `i386`, `i486`, `c3`, the WinChips: the x87 unit only.
+/// `i386`, `i486`, `c3`, the `winchip` CPUs: the x87 unit only.
 const I386: X86Features = X86Features::X87;
 /// `generic`, `i586`, `pentium`, the K6s, `geode`: and `cmpxchg8b`.
 const PENTIUM: X86Features = I386.union(X86Features::CX8);

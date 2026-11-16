@@ -481,6 +481,23 @@ fn reasons_reach_the_log() {
             "text",
             "x86_64-unknown-linux-gnu",
         ),
+        // WP-286: 32-bit x86 is read and classified, and the back half
+        // declines it by one name; x32 stays another target.
+        (
+            &["-filetype=obj"],
+            b"target triple = \"i686-unknown-linux-gnu\"\n\
+              define i64 @f(i64 %a) \"target-cpu\"=\"i686\" {\n  ret i64 %a\n}\n",
+            "x86:not-implemented",
+            "text",
+            "i686-unknown-linux-gnu",
+        ),
+        (
+            &["-filetype=obj", "-mtriple=x86_64-unknown-linux-gnux32"],
+            b"target triple = \"x86_64-unknown-linux-gnux32\"\n",
+            "unsupported-target",
+            "text",
+            "x86_64-unknown-linux-gnux32",
+        ),
         // Read natively: a bitcode header and nothing else.
         (&["-filetype=obj"], bitcode, "malformed-input", "bitcode", "-"),
         (&["-filetype=obj"], wrapped, "malformed-input", "bitcode", "-"),

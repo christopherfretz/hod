@@ -443,6 +443,12 @@ is produced, partial or otherwise:
    writes an ordinary object and an empty `.dwo`). A relocation model left unset is
    `static`, `llc`'s default for these targets. The optimization level is
    accepted and ignored: hod generates the same code at every `-O`.
+2a. A 32-bit x86 module (`Arch::I386`, WP-286) is declined as a whole as
+   `x86:not-implemented` (`hod::X86_NOT_IMPLEMENTED`), of the module, with
+   or without bodies, whatever `-mcpu` and `-mattr` say. Every refusal
+   of the front half comes first, by its own name; 32-bit x86 is
+   classified with x86-64's column of the matrix until it has its own
+   (so `inreg`, as `regparm` and `fastcall` give, is `attr:inreg`).
 3. Each `-mattr` item, then each function's `target-features` attribute,
    is judged by `hod_a64::features::check` (`spec/codegen.md` §5.5.2)
    or, on x86-64, `hod_x64::features::check` for `-mattr` and
@@ -611,7 +617,10 @@ script that looks for an LLVM version in `llc --version` finds it. (kiln's
 driver never runs `llc --version`; it reads the LLVM major from the
 installation directory, see `spec/harness.md` "shim".)
 
-**`--help`** prints the options and exits 0. Neither `--version` nor
+**`--help`** prints the options and exits 0. Its `TARGETS` paragraph
+names the targets: `aarch64-*-linux-gnu` and `x86_64-*-linux-gnu`, and
+`i386`-, `i486`-, `i586`-, `i686-*-linux-gnu`, which are read and
+classified and declined by code generation (`x86:not-implemented`). Neither `--version` nor
 `--help` reads the input, runs the fallback or writes a coverage line.
 
 ## hod's own options
@@ -1163,12 +1172,14 @@ that applies is the reason:
 | `attr:presplitcoroutine`, `coro:target` | the module has a `presplitcoroutine` attribute set and the matrix does not accept it, or the target's code generator compiles no coroutine body (no shipped target today: the backstop for a new one); "Pre-opt modules"; decided before any body is read |
 | a body's reason | for each body in the module's order: the reader's error (the table below), the body reader's own refusal (`call:forwarded-varargs`, ...), `classify`'s body pass, `Body::verify` (`malformed-input`), then, in a module with coroutines, the coroutine refusals ("Pre-opt modules") |
 | `option:relocation-model`, `option:split-dwarf-output` | an option code generation cannot honour ("The back half") |
+| `x86:not-implemented` | the module is 32-bit x86 (`i386`/`i486`/`i586`/`i686-*-linux-gnu`): it was read, verified and classified, and hod has no 32-bit code generator yet ("The back half", step 2a) |
 | `attr:target-feature-<class>` | an `-mattr` item or a function's `target-features` item hod's code is not correct under (`spec/codegen.md` §5.5.2); the item is the detail |
 | a code generator's name | `hod_cg`/`hod_a64` refused a function (`a64:`, `abi:`, `limit:`, `call:`, ...), in the function; or `emit_module` refused the module |
 | `object:nul-in-name`, `limit:object` | the object cannot be written: a symbol or section name with a NUL, or more than ELF can hold |
 
 A supported target (`target_supported`) is a triple whose first component
-is `aarch64` or `x86_64`, with a later component `linux`, followed by
+is `aarch64`, `x86_64`, `i386`, `i486`, `i586` or `i686`, with a later
+component `linux`, followed by
 nothing or by exactly one environment component that starts with `gnu` or
 `musl`. With no stated target the check is skipped and the reader decides:
 a module with neither a triple nor `-mtriple` is `unsupported-target`, and

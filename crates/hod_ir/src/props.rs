@@ -274,6 +274,10 @@ const KNOWN: [Known; 16] = [
 pub const IGNORABLE_MODULE_FLAGS: [&str; 4] =
     ["wchar_size", "min_enum_size", "probe-stack", "stack-probe-size"];
 
+/// The 32-bit x86 flag clang writes for `-mregparm=N` (0 by default):
+/// ignorable with the value 0 only (§2.1, WP-286).
+pub const NUM_REGISTER_PARAMETERS: &str = "NumRegisterParameters";
+
 fn known(name: &[u8]) -> Option<Known> {
     KNOWN_MODULE_FLAGS.iter().position(|known| known.as_bytes() == name).map(|at| KNOWN[at])
 }
@@ -382,7 +386,12 @@ impl FlagTable {
             return bad(name, "set twice");
         }
         let Some(flag) = known else {
-            let ignorable = module_flag_class(name) == FlagClass::Ignorable;
+            // clang writes `NumRegisterParameters` in every 32-bit x86
+            // module: `-mregparm=N`, 0 without it (WP-286). Zero changes
+            // nothing; another count passes arguments in registers.
+            let ignorable = module_flag_class(name) == FlagClass::Ignorable
+                || (name == NUM_REGISTER_PARAMETERS.as_bytes()
+                    && matches!(value, FlagValue::Int(0)));
             return self.keep(behavior, name, value, ignorable);
         };
         let FlagValue::Int(int) = value else {
@@ -675,6 +684,21 @@ mod tests {
         }
         for name in IGNORABLE_MODULE_FLAGS {
             assert_eq!(module_flag_class(name.as_bytes()), FlagClass::Ignorable);
+        }
+    }
+
+    /// §2.1, WP-286: clang's 32-bit x86 `NumRegisterParameters` is
+    /// ignorable when it is 0 (no `-mregparm`) and only then.
+    #[test]
+    fn num_register_parameters_is_ignorable_at_zero() {
+        for (value, ignorable) in [(0, true), (3, false)] {
+            let mut table = FlagTable::default();
+            let mut props = ModuleProps::default();
+            set(&mut table, &mut props, 1, NUM_REGISTER_PARAMETERS, value).unwrap();
+            let flags: Vec<ModuleFlag<'_>> = table.others().collect();
+            assert_eq!(flags.len(), 1);
+            assert_eq!(flags[0].ignorable, ignorable, "{value}");
+            assert_eq!(props, ModuleProps::default());
         }
     }
 

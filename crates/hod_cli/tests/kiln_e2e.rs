@@ -715,6 +715,7 @@ impl Shimmed {
         let machine = match target {
             Target::Aarch64 => "AArch64",
             Target::X86_64 => "X86-64",
+            Target::I686 => "Intel 80386",
         };
         for (tool, args, expect) in [
             ("llvm-readelf", &["-h", "-S", "-r", "-s"][..], machine),
@@ -894,7 +895,7 @@ fn through_the_shim(kiln: &Path, llvm: &Path) {
     }
 
     // Code hod generates: strict mode succeeds.
-    for target in Target::ALL {
+    for target in Target::COMPILED_BY_HOD {
         shimmed.hod_builds_integers(target);
     }
 

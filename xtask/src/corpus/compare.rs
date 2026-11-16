@@ -354,6 +354,7 @@ pub fn default_differences(target: Option<Arch>) -> PathBuf {
     let name = match super::other_target(target) {
         Some(Arch::X86_64) => "corpus-x64-differences.tsv",
         Some(Arch::Aarch64) => "corpus-a64-differences.tsv",
+        Some(Arch::I686) => unreachable!("{}", super::NO_I686_CORPUS),
         None => "corpus-differences.tsv",
     };
     crate::irdiff::workspace_root().join("docs").join("status").join(name)

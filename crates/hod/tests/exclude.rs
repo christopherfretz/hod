@@ -41,6 +41,7 @@ fn triple(target: Target) -> &'static str {
     match target {
         Target::Aarch64 => "aarch64-unknown-linux-gnu",
         Target::X86_64 => "x86_64-unknown-linux-gnu",
+        Target::I686 => "i686-unknown-linux-gnu",
     }
 }
 
@@ -141,7 +142,7 @@ fn inputs() -> Vec<(String, Vec<u8>)> {
 
 #[test]
 fn excluded_section_has_llcs_header_and_the_constants_bytes() {
-    for target in Target::ALL {
+    for target in Target::COMPILED_BY_HOD {
         for (input, bytes) in inputs() {
             let who = format!("{} {input}", target.name());
             check_object(&hod_object(&bytes, target), &who);
@@ -167,7 +168,7 @@ fn exclude_of_a_node_that_is_not_a_tuple_is_refused_by_name() {
 
 #[test]
 fn linkers_drop_the_excluded_section() {
-    for target in Target::ALL {
+    for target in Target::COMPILED_BY_HOD {
         let dir = Scratch::new(&format!("hod-exclude-{}", target.name()));
         let Some(toolchain) = Toolchain::for_target(&dir, target) else {
             assert!(!tools_required(), "no {} toolchain (HOD_REQUIRE_TOOLS=1)", target.name());

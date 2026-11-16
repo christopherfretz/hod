@@ -195,7 +195,7 @@ pub fn parse_args(args: &[String], options: &mut Options) -> Result<bool, String
             "--target" => {
                 let text = value()?;
                 options.target = Some(Arch::from_name(&text).ok_or_else(|| {
-                    format!("unknown target '{text}': expected aarch64 or x86_64")
+                    format!("unknown target '{text}': expected aarch64, x86_64 or i686")
                 })?);
             }
             "--llvm" => {
@@ -269,7 +269,7 @@ pub fn parse_args(args: &[String], options: &mut Options) -> Result<bool, String
 /// `cargo xtask fuzz --budget`: every slice of the budget not run yet,
 /// then the table (`budget`).
 fn budget_command(options: &Options) -> u8 {
-    let targets: Vec<Arch> = options.target.map_or_else(|| Arch::ALL.to_vec(), |arch| vec![arch]);
+    let targets: Vec<Arch> = options.target.map_or_else(Arch::compiled, |arch| vec![arch]);
     let slices = budget::plan(options.seed, &targets);
     if options.budget == Some(budget::Action::Plan) {
         print!("{}", budget::plan_text(&slices));

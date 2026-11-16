@@ -777,6 +777,28 @@ impl Bench {
         args
     }
 
+    /// The verdict of a seed hod refused with `reason`. For a target hod
+    /// does not compile for yet (design 0008's i686) the reference's
+    /// object (`oracle.o`) is still linked (`oracle`) and run, so a broken
+    /// cross toolchain or runner is an error, not a refusal.
+    fn refused(&self, log: &mut Vec<String>, files: &Files, reason: String) -> Verdict {
+        if self.arch.compiled_by_hod() {
+            return Verdict::Refused(reason);
+        }
+        let program = files.at("oracle");
+        if let Err(e) = self.link(log, &files.at("oracle.o"), &program) {
+            return Verdict::Error(format!("the oracle's link: {e}"));
+        }
+        match self.execute(log, &program, self.run_limits) {
+            Err(e) => Verdict::Error(format!("harness: {e}")),
+            Ok((oracle, _)) if !matches!(oracle.end, End::Exit(0) | End::TimedOut) => {
+                let (end, line) = (ended(oracle.end), oracle.first_error_line());
+                Verdict::Error(format!("the oracle's program: {end}: {line}"))
+            }
+            Ok(_) => Verdict::Refused(reason),
+        }
+    }
+
     /// Links `object` into `program`. `Err` is the link's failure.
     pub fn link(&self, log: &mut Vec<String>, object: &Path, program: &Path) -> Result<(), String> {
         self.link_all(log, &[object], program)
@@ -1001,7 +1023,7 @@ impl Bench {
         self.build_with_llc(log, &ir, &oracle_o, false).map_err(Verdict::Error)?;
         match self.build_with_hod(log, &ir, &hod_o, &files.at("coverage.tsv")) {
             Ok(Ok(())) => {}
-            Ok(Err(reason)) => return Err(Verdict::Refused(reason)),
+            Ok(Err(reason)) => return Err(self.refused(log, files, reason)),
             Err(detail) => return Err(finding(Kind::HodFailed, detail)),
         }
         if self.mode == Mode::Debug {

@@ -233,6 +233,31 @@ fn constant_branches_are_a_permitted_class() {
     assert_eq!(summary.constant_branches, 0, "{}", summary.text());
 }
 
+// "Cross runs", the third target (design 0008 milestone B's lane): a
+// csmith program for i686, with csmith's headers over the i686 system
+// root, through clang and `llc`; hod refuses the target today, and the
+// reference's program is still linked by `i686-linux-gnu-gcc` and run
+// under `qemu-i386` (an error if it does not run), the seed counted as
+// refused with hod's reason. When hod compiles for i686, the seed agrees.
+#[test]
+fn an_i686_seed_runs_the_reference_under_qemu_i386() {
+    if !found(&["csmith", "clang-22", "llc-22", "i686-linux-gnu-gcc", "qemu-i386"]) {
+        return;
+    }
+    let scratch = Scratch::new("fuzz-i686");
+    let mut options = options(&scratch, 1, 1);
+    options.target = Arch::from_name("i386");
+    let summary = run(&options).expect("the run");
+    let text = summary.text();
+    assert_eq!(summary.seeds, 1, "{text}");
+    assert!(summary.findings.is_empty() && summary.errors.is_empty(), "{text}");
+    let refused: usize = summary.refused.values().sum();
+    assert_eq!(summary.agree + refused, 1, "{text}");
+    if !Arch::I686.compiled_by_hod() {
+        assert_eq!(refused, 1, "{text}");
+    }
+}
+
 // "Set apart" (`selector-split`): seeds 110043 (`l_419 |= ((&l_31 == &l_31)
 // & (-4L));`, prog.c:258) and 110164 (`g_31 |= (4294967294UL == (p_22 !=
 // g_29));`, prog.c:425) of the 1.0 budget (aarch64, LLVM 22, debug):

@@ -1026,7 +1026,7 @@ fn frame_intrinsics_and_setjmp_behave_as_opt_inlined_them() {
     else {
         return;
     };
-    for target in hod_testutil::Target::ALL {
+    for target in hod_testutil::Target::COMPILED_BY_HOD {
         let dir = Scratch::new(&format!("hod-inlining-frame-{}", target.name()));
         let Some(toolchain) = Toolchain::for_target(&dir, target) else { continue };
         let linker = &toolchain.linkers[0];

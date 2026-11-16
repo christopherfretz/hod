@@ -963,6 +963,74 @@ fn cross_target_builds_and_does_not_run() {
     assert_eq!(report.results_file, Some(world.build().join("irdiff").join(results)));
 }
 
+// "Cross runs", the third target: `--target i686` (or `i386`) links with
+// the i686 cross driver and runs under `qemu-i386`; hod does not compile
+// for it yet (`Arch::compiled_by_hod`), so its refusal, whatever its
+// name, is UNSUPPORTED with the name, counted, and the run passes; an
+// object hod does build is compared as on any target; wild is not in the
+// matrix (it does not link i386), and asking for it is a usage error.
+#[test]
+fn i686_refused_by_hod_is_unsupported_and_the_reference_runs() {
+    assert_eq!(Arch::from_name("i386"), Some(Arch::I686));
+    assert!(!Arch::I686.compiled_by_hod() && !Arch::compiled().contains(&Arch::I686));
+    let world = World::new("irdiff-i686");
+    world.tool("i686-linux-gnu-gcc", FAKE_DRIVER);
+    world.tool("i686-linux-gnu-ld.bfd", &fake_linker("bfd"));
+    // As FAKE_QEMU, with the guest space after the system root.
+    let fake_qemu_i386 = r#"[ "$1" = -cpu ] && [ "$3" = -L ] && [ -d "$4" ] && [ "$5" = -R ] || { echo "qemu: usage: $*" >&2; exit 1; }
+EMULATED="$(basename "$0") $2 $4 $6"
+export EMULATED
+shift 6
+exec "$@""#;
+    world.tool("qemu-i386", fake_qemu_i386);
+    world.tool("wild", &fake_linker("wild"));
+    let sysroot = world.scratch.join("sysroot");
+    std::fs::create_dir_all(&sysroot).unwrap();
+    world.test(
+        "refused.ll",
+        &format!(
+            ";@ stdout: qemu-i386 pentium2,-mmx {} 0x20000000\n\
+             ; hod: decline unsupported-target\n; program: echo \"$EMULATED\"\n",
+            sysroot.display()
+        ),
+    );
+    world.test("other.ll", "; hod: decline x86:not-implemented\n");
+    world.test(
+        "built.ll",
+        ";@ stdout: same\n; program(llc): echo same\n; program(hod): echo other\n",
+    );
+    let mut config = world.config();
+    config.target = Arch::from_name("i686");
+    config.sysroot = Some(sysroot);
+    let report = irdiff::run(&config).unwrap();
+    let all = report.summary(true);
+    assert_eq!(outcomes(&report, "refused.ll"), [Outcome::Unsupported; 3], "{all}");
+    assert_eq!(outcomes(&report, "other.ll"), [Outcome::Unsupported; 3], "{all}");
+    assert_eq!(outcomes(&report, "built.ll"), [Outcome::Fail; 3], "{all}");
+    let refused = report.records.iter().find(|r| file_name(&r.test) == "refused.ll").unwrap();
+    assert_eq!(refused.reason.as_deref(), Some("unsupported-target"));
+    assert_eq!(refused.target, "i686-unknown-linux-gnu");
+    assert!(all.contains("refused.ll [bfd lld mold]: unsupported-target\n"), "{all}");
+    assert!(all.contains("declined unsupported-target: 1"), "{all}");
+    assert!(all.contains("declined x86:not-implemented: 1"), "{all}");
+    assert!(report.notes.iter().any(|n| n == "linker 'wild' does not link i686; not in this run"));
+    // Without the object hod built, the run passes.
+    std::fs::remove_file(world.scratch.join("tests/built.ll")).unwrap();
+    let report = irdiff::run(&config).unwrap();
+    assert_eq!(report.exit_status(), 0, "{}", report.summary(true));
+    assert!(
+        report.notes.iter().any(|n| n.starts_with(
+            "hod declined all 2 tests it was asked to build \
+                                                   for i686"
+        )),
+        "{:?}",
+        report.notes
+    );
+    config.linkers = vec!["wild".to_owned()];
+    let refused = irdiff::run(&config).unwrap_err();
+    assert_eq!(refused, "linker 'wild' does not link i686 programs");
+}
+
 /// The GNU prefix of the other architecture's cross tools.
 fn prefix() -> &'static str {
     if other_arch() == Arch::X86_64 { "x86_64-linux-gnu" } else { "aarch64-linux-gnu" }

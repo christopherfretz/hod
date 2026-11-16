@@ -33,7 +33,7 @@ fn targets() -> Option<(TargetSpec, Target)> {
     let found = match Target::host() {
         Some(Target::Aarch64) => Some((TargetSpec::aarch64_linux_gnu(), Target::X86_64)),
         Some(Target::X86_64) => Some((TargetSpec::x86_64_linux_gnu(), Target::Aarch64)),
-        None => None,
+        Some(Target::I686) | None => None,
     };
     if found.is_none() {
         assert!(!tools_required(), "no native target for this host (HOD_REQUIRE_TOOLS=1)");

@@ -116,8 +116,14 @@ fn short(arch: Arch) -> &'static str {
     match arch {
         Arch::X86_64 => "x64",
         Arch::Aarch64 => "a64",
+        Arch::I686 => unreachable!("{NO_I686_CORPUS}"),
     }
 }
+
+/// Why `--target i686` is refused: the corpus is kiln's, and kiln has no
+/// 32-bit target (design 0008, section 4.4).
+pub const NO_I686_CORPUS: &str =
+    "target 'i686' has no corpus: kiln has no 32-bit target (design 0008 section 4.4)";
 
 /// The corpus directory of `target` when none is given: `corpus` for this
 /// machine's architecture, `corpus-x64` (`corpus-a64`) for the other.
@@ -145,10 +151,12 @@ pub fn take_target(args: &[String]) -> Result<(Option<Arch>, Vec<String>), Strin
     while index < args.len() {
         if args[index] == "--target" {
             let name = value(args, &mut index, "--target")?;
-            target =
-                Some(Arch::from_name(name).ok_or_else(|| {
-                    format!("unknown target '{name}': expected x86_64 or aarch64")
-                })?);
+            let arch = Arch::from_name(name)
+                .ok_or_else(|| format!("unknown target '{name}': expected x86_64 or aarch64"))?;
+            if arch == Arch::I686 {
+                return Err(NO_I686_CORPUS.to_owned());
+            }
+            target = Some(arch);
         } else {
             rest.push(args[index].clone());
         }

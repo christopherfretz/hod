@@ -88,7 +88,7 @@ fn stack_clash_protection_from_kiln_runs() {
     let Some(llc) = tool("llc") else { return };
     let source = scratch.write("clash.cpp", PROGRAM);
     let mut runs = 0;
-    for target in Target::ALL {
+    for target in Target::COMPILED_BY_HOD {
         // A directory per target: each toolchain makes its linkers' own.
         let linkers = Scratch::new(&format!("hod-wp214-clash-{}", target.name()));
         let Some(toolchain) = Toolchain::for_target(&linkers, target) else { continue };

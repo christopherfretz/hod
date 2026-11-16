@@ -310,6 +310,9 @@ pub struct SupportRow {
     pub aarch64: SupportCell,
     /// Its status for `x86_64-unknown-linux-gnu`.
     pub x86_64: SupportCell,
+    /// Its status for `i686-unknown-linux-gnu`: x86-64's unless the row
+    /// says otherwise ([`SupportRow::on_i386`], WP-297).
+    pub i386: SupportCell,
     /// What the name covers, where the name does not say it.
     pub note: &'static str,
 }
@@ -320,16 +323,19 @@ impl SupportRow {
         self.name.split_once(':').map_or(self.name, |(group, _)| group)
     }
 
-    /// The entry for `arch`. 32-bit x86 has no column of its own yet: its
-    /// modules are classified with x86-64's, so that the front half judges
-    /// them as it judges x86-64's, and code generation refuses the module
-    /// as a whole (`x86:not-implemented`, WP-286) until the 32-bit back end
-    /// gives it its column.
+    /// The entry for `arch`.
     pub const fn cell(&self, arch: Arch) -> SupportCell {
         match arch {
             Arch::Aarch64 => self.aarch64,
-            Arch::X86_64 | Arch::I386 => self.x86_64,
+            Arch::X86_64 => self.x86_64,
+            Arch::I386 => self.i386,
         }
+    }
+
+    /// The row with `cell` as its i386 entry (WP-297): a construct whose
+    /// i386 status is not x86-64's.
+    const fn on_i386(self, cell: SupportCell) -> SupportRow {
+        SupportRow { i386: cell, ..self }
     }
 }
 
@@ -413,7 +419,7 @@ const fn row(
     x86_64: SupportCell,
     note: &'static str,
 ) -> SupportRow {
-    SupportRow { name, aarch64, x86_64, note }
+    SupportRow { name, aarch64, x86_64, i386: x86_64, note }
 }
 
 /// The same on both targets.
@@ -657,7 +663,8 @@ const FUNCTION: [SupportRow; 6] = [
 const CC: [SupportRow; 26] = [
     both("cc:ccc", ON, ""),
     row("cc:fastcc", ON, ON, "assigned as `ccc` (`spec/abi-a64.md` §1.2, `spec/abi-x64.md` §1.2)"),
-    both("cc:coldcc", todo(LATER), ""),
+    // WP-297: on i386 `coldcc` passes as C (`spec/abi-x86.md` §1.2).
+    both("cc:coldcc", todo(LATER), "").on_i386(ON),
     both("cc:ghccc", todo(LATER), ""),
     both("cc:anyregcc", todo(LATER), ""),
     row(
@@ -753,8 +760,9 @@ const fn cc_index(id: u16) -> Option<usize> {
 const ATTR_PARAM: [SupportRow; 7] = [
     row("attr:zeroext", ON, ON, ""),
     row("attr:signext", ON, ON, ""),
-    a64("attr:inreg", LATER, ""),
-    row("attr:nest", ON, todo(X64), ""),
+    // WP-297: `spec/abi-x86.md` §3.1, §6.3.
+    a64("attr:inreg", LATER, "").on_i386(ON),
+    row("attr:nest", ON, todo(X64), "").on_i386(ON),
     a64("attr:swiftself", LATER, ""),
     a64("attr:swifterror", LATER, ""),
     a64("attr:swiftasync", LATER, ""),
@@ -1937,6 +1945,10 @@ const fn const_op_index(op: ConstOp) -> usize {
 }
 
 /// In `Intrinsic::ALL` order.
+#[allow(
+    clippy::large_const_arrays,
+    reason = "a table read at compile time (`ROWS`); WP-297's i386 column made it cross the limit"
+)]
 const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len() - INTRINSIC_X86.len()] = [
     row(
         "intrinsic:llvm.memcpy",

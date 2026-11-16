@@ -204,11 +204,17 @@ impl Target for X86 {
     }
 
     fn load(&self, cx: &mut FnCx<'_, Self>, reg: PReg, src: FrameRef, bytes: u32) {
+        if reg == abi::ST0 {
+            return abi::load_st0(cx, src, bytes);
+        }
         // Only general registers hold values of this package.
         common::load_gpr(cx, gp(reg), src, bytes);
     }
 
     fn store(&self, cx: &mut FnCx<'_, Self>, reg: PReg, dst: FrameRef, bytes: u32) {
+        if reg == abi::ST0 {
+            return abi::store_st0(cx, dst, bytes);
+        }
         common::store_gpr(cx, gp(reg), dst, bytes);
     }
 

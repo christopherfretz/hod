@@ -29,8 +29,11 @@ use hod_mc_x64 as mc;
 use hod_mc_x64::{Mem, Mode, Reg, Size};
 use hod_obj::{I386Reloc, RelocKind};
 
+use hod_cg::abi::Place;
+
+use crate::abi;
 use crate::common::{
-    EBP, ESP, INCOMING_BASE, bias_local_sites, gp, put, reset_function, take_admit_error,
+    self, EBP, ESP, INCOMING_BASE, bias_local_sites, gp, put, reset_function, take_admit_error,
     unsupported,
 };
 use crate::reg::{DWARF_EBP, DWARF_ESP, dwarf};
@@ -51,6 +54,9 @@ pub const MAX_FRAME: u32 = (1 << 31) - (1 << 16);
 pub struct FrameState {
     /// The offset of the prologue's `sub esp, imm32` immediate.
     pub frame_imm: u32,
+    /// The slot that keeps an `inreg sret` pointer, returned in `eax`
+    /// (`spec/abi-x86.md` §6.1).
+    pub sret_slot: Option<FrameRef>,
 }
 
 /// The final `FRAME` for a local area of `size` bytes: the least value
@@ -88,6 +94,22 @@ pub fn begin(cx: &mut FnCx<'_, X86>) -> CgResult<()> {
     // `81 EC imm32`: the immediate is the last four bytes.
     cx.state.frame.frame_imm = cx.offset() + sub.bytes().len() as u32 - 4;
     put(cx, sub);
+    // `spec/abi-x86.md` §5.2: a function that writes its result through
+    // a hidden pointer is design 0008's I11 (`aggr`); §6.1: an `inreg
+    // sret` pointer is kept for the return, before any argument
+    // register is read.
+    let asg = cx.fn_assignment();
+    if asg.ret_memory.is_some() {
+        return unsupported(crate::target::AGGREGATE);
+    }
+    let inreg_sret = asg.sret_returned_in.is_some()
+        && asg.args.first().is_some_and(|p| p.arg == 0 && p.place == Place::Reg(crate::reg::EAX));
+    cx.state.frame.sret_slot = None;
+    if inreg_sret {
+        let slot = cx.alloc_slot(4, 4)?;
+        common::store_gpr(cx, Reg::Rax, slot, 4);
+        cx.state.frame.sret_slot = Some(slot);
+    }
     Ok(())
 }
 
@@ -107,13 +129,25 @@ pub fn end(cx: &mut FnCx<'_, X86>) -> CgResult<()> {
         return cx.bug("the prologue is not where it was emitted");
     }
     cx.bind(cx.epilogue())?;
+    // §5.2, §6.1: the `sret` pointer is returned in `eax`; a stack one
+    // is popped by `ret $4`.
+    let pop = abi::callee_pop(cx.fn_assignment());
+    if let Some(slot) = cx.state.frame.sret_slot {
+        common::load_gpr(cx, Reg::Rax, slot, 4);
+    } else if pop != 0 {
+        common::load_gpr(cx, Reg::Rax, FrameRef::Incoming(0), 4);
+    }
     put(cx, mc::lea(Size::D, ESP, Mem::base(EBP, -12)));
     for reg in SAVED.into_iter().rev() {
         put(cx, mc::pop_r(reg));
     }
     put(cx, mc::pop_r(EBP));
     cx.cfi(CfiOp::DefCfa { reg: DWARF_ESP, offset: 4 });
-    put(cx, mc::ret());
+    if pop == 0 {
+        put(cx, mc::ret());
+    } else {
+        put(cx, mc::ret_imm(pop as u16));
+    }
     bias_local_sites(cx, -i64::from(below))?;
     cx.set_frame_desc(FrameDesc { frame_size: below, frame_base: DWARF_EBP });
     take_admit_error(cx)
@@ -164,6 +198,21 @@ pub fn dynamic_slot(
 /// # Errors
 /// `Internal` only for an encoder without a relocatable field.
 pub fn emit_call(cx: &mut FnCx<'_, X86>, target: CallTarget) -> CgResult<()> {
+    // The call's own signature is the last one assigned (`abi::last_call`).
+    let facts = abi::last_call();
+    if facts.edx && matches!(target, CallTarget::Reg(_)) {
+        return unsupported(abi::INDIRECT_EDX);
+    }
+    call_instruction(cx, target)?;
+    // `spec/abi-x86.md` §8.1: the callee popped its hidden pointer.
+    if facts.pop != 0 {
+        adjust_sp(cx, -i64::from(facts.pop));
+    }
+    Ok(())
+}
+
+/// The call instruction alone.
+fn call_instruction(cx: &mut FnCx<'_, X86>, target: CallTarget) -> CgResult<()> {
     match target {
         CallTarget::Sym(sym) => {
             let kind = match sym {

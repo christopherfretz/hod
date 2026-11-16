@@ -612,8 +612,23 @@ impl<'a> Lexer<'a> {
             Disp::Global => self.global(start),
             Disp::Number => self.number(c, start),
             Disp::Blank if FIRST => self.after_blank(start),
+            // `!` is most of the rest in a text with debug metadata. (As
+            // a dispatch of its own it deepens the compare tree LLVM
+            // makes of this match for every token: measured.)
+            Disp::Other if c == b'!' => self.exclaim(start),
             Disp::Blank | Disp::Other => self.compound(c, start),
         }
+    }
+
+    /// `!` and what follows: a metadata name, or `!` alone.
+    #[inline(never)]
+    fn exclaim(&mut self, start: usize) -> Token {
+        let first = self.at(start + 1);
+        if (is(first, LABEL) && !is(first, DIGIT)) || first == b'\\' {
+            let end = self.skip_while(start + 2, META);
+            return self.token(Tok::Meta, start, end);
+        }
+        self.token(Tok::Exclaim, start, start + 1)
     }
 
     #[inline(never)]
@@ -641,15 +656,7 @@ impl<'a> Lexer<'a> {
                 Some(end) => self.token(Tok::Str, start, end),
                 None => self.fail("unterminated string", start, start + 1),
             },
-            b'!' => {
-                let first = self.at(start + 1);
-                if (is(first, LABEL) && !is(first, DIGIT)) || first == b'\\' {
-                    let end = self.skip_while(start + 2, META);
-                    self.token(Tok::Meta, start, end)
-                } else {
-                    self.token(Tok::Exclaim, start, start + 1)
-                }
-            }
+            b'!' => self.exclaim(start),
             b'#' => {
                 let first = self.at(start + 1);
                 if is(first, DIGIT) {

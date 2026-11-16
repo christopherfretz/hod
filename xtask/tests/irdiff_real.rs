@@ -135,10 +135,9 @@ fn dialects_come_in_pairs_and_oracle_skips_are_listed() {
             assert!(kept_off.contains(&row), "spec/harness.md \"Kept off a target\" has no {row}");
             listed += 1;
             assert!(
-                kept.when.iter().all(|cond| !matches!(
-                    cond,
-                    Cond::Arch(irdiff::Arch::Aarch64 | irdiff::Arch::X86_64)
-                )),
+                kept.when
+                    .iter()
+                    .all(|cond| !matches!(cond, Cond::Arch(Arch::Aarch64 | Arch::X86_64))),
                 "{relative}: only i686 is ever kept off"
             );
         }

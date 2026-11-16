@@ -1025,6 +1025,7 @@ fn window(
 /// a branch) and shifts them by `k mod 32` with `shld`/`shrd`. A variable
 /// amount of fewer than 64 bits is reduced modulo `N` by two `div`s
 /// (`edx:eax / N` of the high word, then of the low word).
+#[allow(clippy::many_single_char_names, reason = "the operands are LangRef's a, b, c")]
 fn funnel<'a>(
     cx: &mut FnCx<'a, X86>,
     inst: Inst<'a>,

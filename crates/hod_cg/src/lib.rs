@@ -99,6 +99,6 @@ pub use record::{
     BlockOffset, CallSiteRow, CfiOp, CfiRow, Chunk, ClauseRow, FrameDesc, FuncRecord, IslandRow,
     LineRow, NO_PAD, PadRow, Reloc, Stmt, VarPlace, VarRow,
 };
-pub use reg::{MIN_POOL_FPR, MIN_POOL_GPR, PReg, RegInfo, RegSet};
+pub use reg::{MIN_POOL_FPR, MIN_POOL_GPR, MIN_POOL_GPR_32, PReg, RegInfo, RegSet};
 pub use sym::{RuntimeFn, SymRef};
 pub use target::{BranchTarget, CallEmit, CallTarget, Target};

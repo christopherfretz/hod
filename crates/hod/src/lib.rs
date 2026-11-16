@@ -45,7 +45,7 @@ pub use env::{EnvError, Environment};
 
 pub use back::{
     LIMIT_OBJECT, OBJECT_NUL_IN_NAME, OPTION_RELOCATION_MODEL, OPTION_SPLIT_DWARF,
-    PARALLEL_MIN_INSTS, ThreadTokens, Threads, X86_NOT_IMPLEMENTED, generate_with,
+    PARALLEL_MIN_INSTS, ThreadTokens, Threads, generate_with,
 };
 pub use front::{
     BitcodeReading, INTERNAL_ERROR, INTERNAL_PANIC, LIMIT_READER, READ_BYTES_PER_THREAD,
@@ -373,9 +373,9 @@ pub fn module_triple(input: &[u8]) -> Option<&str> {
 
 /// Whether hod generates code for `triple`: AArch64, x86-64 or 32-bit x86,
 /// Linux, ELF (`docs/ARCHITECTURE.md` "Object file"). The architecture is
-/// the first component (`aarch64`, `x86_64`, or `i386` to `i686`, whose
-/// modules the back half refuses as [`X86_NOT_IMPLEMENTED`] until it has a
-/// code generator), a later component must be `linux`, and
+/// the first component (`aarch64`, `x86_64`, or `i386` to `i686`, which
+/// `hod_x86` compiles, `spec/codegen-x86.md`), a later component must be
+/// `linux`, and
 /// what follows it, if anything, must be a GNU or musl environment
 /// (`gnu`, `gnueabi...`, `musl`): Android and the other Linux environments
 /// have their own ABI details and are not claimed.
@@ -587,8 +587,7 @@ mod tests {
             "x86_64-pc-linux-gnu",
             "aarch64-linux-gnu",
             "x86_64-unknown-linux-musl",
-            // WP-286: 32-bit x86 is read and classified; the back half
-            // refuses it (`x86:not-implemented`).
+            // WP-286, WP-293: 32-bit x86, compiled by `hod_x86`.
             "i686-unknown-linux-gnu",
             "i686-pc-linux-gnu",
             "i586-linux-gnu",

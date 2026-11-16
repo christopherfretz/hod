@@ -21,11 +21,6 @@ use hod_ir::{Arch, Body, FnStr, Module, SymbolKind};
 use crate::front::{Report, symbol_name};
 use crate::{CodeModel, CompileError, Construct, Options, RelocModel, Unsupported};
 
-/// The back half's refusal of every 32-bit x86 module (`spec/cli.md`
-/// "Reasons"): the target is read, verified and classified, and has no
-/// code generator yet (design 0008).
-pub const X86_NOT_IMPLEMENTED: &str = "x86:not-implemented";
-
 /// Where extra worker threads come from: a GNU make jobserver in the
 /// command-line tool (`spec/cli.md` "Threads").
 pub trait ThreadTokens: Send + Sync + fmt::Debug {
@@ -165,8 +160,7 @@ fn groups(module: &Module, bodies: &[Body], options: &Options) -> Vec<Option<Gro
             Arch::X86_64 => {
                 hod_x64::X64::of_attrs_with(attrs, options.cpu.as_deref(), &options.features)
             }
-            // 32-bit x86 never reaches the groups: `generate_with` refuses
-            // it first (`X86_NOT_IMPLEMENTED`).
+            // Unused off x86-64.
             Arch::Aarch64 | Arch::I386 => hod_x64::X64,
         };
         groups[index] = Some(Group { refused, x64 });
@@ -196,7 +190,8 @@ fn compile_one(
             let target = group.map_or(&hod_x64::X64, |group| &group.x64);
             compile_function(target, module, body, &options, scratch, chunk)
         }
-        Arch::I386 => Err(CgError::unsupported(X86_NOT_IMPLEMENTED)),
+        // WP-293: `spec/codegen-x86.md`.
+        Arch::I386 => compile_function(&hod_x86::X86, module, body, &options, scratch, chunk),
     }
     .map_err(Failure::Cg)
 }
@@ -207,8 +202,9 @@ fn check_features(arch: Arch, string: &str) -> Result<(), (&'static str, &str)> 
     match arch {
         Arch::Aarch64 => hod_a64::features::check(string).map_err(|r| (r.reason, r.feature)),
         Arch::X86_64 => hod_x64::features::check(string).map_err(|r| (r.reason, r.feature)),
-        // No 32-bit code generation judges features yet.
-        Arch::I386 => Err((X86_NOT_IMPLEMENTED, string)),
+        // WP-293: no feature changes what `hod_x86` emits (it uses
+        // neither `cmov` nor SSE), so every feature string is accepted.
+        Arch::I386 => Ok(()),
     }
 }
 
@@ -531,11 +527,6 @@ pub fn generate_with(
     report: &mut Report,
 ) -> Result<Vec<u8>, CompileError> {
     let cg = cg_options(options)?;
-    // 32-bit x86: the front half has read, verified and classified the
-    // module; there is no code generator yet (design 0008, WP-286).
-    if module.target().arch() == Arch::I386 {
-        return Err(Unsupported::module(Construct::Named(X86_NOT_IMPLEMENTED.into())).into());
-    }
     check_split_dwarf(module, options)?;
     // `-mattr` applies to every function.
     for item in &options.features {

@@ -365,138 +365,144 @@ fn mixed_feature_calls_run_as_llc_s() {
 /// uses that read the rounded value (`fneg`, `freeze`, `fadd`). Every
 /// value is printed with `%a` / `%La` by an x87 `main`.
 fn fold_module(cpu: &str, p3_x87: bool) -> String {
-    // At `pentium3` these two read an `fpext` of the call result, an x87
-    // `double`, in x87 arithmetic, where `llc` has the 80-bit value and
-    // §11's copies do not (the FINDING of WP-317's record): run only by
-    // the ignored test below.
-    const P3_X87: [&str; 2] = ["trunc_other_add", "ext_sub"];
-    // (name, return type of the shape or "void", body). A void shape
-    // stores its doubles to `%o` (8 bytes apart) and `x86_fp80` values to
-    // `%x` (16 bytes apart); a shape that returns is read by `main` at 80
-    // bits (`fpext` of the call result in `main`'s x87 run).
-    const SHAPES: &[(&str, &str, &str)] = &[
-        (
-            "ext",
-            "void",
-            "%r = call float @df(float 1.0, float 3.0)\n%e = fpext float %r to double\nstore double %e, ptr %o",
-        ),
-        (
-            "ext_call",
-            "void",
-            "%r = call float @df(float 1.0, float 3.0)\ncall void @g()\n%e = fpext float %r to double\nstore double %e, ptr %o",
-        ),
-        (
-            "ext_libm",
-            "void",
-            "%r = call float @df(float 1.0, float 3.0)\n%l = call float @floorf(float 2.5)\n%e = fpext float %r to double\nstore double %e, ptr %o\n%le = fpext float %l to double\n%o1 = getelementptr i8, ptr %o, i32 8\nstore double %le, ptr %o1",
-        ),
-        (
-            "ext_memcpy",
-            "void",
-            "%a = alloca [1000 x i8]\n%b = alloca [1000 x i8]\ncall void @llvm.memset.p0.i32(ptr %b, i8 1, i32 1000, i1 false)\n%r = call float @df(float 1.0, float 3.0)\ncall void @llvm.memcpy.p0.p0.i32(ptr %a, ptr %b, i32 1000, i1 false)\n%e = fpext float %r to double\nstore double %e, ptr %o",
-        ),
-        (
-            "ext_select",
-            "void",
-            "%r = call float @df(float 1.0, float 3.0)\n%c = load volatile i1, ptr @flag\n%p = fadd float %r, 1.0\n%q = fsub float %r, 1.0\n%s = select i1 %c, float %p, float %q\n%sd = fpext float %s to double\n%e = fpext float %r to double\nstore double %e, ptr %o\n%o1 = getelementptr i8, ptr %o, i32 8\nstore double %sd, ptr %o1",
-        ),
-        (
-            "ext_block",
-            "void",
-            "%r = call float @df(float 1.0, float 3.0)\nbr label %next\nnext:\n%e = fpext float %r to double\nstore double %e, ptr %o",
-        ),
-        (
-            "ext_and_use",
-            "void",
-            "%r = call float @df(float 1.0, float 3.0)\n%s = fadd float %r, %r\n%e = fpext float %r to double\n%t = fpext float %s to double\n%u = fadd double %e, %t\nstore double %u, ptr %o\n%o1 = getelementptr i8, ptr %o, i32 8\nstore double %e, ptr %o1",
-        ),
-        (
-            "ext_ld",
-            "void",
-            "%r = call double @dd(double 1.0, double 3.0)\n%e = fpext double %r to x86_fp80\nstore x86_fp80 %e, ptr %x",
-        ),
-        (
-            "ext_ld_call",
-            "void",
-            "%r = call double @dd(double 1.0, double 3.0)\ncall void @g()\n%e = fpext double %r to x86_fp80\nstore x86_fp80 %e, ptr %x",
-        ),
-        (
-            "ext_f_ld",
-            "void",
-            "%r = call float @df(float 1.0, float 3.0)\ncall void @g()\n%e = fpext float %r to x86_fp80\nstore x86_fp80 %e, ptr %x",
-        ),
-        (
-            "trunc",
-            "void",
-            "%r = call double @ad(double 0x3FF0000010000000, double 0x3C30000000000000)\n%t = fptrunc double %r to float\n%e = fpext float %t to double\nstore double %e, ptr %o",
-        ),
-        (
-            "trunc_call",
-            "void",
-            "%r = call double @ad(double 0x3FF0000010000000, double 0x3C30000000000000)\ncall void @g()\n%t = fptrunc double %r to float\n%e = fpext float %t to double\nstore double %e, ptr %o",
-        ),
-        (
-            "trunc_back",
-            "void",
-            "%r = call float @df(float 1.0, float 3.0)\n%e = fpext float %r to double\n%t = fptrunc double %e to float\n%y = fpext float %t to double\nstore double %y, ptr %o\n%o1 = getelementptr i8, ptr %o, i32 8\nstore double %e, ptr %o1",
-        ),
-        (
-            "trunc_other",
-            "void",
-            "%r = call float @df(float 1.0, float 3.0)\n%e = fpext float %r to x86_fp80\n%t = fptrunc x86_fp80 %e to double\nstore double %t, ptr %o",
-        ),
-        (
-            "trunc_other_d",
-            "void",
-            "%r = call double @ad(double 0x3FF0000010000000, double 0x3C30000000000000)\n%e = fpext double %r to x86_fp80\n%t = fptrunc x86_fp80 %e to float\n%y = fpext float %t to double\nstore double %y, ptr %o",
-        ),
-        (
-            "trunc_other_add",
-            "void",
-            "%r = call float @df(float 1.0, float 3.0)\n%e = fpext float %r to x86_fp80\n%t = fptrunc x86_fp80 %e to double\n%s = fadd double %t, 0.0\nstore double %s, ptr %o",
-        ),
-        (
-            "ext_sub",
-            "void",
-            "%r = call float @df(float 1.0, float 3.0)\n%e = fpext float %r to double\n%s = fsub double %e, 0x3FD5555555555555\nstore double %s, ptr %o",
-        ),
-        (
-            "fneg",
-            "void",
-            "%r = call float @df(float 1.0, float 3.0)\n%n = fneg float %r\n%e = fpext float %n to double\nstore double %e, ptr %o",
-        ),
-        (
-            "freeze",
-            "void",
-            "%r = call float @df(float 1.0, float 3.0)\n%z = freeze float %r\n%e = fpext float %z to double\nstore double %e, ptr %o",
-        ),
-        ("ret", "float", "%r = call float @df(float 1.0, float 3.0)\nret float %r"),
-        (
-            "ret_call",
-            "float",
-            "%r = call float @df(float 1.0, float 3.0)\ncall void @g()\nret float %r",
-        ),
-        (
-            "ret_ext",
-            "double",
-            "%r = call float @df(float 1.0, float 3.0)\n%e = fpext float %r to double\nret double %e",
-        ),
-        (
-            "ret_d",
-            "double",
-            "%r = call double @dd(double 1.0, double 3.0)\ncall void @g()\nret double %r",
-        ),
-        (
-            "ret_back",
-            "float",
-            "%r = call float @df(float 1.0, float 3.0)\n%e = fpext float %r to double\n%t = fptrunc double %e to float\nret float %t",
-        ),
-        (
-            "ret_block",
-            "float",
-            "%r = call float @df(float 1.0, float 3.0)\nbr label %next\nnext:\nret float %r",
-        ),
-    ];
+    fold_text(cpu, p3_x87, FOLD_SHAPES)
+}
+
+/// At `pentium3` these two read an `fpext` of the call result, an x87
+/// `double`, in x87 arithmetic, where `llc` has the 80-bit value and
+/// §11's copies do not (the FINDING of WP-317's record): run only by the
+/// ignored test below.
+const P3_X87: [&str; 2] = ["trunc_other_add", "ext_sub"];
+
+/// (name, return type of the shape or "void", body). A void shape stores
+/// its doubles to `%o` (8 bytes apart) and `x86_fp80` values to `%x`; a
+/// shape that returns is read by `main` at 80 bits (`fpext` of the call
+/// result in `main`'s x87 run).
+const FOLD_SHAPES: &[(&str, &str, &str)] = &[
+    (
+        "ext",
+        "void",
+        "%r = call float @df(float 1.0, float 3.0)\n%e = fpext float %r to double\nstore double %e, ptr %o",
+    ),
+    (
+        "ext_call",
+        "void",
+        "%r = call float @df(float 1.0, float 3.0)\ncall void @g()\n%e = fpext float %r to double\nstore double %e, ptr %o",
+    ),
+    (
+        "ext_libm",
+        "void",
+        "%r = call float @df(float 1.0, float 3.0)\n%l = call float @floorf(float 2.5)\n%e = fpext float %r to double\nstore double %e, ptr %o\n%le = fpext float %l to double\n%o1 = getelementptr i8, ptr %o, i32 8\nstore double %le, ptr %o1",
+    ),
+    (
+        "ext_memcpy",
+        "void",
+        "%a = alloca [1000 x i8]\n%b = alloca [1000 x i8]\ncall void @llvm.memset.p0.i32(ptr %b, i8 1, i32 1000, i1 false)\n%r = call float @df(float 1.0, float 3.0)\ncall void @llvm.memcpy.p0.p0.i32(ptr %a, ptr %b, i32 1000, i1 false)\n%e = fpext float %r to double\nstore double %e, ptr %o",
+    ),
+    (
+        "ext_select",
+        "void",
+        "%r = call float @df(float 1.0, float 3.0)\n%c = load volatile i1, ptr @flag\n%p = fadd float %r, 1.0\n%q = fsub float %r, 1.0\n%s = select i1 %c, float %p, float %q\n%sd = fpext float %s to double\n%e = fpext float %r to double\nstore double %e, ptr %o\n%o1 = getelementptr i8, ptr %o, i32 8\nstore double %sd, ptr %o1",
+    ),
+    (
+        "ext_block",
+        "void",
+        "%r = call float @df(float 1.0, float 3.0)\nbr label %next\nnext:\n%e = fpext float %r to double\nstore double %e, ptr %o",
+    ),
+    (
+        "ext_and_use",
+        "void",
+        "%r = call float @df(float 1.0, float 3.0)\n%s = fadd float %r, %r\n%e = fpext float %r to double\n%t = fpext float %s to double\n%u = fadd double %e, %t\nstore double %u, ptr %o\n%o1 = getelementptr i8, ptr %o, i32 8\nstore double %e, ptr %o1",
+    ),
+    (
+        "ext_ld",
+        "void",
+        "%r = call double @dd(double 1.0, double 3.0)\n%e = fpext double %r to x86_fp80\nstore x86_fp80 %e, ptr %x",
+    ),
+    (
+        "ext_ld_call",
+        "void",
+        "%r = call double @dd(double 1.0, double 3.0)\ncall void @g()\n%e = fpext double %r to x86_fp80\nstore x86_fp80 %e, ptr %x",
+    ),
+    (
+        "ext_f_ld",
+        "void",
+        "%r = call float @df(float 1.0, float 3.0)\ncall void @g()\n%e = fpext float %r to x86_fp80\nstore x86_fp80 %e, ptr %x",
+    ),
+    (
+        "trunc",
+        "void",
+        "%r = call double @ad(double 0x3FF0000010000000, double 0x3C30000000000000)\n%t = fptrunc double %r to float\n%e = fpext float %t to double\nstore double %e, ptr %o",
+    ),
+    (
+        "trunc_call",
+        "void",
+        "%r = call double @ad(double 0x3FF0000010000000, double 0x3C30000000000000)\ncall void @g()\n%t = fptrunc double %r to float\n%e = fpext float %t to double\nstore double %e, ptr %o",
+    ),
+    (
+        "trunc_back",
+        "void",
+        "%r = call float @df(float 1.0, float 3.0)\n%e = fpext float %r to double\n%t = fptrunc double %e to float\n%y = fpext float %t to double\nstore double %y, ptr %o\n%o1 = getelementptr i8, ptr %o, i32 8\nstore double %e, ptr %o1",
+    ),
+    (
+        "trunc_other",
+        "void",
+        "%r = call float @df(float 1.0, float 3.0)\n%e = fpext float %r to x86_fp80\n%t = fptrunc x86_fp80 %e to double\nstore double %t, ptr %o",
+    ),
+    (
+        "trunc_other_d",
+        "void",
+        "%r = call double @ad(double 0x3FF0000010000000, double 0x3C30000000000000)\n%e = fpext double %r to x86_fp80\n%t = fptrunc x86_fp80 %e to float\n%y = fpext float %t to double\nstore double %y, ptr %o",
+    ),
+    (
+        "trunc_other_add",
+        "void",
+        "%r = call float @df(float 1.0, float 3.0)\n%e = fpext float %r to x86_fp80\n%t = fptrunc x86_fp80 %e to double\n%s = fadd double %t, 0.0\nstore double %s, ptr %o",
+    ),
+    (
+        "ext_sub",
+        "void",
+        "%r = call float @df(float 1.0, float 3.0)\n%e = fpext float %r to double\n%s = fsub double %e, 0x3FD5555555555555\nstore double %s, ptr %o",
+    ),
+    (
+        "fneg",
+        "void",
+        "%r = call float @df(float 1.0, float 3.0)\n%n = fneg float %r\n%e = fpext float %n to double\nstore double %e, ptr %o",
+    ),
+    (
+        "freeze",
+        "void",
+        "%r = call float @df(float 1.0, float 3.0)\n%z = freeze float %r\n%e = fpext float %z to double\nstore double %e, ptr %o",
+    ),
+    ("ret", "float", "%r = call float @df(float 1.0, float 3.0)\nret float %r"),
+    (
+        "ret_call",
+        "float",
+        "%r = call float @df(float 1.0, float 3.0)\ncall void @g()\nret float %r",
+    ),
+    (
+        "ret_ext",
+        "double",
+        "%r = call float @df(float 1.0, float 3.0)\n%e = fpext float %r to double\nret double %e",
+    ),
+    (
+        "ret_d",
+        "double",
+        "%r = call double @dd(double 1.0, double 3.0)\ncall void @g()\nret double %r",
+    ),
+    (
+        "ret_back",
+        "float",
+        "%r = call float @df(float 1.0, float 3.0)\n%e = fpext float %r to double\n%t = fptrunc double %e to float\nret float %t",
+    ),
+    (
+        "ret_block",
+        "float",
+        "%r = call float @df(float 1.0, float 3.0)\nbr label %next\nnext:\nret float %r",
+    ),
+];
+
+fn fold_text(cpu: &str, p3_x87: bool, shapes: &[(&str, &str, &str)]) -> String {
     let mut m = format!(
         "target triple = \"{TRIPLE}\"\n\
          declare i32 @printf(ptr, ...)\ndeclare float @floorf(float)\n\
@@ -511,7 +517,7 @@ fn fold_module(cpu: &str, p3_x87: bool) -> String {
          define void @g() #1 {{\n  ret void\n}}\n"
     );
     let mut main = String::from("define i32 @main() #1 {\n");
-    for (k, (name, ret, body)) in SHAPES.iter().enumerate() {
+    for (k, (name, ret, body)) in shapes.iter().enumerate() {
         if cpu == "pentium3" && P3_X87.contains(name) != p3_x87 {
             continue;
         }

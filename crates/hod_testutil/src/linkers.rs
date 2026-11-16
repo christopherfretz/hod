@@ -281,8 +281,8 @@ pub fn present(target: Target) -> Vec<(&'static str, PathBuf)> {
 }
 
 /// Whether the matrix's linker `name` links programs of `target`: every
-/// one does but wild for i686 ([`EXCEPTIONS`], case `elf-i386`, after a
-/// note naming it).
+/// one does but wild and mortar for i686 ([`EXCEPTIONS`], case `elf-i386`,
+/// after a note naming it).
 pub fn links(name: &str, target: Target) -> bool {
     !(target == Target::I686 && exception(name, "elf-i386").is_some())
 }
@@ -357,7 +357,17 @@ pub struct Exception {
 /// Every exception of the matrix. A test skips or changes ONE assertion for
 /// a case listed here, never the test, so a linker that regresses on
 /// anything else still fails it.
-pub const EXCEPTIONS: [Exception; 8] = [
+pub const EXCEPTIONS: [Exception; 9] = [
+    Exception {
+        linker: "mortar",
+        version: MORTAR_SHORT,
+        case: "elf-i386",
+        class: Class::Unsupported,
+        reason: "for i386 only `-static` output is linked: a dynamically linked executable \
+                 (PIE or not) is refused with \"unsupported feature: dynamically linked output \
+                 on i386\" and `-static-pie` with \"position-independent executable output\", \
+                 and the i686 matrix's tests link dynamic programs, so it is GNU ld, lld and mold",
+    },
     Exception {
         linker: "wild",
         version: WILD_VERSION,

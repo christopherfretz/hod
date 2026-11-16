@@ -870,9 +870,12 @@ No host is an i686 host: its programs are always linked by the cross
 driver `i686-linux-gnu-gcc` (`-g++`) and always run under `qemu-i386`, on
 an x86-64 host too (one runner for both hosts, whatever the kernel's
 IA-32 support). Its linker matrix is GNU ld (`i686-linux-gnu-ld.bfd`),
-lld and mold: wild refuses `elf_i386` (`linkers::EXCEPTIONS`, case
-`elf-i386`; `linkers::links`), so `linkers::present(Target::I686)` leaves
-it out with a note, `irdiff` notes "linker 'wild' does not link i686; not
+lld and mold: wild refuses `elf_i386`, and mortar links for i386 only
+`-static` output (a dynamically linked executable and `-static-pie` are
+refused by name) where the i686 tests link dynamic programs
+(`linkers::EXCEPTIONS`, case `elf-i386`, one row each; `linkers::links`),
+so `linkers::present(Target::I686)` leaves each
+out with a note, `irdiff` notes "linker 'wild' does not link i686; not
 in this run", and `--linker wild --target i686` is a usage error.
 
 hod does not compile for i686 yet. `Target::ALL` (and `Arch::ALL`) is

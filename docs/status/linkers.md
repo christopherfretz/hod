@@ -96,6 +96,7 @@ linking test of `hod`, `hod_a64`, `hod_x64`, `hod_obj`, `hod_dwarf`,
 | relocatable output (`-r`) | REFUSED, documented |
 | far layout by `--section-start` (large code model, both targets) | REFUSED: finding `section-start-option` |
 | `SHF_COMPRESSED` debug sections in an input (`--compress-debug-sections=zlib` objects) | REFUSED: finding `compressed-debug-input` |
+| i686: dynamically linked executables (PIE or not) and `-static-pie` | not in the i686 matrix: mortar refuses both by name ("dynamically linked output on i386", "position-independent executable output") and links only `-static` for i386, where the i686 tests link dynamic programs (`linkers::EXCEPTIONS`, case `elf-i386`) |
 
 ### Refused kinds
 

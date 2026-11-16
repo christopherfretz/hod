@@ -38,6 +38,7 @@ fn lane() -> Option<Lane> {
     };
     let names: Vec<&str> = lane.linkers.iter().map(|(name, _)| *name).collect();
     assert!(!names.contains(&"wild"), "wild does not link i386: {names:?}");
+    assert!(!names.contains(&"mortar"), "mortar links only static i386 programs: {names:?}");
     if hod_testutil::tools_required() {
         assert_eq!(names, ["bfd", "lld", "mold"]);
     }

@@ -273,3 +273,35 @@ fn a_program_and_its_shared_library_run_as_llc_s() {
     }
     eprintln!("i386 PIC pair: {runs} runs equal llc's");
 }
+
+/// `pic/eax.ll`: every store to a symbol whose value could be in `eax`
+/// (a call's result, a quotient, an argument; 1 to 4 bytes; preemptible
+/// and hidden globals) compiles under PIC without the internal error of
+/// `pic::mem_inst`'s `eax` contract, with and without `Stress::ALL`, and
+/// runs as a PIE as `llc`'s does.
+#[test]
+fn stores_of_eax_values_to_symbols_compile_and_run() {
+    let ll = data("pic/eax.ll");
+    // Compiling is the claim even without the tools to run it.
+    hod_pic(&ll);
+    stressed_pic(&ll);
+    let Some(tools) = tools() else { return };
+    let scratch = Scratch::new("i386-pic-eax");
+    let mut runs = 0;
+    for major in LLVM_MAJORS {
+        let Some(llc) = llvm_tool(major, "llc") else { continue };
+        let objects = objects(&scratch, &llc, &ll, &format!("eax-{major}"));
+        for linker in &tools.linkers {
+            let mut results = Vec::new();
+            for (who, object) in &objects {
+                let exe = scratch.join(format!("eax-{major}-{who}-{}", linker.0));
+                tools.link(&scratch, linker, &["-pie"], &[object], &exe);
+                results.push((*who, run(&tools.qemu, &exe)));
+            }
+            assert_eq!(results[0].1.0, Some(205), "llc {major} ({})", linker.0);
+            all_equal(&results, &format!("eax {major} ({})", linker.0));
+            runs += 1;
+        }
+    }
+    eprintln!("i386 PIC eax: {runs} runs equal llc's");
+}

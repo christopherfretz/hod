@@ -175,26 +175,67 @@ pub fn add_addend(cx: &mut FnCx<'_, X86>, rd: Reg, addend: i64) {
     }
 }
 
-/// Whether `inst`, built over a memory operand based on `eax`, also names
-/// `eax` as a register it reads (the `ModRM.reg` field of a store or an
-/// arithmetic operation): [`mem_inst`]'s contract forbids it.
+/// Whether `inst`, built over a memory operand based on `eax`, also reads
+/// `eax`: as its `ModRM.reg` operand (a store, an operation, `xchg`,
+/// `cmov`, two-operand `imul`, `xadd`, `bt*`, `shld`/`shrd`) or
+/// implicitly (`mul`/`div`/`imul`/`idiv` of memory, `cmpxchg`,
+/// `cmpxchg8b`): [`mem_inst`]'s contract forbids it. Loads (`mov`,
+/// `lea`, `movzx`/`movsx`, `imul r, m, imm`) write their register after
+/// the address is formed; groups (`/digit`), the x87 escapes and the SSE
+/// forms (whose register is an `xmm`) name no general register.
 fn reads_eax(inst: Inst) -> bool {
     let Ok(admitted) = Mode::X86.admit(inst) else { return false };
     let bytes = admitted.bytes();
     let mut at = 0;
-    while bytes.get(at).is_some_and(|b| matches!(b, 0x66 | 0x65 | 0x64 | 0xf0)) {
+    let prefix =
+        |b: &u8| matches!(b, 0x66 | 0xf0 | 0xf2 | 0xf3 | 0x26 | 0x2e | 0x36 | 0x3e | 0x64 | 0x65);
+    while bytes.get(at).is_some_and(prefix) {
         at += 1;
     }
-    let (Some(&op), Some(&modrm)) = (bytes.get(at), bytes.get(at + 1)) else { return false };
-    // Loads (`mov`, `lea`, `movzx`/`movsx` behind `0F`) write their
-    // register after the address is formed; groups (`/digit`) name none.
-    let writes_only = matches!(op, 0x8a | 0x8b | 0x8d | 0x0f);
-    let group = matches!(
-        op,
-        0x80..=0x83 | 0xc0 | 0xc1 | 0xc6 | 0xc7 | 0xd0..=0xd3 | 0xf6 | 0xf7 | 0xfe | 0xff
-    );
+    let Some(&op) = bytes.get(at) else { return false };
+    if op == 0x0f {
+        let (Some(&op2), Some(&modrm)) = (bytes.get(at + 1), bytes.get(at + 2)) else {
+            return false;
+        };
+        let reg_field = (modrm >> 3) & 7;
+        return match op2 {
+            0xb0 | 0xb1 | 0xc7 => true,
+            0x40..=0x4f
+            | 0xaf
+            | 0xa3
+            | 0xab
+            | 0xb3
+            | 0xbb
+            | 0xa4
+            | 0xa5
+            | 0xac
+            | 0xad
+            | 0xc0
+            | 0xc1 => reg_field == 0,
+            _ => false,
+        };
+    }
+    let Some(&modrm) = bytes.get(at + 1) else { return false };
     let reg_field = (modrm >> 3) & 7;
-    !writes_only && !group && reg_field == 0
+    match op {
+        0xf6 | 0xf7 => reg_field >= 4,
+        // Loads, then groups and the x87 escapes.
+        0x8a
+        | 0x8b
+        | 0x8d
+        | 0x69
+        | 0x6b
+        | 0x80..=0x83
+        | 0xc0
+        | 0xc1
+        | 0xc6
+        | 0xc7
+        | 0xd0..=0xd3
+        | 0xd8..=0xdf
+        | 0xfe
+        | 0xff => false,
+        _ => reg_field == 0,
+    }
 }
 
 /// The instruction `make` builds over the memory operand `[sym + addend]`
@@ -204,9 +245,14 @@ fn reads_eax(inst: Inst) -> bool {
 /// `[eax + addend]`. A thread-local symbol's address is put in `eax` by
 /// `tls::address`.
 ///
-/// Contract: in PIC this writes `eax` (and the word below `esp`), so
-/// `eax` holds nothing live and `make` names it as no register it reads;
-/// a store or an operation of `eax` over a symbol is `Internal`.
+/// Contract (`spec/codegen-x86.md` §8.2): in PIC, and for a thread-local
+/// symbol in any model, this writes `eax` (and the word below `esp`), so
+/// `eax` holds nothing live and `make` builds no instruction that reads
+/// `eax` ([`reads_eax`]: as its register operand or implicitly); one that
+/// does is `Internal`, never emitted. No lowering reaches that today: the
+/// only caller is `mem`'s load and store, whose register is a value's or
+/// a temporary's (the pool, `ebx`/`esi`/`edi`: `eax` is not holdable, a
+/// call's result is moved out of it at once) or `ecx`/`edx`.
 ///
 /// # Errors
 /// What `tls::address` refuses; `Internal` as above.
@@ -300,5 +346,33 @@ mod tests {
         assert!(!reads_eax(mc::lea(Size::D, EAX, m)));
         assert!(!reads_eax(mc::movzx_rm(Size::D, EAX, Size::B, m)));
         assert!(reads_eax(mc::mov_mr(Size::W, m, EAX)));
+        assert!(reads_eax(mc::mov_mr(Size::B, m, EAX)));
+        assert!(!reads_eax(mc::mov_mr(Size::B, m, Reg::Rbx)));
+        // `ModRM.reg` sources and destinations that are also read.
+        assert!(reads_eax(mc::add_rm(Size::D, EAX, m)));
+        assert!(reads_eax(mc::add_mr(Size::D, m, EAX)));
+        assert!(reads_eax(mc::test_mr(Size::D, m, EAX)));
+        assert!(reads_eax(mc::xchg_mr(Size::D, m, EAX)));
+        assert!(reads_eax(mc::xadd_mr(Size::D, m, EAX)));
+        assert!(reads_eax(mc::imul_rm(Size::D, EAX, m)));
+        assert!(reads_eax(mc::cmovcc_rm(mc::Cond::E, Size::D, EAX, m)));
+        assert!(!reads_eax(mc::imul_rm(Size::D, Reg::Rsi, m)));
+        assert!(!reads_eax(mc::imul_rmi(Size::D, EAX, m, 3)));
+        assert!(!reads_eax(mc::movzx_rm(Size::D, EAX, Size::W, m)));
+        // Implicit `eax`.
+        for size in [Size::B, Size::D] {
+            assert!(reads_eax(mc::mul_m(size, m)));
+            assert!(reads_eax(mc::div_m(size, m)));
+            assert!(reads_eax(mc::idiv_m(size, m)));
+        }
+        assert!(reads_eax(mc::cmpxchg_mr(Size::D, m, Reg::Rcx)));
+        assert!(reads_eax(mc::cmpxchg8b_m(m)));
+        assert!(!reads_eax(mc::neg_m(Size::D, m)));
+        // The x87 escapes and the SSE forms name no general register.
+        for w in [mc::X87Size::S, mc::X87Size::D] {
+            assert!(!reads_eax(mc::fld_m(w, m)));
+        }
+        assert!(!reads_eax(mc::movs_mr(mc::FpSize::S, m, mc::Xmm::ALL[0])));
+        assert!(!reads_eax(mc::movs_mr(mc::FpSize::D, m, mc::Xmm::ALL[0])));
     }
 }

@@ -730,11 +730,15 @@ or `ret` in its reach reads gets a 12-byte slot, stored at 80 bits
 before the glue store (`x87::store_call_result`); `fp_cast` and
 `x87::ret_copy` read the slot for a view; `x87` keeps no §11 copy of
 such a result. Not modelled: `llc`'s bit-test form of an `atomicrmw
-or`/`and` (one instruction) counts as a loop. Divergence (WP-317's
-FINDING, an ignored test): at `pentium3` an `fpext` of a `float` call
-result to `double` is an x87 value that `llc` keeps as `x` for every
-x87 use in the block (`faddp` of `x`); hod's x87 operations read its
-home, rounded to `double`.
+or`/`and` (one instruction) counts as a loop. At SSE without SSE2
+(`pentium3`) an `fpext` of a `float` call result to `double` is an x87
+value that `llc` keeps as `x` for every x87 use in the reach (`faddp`
+of `x`, measured 19 and 22): `x87::push` reads the view's slot for
+every x87 operand, and `x87::cast` (`fpext`/`fptrunc` between
+`double` and `x86_fp80`) pushes what `fp_cast` would
+(`sse::x87_cast_source`: `fptrunc x86_fp80 (fpext w)` to `double`
+rounds `x` through `float`). Without SSE no view exists and neither
+function changes its code.
 
 **Remains refused.** `half`, `bfloat` (`x86:float:half`,
 `x86:float:bfloat`: with SSE2 `llc` returns them in `xmm0`, which the

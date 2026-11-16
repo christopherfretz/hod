@@ -471,6 +471,21 @@ fn fp_cast<'a>(
         X87Size::D => 8,
         X87Size::T => 10,
     };
+    if !push_source(cx, inst, arg, to)? {
+        let src = cx.use_mem(arg)?;
+        crate::x87::ret_copy(cx, inst, arg, true);
+        crate::x87::load_ret(cx, src, bytes);
+    }
+    let inst = cx.body.inst(inst.id());
+    let r = cx.def_mem(inst)?;
+    frame_inst(cx, r, |m| mc::fstp_m(b, m));
+    Ok(())
+}
+
+/// Pushes what `fpext`/`fptrunc` `inst` to `to` reads when its operand
+/// involves a view ([`Source::View`], [`Source::Rounded`]); whether it
+/// did (else nothing is emitted).
+fn push_source(cx: &mut FnCx<'_, X86>, inst: Inst<'_>, arg: Value, to: TypeId) -> CgResult<bool> {
     match source(cx, inst, arg, to)? {
         Source::View(slot) => frame_inst(cx, slot, |m| mc::fld_m(X87Size::T, m)),
         Source::Rounded(slot, size) => {
@@ -482,16 +497,22 @@ fn fp_cast<'a>(
             put(cx, mc::fld_m(size, sp(0)));
             above(cx, 12);
         }
-        Source::Operand => {
-            let src = cx.use_mem(arg)?;
-            crate::x87::ret_copy(cx, inst, arg, true);
-            crate::x87::load_ret(cx, src, bytes);
-        }
+        Source::Operand => return Ok(false),
     }
-    let inst = cx.body.inst(inst.id());
-    let r = cx.def_mem(inst)?;
-    frame_inst(cx, r, |m| mc::fstp_m(b, m));
-    Ok(())
+    Ok(true)
+}
+
+/// From `x87::cast`: an `fpext`/`fptrunc` between x87 types (at SSE
+/// without SSE2, `double` and `x86_fp80`) whose operand is a view, or an
+/// `fpext` of one: pushes what `llc` reads (as [`fp_cast`]). Whether it
+/// did; nothing is emitted otherwise (and never without an SSE call
+/// result in the function).
+///
+/// # Errors
+/// What the operand's type reports.
+pub fn x87_cast_source(cx: &mut FnCx<'_, X86>, inst: Inst<'_>, arg: Value) -> CgResult<bool> {
+    let to = inst.ty();
+    push_source(cx, inst, arg, to)
 }
 
 /// What an `fpext`/`fptrunc` pushes ([`Views`]).
@@ -1028,8 +1049,11 @@ fn ext_operand(cx: &FnCx<'_, X86>, v: Value) -> Option<Value> {
     }
 }
 
-/// The slot of `x` that `ret` `user` returns for `value`, if `value` is
-/// a view (from `x87::ret_copy`).
+/// The slot of `x` that `user` reads for `value`, if `value` is a view
+/// (from `x87::ret_copy` for a `ret`, and from `x87::push` for any x87
+/// operation: at SSE without SSE2 an `fpext` of a `float` call result to
+/// `double` is `x` for every x87 use in its reach, measured `llc` 19 and
+/// 22).
 pub fn ret_view(cx: &FnCx<'_, X86>, value: Value, user: Inst<'_>) -> Option<FrameRef> {
     if cx.state.sse.live.is_empty() {
         return None;

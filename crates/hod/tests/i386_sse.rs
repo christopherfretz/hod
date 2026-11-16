@@ -370,8 +370,8 @@ fn fold_module(cpu: &str, p3_x87: bool) -> String {
 
 /// At `pentium3` these two read an `fpext` of the call result, an x87
 /// `double`, in x87 arithmetic, where `llc` has the 80-bit value and
-/// §11's copies do not (the FINDING of WP-317's record): run only by the
-/// ignored test below.
+/// §11's copies do not (the finding of WP-317's second session): run by
+/// their own test below.
 const P3_X87: [&str; 2] = ["trunc_other_add", "ext_sub"];
 
 /// (name, return type of the shape or "void", body). A void shape stores
@@ -563,12 +563,11 @@ fn call_result_folds_run_as_llc_s() {
     fold_runs(&CPUS.map(|c| c.0), false);
 }
 
-/// The FINDING: at `pentium3` an `fpext` of a `float` call result to the
-/// x87 `double` is the 80-bit value in `llc` for every x87 use in the
-/// block; hod's x87 operations read its home (rounded). Fixing it needs
-/// `x87::push` (I9's) to read `sse`'s view.
+/// At `pentium3` an `fpext` of a `float` call result to the x87 `double`
+/// is the 80-bit value in `llc` for every x87 use in the block, and an
+/// x87 `fptrunc` of an `fpext` of it to another type rounds through
+/// `float` (`x87::push` and `x87::cast` read `sse`'s view).
 #[test]
-#[ignore = "pentium3: x87 uses of an fpext of an SSE call result read the rounded home (x87.rs)"]
 fn call_result_folds_into_x87_doubles_at_pentium3() {
     fold_runs(&["pentium3"], true);
 }

@@ -477,6 +477,25 @@ pub fn lower<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>) -> CgResult<()> {
     }
 }
 
+/// Whether `llc` lowers the `atomicrmw` `inst` (operation `op`) with a
+/// block boundary, an x87 barrier (§11, §12 "Barriers"). Measured in the
+/// `-O0` assembly of `llc` 19 and 22 at CPU `generic` and `i686`: a
+/// loop for every 8-byte operation (`lock cmpxchg8b`); at 1, 2 and 4
+/// bytes for every operation except `xchg`, `add` and `sub`, and except
+/// `and`, `or`, `xor` whose result is unused (`lock and`/`or`/`xor`, no
+/// loop); the floating operations are loops. `cmpxchg` (strong or weak,
+/// 8 bytes included), fences, ordered loads and stores have no branch.
+pub fn barrier(cx: &FnCx<'_, X86>, inst: Inst<'_>, op: RmwOp) -> bool {
+    if cx.types().size_of(inst.ty()) == 8 {
+        return true;
+    }
+    match op {
+        RmwOp::Xchg | RmwOp::Add | RmwOp::Sub => false,
+        RmwOp::And | RmwOp::Or | RmwOp::Xor => !inst.uses().is_unused(),
+        _ => true,
+    }
+}
+
 /// Whether `agg` is the result of a `cmpxchg` (whose fields
 /// [`extract`] reads).
 pub fn is_cmpxchg_result(cx: &FnCx<'_, X86>, agg: Value) -> bool {

@@ -26,6 +26,30 @@ one literal path per command).
 - Spec: `spec/codegen-x86.md` §12 + §3 + §7 rows, `spec/eh.md` §2.1,
   README row.
 
+## Measured in session 1
+
+- irdiff i686 full tier: LLVM 22 base 9 PASS / 195 UNSUPPORTED / 0 FAIL,
+  head 90 PASS / 111 UNSUPPORTED / 3 FAIL (hod built 3 -> 31 of 68
+  objects; `x86:eh` 35 -> 0; newly reached: x86:intrinsic +4,
+  x86:float:cast +2, x86:abi:wide-arg +1). LLVM 19: 9 -> 90 PASS, 192 ->
+  108 UNSUPPORTED, 3 FAIL. The 3 FAIL rows are `tests/ir/global_ctors.ll`
+  (bfd, lld, mold): NOT an EH bug, a hod_cg bug the EH refusal hid:
+  `crates/hod_cg/src/emit/mod.rs:1383` `append_zeros(section, 8)` writes
+  8-byte `.init_array`/`.fini_array` entries on i386; it should be
+  `u64::from(arch.address_bytes())` (8 on 64-bit: byte-identical). Not
+  fixed: hod_cg outside authorization; supervisor to decide.
+- compare-binaries base 31400b11 vs head: aarch64 and x86_64 0 different,
+  0 changed-outcome (3487 + 3456 modules x2 modes); i686: 64 refused ->
+  compiles, 18 refused under another name, 8 different (objects now with
+  `.eh_frame`), none compiles -> error.
+- `cargo clippy --workspace --all-targets -D warnings`: one error in
+  `crates/hod/tests/i386_module_asm.rs:367` (too_many_lines), present at
+  base, not this package's file. fmt clean.
+- Unit tests `-p hod_x86 -p hod_eh -p hod_dwarf -p hod_cg`: all ok.
+  `-p hod --test 'i386*' --test debug_frame --test hardening --test
+  debug_e2e`: 10 result lines all ok, but the glob may not have selected
+  every i386 test: rerun them by name and read the x87 shape counts.
+
 ## Remaining, in order
 
 1. irdiff i686 full tier, LLVM 22 and 19, base vs head (command running

@@ -55,6 +55,32 @@ pub struct Sym {
     pub size: u64,
 }
 
+/// hod's own `.mason.meta` unit (`spec/codegen.md` §9.7.5, WP-332) is
+/// the one difference from `llc` that rule permits: in the section named
+/// `.mason.meta` whose type is `SHT_PROGBITS` and whose flags are exactly
+/// `SHF_EXCLUDE`, the unit of producer 2 that ends the section is left
+/// out of the description; a section that held nothing else is left out
+/// whole (its type becomes `SHT_NULL`, which no description lists).
+/// Everything else in the section, kiln's unit among it, is compared.
+fn leave_out_hods_unit(bytes: &[u8], section: &mut Section) {
+    if section.sh_type == SHT_NOBITS {
+        return;
+    }
+    let data = &bytes[section.offset as usize..(section.offset + section.size) as usize];
+    let Some(at) = hod_testutil::mason::hods_unit_start(
+        section.name.as_bytes(),
+        section.sh_type,
+        section.flags,
+        data,
+    ) else {
+        return;
+    };
+    section.size = at as u64;
+    if at == 0 {
+        section.sh_type = 0;
+    }
+}
+
 /// A parsed object.
 pub struct Elf {
     pub bytes: Vec<u8>,
@@ -84,6 +110,9 @@ impl Elf {
                 align: u64_at(&bytes, h + 0x30),
                 entsize: u64_at(&bytes, h + 0x38),
             });
+        }
+        for section in &mut sections {
+            leave_out_hods_unit(&bytes, section);
         }
         let mut symbols = Vec::new();
         if let Some(symtab) = sections.iter().find(|s| s.sh_type == SHT_SYMTAB) {

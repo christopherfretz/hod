@@ -1430,8 +1430,14 @@ impl<'m> ModuleEmitter<'m> {
     /// `SHF_EXCLUDE`, alignment 8, no group, no relocation.
     fn mason_unit(&mut self) -> CgResult<()> {
         let unit = mason::unit(crate::access::model_used(self.module, &self.options));
-        let found =
-            self.sections.explicit(mason::SECTION, Kind::Exclude, false, false, NO_GROUP, mason::ALIGN);
+        let found = self.sections.explicit(
+            mason::SECTION,
+            Kind::Exclude,
+            false,
+            false,
+            NO_GROUP,
+            mason::ALIGN,
+        );
         let section = match found {
             Found::Old(section) => section,
             Found::New(new, pending) => {

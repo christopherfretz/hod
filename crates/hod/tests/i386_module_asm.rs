@@ -24,7 +24,7 @@ use std::process::Command;
 
 use hod::{Options, OutputKind, RelocModel};
 use hod_testutil::target::Target;
-use hod_testutil::{LLVM_MAJORS, Scratch, linkers, tools_required};
+use hod_testutil::{LLVM_MAJORS, Scratch, linkers, mason, tools_required};
 
 mod i386_support;
 use i386_support::{TRIPLE, back_end_object, checked, llc_object, llvm_tool, run, tool};
@@ -125,13 +125,26 @@ fn describe(bytes: &[u8]) -> Described {
     let mut sections = raw;
     for (i, s) in sections.iter_mut().enumerate() {
         s.name = cstr(strtab + u32_at(bytes, header(i)) as usize);
+        // hod's own unit, the one difference `spec/codegen.md` §9.7.5
+        // permits: left out, and its section with it when it held
+        // nothing else (type `SHT_NULL`, skipped below).
+        if s.ty != 8 {
+            let data = &bytes[s.offset..s.offset + s.size];
+            let flags = u64::from(s.flags);
+            if let Some(at) = mason::hods_unit_start(s.name.as_bytes(), s.ty, flags, data) {
+                s.size = at;
+                if at == 0 {
+                    s.ty = 0;
+                }
+            }
+        }
     }
     let data = |s: &Section| -> &[u8] {
         if s.ty == 8 { &[] } else { &bytes[s.offset..s.offset + s.size] }
     };
     let mut out = Described { sections: Vec::new(), relocations: Vec::new(), symbols: Vec::new() };
     for s in &sections {
-        if ignored(&s.name) {
+        if ignored(&s.name) || s.ty == 0 {
             continue;
         }
         let hex = data(s).iter().fold(String::new(), |mut hex, b| {

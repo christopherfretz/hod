@@ -22,6 +22,7 @@
 pub mod avx512;
 pub mod jobs;
 pub mod linkers;
+pub mod mason;
 pub mod target;
 
 pub use target::Target;

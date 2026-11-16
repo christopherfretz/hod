@@ -29,7 +29,9 @@ fn the_plan_is_the_budget_in_disjoint_ranges() {
         *per.entry((slice.arch, slice.llvm, slice.profile.name, slice.mode.name())).or_default() +=
             slice.count;
     }
-    for arch in Arch::ALL {
+    // i686 has no ranges yet: asked for, it gets none.
+    assert!(slices.iter().all(|slice| budget::TARGETS.contains(&slice.arch)));
+    for arch in budget::TARGETS {
         for line in BUDGET {
             let (profile, mode) = (line.profile, line.mode.name());
             assert_eq!(per[&(arch, 22, profile, mode)], line.seeds);

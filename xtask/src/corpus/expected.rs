@@ -116,6 +116,9 @@ fn parse_row(line: &str, number: usize) -> Result<Row, String> {
         return Err(format!("{} fields, not 5 separated by tabs", fields.len()));
     };
     let target = Arch::from_name(target).ok_or_else(|| format!("unknown target '{target}'"))?;
+    if target == Arch::I686 {
+        return Err(super::NO_I686_CORPUS.to_owned());
+    }
     if test.contains(['*', '?', '[']) || test.ends_with('/') {
         return Err(format!("'{test}' is not one test (no wildcard or directory rows)"));
     }
@@ -482,7 +485,8 @@ mod tests {
         assert!(bad("x86_64\trefused\tkiln a.c\tcc:*\tr").contains("one refusal name"));
         assert!(bad("x86_64\tundefined\tkiln a.c\tcc:x\tr").contains("write '-'"));
         assert!(bad("x86_64\tundefined\tkiln a.c\t-\t-").contains("evidence"));
-        assert!(bad("i386\tundefined\tkiln a.c\t-\te").contains("unknown target"));
+        assert!(bad("riscv64\tundefined\tkiln a.c\t-\te").contains("unknown target"));
+        assert!(bad("i386\tundefined\tkiln a.c\t-\te").contains("has no corpus"));
         assert!(bad("x86_64\txfail\tkiln a.c\t-\te").contains("unknown kind"));
         assert!(bad("x86_64 refused kiln a.c cc:x r").contains("not 5"));
         let twice = format!("{REFUSED}{REFUSED}");

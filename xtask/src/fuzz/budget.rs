@@ -100,8 +100,14 @@ impl Slice {
     }
 }
 
+/// The targets the budget's seed ranges are laid out over, in order. Not
+/// [`Arch::ALL`]: a target added there would move every later range and
+/// renumber the budget's seeds. i686 (design 0008, milestone B) gets
+/// ranges of its own when its budget is decided.
+pub const TARGETS: [Arch; 2] = [Arch::Aarch64, Arch::X86_64];
+
 /// The slices of the budget from seed `base`, for `targets`, in the order
-/// they run: LLVM 22 then 19, each target, the lines in order, chunks of at
+/// they run: LLVM 22 then 19, each of [`TARGETS`], the lines in order, chunks of at
 /// most [`CHUNK`] seeds. Every slice's seeds follow the previous slice's,
 /// so no two slices share a seed, whatever `targets` is (a target left out
 /// keeps its ranges).
@@ -109,7 +115,7 @@ pub fn plan(base: u64, targets: &[Arch]) -> Vec<Slice> {
     let mut slices = Vec::new();
     let mut next = base;
     for llvm in [22, 19] {
-        for arch in Arch::ALL {
+        for arch in TARGETS {
             for line in BUDGET {
                 let profile = Profile::by_name(line.profile).expect("a profile of the budget");
                 let mut seeds =

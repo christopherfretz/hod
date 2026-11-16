@@ -1162,8 +1162,8 @@ runs").
 
 | tier | runs, in order |
 |---|---|
-| `ci --quick` | `irdiff --tier quick` with the default oracle; `irdiff --llvm 22 --target <other>` over every test (`xtask::ci::QUICK_CROSS_LLVM`); `irdiff --llvm 22 --target i686 --tier quick` |
-| `ci` | `irdiff --witness` over every test with LLVM 22, then 19; `irdiff --hybrid` over every test with the default oracle; `irdiff --target <other>` over every test with LLVM 22, then 19; `irdiff --llvm 22 --target i686 --tier quick` |
+| `ci --quick` | `irdiff --tier quick` with the default oracle; `irdiff --llvm 22 --target <other>` over every test (`xtask::ci::QUICK_CROSS_LLVM`); `irdiff --llvm 22 --target i686` over every test (the quick tier until the i386 join C) |
+| `ci` | `irdiff --witness` over every test with LLVM 22, then 19; `irdiff --hybrid` over every test with the default oracle; `irdiff --target <other>` over every test with LLVM 22, then 19; `irdiff --llvm 22 --target i686` over every test |
 
 The i686 run (WP-302) is the quick tier with LLVM 22 on every Linux host
 of a known architecture, in both tiers of the gate: hod builds no object

@@ -539,8 +539,9 @@ pub const QUICK_CROSS_LLVM: u32 = crate::irdiff::tools::LLVM_MAJORS[0];
 ///   the other architecture under the emulator, once per oracle, so that a
 ///   difference between LLVM 19's and 22's programs of that target is a
 ///   failure of one of the two runs;
-/// - both: last, the quick tier for i686 under its emulator with
-///   [`QUICK_CROSS_LLVM`] (WP-302: about 2 s while hod declines it).
+/// - both: last, every test for i686 under its emulator with
+///   [`QUICK_CROSS_LLVM`] (WP-302 ran the quick tier; the i386 join C
+///   the full one: about 8 s on a loaded machine).
 ///
 /// A host that is not a Linux machine of a known architecture runs no
 /// cross run: there is no "other" target to emulate.
@@ -557,12 +558,12 @@ pub fn irdiff_runs(quick: bool, host: Option<crate::irdiff::Arch>) -> Vec<Irdiff
         paths: &[],
     };
     let other = host.map(|host| if host == Arch::Aarch64 { Arch::X86_64 } else { Arch::Aarch64 });
-    // WP-302: the quick tier for i686 with the newest oracle, last, in
-    // both tiers of the gate, on a host that can emulate it.
+    // WP-302: i686 with the newest oracle, last, in both tiers of the
+    // gate, on a host that can emulate it (every test since the i386
+    // join C).
     let i686 = host.map(|_| IrdiffRun {
         llvm: Some(QUICK_CROSS_LLVM),
         target: Some(Arch::I686),
-        tier: TierFilter::Quick,
         ..base.clone()
     });
     let mut runs = Vec::new();
@@ -782,13 +783,13 @@ mod tests {
         };
         // The quick gate runs every seed for the other architecture, with
         // LLVM 22 (WP-139).
-        // Both tiers end with the quick tier for i686 (WP-302).
+        // Both tiers end with every test for i686 (WP-302, i386 join C).
         assert_eq!(
             commands(true, Some(Arch::Aarch64)),
             [
                 "cargo xtask irdiff --tier quick",
                 "cargo xtask irdiff --llvm 22 --target x86_64",
-                "cargo xtask irdiff --llvm 22 --target i686 --tier quick",
+                "cargo xtask irdiff --llvm 22 --target i686",
             ]
         );
         assert_eq!(
@@ -799,12 +800,12 @@ mod tests {
                 "cargo xtask irdiff --hybrid",
                 "cargo xtask irdiff --llvm 22 --target x86_64",
                 "cargo xtask irdiff --llvm 19 --target x86_64",
-                "cargo xtask irdiff --llvm 22 --target i686 --tier quick",
+                "cargo xtask irdiff --llvm 22 --target i686",
             ]
         );
         let on_x86 = commands(false, Some(Arch::X86_64));
         assert_eq!(on_x86[3], "cargo xtask irdiff --llvm 22 --target aarch64");
-        assert_eq!(on_x86[5], "cargo xtask irdiff --llvm 22 --target i686 --tier quick");
+        assert_eq!(on_x86[5], "cargo xtask irdiff --llvm 22 --target i686");
         assert_eq!(commands(true, Some(Arch::X86_64)).len(), 3);
         assert_eq!(commands(true, None), ["cargo xtask irdiff --tier quick"]);
         assert_eq!(commands(false, None).len(), 3);

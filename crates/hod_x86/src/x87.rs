@@ -223,6 +223,10 @@ pub struct Copies {
 /// What allocating the copy's slot reports.
 pub fn call_result(cx: &mut FnCx<'_, X86>, inst: Inst<'_>, on: bool) -> CgResult<()> {
     cx.state.x87.call = None;
+    // A result of an SSE type: `sse` keeps its 80-bit value (I12).
+    if crate::sse::call_result(cx, inst, on)? {
+        return Ok(());
+    }
     let wide = matches!(cx.types().kind(inst.ty()), TypeKind::Float | TypeKind::Double);
     if on && wide && !inst.uses().is_unused() {
         cx.state.x87.call = copy_slot(cx, inst)?.map(|slot| (inst.id().raw(), slot));
@@ -233,6 +237,7 @@ pub fn call_result(cx: &mut FnCx<'_, X86>, inst: Inst<'_>, on: bool) -> CgResult
 /// The glue store of `st0` to `dst` (`Target::store`): first the 80-bit
 /// copy of the call result being stored, if [`call_result`] took a slot.
 pub fn store_call_result(cx: &mut FnCx<'_, X86>, dst: FrameRef, bytes: u32) {
+    crate::sse::store_call_copy(cx);
     if let Some((raw, slot)) = cx.state.x87.call.take() {
         let inst = cx.body.inst(InstId::new(raw));
         store_copy(cx, inst, slot);
@@ -245,7 +250,12 @@ pub fn store_call_result(cx: &mut FnCx<'_, X86>, dst: FrameRef, bytes: u32) {
 /// (measured: `fdivrp; retl`), so the glue load ([`load_ret`]) takes
 /// its copy. `on` false ends the bracket.
 pub fn ret_copy(cx: &mut FnCx<'_, X86>, inst: Inst<'_>, value: Value, on: bool) {
-    cx.state.x87.ret = if on { copy_for(cx, value, inst.id()) } else { None };
+    // A view of an SSE call result returns its 80-bit value (I12).
+    cx.state.x87.ret = if on {
+        crate::sse::ret_view(cx, value, inst).or_else(|| copy_for(cx, value, inst.id()))
+    } else {
+        None
+    };
 }
 
 /// The glue load of `src` into `st0` (`Target::load`): the copy that
@@ -632,7 +642,8 @@ fn above(cx: &mut FnCx<'_, X86>, n: u32) {
 /// Pushes operand `v` (of type `fp`) of instruction `user`: its 80-bit
 /// copy if `user` is in its run, else its home. Whether it was the copy.
 fn push(cx: &mut FnCx<'_, X86>, v: Value, fp: Fp, user: Inst<'_>) -> CgResult<bool> {
-    if let Some(slot) = copy_for(cx, v, user.id()) {
+    // An `fpext` of an SSE call result is its 80-bit value (§16).
+    if let Some(slot) = crate::sse::ret_view(cx, v, user).or_else(|| copy_for(cx, v, user.id())) {
         fld(cx, Fp::F80, slot);
         return Ok(true);
     }
@@ -1094,6 +1105,10 @@ fn cast<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, arg: Value) -> CgResult<()> 
     match inst.opcode() {
         Opcode::FPExt | Opcode::FPTrunc if is_fp(cx, from) && is_fp(cx, inst.ty()) => {
             let (a, b) = (fp_of(cx, from)?, fp_of(cx, inst.ty())?);
+            if crate::sse::x87_cast_source(cx, inst, arg)? {
+                // A view of an SSE call result (§16).
+                return result(cx, inst, b, false);
+            }
             if let Some(x) = undone(cx, inst, arg) {
                 // `fptrunc (fpext x)` back to `x`'s type in one block is
                 // `x` (`llc`'s DAG folds it).

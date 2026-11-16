@@ -168,12 +168,21 @@ their values).
 | `x86:i64` | not reachable since WP-315 (§13.4): every integer of 33 to 64 bits is taken by §8, `abi.rs` or §13 | I6, WP-306, WP-315 |
 | `x86:i64:wide` | an integer wider than 64 bits (§8), also as a `switch` condition, a `ptradd` index and the result of an integer intrinsic of §8 | — |
 | `x86:float` | a floating-point value in a register where §11 takes none (arguments and results are I6's since the join) | — |
-| `x86:float:half`, `x86:float:bfloat`, `x86:float:fp128` | a value of those types | — |
-| `x86:float:sse` | a `float` operation with SSE, a `double` one with SSE2 (`llc` uses `xmm`) | I12 |
+| `x86:float:half` | a `half` value in a function without SSE2; a `half` parameter or result of `fastcc` or `inreg` (§16) | — |
+| `x86:float:half:intrinsic` | an intrinsic on `half` (§16) | — |
+| `x86:float:bfloat`, `x86:float:fp128` | a value of those types | — |
 | `x86:float:i64-cast` | a conversion between a floating type and an integer of 33 to 63 or more than 64 bits (§11; `fptoui` to `i64` is lowered since the i386 join C) | — |
 | `x86:float:intrinsic` | a floating-point intrinsic §11 does not lower | — |
 | `x86:float:cast` | a `bitcast` of a floating value, another cast not in §11 | — |
-| `x86:vector` | a vector value, a vector `ptradd`, the element operations | I12 |
+| `x86:vector` | a vector `ptradd` (§17) | I12 |
+| `x86:vector:no-sse2` | a vector in a function without SSE2 (§17) | — |
+| `x86:vector:wide` | a vector of more than 16 bytes passed or returned | — |
+| `x86:vector:abi` | a vector of `i1`, of one lane or of odd-width integers passed or returned | — |
+| `x86:vector:element` | lanes of `half`, `bfloat`, `fp128`, `x86_fp80`, odd-width integers | — |
+| `x86:vector:scalable` / `:length` | a scalable vector; more than 256 lanes | — |
+| `x86:vector:i64-op` | `i64` lanes: an operation other than `add`, `sub`, bitwise, compares, moves | — |
+| `x86:vector:frem` / `:cast` | `frem`; casts with unsigned 32-bit or 64-bit lanes and floating point | — |
+| `x86:vector:intrinsic` | an intrinsic on vectors other than the integer and `i1` reductions | — |
 | `x86:aggregate` | since WP-315 (§13.2) only an aggregate argument of more than 16 leaves (`abi.rs`'s `MAX_LEAVES`) and an aggregate without a layout | — |
 | `x86:frame-depth` | `llvm.frameaddress`/`returnaddress` deeper than 256 frames (§13.5) | — |
 | `x86:eh:landingpad`, `x86:eh:landingpad-clause`, `x86:eh:resume`, `x86:eh:typeid` | a `landingpad` or `resume` of a type other than `{ ptr, i32 }`; a clause that is not a symbol, `null` or an array of them; `llvm.eh.typeid.for` of a non-symbol (§14; `x86:eh` itself removed by WP-314) | — |
@@ -482,8 +491,8 @@ written as on the other targets.
 
 **Types and homes.** `float`, `double` and `x86_fp80` are class `Mem`:
 a home in the frame of 4, 8 or 12 bytes (`x86_fp80`'s image is the low
-10). A function whose CPU has SSE (`float`) or SSE2 (`double`) is
-refused `x86:float:sse` (`llc` computes in `xmm`); the CPU is the
+10). In a function whose CPU has SSE (`float`) or SSE2 (`double`)
+those types are §16's (`llc` computes in `xmm`); the CPU is the
 function's `target-cpu`/`target-features`, else the tool's `-mcpu`/
 `-mattr` (`generic` without them; `X86::with_cpu`, as `llc` takes its
 options for a function without the attributes).
@@ -973,3 +982,191 @@ through the pointer hod saved. A thread-local variable is
   debugger sessions (gdb-multiarch under `qemu-i386 -g`) are in WP-314's
   record; the debug lane has no i686 column yet (`xtask/src/debug.rs`
   `NO_I686_LANE`).
+
+## 16. Scalar SSE (`sse`, WP-317, design 0008 I12)
+
+**Which values.** In a function whose CPU has SSE, `float` is an SSE
+type; with SSE2, `double` too (the CPU as §11 decides it: the
+function's `target-cpu`/`target-features`, else `-mcpu`).
+`sse::owns` is the one decision point: an instruction with an SSE value
+as its result or an operand (`fcmp`, a store, a cast, an intrinsic) is
+lowered by `sse`; every other floating instruction by `x87` as §11
+says, unchanged. `x86_fp80` is always §11's; at SSE without SSE2
+(`pentium3`) so is `double`.
+
+**Homes, ABI, glue.** SSE values are class `Mem` as on the x87 (4 or 8
+bytes): arguments on the stack, `phi`s, and `float`/`double` returns
+and call results through `st0` are §11's glue. This departs from
+design 0008's `Fpr` row on purpose: hod does not aim at fast code, a
+value in memory needs no `xmm` glue for arguments, returns, `phi`s or
+spills (the x87 path already has all of it), and `class_of` has only
+the types, not the function's features. A call result of an SSE type
+is stored by `fstp` at its type's width, which every SSE use reads;
+an `fpext`, `fptrunc` or `ret` may read its 80-bit value instead
+("The 80-bit value of a call result" below). A return loads the home
+(`fld`), as `llc` writes `movsd` to a stack slot and `fldl`.
+
+**Operations.** The first operand is loaded into `xmm6`
+(`movss`/`movsd`), the operation takes the second from its home, the
+result is stored to its home: every result is rounded to its type at
+once, as `llc`'s, so no SSE value has an 80-bit copy. `fadd`, `fsub`,
+`fmul`, `fdiv` (`adds`...), `sqrt` (`sqrts`), `fmuladd` (`muls` then
+`adds`: two roundings, as `llc` at these CPUs), `minnum`/`maxnum` as
+`llc`: `b` where `a` is a NaN, else `mins b, a` (`b < a ? b : a`;
+`maxs` `b > a ? b : a`). `fneg`, `fabs`, `copysign` change the sign bit
+of the copy in memory (bit-exact as `llc`'s masks). Loads and stores
+through `xmm6`; `freeze` and a `select` of a constant condition copy;
+`select` takes the address of the chosen home by `cmov` (every SSE CPU
+has it) and copies through `xmm6`. `fcmp`: `ucomis` with §11's operand
+order and flag reading. Constants are written into the home by `mov`
+immediates (§11; no constant pool, no relocation under PIC).
+
+**Conversions.** `fpext`/`fptrunc` (between `float`, `double`,
+`x86_fp80`, at least one an SSE type): `fld` of the operand's 80-bit
+value for this use (below), or its §11 copy (at SSE without SSE2 a
+computed `double`, an x87 value that `llc` rounds to `float`
+directly), else its home, and `fstp` to the result's home (one
+rounding). `sitofp` of at most 32 bits: `cvtsi2s` of the
+extended value; `uitofp` of an `i32`: `fild` of 64 bits with a zero
+high word and `fstp` (one rounding, as `llc`'s `2^52` sequence).
+`fptosi` to at most 32 bits: `cvtts2si` (a narrower result is its low
+bits); `fptoui` to `i32` as `llc`: `x - 2^31` and `x` truncated, the
+first masked by the sign of the second, or-ed. 64-bit integers, as
+`llc` on the x87 from the home: `sitofp` = `fild`, `fstp`; `uitofp` to
+`float` = `fild`, `fadd` of 0 or `2^64` at 80 bits, `fstp`; `uitofp`
+to `double` = high word times `2^32` plus the low word, both exact,
+`addsd` (one rounding, as `llc`'s `2^52`/`2^84` sequence); `fptosi`/
+`fptoui` to `i64` = §11's control-word sequence on the home's value.
+`bitcast` between an SSE type and the integer of its width is a copy.
+Integers of 33 to 63 or more than 64 bits: `x86:float:i64-cast`.
+
+**Calls.** `frem` and the libm intrinsics are calls of `fmodf`/`fmod`,
+`floorf`/`floor`, ... (`fma` too) through `pic::emit_call`, arguments
+copied to the outgoing area at their width, the result stored from
+`st0` at its type's width. Barriers (§11) are unchanged: no new
+construct of this section is lowered by `llc` with a branch or a call
+that §11 does not already list (`frem` and the libm intrinsics are
+calls there for every type).
+
+**The 80-bit value of a call result** (measured, `llc` 19 and 22
+identical, `-O0`, `pentium4` and `pentium3`). `llc` takes a call result
+of an SSE type out of `st0` as an exact `fp_round` of the 80-bit
+register `x`, and the DAG of the call's block folds that node into
+some uses. A *view* is a value `llc` still has as `x`: the call result;
+an `fpext` of a view; an `fptrunc` of an `fpext` of a view `w` back to
+`w`'s type. A view reaches the uses in the call's block up to an
+`atomicrmw` that `AtomicExpand` turns into a loop (an `and`/`or`/`xor`
+whose result is used, any operation wider than 32 bits, the floating
+operations, `nand`, `min`/`max` and the rest; `xchg`, `add`, `sub` of
+at most 32 bits, an unused `and`/`or`/`xor` and `cmpxchg` stay one
+instruction), and across everything else: calls, libm calls, `memcpy`,
+a `select` that `llc` lowers with a branch (`llc` spills `x` at 80
+bits, `fstpt`/`fldt`). Within the reach:
+- `fpext` of a view to `U`: `x` rounded to `U` (`x` for `x86_fp80`);
+- `fptrunc` of a view: `x` rounded to the result type once;
+  `fptrunc (fpext w)` of a view `w` to `w`'s type is `w`; to another
+  type it is `x` rounded to `w`'s type and converted, unless every use
+  of the result is a store (then `x` rounded once: `llc` folds the
+  store);
+- `ret` of a view returns `x` itself.
+Every other use (arithmetic, `fcmp`, `store`, an argument, `freeze`,
+`fneg`, a use in another block or past the reach) reads the home, the
+value rounded to its type. hod (`sse::Views`): at the call
+(`x87::call_result`) a result of an SSE type that an `fpext`, `fptrunc`
+or `ret` in its reach reads gets a 12-byte slot, stored at 80 bits
+before the glue store (`x87::store_call_result`); `fp_cast` and
+`x87::ret_copy` read the slot for a view; `x87` keeps no §11 copy of
+such a result. Not modelled: `llc`'s bit-test form of an `atomicrmw
+or`/`and` (one instruction) counts as a loop. At SSE without SSE2
+(`pentium3`) an `fpext` of a `float` call result to `double` is an x87
+value that `llc` keeps as `x` for every x87 use in the reach (`faddp`
+of `x`, measured 19 and 22): `x87::push` reads the view's slot for
+every x87 operand, and `x87::cast` (`fpext`/`fptrunc` between
+`double` and `x86_fp80`) pushes what `fp_cast` would
+(`sse::x87_cast_source`: `fptrunc x86_fp80 (fpext w)` to `double`
+rounds `x` through `float`). Without SSE no view exists and neither
+function changes its code.
+
+**`half` with SSE2** (WP-317 third session; measured `llc` 19 and 22,
+`-O0`, `pentium4`, identical but for `fneg`). The function's feature
+set reaches the target through `Target::for_function` (`X86::features`).
+A `half` argument takes a 4-byte stack slot (its two bytes at the
+start); a result is returned in `xmm0` (`abi::assign_for` asks
+`sse::half_place`; glue `load` is `movzx eax` + `movd xmm0`, glue
+`store` `movd eax` + a 16-bit store). A `half` value lives in a 2-byte
+home (class `Mem`). Every operation is `llc`'s libgcc sequence, all
+calls through `pic::emit_call`: each operand widened by `__extendhfsf2`
+(exact, result in `st0`), the `float` operation (`adds`..`divs`,
+`ucomiss` for `fcmp`, `fmodf` for `frem`), and `__truncsfhf2`, whose
+result is read from `xmm0`. `fpext` stores the widened value at the
+result's width (exact for `float`, `double`, `x86_fp80`); `fptrunc`
+passes its operand at the operand's width to `__truncsfhf2` /
+`__truncdfhf2` / `__truncxfhf2` (one rounding; a view of an SSE call
+result is `x` rounded to the operand's type, as `llc` folds no rounding
+into a conversion to `half`). `sitofp`/`uitofp` produce the `float`
+that the `float` conversion would (`cvtsi2ss`; an unsigned `i32` and
+an `i64` by `fild`, the unsigned `i64` with `llc`'s `2^64` addition)
+and narrow it; `fptosi`/`fptoui` widen and truncate with `cvttss2si`
+(every `half` in the result's range converts exactly; an `i64` result
+is sign-extended). `load`, `store`, `freeze`, `select` (the address
+`cmov`), `bitcast` to and from `i16` are 16-bit copies. `fneg` flips bit
+15 (LLVM 22; LLVM 19 widens, negates and narrows, which differs only
+for a signalling NaN: tests use no signalling NaN). The libgcc calls
+are calls, but with SSE2 §11 keeps no 80-bit copy (`float` and
+`double` are SSE values), so they need no `x87::barrier` entry; a
+view of an SSE call result reaches across them as across any call.
+Refused: `half` in a function without SSE2 (`x86:float:half`: `llc`
+returns it in `ax` there and reads `ax` after `__truncsfhf2`, but
+libgcc's routine writes only `xmm0`, an SSE2 `movd`), a `half`
+parameter or result of `fastcc` or `inreg` (`x86:float:half`), and
+the `half` intrinsics (`x86:float:half:intrinsic`).
+
+**Remains refused.** `bfloat` (`x86:float:bfloat`: `llc` 19 aborts on
+part of its operations, "Unsupported library call operation" and
+"soft promote", and errors on its return without SSE: no oracle),
+`fp128` (`x86:float:fp128`: libgcc calls with a
+hidden result pointer, and LLVM 19 and 22 align its arguments
+differently), other
+intrinsics (`x86:float:intrinsic`).
+
+## 17. Vectors (`vector`, WP-317, design 0008 I12 step C)
+
+**Measured** (`llc` 19 and 22, `-O0 -global-isel=0 -fast-isel=0`, at
+`pentium4`): a vector of at most 16 bytes, at least two lanes and lanes
+of 8 to 64 bits is one `xmm`, its bytes packed from lane 0 (`<2 x
+i32>`, `<4 x i8>`, `<3 x i32>` widened, not promoted). The result is in
+`xmm0`; the first three arguments in `xmm0`-`xmm2` (`fastcc` and
+`inreg` the same); every other one, and every vector of a variadic
+call, in a 16-byte stack slot aligned 16. `<1 x T>` is scalarized, `<N
+x i1>` promoted, a wider vector split over several `xmm`: refused at
+the boundary (`x86:vector:abi`, `x86:vector:wide`). Without SSE2
+(`pentium3`, `generic`) `llc` scalarizes every vector: refused
+(`x86:vector:no-sse2`). `llc` does not realign the stack for a 16-byte
+slot: it relies on `esp` being 16-aligned after its prologue, which
+hod's frame keeps (§ "Frame"), so `frame.rs` is unchanged.
+
+**Values.** Every vector is of class `Mem`; its home holds its memory
+image (lanes packed; `i1` lanes bit by bit, lane 0 in bit 0), so
+`load`, `store`, `bitcast`, `freeze` and `phi` are copies and a
+constant is its flattened image. The boundary is `sse::vector_place`
+(the part's size is the allocation size: 2, 4, 8 or 16) with the glue
+moves `sse::load_xmm` / `store_xmm` (`movzx`+`movd`, `movd`, `movsd`,
+`movdqu`).
+
+**Operations**, lane by lane through `eax`, `ecx`, `edx`, `xmm6`:
+integer `add` .. `ashr`, `udiv` .. `srem` (lanes of 1 to 4 bytes,
+extended to 32 bits; a lane divided by zero traps, as `llc`'s);
+`i64` lanes `add`/`adc`, `sub`/`sbb`, bitwise; `i1` lanes bitwise on
+bytes; `fadd` .. `fdiv` (`adds`.. on `xmm6`), `fneg` (the sign bit);
+`icmp` (`i64` lanes by `cmp`/`sbb` of the halves), `fcmp` (§16's
+conditions) into an `i1` vector; `select` by a scalar or an `i1`
+vector without a branch (`f ^ ((t ^ f) & m)`); `extractelement` /
+`insertelement` with a constant or variable index (masked with `N-1`
+for a power-of-two `N`, else 0 when `≥ N`); `shufflevector`; `trunc`,
+`zext`, `sext` (with `i1` lanes), `fpext`, `fptrunc`, `sitofp` and
+`fptosi` (lanes up to 32 bits, `uitofp` / `fptoui` up to 16);
+`llvm.vector.reduce.{add,mul,and,or,xor,smax,smin,umax,umin}` of lanes
+up to 32 bits (`cmov` for the extremes) and of at most 32 `i1`. A
+result whose lanes move (shuffle, cast, compare, `i1`) is built in a
+slot of its own and copied to its home. Nothing branches or calls: no
+vector construct is an x87 barrier.

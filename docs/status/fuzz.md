@@ -1,4 +1,52 @@
-# Random programs (L10): the budget of WP-241
+# Random programs (L10): the budget
+
+## At the candidate cd6ef6bc (2026-11-15)
+
+The budget's run on the 1.0 release candidate: **62 of 62 slices, 0
+refused, 0 errors, 0 findings.**
+
+Inputs:
+- hod: the frozen release binary of `cd6ef6bc` (`hod-cd6ef6bc`, sha256
+  `80138ec1411506d5b4048f1eac49e8b377f9eeedb21e70ae43e3c81ab094929c`);
+  `--strict`
+- `cargo xtask fuzz --budget --seed 200001 -j 4 --hod hod-cd6ef6bc`:
+  62 slices, seeds 200001 to 226250 (26,250 seeds), with the harness's
+  set-asides `ub-float-cast`, `selector-split`,
+  `llc19-int128-last-register` (WP-249) and `dead-store` (WP-266)
+- the same tools, oracle, emulator and time limit as the first run
+  below; the machine shared
+- wall time 2026-11-15 15:56 to 21:00 EST, exit status 0; the slices'
+  own minutes add up to 303
+
+| target | LLVM | seeds | agree | refused | skipped | error | finding | set apart | minutes | programs/min |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| x86_64 | 22 | 10500 | 9520 | 0 | 980 | 0 | 0 | 0 | 116 | 90.3 |
+| x86_64 | 19 | 2625 | 2317 | 0 | 279 | 0 | 0 | 29 | 32 | 83.3 |
+| aarch64 | 22 | 10500 | 9428 | 0 | 1072 | 0 | 0 | 0 | 124 | 84.7 |
+| aarch64 | 19 | 2625 | 2358 | 0 | 267 | 0 | 0 | 0 | 31 | 85.6 |
+| all | | 26250 | 23623 | 0 | 2598 | 0 | 0 | 29 | 303 | 86.8 |
+
+Skipped: `both-timed-out` 2248, `ub-float-cast` 209 (csmith's undefined
+float-to-integer conversion, class 1 below), `oracle-timed-out` 140,
+`csmith-failed` 1.
+
+Set apart, none of them hod's wrong code, each with the evidence the
+harness requires (`spec/harness.md` "Set apart (seeds)"):
+- 29 seeds `llc19-int128-last-register` (x86-64, LLVM 19, `abi`): class
+  3 below, gcc and `llc` 22 printing exactly hod's output;
+- debug pairs (`debug-lines`, rows the oracle's selector does not keep;
+  the seed itself agrees): 2 `selector-split` (seeds 226144 and 226240,
+  x86-64 LLVM 19 default debug: FastISel and GlobalISel keep hod's row,
+  SelectionDAG drops it; `llc`'s own configurations differing, class 2
+  below) and 2 `dead-store` (seeds 220612 and 220916, x86-64 LLVM 22
+  default debug: FastISel keeps hod's row, SelectionDAG has none,
+  GlobalISel fell back for the function).
+
+Evidence: the run's log and table
+(`.build/candidate/fuzz-budget-cd6ef6bc.log`,
+`.build/candidate/fuzz-cd6ef6bc/budget.md` on the reference machine).
+
+## The first run (WP-241, `df415453`)
 
 The first run of the fuzzing budget (`docs/VALIDATION.md` "Random
 programs (L10)", "The budget"; `spec/harness.md` "Budget";
@@ -31,7 +79,7 @@ Inputs:
   at 00:37Z and is in the table, the run was resumed after it); the
   slices' own minutes add up to 288
 
-## Totals
+### Totals
 
 | target | LLVM | seeds | agree | refused | skipped | error | finding | minutes | programs/min |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -41,7 +89,7 @@ Inputs:
 | aarch64 | 19 | 2625 | 2366 | 0 | 259 | 0 | 0 | 32 | 81.2 |
 | all | | 26250 | 23714 | 0 | 2487 | 0 | 49 | 288 | 91.1 |
 
-## Per slice group
+### Per slice group
 
 | target | LLVM | profile | mode | seed ranges | seeds | agree | refused | skipped | error | finding | minutes | programs/min |
 |---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -86,12 +134,12 @@ Inputs:
 | x86_64 | 19 | abi | mix | 126001-126125 | 125 | 115 | 0 | 0 | 0 | 10 | 2 | 69.7 |
 | x86_64 | 19 | default | debug | 126126-126250 | 125 | 113 | 0 | 12 | 0 | 0 | 1 | 99.3 |
 
-## Refusals and errors
+### Refusals and errors
 
 None: hod `--strict` built every module, and no slice had an error
 (the oracle's side).
 
-## Skipped
+### Skipped
 
 | name | seeds |
 |---|---:|
@@ -101,7 +149,7 @@ None: hod `--strict` built every module, and no slice had an error
 | `clang-failed` | 2 |
 | `nothing-to-split` | 1 |
 
-## Findings
+### Findings
 
 49 findings, **none is hod's wrong code**. They are three classes, each
 decided on evidence (a sanitizer's report, or `llc`'s own
@@ -205,7 +253,7 @@ The `abi` slices at LLVM 22 (both targets) and at AArch64 LLVM 19 had
 no finding. Generator option that avoids it at LLVM 19: no `__int128`
 argument where exactly one general-purpose register is left.
 
-## What the release candidate's run needs
+### What the release candidate's run needed (done: the section at the top)
 
 The candidate's budget runs with the candidate's hod and the harness
 of `cb8b1ae0` or later, from seed 200001, with `ub-float-cast` and

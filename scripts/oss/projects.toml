@@ -391,7 +391,11 @@ url = "https://github.com/google/flatbuffers"
 tag = "v25.12.19"
 build = "cmake"
 cxx_std = 17
-configure = ["-DFLATBUFFERS_BUILD_TESTS=ON", "-DFLATBUFFERS_BUILD_CPP17=ON", "-DFLATBUFFERS_BUILD_FLATC=ON", "-DFLATBUFFERS_BUILD_FLATLIB=ON", "-DFLATBUFFERS_BUILD_GRPCTEST=OFF", "-DFLATBUFFERS_STRICT_MODE=OFF"]
+configure = ["-DFLATBUFFERS_BUILD_TESTS=ON", "-DFLATBUFFERS_BUILD_CPP17=ON", "-DFLATBUFFERS_BUILD_FLATC=ON", "-DFLATBUFFERS_BUILD_FLATLIB=ON", "-DFLATBUFFERS_BUILD_GRPCTEST=OFF", "-DFLATBUFFERS_STRICT_MODE=OFF", "-DFLATBUFFERS_FLATC_EXECUTABLE=flatc"]
+# FLATBUFFERS_FLATC_EXECUTABLE names the flatc TARGET (the default is the
+# path $<TARGET_FILE:flatc>): CMake puts the crosscompiling emulator before a
+# custom command only when it names a target, so the x86-64 cross build runs
+# its flatc under qemu instead of handing it to the kernel; natively the same.
 # flattests and flattests_cpp17 as the project registers them (build dir),
 # and the three sample programs, which read schemas and data relative to
 # the source dir; one ctest run, under the cross build's emulator if any.
@@ -479,30 +483,44 @@ configure = ["-DBUILD_LIST=core,imgproc,ts", "-DBUILD_TESTS=ON", "-DBUILD_PERF_T
 # The image codec libraries (libjpeg-turbo, libpng, libwebp, ...) serve
 # imgcodecs only, which BUILD_LIST leaves out: off (kiln rejects their NEON
 # kernels and one libwebp C conversion, findings KILN-LIMITS-3.md 8-9).
-# OPENCV_TEST_DATA_PATH is not set (opencv_extra is not fetched): the tests
-# that need its data are skipped by the suite itself.
-test = "ctest --output-on-failure --timeout 9000"
+# Tests: opencv_test_core and opencv_test_imgproc only, with opencv_extra's
+# test data (4.14.0, cloned beside the sources). The build cannot be narrowed
+# further: modules/ts/CMakeLists.txt makes opencv_ts depend on imgcodecs,
+# videoio and highgui, so they are built whatever BUILD_LIST says; their
+# tests are left out instead (imgcodecs' segfault without codecs in every
+# tree, the control included).
+# (cloned by hand: `git clone --depth 1 -b 4.14.0
+# https://github.com/opencv/opencv_extra $HOD_OSS_ROOT/src/opencv_extra`;
+# the lane's environment exports HOD_OSS_ROOT).
+test = "OPENCV_TEST_DATA_PATH=$HOD_OSS_ROOT/src/opencv_extra/testdata ctest --output-on-failure --timeout 9000 -R '^opencv_test_(core|imgproc)$'"
 test_timeout = 10800
-notes = "WP-211. opencv_core and opencv_imgproc (with opencv_ts and the bundled zlib, C through kiln-cc), their accuracy tests opencv_test_core and opencv_test_imgproc. Natively NEON (and NEON_DOTPROD/FP16 dispatch where the CPU dispatch list has them); on x86-64 the dispatched files are compiled once per target (SSE2 .. AVX2, AVX-512) and dispatched at run time. No IPP, OpenCL, KleidiCV, Eigen, LAPACK (no downloads)."
+notes = "WP-211. opencv_core and opencv_imgproc (with opencv_ts and the bundled zlib, C through kiln-cc), their accuracy tests opencv_test_core and opencv_test_imgproc (run with opencv_extra 4.14.0's testdata). Natively NEON (and NEON_DOTPROD/FP16 dispatch where the CPU dispatch list has them); on x86-64 the dispatched files are compiled once per target (SSE2 .. AVX2, AVX-512) and dispatched at run time. No IPP, OpenCL, KleidiCV, Eigen, LAPACK (no downloads)."
 
 [grpc]
 url = "https://github.com/grpc/grpc"
 tag = "v1.85.2"
 build = "cmake"
 cxx_std = 17
-c = "kiln"
 submodules = true
+# C through clang-19: kiln's C driver rejects upb's C (an _Atomic pointer
+# assigned NULL, upb/mem/arena.c; offsetof with a run-time array index,
+# UPB_SIZEOF_FLEX), 48 of 227 C TUs in the control; the C++ is the census.
+c = "clang"
 # Every dependency from its bundled submodule (abseil, protobuf, re2, zlib,
 # c-ares, BoringSSL, upb, googletest, benchmark). BoringSSL without its
-# assembly (OPENSSL_NO_ASM): .S files would not be kiln TUs.
-configure = ["-DgRPC_BUILD_TESTS=ON", "-DgRPC_DOWNLOAD_ARCHIVES=OFF", "-DgRPC_ABSL_PROVIDER=module", "-DgRPC_PROTOBUF_PROVIDER=module", "-DgRPC_RE2_PROVIDER=module", "-DgRPC_ZLIB_PROVIDER=module", "-DgRPC_CARES_PROVIDER=module", "-DgRPC_SSL_PROVIDER=module", "-DOPENSSL_NO_ASM=ON", "-DgRPC_BUILD_GRPC_CSHARP_PLUGIN=OFF", "-DgRPC_BUILD_GRPC_NODE_PLUGIN=OFF", "-DgRPC_BUILD_GRPC_OBJECTIVE_C_PLUGIN=OFF", "-DgRPC_BUILD_GRPC_PHP_PLUGIN=OFF", "-DgRPC_BUILD_GRPC_PYTHON_PLUGIN=OFF", "-DgRPC_BUILD_GRPC_RUBY_PLUGIN=OFF", "-Dprotobuf_BUILD_TESTS=OFF", "-DABSL_PROPAGATE_CXX_STD=ON"]
+# assembly (OPENSSL_NO_ASM). GRPC_PORT_ISOLATED_RUNTIME: the tests pick their
+# ports themselves (test/core/test_util/port_ci.cc) instead of asking gRPC's
+# port server (tools/run_tests/start_port_server.py) on 127.0.0.1:32766;
+# without it server_builder_test and the four end2end suites fail in the
+# control ("gRPC tests require a helper port server").
+configure = ["-DCMAKE_CXX_FLAGS=-DGRPC_PORT_ISOLATED_RUNTIME", "-DgRPC_BUILD_TESTS=ON", "-DgRPC_DOWNLOAD_ARCHIVES=OFF", "-DgRPC_ABSL_PROVIDER=module", "-DgRPC_PROTOBUF_PROVIDER=module", "-DgRPC_RE2_PROVIDER=module", "-DgRPC_ZLIB_PROVIDER=module", "-DgRPC_CARES_PROVIDER=module", "-DgRPC_SSL_PROVIDER=module", "-DOPENSSL_NO_ASM=ON", "-DgRPC_BUILD_GRPC_CSHARP_PLUGIN=OFF", "-DgRPC_BUILD_GRPC_NODE_PLUGIN=OFF", "-DgRPC_BUILD_GRPC_OBJECTIVE_C_PLUGIN=OFF", "-DgRPC_BUILD_GRPC_PHP_PLUGIN=OFF", "-DgRPC_BUILD_GRPC_PYTHON_PLUGIN=OFF", "-DgRPC_BUILD_GRPC_RUBY_PLUGIN=OFF", "-Dprotobuf_BUILD_TESTS=OFF", "-DABSL_PROPAGATE_CXX_STD=ON"]
 build_targets = ["grpc", "grpc++", "grpc_cpp_plugin", "status_util_test", "time_util_test", "byte_buffer_test", "sockaddr_utils_test", "useful_test", "bitset_test", "status_helper_test", "json_test", "thread_quota_test", "grpc_byte_buffer_reader_test", "orphanable_test", "ref_counted_test", "env_test", "host_port_test", "string_ref_test", "channel_arguments_test", "proto_utils_test", "codegen_test_minimal", "server_builder_test", "alarm_test", "end2end_test", "async_end2end_test", "generic_end2end_test", "client_callback_end2end_test"]
 # The tests run from the source tree (end2end tests read
 # src/core/tsi/test_creds); a program that did not link is a missing test.
 test = "mkdir -p whole && emu=$(sed -n 's/^CMAKE_CROSSCOMPILING_EMULATOR:[A-Z]*=//p' CMakeCache.txt | tr ';' ' ') && for t in status_util_test time_util_test byte_buffer_test sockaddr_utils_test useful_test bitset_test status_helper_test json_test thread_quota_test grpc_byte_buffer_reader_test orphanable_test ref_counted_test env_test host_port_test string_ref_test channel_arguments_test proto_utils_test codegen_test_minimal server_builder_test alarm_test end2end_test async_end2end_test generic_end2end_test client_callback_end2end_test; do if [ -x \"$t\" ]; then echo \"add_test($t $emu $PWD/$t)\"; echo \"set_tests_properties($t PROPERTIES WORKING_DIRECTORY @SRC@)\"; fi; done > whole/CTestTestfile.cmake && cd whole && ctest --output-on-failure -j4 --timeout 2400"
 test_timeout = 10800
 test_vmem_kb = 16000000
-notes = "WP-211. gRPC with every dependency bundled (submodules): libgrpc, libgrpc++ and grpc_cpp_plugin (protoc built from the bundled protobuf), plus 24 test programs (core unit tests and the C++ end2end suites end2end_test, async_end2end_test, generic_end2end_test, client_callback_end2end_test); C (BoringSSL without asm, c-ares, zlib, upb, address_sorting) through kiln-cc."
+notes = "WP-211. gRPC with every dependency bundled (submodules): libgrpc, libgrpc++ and grpc_cpp_plugin (protoc built from the bundled protobuf), plus 24 test programs (core unit tests and the C++ end2end suites end2end_test, async_end2end_test, generic_end2end_test, client_callback_end2end_test); C (BoringSSL without asm, c-ares, zlib, upb, address_sorting) through clang-19, unlogged (kiln's C driver rejects upb)."
 
 # ---------------------------------------------------------------- fifth set (WP-253)
 # Copies of kiln's rows at kiln 8f93304ee (kiln's `@OSS@` is `@KILN_OSS@`

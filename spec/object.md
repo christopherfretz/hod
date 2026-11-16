@@ -524,6 +524,26 @@ a fine sink; a piece of 64 KiB or more goes to the sink directly.
 Writing does not change the object; it may be written again or extended and
 written again.
 
+```rust
+hod_obj::elf::prepare(object: Object) -> Result<Prepared, Error>
+impl Prepared {
+    fn file_size(&self) -> u64
+    fn object(&self) -> &Object
+    fn write<W: io::Write>(&self, out: &mut W) -> io::Result<u64>
+    fn to_vec(&self) -> Result<Vec<u8>, Error>
+}
+```
+
+`prepare` (WP-312) runs the checks and the layout of `to_vec` and keeps
+them with the object, which it takes (and drops on an error, the same
+`Error` as `to_vec`'s), so that a caller learns that the object is
+writable before it opens its output and writes it later without the
+checks again. `Prepared::write` and `Prepared::to_vec` are `write` and
+`to_vec` past their checks, the same code: the same bytes, `write`
+batching as above, its only failure `out`'s (the output is then
+incomplete); `to_vec`'s only failure the allocation
+(`TooLarge(FileBytes)`). The object cannot change while prepared.
+
 ### File header
 
 gABI "ELF Header". `e_ident`: `ELFCLASS64`, `ELFDATA2LSB`, `EV_CURRENT`;
@@ -918,7 +938,8 @@ These are properties of the design, checked by `record_sizes` in
   indices, `st_name`); 4 bytes per name (where "String table" put it) and
   8 bytes per piece of the name arena; 5 bytes per distinct section name;
   the 64 KiB buffer (`write`)
-  or the output (`to_vec`); and, only for a section whose relocations were
+  or the output (`to_vec`), the same for `Prepared`, which keeps this
+  layout until it is dropped; and, only for a section whose relocations were
   added out of order, 4 bytes per relocation of the largest such section.
   The symbol table, relocation entries, string tables and section headers
   are generated straight into the output, never materialized.

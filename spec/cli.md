@@ -21,6 +21,13 @@ pub fn compile_with(input: &[u8], options: &Options, settings: &Settings, report
     -> Result<Vec<u8>, CompileError>;
 pub fn compile_releasing(input: &mut Cow<'_, [u8]>, options: &Options, settings: &Settings,
     report: &mut Report) -> Result<Vec<u8>, CompileError>;
+pub fn compile_object(input: &mut Cow<'_, [u8]>, options: &Options, settings: &Settings,
+    report: &mut Report) -> Result<ObjectFile, CompileError>;
+impl ObjectFile {
+    pub fn size(&self) -> u64;
+    pub fn write_to(&self, out: &mut dyn io::Write) -> Result<io::Result<u64>, CompileError>;
+    pub fn to_vec(&self) -> Result<Vec<u8>, CompileError>;
+}
 pub fn generate(module: &hod_ir::Module, bodies: &[hod_ir::Body], options: &Options)
     -> Result<Vec<u8>, CompileError>;
 pub fn generate_with(module: &hod_ir::Module, bodies: &[hod_ir::Body], options: &Options,
@@ -66,6 +73,25 @@ pub trait ThreadTokens: Send + Sync + Debug {
   (the fallback is then fed the same bytes); the input is then not part
   of the peak of code generation (on a 36 MB libc++ module, a third of
   the peak resident set).
+- `compile_object` (WP-312) is `compile_releasing` that answers the
+  object unwritten: an `ObjectFile`, which passed the ELF writer's
+  checks (`hod_obj::elf::prepare`, `spec/object.md` "ELF writer") and
+  whose `.dwo` file, if any, is written; it keeps the module and its
+  bodies, freed after the object when it is dropped (freed before the
+  object is written, they cost glibc a consolidation of their small
+  chunks on the sections' frees after it, measured in WP-312). Its answers, refusals and report are those of
+  `compile_releasing`. `write_to` writes the file front to back into
+  `out` straight from the sections' buffers (pieces under 64 KiB
+  batched), never holding the whole file a second time, and does not
+  flush; `to_vec` is the one vector `compile_releasing` returns. A panic
+  of hod's while writing is contained: the outer `Err` of `write_to`
+  (`CompileError::Panic`); the inner `Err` is `out`'s failure. Either
+  leaves `out` with part of the file. The bytes of `write_to` and
+  `to_vec` are those of `compile_releasing` for the same compile
+  (`crates/hod/tests/object_file.rs`, over `tests/ir` for both 64-bit
+  targets at one and four threads). The `hod` binary compiles with it:
+  on `stl-heavy-g`, 2.8 MiB less peak resident set
+  (`spec/landed/object/WP-312.md`).
 - `Settings` is how the front half works, not an `llc` option:
   `bitcode` (`BitcodeReading::Native`, or `Decline` for a caller that
   converts bitcode itself, which then gets `bitcode-input`), `census`
@@ -827,7 +853,14 @@ coverage line with outcome `error` and the reason given.
    `-o -`; without `-o`, to standard output when the input is standard
    input, else to the input's name with a final `.ll` or `.bc` removed and
    `.o` added (`llc`'s rule). Failure: `output-unwritable`, 1. Outcome
-   `hod`, exit status 0.
+   `hod`, exit status 0. The file is created (or truncated) only once the
+   compile has answered an object that passed the writer's checks, and
+   is written with `ObjectFile::write_to` from the sections' buffers;
+   standard output is flushed after. A written object is not freed (the
+   process exits after the coverage line; freeing cost more instructions
+   than writing); one that failed to write is, before any fallback. An output that fails part way keeps
+   what it was given (no file is removed), as before WP-312. A panic of
+   hod's while writing (`internal-panic`) is answered as in step 9.
 9. On `Unsupported`, `MalformedInput`, `InvalidOptions` or `Internal`: run the fallback
    if one is configured and strict mode is off; otherwise fail with the
    reason of "Reasons" and the exit status of "Exit status". The diagnostic

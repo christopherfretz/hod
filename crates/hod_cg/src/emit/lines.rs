@@ -210,10 +210,18 @@ impl<'m> DebugLines<'m> {
         }
         let Some(&cached) = self.scope_file.get(scope.index()) else { return 0 };
         let raw = if cached == UNKNOWN {
-            let file = match self.debug.node(scope) {
-                DiNode::Subprogram(n) => n.file,
-                DiNode::LexicalBlock(n) => n.file,
-                DiNode::LexicalBlockFile(n) => n.file,
+            // WP-320: the one field read, not the node decoded.
+            let debug = self.debug;
+            let file = match debug.kind(scope) {
+                DiKind::Subprogram => {
+                    debug.view::<hod_ir::DiSubprogram>(scope).and_then(|n| n.file())
+                }
+                DiKind::LexicalBlock => {
+                    debug.view::<hod_ir::DiLexicalBlock>(scope).and_then(|n| n.file())
+                }
+                DiKind::LexicalBlockFile => {
+                    debug.view::<hod_ir::DiLexicalBlockFile>(scope).and_then(|n| n.file())
+                }
                 _ => None,
             };
             let raw = file.map_or(NO_FILE, DiId::raw);

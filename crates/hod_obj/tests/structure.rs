@@ -727,6 +727,35 @@ fn write_matches_to_vec() {
     elf::write(&obj, &mut counted).unwrap();
     assert_eq!(counted.bytes, expected);
     assert!(counted.calls <= 8, "{} writes", counted.calls);
+
+    // `prepare` (WP-312): the same checks and layout, kept; its `write`
+    // and `to_vec` give the same bytes, through any sink, as often as
+    // asked.
+    let prepared = elf::prepare(obj).unwrap();
+    assert_eq!(prepared.file_size(), expected.len() as u64);
+    assert_eq!(prepared.to_vec().unwrap(), expected);
+    let mut whole = Vec::new();
+    assert_eq!(prepared.write(&mut whole).unwrap(), expected.len() as u64);
+    assert_eq!(whole, expected);
+    let mut trickle = Trickle { bytes: Vec::new(), step: 7, calls: 0 };
+    prepared.write(&mut trickle).unwrap();
+    assert_eq!(trickle.bytes, expected);
+    assert_eq!(elf::to_vec(prepared.object()).unwrap(), expected);
+    // A failing sink fails `write`, part way.
+    assert!(prepared.write(&mut Full { room: 100 }).is_err());
+}
+
+/// "ELF writer": `prepare` refuses what `to_vec` refuses, with the same
+/// error (WP-312).
+#[test]
+fn prepare_refuses_as_to_vec() {
+    let mut obj = Object::new(Arch::AArch64);
+    for _ in 0..2 {
+        let huge = obj.add_section(b".huge", SectionKind::Data, 1 << 63).unwrap();
+        obj.append(huge, &[0]);
+    }
+    assert_eq!(elf::to_vec(&obj), Err(Error::TooLarge(Limit::FileBytes)));
+    assert_eq!(elf::prepare(obj).unwrap_err(), Error::TooLarge(Limit::FileBytes));
 }
 
 struct Full {

@@ -19,7 +19,7 @@ use hod_ir::{
     SymbolKind, TargetSpec,
 };
 
-use crate::back::generate_with;
+use crate::back::{ObjectFile, generate_object};
 use crate::contain::contained;
 use crate::front::{INTERNAL_PANIC, Report, Settings, reason_name, symbol_name};
 use crate::{CompileError, Construct, Options, OutputKind, Unsupported};
@@ -307,12 +307,40 @@ impl Session {
     /// ```
     #[allow(clippy::result_large_err, reason = "design 0004 §4: the report comes with the answer")]
     pub fn finish(mut self, out: &mut Vec<u8>) -> Result<Report, (CompileError, Report)> {
-        match self.guarded(Session::conclude) {
+        let bytes = |session: &mut Session| {
+            let bytes = session.conclude()?.to_vec()?;
+            session.report.phase("object");
+            Ok(bytes)
+        };
+        match self.guarded(bytes) {
             Ok(object) if out.is_empty() => *out = object,
             Ok(object) => out.extend_from_slice(&object),
             Err(error) => return Err((error, self.report)),
         }
         Ok(self.report)
+    }
+
+    /// [`Session::finish`] that answers the object unwritten, so that the
+    /// caller writes it from the sections' own buffers
+    /// ([`crate::compile_object`]).
+    #[cfg(feature = "readers")]
+    #[allow(clippy::result_large_err, reason = "design 0004 §4: the report comes with the answer")]
+    pub(crate) fn finish_object(mut self) -> Result<(ObjectFile, Report), (CompileError, Report)> {
+        let object = |session: &mut Session| {
+            let object = session.conclude()?;
+            session.report.phase("object");
+            Ok(object)
+        };
+        match self.guarded(object) {
+            // The module and the bodies go with the object, freed after it
+            // (`ObjectFile`).
+            Ok(mut object) => {
+                let Session { module, bodies, report, .. } = self;
+                object.1 = Some((module, bodies));
+                Ok((object, report))
+            }
+            Err(error) => Err((error, self.report)),
+        }
     }
 
     /// Stops the walk with a producer's error (a reader's), and answers:
@@ -652,7 +680,7 @@ impl Session {
     }
 
     /// The end of the walk: the answer, or the object.
-    fn conclude(&mut self) -> Result<Vec<u8>, CompileError> {
+    fn conclude(&mut self) -> Result<ObjectFile, CompileError> {
         if self.stopped.is_none() && self.stage == Stage::Module {
             let _ = self.misuse("finish before end_module");
         }
@@ -691,7 +719,13 @@ impl Session {
             self.bodies.sort_by_key(|body| body.symbol().index());
         }
         let module = &self.module;
-        generate_with(module, &self.bodies, &self.options, &self.settings.threads, &mut self.report)
+        generate_object(
+            module,
+            &self.bodies,
+            &self.options,
+            &self.settings.threads,
+            &mut self.report,
+        )
     }
 }
 

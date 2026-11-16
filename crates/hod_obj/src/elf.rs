@@ -798,7 +798,11 @@ struct Buffered<'a, W: Write> {
 
 const BUFFER_SIZE: usize = 64 * 1024;
 
-impl<W: Write> Buffered<'_, W> {
+impl<'a, W: Write> Buffered<'a, W> {
+    fn new(out: &'a mut W) -> Self {
+        Buffered { out, buffer: Vec::with_capacity(BUFFER_SIZE), position: 0 }
+    }
+
     fn flush_buffer(&mut self) -> std::io::Result<()> {
         self.out.write_all(&self.buffer)?;
         self.buffer.clear();
@@ -1336,15 +1340,7 @@ pub fn file_size(obj: &Object) -> Result<u64, Error> {
 /// Any [`Error`] the object's construction deferred, or that the checks of
 /// `spec/object.md` "Errors" find.
 pub fn to_vec(obj: &Object) -> Result<Vec<u8>, Error> {
-    let layout = Layout::new(obj)?;
-    let mut bytes = Vec::new();
-    usize::try_from(layout.file_size)
-        .ok()
-        .and_then(|size| bytes.try_reserve_exact(size).ok())
-        .ok_or(Error::TooLarge(Limit::FileBytes))?;
-    let mut sink = VecSink(bytes);
-    let Ok(()) = emit(obj, &layout, &mut sink);
-    Ok(sink.0)
+    emit_vec(obj, &Layout::new(obj)?)
 }
 
 /// Serializes an object as an ELF64 relocatable file into `out`, front to
@@ -1354,9 +1350,77 @@ pub fn to_vec(obj: &Object) -> Result<Vec<u8>, Error> {
 /// [`WriteError::Invalid`], before anything is written, for an object
 /// [`to_vec`] rejects; [`WriteError::Io`] when `out` fails.
 pub fn write<W: Write>(obj: &Object, out: &mut W) -> Result<u64, WriteError> {
-    let layout = Layout::new(obj)?;
-    let mut sink = Buffered { out, buffer: Vec::with_capacity(BUFFER_SIZE), position: 0 };
-    emit(obj, &layout, &mut sink)?;
+    Ok(emit_write(obj, &Layout::new(obj)?, out)?)
+}
+
+/// [`to_vec`] of a checked layout: one vector of the file's size.
+fn emit_vec(obj: &Object, layout: &Layout) -> Result<Vec<u8>, Error> {
+    let mut bytes = Vec::new();
+    usize::try_from(layout.file_size)
+        .ok()
+        .and_then(|size| bytes.try_reserve_exact(size).ok())
+        .ok_or(Error::TooLarge(Limit::FileBytes))?;
+    let mut sink = VecSink(bytes);
+    let Ok(()) = emit(obj, layout, &mut sink);
+    Ok(sink.0)
+}
+
+/// [`write`] of a checked layout.
+fn emit_write<W: Write>(obj: &Object, layout: &Layout, out: &mut W) -> std::io::Result<u64> {
+    let mut sink = Buffered::new(out);
+    emit(obj, layout, &mut sink)?;
     sink.flush_buffer()?;
     Ok(layout.file_size)
+}
+
+/// An object that passed the writer's checks, with its layout: what
+/// [`prepare`] makes, so that a caller can learn that the object is
+/// writable before it opens the output, and write it later without the
+/// checks again (`spec/object.md` "ELF writer").
+#[derive(Debug)]
+pub struct Prepared {
+    object: Object,
+    layout: Layout,
+}
+
+/// Checks `object` and lays it out as [`write`] and [`to_vec`] do, and
+/// keeps both for [`Prepared::write`] or [`Prepared::to_vec`].
+///
+/// # Errors
+/// As [`to_vec`]; the object is dropped.
+pub fn prepare(object: Object) -> Result<Prepared, Error> {
+    let layout = Layout::new(&object)?;
+    Ok(Prepared { object, layout })
+}
+
+impl Prepared {
+    /// The size in bytes of the file: [`file_size`] of the object.
+    #[must_use]
+    pub fn file_size(&self) -> u64 {
+        self.layout.file_size
+    }
+
+    /// The object.
+    #[must_use]
+    pub fn object(&self) -> &Object {
+        &self.object
+    }
+
+    /// [`write`] of the object, without its checks: the same bytes, front
+    /// to back, into `out`, which is not flushed.
+    ///
+    /// # Errors
+    /// When `out` fails; the output is incomplete.
+    pub fn write<W: Write>(&self, out: &mut W) -> std::io::Result<u64> {
+        emit_write(&self.object, &self.layout, out)
+    }
+
+    /// [`to_vec`] of the object, without its checks.
+    ///
+    /// # Errors
+    /// [`Error::TooLarge`] ([`Limit::FileBytes`]) when the vector cannot be
+    /// allocated.
+    pub fn to_vec(&self) -> Result<Vec<u8>, Error> {
+        emit_vec(&self.object, &self.layout)
+    }
 }

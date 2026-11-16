@@ -44,7 +44,7 @@ pub use args::ArgError;
 pub use env::{EnvError, Environment};
 
 pub use back::{
-    LIMIT_OBJECT, OBJECT_NUL_IN_NAME, OPTION_RELOCATION_MODEL, OPTION_SPLIT_DWARF,
+    LIMIT_OBJECT, OBJECT_NUL_IN_NAME, OPTION_RELOCATION_MODEL, OPTION_SPLIT_DWARF, ObjectFile,
     PARALLEL_MIN_INSTS, ThreadTokens, Threads, generate_with,
 };
 pub use front::{
@@ -52,7 +52,7 @@ pub use front::{
     READ_MAX_THREADS, READ_MIN_BODY_BYTES, Report, Settings, generate, read_threads,
 };
 #[cfg(feature = "readers")]
-pub use front::{compile_releasing, compile_with};
+pub use front::{compile_object, compile_releasing, compile_with};
 pub use session::Session;
 /// The names of the bodies declined because their meaning depends on being
 /// inlined (`spec/cli.md` "Always-inline").

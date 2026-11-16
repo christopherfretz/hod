@@ -3,9 +3,12 @@
 //!
 //! Not resistant to hash flooding, which keys the compiler numbers itself
 //! do not need: the input cannot choose them. A map keyed by input bytes
-//! (a section or symbol name) or by an input integer keeps the standard
-//! hasher. No state is random, so a map's iteration order is the same
-//! from run to run; nothing that writes output may depend on it anyway.
+//! or by an input integer keeps the standard hasher, with one exception
+//! (WP-321): the section names of `emit::section`, where an input built
+//! to collide could only cost time, never change the object, and
+//! `SipHash` cost about 1% of a large `-g` input. No state is random, so a
+//! map's iteration order is the same from run to run; nothing that writes
+//! output may depend on it anyway.
 //!
 //! `hod_ir` and `hod_dwarf` have hashers of the same family, private to
 //! their crates (`hod_ir::intern::Hasher64` is not a `Hasher`,
@@ -120,5 +123,37 @@ mod tests {
         }
         assert!(low.iter().all(|&n| (64..=192).contains(&n)), "{low:?}");
         assert!(top.iter().all(|&n| (16..=112).contains(&n)), "{top:?}");
+    }
+
+    /// WP-321: section names (`.text.<mangled>`, long common prefixes,
+    /// differing in a few bytes late in the name) do not collapse: 10,000
+    /// of them give at least 9,990 distinct hashes, and the low 16 bits
+    /// (the buckets) and the top 7 (the tags) are spread.
+    #[test]
+    fn section_names_spread() {
+        use std::collections::HashSet;
+        let build = BuildHasherDefault::<IdHasher>::default();
+        let mut hashes = HashSet::new();
+        let mut low = [0u32; 256];
+        let mut low16 = HashSet::new();
+        let mut top = [0u32; 128];
+        for i in 0..10_000u32 {
+            let name = format!(
+                ".text._ZNSt3__16vectorIN12_GLOBAL__N_14ItemENS_9allocatorIS2_EEE{}E{}Ev",
+                i % 100,
+                i / 100
+            );
+            let h = build.hash_one(name.as_bytes());
+            hashes.insert(h);
+            low[(h & 255) as usize] += 1;
+            low16.insert(h & 0xffff);
+            top[(h >> 57) as usize] += 1;
+        }
+        assert!(hashes.len() >= 9_990, "{} distinct", hashes.len());
+        // 10,000 keys over 65,536 values: about 9,300 distinct when spread.
+        assert!(low16.len() >= 9_000, "{} distinct low 16 bits", low16.len());
+        // About 39 per byte value, 78 per tag.
+        assert!(low.iter().all(|&n| (10..=80).contains(&n)), "{low:?}");
+        assert!(top.iter().all(|&n| (30..=140).contains(&n)), "{top:?}");
     }
 }

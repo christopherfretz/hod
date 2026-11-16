@@ -21,7 +21,7 @@ use std::fmt::Display;
 use crate::body::{Body, CallData, Clause, DbgRecordKind, Inst, UNSET, UseFacts};
 use crate::constant::Const;
 use crate::debug::expr::{DiOp, ExprId};
-use crate::debug::node::DiNode;
+use crate::debug::node::{DiLabel, DiLocalVariable};
 use crate::dom::Dominators;
 use crate::error::{IrError, IrErrorKind, IrResult};
 use crate::ids::{BlockId, ConstId, DiId, LocId, TypeId};
@@ -1163,11 +1163,17 @@ impl<L: Layering> Verifier<'_, L> {
             |var: DiId, label: bool, expr: ExprId, loc: LocId, args: u64, what: &dyn Display| {
                 let fail =
                     |why: &str| Err(IrError::new(InvalidDebugInfo, format!("{what}: {why}")));
-                let scope = match (debug.contains(var).then(|| debug.node(var)), label) {
-                    (Some(DiNode::LocalVariable(node)), false) => node.scope,
-                    (Some(DiNode::Label(node)), true) => node.scope,
-                    (_, false) => return fail("its variable is not a DILocalVariable"),
-                    (_, true) => return fail("its label is not a DILabel"),
+                // WP-320: the one field read, not the node decoded.
+                let scope = if label {
+                    match debug.view::<DiLabel>(var) {
+                        Some(node) => node.scope(),
+                        None => return fail("its label is not a DILabel"),
+                    }
+                } else {
+                    match debug.view::<DiLocalVariable>(var) {
+                        Some(node) => node.scope(),
+                        None => return fail("its variable is not a DILocalVariable"),
+                    }
                 };
                 location(loc, what)?;
                 let here = debug.location(loc).and_then(|loc| debug.subprogram_of(loc.scope));

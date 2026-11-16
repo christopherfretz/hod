@@ -1049,10 +1049,32 @@ written by the same walk.
 `DebugStrings` keeps `.debug_str` pooled per object, so each distinct
 string is stored once, and keeps `.debug_str_offsets` per unit, so each
 distinct string the unit names has one entry, in order of first use by
-the walk. The walk order is deterministic, so the indices are too. One
-hash table keyed by the bytes serves both. A string's entry remembers the
-last unit that named it and its index there, so a lookup is one probe,
-whether the string is new to the object, new to the unit, or neither.
+the walk. The walk order is deterministic, so the indices are too. A
+string's entry remembers the last unit that named it and its index
+there, so a lookup is one probe, whether the string is new to the
+object, new to the unit, or neither.
+
+The entries live in one of two tables (WP-318). The strings of the debug
+store (`hod_ir`, `spec/ir.md` §6.2) are a table indexed by the store's
+string id, made the first time an id is asked for, of
+`string_count()` entries: `index_str(DiStr)` reads it without hashing.
+The writer reads a string field with its id through `DiView::ids` (a
+writer that holds the node decoded reads the one field again, which is
+cheaper than hashing it: `Writer::strx_of`). Every other string (a name
+the writer makes up, such as `__ARRAY_SIZE_TYPE__`) is a hash table
+keyed by the bytes, `index(bytes)`. The invariant that keeps the
+indices those of one table: a string is in exactly one of the two.
+`index(bytes)` looks for the bytes in the store first (`find_string`,
+one hash) and, if the store holds them, uses the store's entry; the
+store is not changed while the DIEs are written and interns its strings,
+so equal bytes are one id. A string first asked for by its bytes and
+later by its id, or the other way round, therefore has one entry and
+one index, and `.debug_str` and `.debug_str_offsets` are byte for byte
+what one table keyed by the bytes gives. The pool's store is the first
+one `use_store` names (each unit names its plan's); a unit of another
+store is served by its strings' bytes. The skeleton unit of split DWARF
+(§6.15) pools its four strings by bytes alone; DWARF 4 (§6.20) converts
+the same indices to `DW_FORM_strp` offsets.
 
 The hash takes eight bytes per multiply, Fx style, and ends with a mix.
 Without that mix, the low bits of the product (the bucket) depend only on
@@ -1061,9 +1083,6 @@ buckets; with it they fill 41,542 of 65,536, which is what a random
 function gives (`strings::tests::hash_spreads`). A string with a NUL is
 `NulInName`.
 
-Planned optimization: `hod_ir`'s names are already interned, so a pool
-keyed by `hod_ir`'s string id would index an array instead of hashing.
-`hod_ir` does not expose that id from a decoded node yet (§2).
 
 ### 6.4 Subprograms, variables, blocks and labels (implemented, WP-057)
 

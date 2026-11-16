@@ -12,6 +12,7 @@
 //! (39, 71); the others take family [`fam::LABEL_ANY`].
 
 use hod_ir::DiLabel;
+
 use hod_obj::SymbolId;
 
 use crate::Error;
@@ -47,7 +48,7 @@ impl<'a> Writer<'a> {
             | b(at.is_some()) << 5;
         self.abbrev(code(fam::LABEL_ANY, mask, false));
         if !n.name.is_empty() {
-            self.strx(n.name)?;
+            self.strx_of::<DiLabel>(plan.debug, node, n.name, |v| v.name())?;
         }
         self.decl(decl);
         if column {

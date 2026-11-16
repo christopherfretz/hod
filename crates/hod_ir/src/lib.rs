@@ -138,9 +138,9 @@ pub use classify::{
 pub use debug::names::*;
 pub use debug::node::{
     DiBasicType, DiBound, DiCompileUnit, DiCompositeType, DiConstant, DiDerivedType, DiEnumerator,
-    DiFieldOut, DiFieldValue, DiFile, DiGlobalVariable, DiGlobalVariableExpression,
-    DiImportedEntity, DiKind, DiLabel, DiLexicalBlock, DiLexicalBlockFile, DiLocalVariable,
-    DiNamespace, DiNode, DiOther, DiRecord, DiShape, DiString, DiSubprogram, DiSubrange,
+    DiFieldId, DiFieldOut, DiFieldValue, DiFile, DiGlobalVariable, DiGlobalVariableExpression,
+    DiIds, DiImportedEntity, DiKind, DiLabel, DiLexicalBlock, DiLexicalBlockFile, DiLocalVariable,
+    DiNamespace, DiNode, DiOther, DiRecord, DiShape, DiStr, DiString, DiSubprogram, DiSubrange,
     DiSubroutineType, DiTemplateTypeParameter, DiTemplateValueParameter, DiTuple, DiView,
 };
 pub use debug::unique::{DiMark, DiMerge};

@@ -515,7 +515,24 @@ fn signatures() -> Vec<Signature> {
 }
 
 /// The two modules of the grid: hod's and `llc`'s.
-fn modules(sigs: &[Signature]) -> (String, String) {
+/// The identity operation hod's computing forwarder applies to a value
+/// of `ty` named `v` into `out` (`add 0`, `fadd -0.0`: exact for every
+/// value of the grid), if `ty` is a scalar integer or floating type.
+fn identity(ty: Ty, v: &str, out: &str) -> Option<String> {
+    let t = ty.ir();
+    match ty {
+        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => Some(format!("  {out} = add {t} {v}, 0\n")),
+        Ty::F32 | Ty::F64 => Some(format!("  {out} = fadd {t} {v}, -0.0\n")),
+        Ty::F80 => Some(format!("  {out} = fadd {t} {v}, 0xK80000000000000000000\n")),
+        _ => None,
+    }
+}
+
+/// The grid's modules; with `compute`, hod's forwarder computes on every
+/// scalar argument and on the result before passing them on (WP-297's
+/// rows with design 0008 I7's 64-bit integers and I9's x87: the value
+/// leaves a register pair or the x87 stack, not only a glue copy).
+fn modules(sigs: &[Signature], compute: bool) -> (String, String) {
     let mut hod = String::from(PRELUDE);
     hod.push_str("declare void @mark(i32) nounwind\n");
     let mut llc = String::from(PRELUDE);
@@ -529,11 +546,33 @@ fn modules(sigs: &[Signature]) -> (String, String) {
         writeln!(hod, "declare {cc}{ret} @chk{k}({proto}) nounwind").unwrap();
         let named = params(sig, false, |j| format!("%a{j}"));
         writeln!(hod, "define {cc}{ret} @hod{k}({named}) nounwind {{").unwrap();
+        let mut computed = vec![false; sig.params.len()];
+        if compute {
+            for (j, p) in sig.params.iter().enumerate() {
+                if let Some(op) = identity(p.ty, &format!("%a{j}"), &format!("%c{j}")) {
+                    hod.push_str(&op);
+                    computed[j] = true;
+                }
+            }
+        }
+        let passed = params(sig, false, |j| {
+            if computed.get(j).copied().unwrap_or(false) {
+                format!("%c{j}")
+            } else {
+                format!("%a{j}")
+            }
+        });
         let result = if ret == "void" { String::new() } else { "%r = ".into() };
-        writeln!(hod, "  {result}call {cc}{ret} @chk{k}({named})").unwrap();
+        writeln!(hod, "  {result}call {cc}{ret} @chk{k}({passed})").unwrap();
         writeln!(hod, "  call void @mark(i32 {k})").unwrap();
+        let back = match sig.ret {
+            Ret::Scalar(ty) if compute => identity(ty, "%r", "%s"),
+            _ => None,
+        };
         if ret == "void" {
             hod.push_str("  ret void\n}\n");
+        } else if let Some(op) = back {
+            writeln!(hod, "{op}  ret {ret} %s\n}}").unwrap();
         } else {
             writeln!(hod, "  ret {ret} %r\n}}").unwrap();
         }
@@ -618,13 +657,24 @@ fn modules(sigs: &[Signature]) -> (String, String) {
 /// 22, hod plain and under `Stress::ALL`.
 #[test]
 fn the_abi_grid_runs_as_llc_s() {
+    grid(false, "i386-abi");
+}
+
+/// The grid with hod's forwarder computing on every scalar argument and
+/// result (`identity`): the rows `i64` and the x87 made possible.
+#[test]
+fn the_computing_abi_grid_runs_as_llc_s() {
+    grid(true, "i386-abi-compute");
+}
+
+fn grid(compute: bool, name: &str) {
     let target = Target::I686;
     let (Some(gcc), Some(qemu)) = (tool(&target.c_driver()), tool(&target.emulator())) else {
         return;
     };
     let sigs = signatures();
-    let (hod_ll, llc_ll) = modules(&sigs);
-    let scratch = Scratch::new("i386-abi");
+    let (hod_ll, llc_ll) = modules(&sigs, compute);
+    let scratch = Scratch::new(name);
     let llc_path = scratch.write("grid-llc.ll", &llc_ll);
     scratch.write("grid-hod.ll", &hod_ll);
     let options = Options {
@@ -661,7 +711,10 @@ fn the_abi_grid_runs_as_llc_s() {
             runs += 1;
         }
     }
-    eprintln!("i386 ABI grid: {} signatures, {runs} runs, both directions each", sigs.len());
+    eprintln!(
+        "i386 ABI grid (computing: {compute}): {} signatures, {runs} runs, both directions each",
+        sigs.len()
+    );
 }
 
 /// The fixed rows' hod module: `spec/abi-x86.md` §5.1 (a dropped x87

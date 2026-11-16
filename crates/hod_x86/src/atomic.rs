@@ -462,6 +462,21 @@ pub fn cmpxchg<'a>(
     Ok(())
 }
 
+/// The dispatch arm of `fence`, `cmpxchg` and `atomicrmw`.
+///
+/// # Errors
+/// What [`fence`], [`cmpxchg`] and [`rmw`] report.
+pub fn lower<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>) -> CgResult<()> {
+    match inst.kind() {
+        hod_ir::InstKind::Fence { ordering, scope } => fence(cx, ordering, scope),
+        hod_ir::InstKind::CmpXchg { ptr, expected, replacement, mem, .. } => {
+            cmpxchg(cx, inst, ptr, expected, replacement, mem)
+        }
+        hod_ir::InstKind::AtomicRmw { op, ptr, value, mem } => rmw(cx, inst, op, ptr, value, mem),
+        _ => cx.bug("an instruction that is no fence, cmpxchg or atomicrmw"),
+    }
+}
+
 /// Whether `agg` is the result of a `cmpxchg` (whose fields
 /// [`extract`] reads).
 pub fn is_cmpxchg_result(cx: &FnCx<'_, X86>, agg: Value) -> bool {

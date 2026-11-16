@@ -256,12 +256,8 @@ impl Target for X86 {
             InstKind::IndirectBr { .. } => unsupported(control::INDIRECT_BRANCH),
             InstKind::Ret { value } => control::ret(cx, inst, value),
             InstKind::Unreachable => control::unreachable(cx),
-            InstKind::Fence { ordering, scope } => crate::atomic::fence(cx, ordering, scope),
-            InstKind::CmpXchg { ptr, expected, replacement, mem, .. } => {
-                crate::atomic::cmpxchg(cx, inst, ptr, expected, replacement, mem)
-            }
-            InstKind::AtomicRmw { op, ptr, value, mem } => {
-                crate::atomic::rmw(cx, inst, op, ptr, value, mem)
+            InstKind::Fence { .. } | InstKind::CmpXchg { .. } | InstKind::AtomicRmw { .. } => {
+                crate::atomic::lower(cx, inst)
             }
             InstKind::ExtractElement { .. }
             | InstKind::InsertElement { .. }

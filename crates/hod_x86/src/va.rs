@@ -86,12 +86,10 @@ pub fn layout(cx: &FnCx<'_, X86>, ty: hod_ir::TypeId) -> Option<Layout> {
     let types = cx.types();
     let plain = |step: u32, align: u32, bytes: u32| Layout { step, align, bytes, wide: false };
     match types.kind(ty) {
-        TypeKind::Ptr { .. } => Some(plain(4, 4, 4)),
-        TypeKind::Float => Some(plain(4, 4, 4)),
+        TypeKind::Ptr { .. } | TypeKind::Float => Some(plain(4, 4, 4)),
         TypeKind::Double => Some(plain(8, 4, 8)),
         TypeKind::X86Fp80 => Some(plain(12, 4, 10)),
         _ => match types.int_bits(ty)? {
-            0 => None,
             1..=8 => Some(plain(1, 1, 1)),
             9..=16 => Some(plain(2, 2, 2)),
             17..=24 => Some(plain(4, 4, 3)),

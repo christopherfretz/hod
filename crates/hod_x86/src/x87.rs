@@ -871,6 +871,16 @@ fn routine_op(which: Intrinsic<'_>) -> Option<FpOp> {
         I::NearbyInt => O::NearbyInt,
         I::Rint => O::Rint,
         I::Fma => O::Fma,
+        I::Asin => O::Asin,
+        I::Acos => O::Acos,
+        I::Atan => O::Atan,
+        I::Atan2 => O::Atan2,
+        I::Sinh => O::Sinh,
+        I::Cosh => O::Cosh,
+        I::Tanh => O::Tanh,
+        I::Exp10 => O::Exp10,
+        I::MinNum => O::MinNum,
+        I::MaxNum => O::MaxNum,
         _ => return None,
     })
 }
@@ -878,6 +888,16 @@ fn routine_op(which: Intrinsic<'_>) -> Option<FpOp> {
 /// libm's routine of `op` for `fp`: `llc`'s symbol (`floorf`, `floor`,
 /// `floorl`), the same names as x86-64's.
 fn routine(op: FpOp, fp: Fp) -> CgResult<RuntimeFn> {
+    // `llc` calls `fmin`/`fmax` for `minnum`/`maxnum` on the x87 (x86-64
+    // has instructions); `hod_cg` names no `double` one yet.
+    match (op, fp) {
+        (FpOp::MinNum, Fp::F32) => return Ok(RuntimeFn::Fminf),
+        (FpOp::MaxNum, Fp::F32) => return Ok(RuntimeFn::Fmaxf),
+        (FpOp::MinNum, Fp::F80) => return Ok(RuntimeFn::Fminl),
+        (FpOp::MaxNum, Fp::F80) => return Ok(RuntimeFn::Fmaxl),
+        (FpOp::MinNum | FpOp::MaxNum, Fp::F64) => return unsupported(INTRINSIC),
+        _ => {}
+    }
     match fp_routine(op, fp.fp_type(), Arch::X86_64) {
         Some(func) => Ok(func),
         None => unsupported(INTRINSIC),

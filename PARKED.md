@@ -1,79 +1,74 @@
-# WP-300 (I9, x87) parked at the context budget
+# WP-300 (I9, x87) parked at the context budget (second session)
 
 Branch `wp/300-i386-x87`, base `d9833483`. Read `.build/briefs/general.md`,
-`.build/briefs/i386-group.md`, the WP-300 row, then this file and
-`crates/hod_x86/src/x87.rs` (its module comment is the design).
+`.build/briefs/i386-group.md`, the WP-300 row, then this file and the
+module comment of `crates/hod_x86/src/x87.rs` (the design and the rule).
 
-## Done (commit 286dcea0)
+## Done
 
-- `crates/hod_x86/src/x87.rs`: all of the lowering. `float`/`double`/
-  `x86_fp80` are `Mem` (class_of already said so). Loads, stores, phis
-  (hod_cg's `Target::copy`), `freeze`, `select`, `copysign`: integer
-  copies (bit-exact). Constants: `materialize_mem` writes the encoding
-  with `mov m, imm` pieces (no constant pool, no relocation, so nothing
-  to refuse under PIC: `x86:pic:float-constant` is NOT needed; say so).
-  fadd/fsub/fmul/fdiv/fneg, frem (fmodf/fmod/fmodl), fcmp all 16
-  predicates (`fucompp`+`fnstsw`+`sahf` without CMOV, `fucomip` with it,
-  via `hod_ir::X86Features::of_function`), fpext/fptrunc, sitofp/uitofp
-  and fptosi/fptoui for i1..i32 (control word around `fistp`; unsigned
-  i32 through 64-bit `fild`/`fistp`), sqrt (`fsqrt`), fabs, copysign,
-  fmuladd (product unrounded into the sum, as llc without FMA), libm
-  calls of `routine_op` (sin..fma) through `fp_routine(.., X86_64)`.
-- Excess precision (point 3 of the brief): **llc -O0 does NOT round after
-  each IR instruction**; it keeps a result in an x87 register for a use
-  in the same block (verified: `(a*b)+c`, a=b=1+2^-30, c=-(1+2^-29),
-  llc 22 prints 2^-60 = `0 3c300000`; rounding each step gives 0). hod
-  matches with "carried" results (`carried`, `carry_user`, `neutral`,
-  `consumes`): a pure function of the IR, no state. Multi-use in-block
-  results are still rounded (llc keeps them unrounded): a known
-  divergence to write into the spec.
-- `reg.rs`: `st(n)` = PReg 16+n, DWARF 11..18 (`dwarf` body, test).
-- `target.rs`: one first arm `_ if crate::x87::owns(cx, inst) =>
-  crate::x87::lower(cx, inst)` (target.rs:136), `materialize_mem` body
-  calls `crate::x87::materialize_mem` (target.rs:~245).
-- Smoke-verified by hand (clang 22 `-mno-sse -march=pentiumpro
-  -ffp-contract=off`, and the same module with target-cpu/features
-  stripped = generic): chain, float chain with division, long double
-  div/neg, fcmp with NaN, conversions, fromi, fptrunc fp80->double->float,
-  select: hod's output == llc 22's, both CPUs. No test file yet.
+- `x87.rs` lowering (commit 286dcea0), then (e43a3219 and the commit after it):
+  carried results with up to 4 uses (one stack copy per operand,
+  `fld st0` at the definition), `freeze` and `fptrunc (fpext x)` pass 80
+  bits on, `select` is `fcmov` on the stack with `cmov`, `candidate`
+  counts only computed results (loads no longer block carrying),
+  minnum/maxnum (float `fminf`/`fmaxf`, x86_fp80 `fminl`/`fmaxl`; double
+  refused `x86:float:intrinsic`: hod_cg has no `RuntimeFn::Fmin`/`Fmax`,
+  a follow-up in `crates/hod_cg/src/sym.rs` ~line 1006), asin..tanh,
+  atan2, exp10 as libm calls.
+- Rounding rule MEASURED (hand-written shapes, qemu-i386; llc 19 == llc 22
+  on every shape, float and double): llc keeps a computed result at 80 bits
+  for EVERY use in its block before the next call (any number of uses, any
+  order, any distance); a use after a call or in another block reads it
+  rounded; `freeze`, `fpext`, `fptrunc(fpext x)` (DAG fold) and `select`
+  with cmov (`fcmov`) pass 80 bits; without cmov `select` rounds (branch);
+  with 6+ simultaneously live x87 values llc rounds SOME uses (depends on
+  its fast allocator: not computable from the IR). `x86_fp80`: nothing to
+  round.
+- Tests `crates/hod/tests/i386_x87.rs` (4 tests, all pass): arith.c (12
+  runs), fcmp module (12 runs, 16 preds x 3 types x 121 pairs, zext/select/
+  br/fp select/fneg operand), shapes-{float,double}.ll + shapes.c (156 lines
+  equal llc, 140 equal the model), `x86:float:sse` refusal. Each run: llc,
+  hod, Stress::ALL; llc 19 and 22; generic and pentiumpro; GNU ld.
+- `cargo fmt`, `clippy -p hod_x86 -p hod --all-targets -D warnings` clean;
+  `cargo test -p hod_x86`, `-p hod --test i386 --test i386_run` pass.
+
+## DECISION for the supervisor (put at the top of the hand-back)
+
+hod rounds, where llc keeps 80 bits, in these shapes (tests compare them
+with a model): a use after another carried result defined later is still
+live (non-LIFO: `twice` when the first result's store comes after the
+second use, `nonlifo`, `sqrt_between`), uses more than 12 instructions
+away (`far_*`), more than 4 copies on the stack (`many*`, where llc itself
+rounds some, allocator-dependent), a value with uses both before and after
+a call or also in another block (`call_between`, `block_and_local`), and
+`select i1 true` (llc folds it) without cmov. Fix for all but the
+allocator part: keep an 80-bit copy in a 12-byte frame slot (`fstp tword`)
+next to the rounded one and `fld tword` it for every same-block use before
+a call. That needs a per-function map InstId -> FrameRef, i.e. ONE field
+in `FnState` (`crates/hod_x86/src/target.rs:44`, outside ownership).
+Approve that edit, or accept the documented divergence.
 
 ## Remaining, in order
 
-1. `crates/hod/tests/i386_x87.rs` (`mod i386_support;`), programs in
-   `crates/hod/tests/data/i386/x87/`: arith.c, conv.c, libm.c
-   (`-fno-math-errno`), and an IR module generated in the test for the 16
-   fcmp predicates x 3 types (C cannot spell ueq/ugt/...). Variants per
-   program: clang flags `-fno-pic -fno-pie -mno-sse -march=pentiumpro`
-   (+ `-ffp-contract=off` in one variant so fmul/fadd chains are seen,
-   default in the other so `llvm.fmuladd` is seen) and "generic" = the
-   module text with `"target-cpu"=..`, `"target-features"=..`,
-   `"tune-cpu"=..` removed. Each: hod, `stressed_object`, llc 19 and 22;
-   link `-no-pie -lm`; outputs equal. Print an FNV hash of result bytes
-   (only 10 bytes of a long double) plus the 2^-60 chain line, and
-   assert that line in Rust. Random operands: LCG in the program; set the
-   quiet bit of any NaN pattern (SNaN through a copy differs from llc's
-   `fld`/`fstp`); long double with the integer bit set; to-int inputs only
-   in range (out of range is poison and llc uses `fistp word` for i16).
-   Assert `x86:float:sse` for a module with clang's default pentium4.
-2. Run `cargo test -q -p hod --test i386_x87`, `i386`, `i386_run`;
-   `cargo xtask irdiff --target i686 --quick` before (base worktree build
-   dir) and after; `cargo xtask compare-binaries` base vs head over both
-   corpora (`-j 4`, absolute `--out`).
-3. `spec/codegen-x86.md`: new last section (classes, carried-result rule
-   and its divergence, compare flags table, control word sequence, libm
-   symbols, refusal names) and the §7 rows: `x86:float` now only "a
-   floating argument/result (I6)"; add `x86:float:{half,bfloat,fp128,
-   sse,i64-cast,intrinsic,cast}`. `crates/hod_x86/README.md` I9 row.
-   `spec/landed/codegen/WP-300.md`.
-4. i64 casts: refused `x86:float:i64-cast` (no i64 value can exist before
-   I7 merges); after I7: `fild qword`/`fistp qword` on the i64 slot.
+1. Evidence: `cargo xtask irdiff --target i686 --quick` base (`d9833483`,
+   own target dir) vs head, counts per class and refusal name;
+   `cargo xtask compare-binaries` base vs head over `.build/corpus/kiln`
+   and `.build/corpus-x64/kiln` (`-j 4`, absolute `--out`): 0 different,
+   0 changed-outcome. Run in the background.
+2. Spec: new last section §9 of `spec/codegen-x86.md` (the measured llc
+   rule and hod's rule above with the divergent shapes, compare flags
+   per CPU, control word sequence around `fistp`, libm symbols per type,
+   refusals `x86:float:{half,bfloat,fp128,sse,i64-cast,intrinsic,cast}`;
+   `x86:float` remains only for floating arguments/returns (I6)); §7
+   rows; `crates/hod_x86/README.md` I9 row; `spec/landed/codegen/WP-300.md`
+   (no `x86:pic:float-constant`: constants are `mov` immediates). Then
+   delete this file.
+3. Not this package: i64 casts wait for WP-298; SSE is I12.
 
-## Decisions
+## Notes
 
-- Constants by immediates, not a `.rodata` pool: same bits, no
-  relocation, PIC-neutral (deviation from the brief, on purpose).
-- libm calls are emitted in x87.rs (args copied to `[esp+..]` at 4/8/12
-  bytes, area rounded to 16, `st0` result); no register displacement is
-  needed: the pool (ebx, esi, edi) is callee-saved.
-- SSE: a `float` op under SSE or a `double` op under SSE2 is refused
-  `x86:float:sse` (llc would use xmm; I12).
+- `hod --mcpu=pentiumpro` does not change `X86Features::of_function` (only
+  the function's `target-cpu` attribute does); tests use attributes.
+- `arith.c` setup was rewritten once with a python script (against the
+  edit rule; content reviewed, test data only).
+- Measurement scratch: `.build/target-wp-300/measure/` (delete when done).

@@ -74,13 +74,17 @@ fn string(&self, id: StrId) -> &[u8]
 `add_string` stores a symbol name and returns its id. Names are arbitrary
 bytes without NUL. **Equal names are not merged**: each call stores the
 bytes again. A caller that uses one name for many symbols (AArch64 mapping
-symbols `$x` and `$d`, for example) adds it once and reuses the `StrId`. The
+symbols `$x` and `$d`, for example) adds it once and reuses the `StrId`.
+`StrId`s number the names from 1 in call order (WP-296: the writer finds
+a name's bytes and records where it put them by its number, without
+scanning for the NUL). The
 empty name returns `StrId::EMPTY` and stores nothing. Errors: `NulInName`;
 `TooLarge(StringBytes)` when the names would pass 4 GiB.
 
 `string` returns the bytes of a stored name. It never panics: for an id
-the object did not issue the result is unspecified bytes of the name arena
-(empty when the id is past its end).
+the object did not issue the result is another of its names, or empty when
+the id is past the last name. A symbol whose `StrId` this object did not
+issue is `BadSymbol(UnknownName)` when written.
 
 ### Sections
 
@@ -540,8 +544,9 @@ gABI "ELF Header". `e_ident`: `ELFCLASS64`, `ELFDATA2LSB`, `EV_CURRENT`;
    `SectionId` order;
 6. `.symtab`;
 7. `.symtab_shndx`, only when needed;
-8. `.strtab`;
-9. `.shstrtab`.
+8. `.strtab`, which is also the section name table: `e_shstrndx` is its
+   index (WP-296; `llc` 19 and 22 write one table for both too, see
+   "String table").
 
 So the ELF index of `SectionId(n)` is `1 + group_count + n`, and every
 group's header precedes its members' (gABI "Section Groups" requires it).
@@ -550,8 +555,7 @@ group's header precedes its members' (gABI "Section Groups" requires it).
 
 In file order: the file header; the caller's sections' contents in
 `SectionId` order; the group sections; the relocation sections; `.symtab`;
-`.symtab_shndx`; `.strtab`; `.shstrtab`; the section header table, which
-ends the file.
+`.symtab_shndx`; `.strtab`; the section header table, which ends the file.
 
 - The contents of a section that occupies file space start at a file
   offset that is a multiple of its alignment, padded with zeros, whether or
@@ -580,15 +584,36 @@ size, and:
 The link does not affect the section's position in the object, its
 relocation section, or anything else.
 
-### Section names
+### String table
 
-`.shstrtab` (`SHT_STRTAB`, no flags, alignment 1) holds: a NUL; `.symtab`,
-`.strtab`, `.shstrtab`; then `.symtab_shndx`, `.group` and
-`.note.GNU-stack`, each only when such a section is written; then each
-**distinct** caller's section name once, in the order first used. When any
-section of a name has relocations the name is stored as `.rela<name>`: the
-relocation section's `sh_name` points at it and the section's `sh_name`
-five bytes further. Sections with equal names have equal `sh_name`.
+One `SHT_STRTAB` section, `.strtab` (no flags, alignment 1), holds the
+section names and the symbol names; it is `e_shstrndx` and `.symtab`'s
+`sh_link` (WP-296). In order:
+
+1. **The section names**: a NUL; `.symtab`, `.strtab`; then
+   `.symtab_shndx`, `.group` and `.note.GNU-stack`, each only when such a
+   section is written; then each **distinct** caller's section name once,
+   in the order first used. When any section of a name has relocations the
+   name is stored as `.rela<name>` (`.rel<name>` in ELF32): the relocation
+   section's `sh_name` points at it and the section's `sh_name` five (four)
+   bytes further. Sections with equal names have equal `sh_name`.
+2. **The symbol names**: a written symbol defined in a caller's section
+   whose name **ends with** the symbol's name has its `st_name` pointing
+   into that section name (`foo` in `.text.foo` or `.rela.text.foo`: the
+   name of a `-ffunction-sections` / `-fdata-sections` section, of a
+   COMDAT member, is stored once). Every other name a written symbol uses
+   follows, once per distinct `StrId`, in the order of the first symbol
+   (by `SymbolId`) that uses it, each NUL-terminated. Names only omitted
+   symbols use are not stored. `st_name` of the empty name is 0.
+
+Why: `llc` (19 and 22, both targets) writes one table, tail-merged by
+LLVM's `StringTableBuilder` (distinct strings sorted by their reversed
+bytes, each string that is a suffix of the one before it sharing its
+bytes). hod does not sort: the rule above finds the merges that matter
+(a section named after its symbol) with one comparison per symbol, and the
+size comes within a few bytes of the full tail merge. Measured on the
+`stl-heavy -g` bench input: 502,071 bytes by this rule against 502,050 by
+`StringTableBuilder` over the same names (`landed/object/WP-296.md`).
 
 ### Symbol table
 
@@ -605,7 +630,8 @@ five bytes further. Sections with equal names have equal `sh_name`.
 local). Unreferenced undefined symbols are not written (see "Symbols").
 Relocations and group signatures use the entries' new indices.
 
-Fields: `st_name` is the name's offset in `.strtab`; `st_info` is
+Fields: `st_name` is the name's offset in `.strtab` ("String table");
+`st_info` is
 `binding << 4 | type` with bindings `STB_LOCAL` 0, `STB_GLOBAL` 1,
 `STB_WEAK` 2 and types `STT_NOTYPE` 0, `STT_OBJECT` 1, `STT_FUNC` 2,
 `STT_SECTION` 3, `STT_FILE` 4, `STT_TLS` 6, `STT_GNU_IFUNC` 10; `st_other`
@@ -613,9 +639,6 @@ is `other | visibility` with `STV_DEFAULT` 0, `STV_HIDDEN` 2,
 `STV_PROTECTED` 3; `st_shndx` is `SHN_UNDEF`, `SHN_ABS`, `SHN_COMMON`, or
 the section's ELF index; `st_value` and `st_size` as given.
 
-`.strtab` (`SHT_STRTAB`, no flags, alignment 1) is a NUL followed by every
-name passed to `add_string`, in call order, each NUL-terminated, including
-names only omitted symbols use. `st_name` of the empty name is 0.
 
 ### Relocation sections
 
@@ -729,7 +752,7 @@ writer uses the escapes of gABI "ELF Header" and "Symbol Table":
 
 - section count ≥ 0xff00: `e_shnum` is 0 and the count is in `sh_size` of
   section header 0;
-- `.shstrtab` index ≥ 0xff00: `e_shstrndx` is `SHN_XINDEX` (0xffff) and
+- `.strtab` index ≥ 0xff00: `e_shstrndx` is `SHN_XINDEX` (0xffff) and
   the index is in `sh_link` of section header 0;
 - a written symbol in a section whose ELF index is ≥ 0xff00: its
   `st_shndx` is `SHN_XINDEX`, and the object has a `.symtab_shndx` section
@@ -876,7 +899,9 @@ These are properties of the design, checked by `record_sizes` in
   are 32-byte records in **one vector for the whole object**; a section's
   relocations are an index chain through it, so sections need no vectors of
   their own and may be interleaved freely. Symbol names are appended to one
-  byte arena that is already the image of `.strtab`.
+  byte arena, with 4 bytes per name (where it ends); the writer copies the
+  arena into `.strtab` in pieces (one piece when no name is merged or
+  dropped and names are used in call order).
 - **Per section:** one record of 104 bytes (the alignment is stored as its
   exponent, which is what leaves room for the link target), and one heap
   buffer for its contents once it has any. Section names are interned in
@@ -889,14 +914,18 @@ These are properties of the design, checked by `record_sizes` in
   `append_owned` and `data_mut` let a producer avoid the copy into the
   model as well.
 - **The writer's own memory** is: 8 bytes per section (content offsets) and
-  4 bytes per section (relocation section indices); 4 bytes per symbol (new
-  indices); 5 bytes per distinct section name; the 64 KiB buffer (`write`)
+  4 bytes per section (relocation section indices); 8 bytes per symbol (new
+  indices, `st_name`); 4 bytes per name (where "String table" put it) and
+  8 bytes per piece of the name arena; 5 bytes per distinct section name;
+  the 64 KiB buffer (`write`)
   or the output (`to_vec`); and, only for a section whose relocations were
   added out of order, 4 bytes per relocation of the largest such section.
   The symbol table, relocation entries, string tables and section headers
   are generated straight into the output, never materialized.
-- The writer makes one pass over sections and two over symbols to lay out,
-  then one pass over each table to emit (three over symbols, for the three
+- The writer makes one pass over sections and three over symbols to lay
+  out (the one of "String table" compares a written symbol's name with its
+  section's name once and looks its place up by `StrId`, no search or
+  sort), then one pass over each table to emit (three over symbols, for the three
   parts of `.symtab`).
 
 ## Differences from LLVM's output
@@ -908,9 +937,11 @@ same. Deliberate differences:
   tables; LLVM puts `.strtab` first and each relocation section after its
   section. This order makes the ELF index of a section a constant offset
   from its id.
-- `.strtab` and `.shstrtab` are not tail-merged or deduplicated beyond what
-  "Section names" and "Strings" say: suffix merging costs time and hod's
-  job is to finish.
+- `.strtab` is not sorted and tail-merged as LLVM's `StringTableBuilder`
+  does; it shares only what "String table" says (a symbol's name with its
+  section's name, `.text` with `.rela.text`): a sort costs time and hod's
+  job is to finish. The size is within a few bytes of LLVM's over the same
+  names; the byte order differs.
 - Relocations are sorted by offset only; LLVM's order within equal offsets
   differs for some targets.
 - Sections without file space are not padded to their alignment in the

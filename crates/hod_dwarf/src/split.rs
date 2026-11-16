@@ -195,8 +195,6 @@ struct Layout {
     ranges: bool,
     /// The unit has a `.debug_addr` contribution.
     has_addr: bool,
-    /// The `.debug_addr` index of the first span.
-    span_base: usize,
 }
 
 impl<'a> Writer<'a> {
@@ -214,7 +212,9 @@ impl<'a> Writer<'a> {
             stack: Vec::new(),
             addr_of: Vec::new(),
             addrs: Vec::new(),
+            addr_index: std::collections::HashMap::default(),
             spans: Vec::new(),
+            span_index: Vec::new(),
             unit_start: 0,
             cur: Vec::new(),
             expr: Vec::new(),
@@ -278,13 +278,8 @@ impl<'a> Writer<'a> {
         let ranges = self.spans.len() > 1;
         // The blocks' lists are the `.dwo` table's; the unit's own list
         // is the skeleton's.
-        let span_base = self.begin_functions(plan, globals);
-        let layout = Layout {
-            pc: self.spans.len() == 1,
-            ranges,
-            has_addr: span_base > 0 || !self.spans.is_empty(),
-            span_base,
-        };
+        let (has_addr, _) = self.begin_functions(plan, globals);
+        let layout = Layout { pc: self.spans.len() == 1, ranges, has_addr };
         if n > 1 {
             // The header (DWARF 5 §7.5.1.2): the abbreviations at 0 of
             // `.debug_abbrev.dwo`, the DWO id written last.
@@ -331,8 +326,7 @@ impl<'a> Writer<'a> {
                 .ok_or(Error::TooLarge)?;
             self.info[..4].copy_from_slice(&length.to_le_bytes());
         }
-        debug_assert_eq!(self.addrs.len(), span_base);
-        self.contributions(layout.has_addr, false, span_base)?;
+        self.contributions(layout.has_addr, false)?;
         Ok(layout)
     }
 }
@@ -646,7 +640,7 @@ fn skeleton<'a>(
     }
     if layout.pc {
         let size = u32::try_from(w.spans[0].size).map_err(|_| Error::TooLarge)?;
-        write_uleb(&mut info, layout.span_base as u64);
+        write_uleb(&mut info, u64::from(w.span_index[0])); // the span's entry
         info.extend_from_slice(&size.to_le_bytes());
     }
     if layout.ranges {
@@ -687,9 +681,9 @@ fn skeleton<'a>(
         rnglists.extend_from_slice(&[8, 0]);
         rnglists.extend_from_slice(&1u32.to_le_bytes());
         rnglists.extend_from_slice(&4u32.to_le_bytes());
-        for (k, s) in w.spans.iter().enumerate() {
+        for (s, &index) in w.spans.iter().zip(&w.span_index) {
             rnglists.push(DW_RLE_STARTX_LENGTH);
-            write_uleb(&mut rnglists, (layout.span_base + k) as u64);
+            write_uleb(&mut rnglists, u64::from(index)); // the span's entry
             write_uleb(&mut rnglists, s.size);
         }
         rnglists.push(DW_RLE_END_OF_LIST);

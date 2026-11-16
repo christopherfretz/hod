@@ -114,8 +114,11 @@ impl Writer<'_> {
     pub(crate) fn tls_location(&mut self, symbol: hod_obj::SymbolId, addend: i64) {
         if self.split {
             // WP-189: the offset is a `.debug_addr` entry (§6.24).
-            let index = self.push_addr(symbol, addend);
-            self.tls_addrs.push(index);
+            let (index, new) = self.pool_addr(symbol, addend, true);
+            if new {
+                // Entries are added at the end: the list stays ascending.
+                self.tls_addrs.push(index);
+            }
             write_uleb(&mut self.info, 2 + uleb_len(u64::from(index)) as u64);
             self.info.push(DW_OP_GNU_CONST_INDEX);
             write_uleb(&mut self.info, u64::from(index));

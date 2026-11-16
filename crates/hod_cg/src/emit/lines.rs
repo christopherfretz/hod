@@ -11,11 +11,12 @@
 //! index of its scope's file, its line and its column; an inlined
 //! location keeps its own scope's file and line, as `llc` writes it), the
 //! policy (`function_rows`) makes the rows, and the rows are encoded at
-//! once as the function's own sequence into its unit's [`LineProgram`],
-//! relative to the section symbol of its code plus its offset. A
-//! sequence's bytes depend only on its rows, and functions are placed in
-//! module order, so the program is the same for any division into
-//! chunks. [`DebugLines::finish`] writes `.debug_line` (one unit per
+//! once into its unit's [`LineProgram`], relative to the section symbol
+//! of its code plus its offset: they continue the sequence of the
+//! function placed just before when that one is of the same unit and
+//! section (WP-296, `spec/dwarf.md` §5.6), else they start one. Functions
+//! are placed in module order, so the program is the same for any
+//! division into chunks. [`DebugLines::finish`] writes `.debug_line` (one unit per
 //! compile unit, in `!llvm.dbg.cu` order), then the DIEs with
 //! `DW_AT_stmt_list` and the code spans of each unit.
 //!
@@ -45,7 +46,8 @@ const NO_FILE: u32 = u32::MAX - 1;
 #[derive(Debug)]
 struct Unit<'m> {
     plan: UnitPlan<'m>,
-    /// The unit's sequences, one per function, in module order.
+    /// The unit's sequences, one per run of its functions in one section
+    /// (§5.6), in module order.
     program: LineProgram,
     /// The code of the unit's functions.
     code: Vec<CodeSpan>,
@@ -76,6 +78,10 @@ pub(super) struct DebugLines<'m> {
     /// The unit and the section symbol of the last function given a code
     /// span (WP-136, `spec/dwarf.md` §6.17): `llc`'s "previous unit".
     prev_span: Option<(usize, SymbolId)>,
+    /// The unit whose line program has an open sequence (WP-296,
+    /// `spec/dwarf.md` §5.6): that of the last function placed, when it
+    /// has rows.
+    line_open: Option<usize>,
 }
 
 /// Where a function was placed, and its frame.
@@ -176,6 +182,7 @@ impl<'m> DebugLines<'m> {
             calls: Vec::new(),
             split,
             prev_span: None,
+            line_open: None,
         })))
     }
 
@@ -252,13 +259,25 @@ impl<'m> DebugLines<'m> {
         };
         // A function without a subprogram has no line information, even
         // when its instructions have locations: `llc` writes neither rows
-        // nor a range for it (§5.7).
-        let Some(sp) = subprogram else { return Ok(()) };
+        // nor a range for it (§5.7), and it ends the line sequence before
+        // it (`DwarfDebug::skippedNonDebugFunction`, §5.6).
+        let Some(sp) = subprogram else {
+            self.end_sequence();
+            return Ok(());
+        };
         let Some((unit, scope)) = self.unit_of(sp) else {
+            self.end_sequence();
             return Ok(());
         };
         if size == 0 {
+            self.end_sequence();
             return Ok(());
+        }
+        // WP-296 (§5.6): a function of another unit ends the sequence of
+        // the last one, as `DwarfCompileUnit::addRange` terminates the
+        // previous unit's line table.
+        if self.line_open != Some(unit) {
+            self.end_sequence();
         }
         let symbol = obj.section_symbol(section);
         let addend = offset as i64;
@@ -298,6 +317,8 @@ impl<'m> DebugLines<'m> {
         };
         self.units[unit].plan.add_function(&input).map_err(|e| dwarf_err(self.debug, e))?;
         if lines.is_empty() {
+            // No rows: the code is not covered by the last row before it.
+            self.end_sequence();
             return Ok(());
         }
 
@@ -326,9 +347,23 @@ impl<'m> DebugLines<'m> {
         if let Some((entries, ready)) = stubs {
             stub_rows(&mut self.rows, scope, entries, ready);
         }
+        // WP-296 (§5.6): the rows continue the unit's open sequence when
+        // the function follows its code in the same section, as `llc`'s
+        // one sequence per run of functions; the sequence stays open.
         let u = &mut self.units[unit];
         let seq = Sequence { order: 0, symbol, addend, size, rows: &self.rows };
-        u.program.push(u.plan.files().files().len(), &seq).map_err(|e| dwarf_err(self.debug, e))
+        u.program
+            .push_open(u.plan.files().files().len(), &seq)
+            .map_err(|e| dwarf_err(self.debug, e))?;
+        self.line_open = Some(unit);
+        Ok(())
+    }
+
+    /// Ends the open line sequence, if there is one (§5.6).
+    fn end_sequence(&mut self) {
+        if let Some(unit) = self.line_open.take() {
+            self.units[unit].program.close();
+        }
     }
 
     /// Adds `code` to the code of `unit` as `DwarfCompileUnit::addRange`
@@ -364,6 +399,7 @@ impl<'m> DebugLines<'m> {
         obj: &mut Object,
         mut place: impl FnMut(&mut Object, SymId) -> Option<(SymbolId, i64)>,
     ) -> CgResult<()> {
+        self.end_sequence();
         // Each unit's placed globals.
         let mut globals: Vec<Vec<GlobalAddr>> = vec![Vec::new(); self.units.len()];
         for &(sym, expr) in module.global_exprs() {

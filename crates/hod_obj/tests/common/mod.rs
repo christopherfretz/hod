@@ -202,7 +202,8 @@ impl Elf {
         for (sec, name) in sections.iter_mut().zip(names) {
             sec.name = name;
         }
-        assert_eq!(sections[shstrndx as usize].name, ".shstrtab");
+        // "String table": one table for section and symbol names.
+        assert_eq!(sections[shstrndx as usize].name, ".strtab");
 
         let mut elf = Self {
             bytes: bytes.to_vec(),

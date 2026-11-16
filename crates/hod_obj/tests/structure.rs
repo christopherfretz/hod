@@ -46,7 +46,7 @@ fn file_header_per_architecture() {
 fn empty_object() {
     let elf = parse(&Object::new(Arch::AArch64));
     let names: Vec<_> = elf.sections.iter().map(|s| s.name.as_str()).collect();
-    assert_eq!(names, ["", ".note.GNU-stack", ".symtab", ".strtab", ".shstrtab"]);
+    assert_eq!(names, ["", ".note.GNU-stack", ".symtab", ".strtab"]);
     assert_eq!(elf.symbols.len(), 1);
     assert_eq!(elf.sections[elf.symtab].info, 1);
 }
@@ -344,9 +344,9 @@ fn unreferenced_undefined_symbols_are_omitted() {
     assert_eq!(names, ["", "used", "retained", "defined_later"]);
     assert_eq!(elf.symbols[1].shndx, SHN_UNDEF);
     assert_eq!(elf.symbols[3].shndx, elf.only(".text") as u32);
-    // Its name stays in the string table; only the symbol is dropped.
+    // "String table": its name is dropped with it.
     let strtab = elf.data(elf.sections[elf.symtab].link as usize);
-    assert!(strtab.windows(7).any(|w| w == b"unused\0"));
+    assert!(!strtab.windows(7).any(|w| w == b"unused\0"));
 }
 
 /// "Symbol table": section symbols are created once per section, are local
@@ -632,22 +632,52 @@ fn tables() {
     assert_eq!(symtab.link as usize, elf.only(".strtab"));
     let strtab = &elf.sections[elf.only(".strtab")];
     assert_eq!((strtab.kind, strtab.flags, strtab.align, strtab.entsize), (SHT_STRTAB, 0, 1, 0));
-    assert_eq!(elf.data(elf.only(".strtab")), b"\0hello.c\0.L.str\0puts\0main\0");
+    assert_eq!(elf.shstrndx as usize, elf.only(".strtab"), "one table for both");
+    assert_eq!(
+        elf.data(elf.only(".strtab")),
+        b"\0.symtab\0.strtab\0.note.GNU-stack\0.rela.text\0.rodata\0hello.c\0.L.str\0puts\0main\0"
+    );
     let names: Vec<_> = elf.sections.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(
         names,
-        [
-            "",
-            ".text",
-            ".rodata",
-            ".note.GNU-stack",
-            ".rela.text",
-            ".symtab",
-            ".strtab",
-            ".shstrtab"
-        ]
+        ["", ".text", ".rodata", ".note.GNU-stack", ".rela.text", ".symtab", ".strtab"]
     );
     assert_eq!(elf.data(elf.only(".rodata")), b"hi\0");
+}
+
+/// "String table": a symbol whose name ends its section's name points into
+/// it (behind `.rela` too); a name two symbols share is stored once, even
+/// out of call order; a name only an omitted symbol uses is not stored.
+#[test]
+fn symbol_names_share_section_names() {
+    let mut obj = Object::new(Arch::AArch64);
+    let foo_text = obj.add_section(b".text.foo", SectionKind::Text, 4).unwrap();
+    let bar_text = obj.add_section(b".text._Z3barv", SectionKind::Text, 4).unwrap();
+    let foo = obj.add_string(b"foo").unwrap();
+    let mapping = obj.add_string(b"$x").unwrap();
+    let bar = obj.add_string(b"_Z3barv").unwrap();
+    for (section, name) in [(foo_text, foo), (bar_text, bar)] {
+        obj.append(section, &[0xc0, 0x03, 0x5f, 0xd6]); // ret
+        obj.add_symbol(Symbol::defined(name, SymbolKind::Func, section, 0, 4));
+        obj.add_symbol(
+            Symbol::defined(mapping, SymbolKind::NoType, section, 0, 0)
+                .with_binding(Binding::Local),
+        );
+    }
+    let puts = undefined(&mut obj, "puts");
+    undefined(&mut obj, "unused");
+    obj.add_relocation(bar_text, 0, A64Reloc::Call26, puts, 0);
+
+    let elf = parse(&obj);
+    assert_eq!(elf.shstrndx as usize, elf.only(".strtab"));
+    assert_eq!(
+        elf.data(elf.only(".strtab")),
+        b"\0.symtab\0.strtab\0.note.GNU-stack\0.text.foo\0.rela.text._Z3barv\0$x\0puts\0"
+    );
+    let names: Vec<_> = elf.symbols.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["", "$x", "$x", "foo", "_Z3barv", "puts"]);
+    assert_eq!(elf.sections[elf.only(".text._Z3barv")].name, ".text._Z3barv");
+    assert_eq!(elf.sections[elf.only(".rela.text._Z3barv")].name, ".rela.text._Z3barv");
 }
 
 /// A sink that accepts a few bytes per call and counts the calls.
@@ -905,9 +935,9 @@ fn bad_symbols() {
 #[test]
 fn section_count_escapes_at_the_boundary() {
     // With no stack note and no relocations the file has the caller's
-    // sections plus four: the null section and the three tables.
+    // sections plus three: the null section and the two tables.
     for (sections, shnum_escaped, shstrndx_escaped) in
-        [(0xff00 - 5, false, false), (0xff00 - 4, true, false), (0xff00 - 3, true, true)]
+        [(0xff00 - 4, false, false), (0xff00 - 3, true, false), (0xff00 - 2, true, true)]
     {
         let mut obj = Object::new(Arch::AArch64);
         obj.set_stack_note(StackNote::Omit);
@@ -915,7 +945,7 @@ fn section_count_escapes_at_the_boundary() {
             obj.add_section(b".data", SectionKind::Data, 1).unwrap();
         }
         let elf = parse(&obj);
-        assert_eq!(elf.sections.len() as u32, sections + 4);
+        assert_eq!(elf.sections.len() as u32, sections + 3);
         assert_eq!(elf.raw_shnum == 0, shnum_escaped, "{sections} sections");
         assert_eq!(elf.raw_shstrndx == 0xffff, shstrndx_escaped, "{sections} sections");
     }
@@ -948,8 +978,8 @@ fn more_than_65k_sections() {
     let obj = common::many_sections(count);
     let elf = parse(&obj);
     // Null, the sections, `main`'s, the stack note, one relocation section,
-    // and four tables.
-    assert_eq!(elf.sections.len() as u32, count + 8);
+    // and three tables.
+    assert_eq!(elf.sections.len() as u32, count + 7);
     assert_eq!((elf.raw_shnum, elf.raw_shstrndx), (0, 0xffff));
     assert_eq!(elf.sections[elf.only(".symtab_shndx")].link as usize, elf.symtab);
 

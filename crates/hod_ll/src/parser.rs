@@ -337,6 +337,7 @@ impl<'a, 'm, L: Layering> Parser<'a, 'm, L> {
     /// [`Parser::syntax`]'s failure, out of line.
     #[cold]
     #[inline(never)]
+    #[allow(clippy::unnecessary_box_returns)] // The error of `PResult` is boxed.
     fn unexpected(&self, what: &str) -> Box<Fail> {
         match self.syntax::<std::convert::Infallible>(what) {
             Err(failure) => failure,

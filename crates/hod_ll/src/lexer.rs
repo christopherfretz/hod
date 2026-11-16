@@ -527,18 +527,16 @@ impl<'a> Lexer<'a> {
     #[inline(never)]
     fn at_end_rest(&mut self) -> Token {
         if self.replay_from != usize::MAX {
-            return match self.replayed() {
-                Some(token) => token,
-                None => {
-                    let src = self.src;
-                    self.src = self.bytes;
-                    let token = self.lex_out_of_line();
-                    // `replayed` set `src` for what is left to replay;
-                    // the lexing must not have moved it.
-                    self.src = src;
-                    token
-                }
-            };
+            if let Some(token) = self.replayed() {
+                return token;
+            }
+            let src = self.src;
+            self.src = self.bytes;
+            let token = self.lex_out_of_line();
+            // `replayed` set `src` for what is left to replay; the
+            // lexing must not have moved it.
+            self.src = src;
+            return token;
         }
         if self.full.len() > MAX_SOURCE_BYTES {
             return self.fail("source is larger than 4 GiB", 0, 0);

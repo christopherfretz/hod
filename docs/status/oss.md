@@ -78,6 +78,23 @@ Host: aarch64; target: x86_64 (cross-built, tests under qemu-x86_64). Rows from 
 | daw_json_link (re-run, strict) | O0g | 159 | 159 | 159 | 0 | 0 | - | ok | 147/147 | - | 147/147 | same | `hod-cd6ef6bc` | `8f93304ee` |
 | libunifex (re-run) | O0 | 114 | 114 | 114 | 0 | 0 | ok | ok | 91/94 | 91/94 | 91/94 | same | `hod-e98267c0` | `8f93304ee` |
 | libunifex (re-run) | O0g | 114 | 114 | 114 | 0 | 0 | ok | ok | 91/94 | 91/94 | 91/94 | same | `hod-e98267c0` | `8f93304ee` |
+| scnlib (re-run, strict) | O0 | 47 | 69 | 47 | 0 | 0 | - | ok | 24/25 | - | 24/25 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| scnlib (re-run, strict) | O0g | 47 | 69 | 47 | 0 | 0 | - | ok | 24/25 | - | 24/25 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| mp_units (re-run, strict) | O0 | 64 | 64 | 64 | 0 | 0 | - | ok | 25/25 | - | 25/25 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| mp_units (re-run, strict) | O0g | 64 | 64 | 64 | 0 | 0 | - | ok | 25/25 | - | 25/25 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| reflect_cpp (re-run, strict) | O0 | 327 | 323 | 323 | 0 | 0 | - | ok | 484/484 | - | 484/484 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| reflect_cpp (re-run, strict) | O0g | 327 | 323 | 323 | 0 | 0 | - | ok | 484/484 | - | 484/484 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| ctre (re-run, strict) | O0 | 25 | 25 | 25 | 0 | 0 | - | ok | rc 0 | - | rc 0 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| ctre (re-run, strict) | O0g | 25 | 25 | 25 | 0 | 0 | - | ok | rc 0 | - | rc 0 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| entt (re-run, strict) | O0 | 73 | 73 | 73 | 0 | 0 | - | ok | 68/68 | - | 68/68 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| entt (re-run, strict) | O0g | 73 | 73 | 73 | 0 | 0 | - | ok | 68/68 | - | 68/68 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| cereal (re-run, strict) | O0 | 39 | 39 | 39 | 0 | 0 | - | ok | 40/40 | - | 40/40 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| cereal (re-run, strict) | O0g | 39 | 39 | 39 | 0 | 0 | - | ok | 40/40 | - | 40/40 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| taskflow (re-run, strict) | O0 | 27 | 27 | 27 | 0 | 0 | - | ok | 2462/2462 | - | 2462/2462 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| glaze (re-run, strict) | O0 | 89 | 114 | 86 | 0 | 0 | - | failed (3 TUs) | 100/102 | - | 100/102 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| glaze (re-run, strict) | O0g | 89 | 112 | 84 | 0 | 0 | - | failed (5 TUs) | 98/102 | - | 98/102 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| stdexec (re-run, strict) | O0 | 231 | 235 | 231 | 0 | 0 | - | ok | 907/907 | - | 907/907 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| stdexec (re-run, strict) | O0g | 231 | 235 | 231 | 0 | 0 | - | ok | 907/907 | - | 907/907 | same | `hod-cd6ef6bc` | `8f93304ee` |
 | glaze | O0 | 89 | 114 | 86 | 0 | 0 | failed (3 TUs) | failed (3 TUs) | 100/102 | 100/102 | 99/102 | strict: 1 worse (lib_test) | `hod-02fe2d02` | `8f93304ee` |
 | glaze | O0g | 89 | 112 | 84 | 0 | 0 | failed (5 TUs) | failed (5 TUs) | 98/102 | 98/102 | 98/102 | same | `hod-02fe2d02` | `8f93304ee` |
 | stdexec | O0 | 231 | 235 | 231 | 0 | 0 | ok | ok | 907/907 | 907/907 | 907/907 | same | `hod-02fe2d02` | `8f93304ee` |
@@ -91,6 +108,7 @@ Host: aarch64; target: x86_64 (cross-built, tests under qemu-x86_64). Rows from 
 6. stdexec: the 4 objects not by hod are link rows.
 7. taskflow `-O0 -g` was not run in WP-253.
 8. Re-runs at later candidates. At `hod-e98267c0`, daw_json_link strict declined 21 TUs: the dead-arm fold refused an `invoke` in the dead arm (`intrinsic:const-fold-nounwind-invoke`). At `hod-cd6ef6bc` it is equal to the control. libunifex at `hod-e98267c0`: the 17 internal errors are gone.
+9. Strict re-runs at `hod-cd6ef6bc` (the 1.0 candidate) of scnlib, mp_units, reflect_cpp, ctre, entt, cereal, taskflow `-O0`, glaze and stdexec, against the controls recorded above (kiln `8f93304ee`): every object kiln offered was built by hod, none declined, none not offered, every link as in the control, and every test equal to the control test by test. glaze `lib_test` passed at `-O0` (the difference at `hod-02fe2d02` was the race of note 5).
 
 ## Refusal census (hybrid builds)
 

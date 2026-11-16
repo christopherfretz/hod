@@ -158,7 +158,7 @@ fn names_table(out: &mut String, head: &str, list: &[ConstructInfo]) {
 }
 
 /// The i386 column (WP-297): its counts per group, then the rows whose
-/// i386 cell is not their x86_64 cell; every other row is as x86_64.
+/// i386 cell is not their `x86_64` cell; every other row is as `x86_64`.
 fn i386_section(out: &mut String) {
     out.push_str(
         "\n## i386\n\n\

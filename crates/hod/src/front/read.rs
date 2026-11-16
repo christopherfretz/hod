@@ -146,8 +146,9 @@ fn front(
     let session = match kind {
         InputKind::Text => {
             let parse = hod_ll::ParseOptions { default_target: forced };
+            let threads = scanning_threads(&settings.threads, held.as_deref(), input.len());
             let hod_ll::ParsedModule { module, text } =
-                hod_ll::parse_module(input, &parse).map_err(|error| from_ll(&error))?;
+                hod_ll::parse_module_on(input, &parse, threads).map_err(|error| from_ll(&error))?;
             report.phase("parse");
             let mut session = start(module, report)?;
             if session.end_module().is_ok() {
@@ -225,7 +226,22 @@ fn reading_threads<T>(
     functions: &[T],
 ) -> usize {
     let granted = threads.max.max(1);
-    let wanted = read_threads(body_bytes, functions.len(), granted);
+    held_threads(granted, held, read_threads(body_bytes, functions.len(), granted))
+}
+
+/// The threads of the index scan of a text of `len` bytes
+/// (`hod_ll::scan_threads` of what `threads` grants); where threads come
+/// from tokens, of what the compile's one request to the pool gives,
+/// held for reading and code generation after.
+fn scanning_threads(threads: &Threads, held: Option<&HeldTokens>, len: usize) -> usize {
+    let granted = threads.max.max(1);
+    held_threads(granted, held, hod_ll::scan_threads(len, granted))
+}
+
+/// `wanted` threads of `granted`: where they come from tokens, the
+/// calling thread and what the compile's one request gives, at most
+/// `wanted`.
+fn held_threads(granted: usize, held: Option<&HeldTokens>, wanted: usize) -> usize {
     match held {
         Some(held) if wanted > 1 => 1 + held.fill(granted - 1).min(wanted - 1),
         Some(_) => 1,

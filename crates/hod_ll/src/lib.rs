@@ -31,6 +31,7 @@ use hod_ir::{FnAttrsId, Module, SymId, TargetSpec, TypeId};
 pub use attrs::call_conv_keyword;
 pub use body::{BodyParser, HAND_OVER_BYTES, ParsedBody, parse_bodies, parse_bodies_on};
 pub use error::{LlError, LlErrorKind};
+pub use index::{SCAN_BYTES_PER_THREAD, SCAN_MAX_THREADS, SCAN_PIECE_BYTES, scan_threads};
 pub use kw::Kw;
 pub use lexer::{Lexer, MAX_SOURCE_BYTES, Tok, Token, unescape};
 pub use meta::{MdKind, MdNode, MdRef, MetadataIndex, NamedMetadata};
@@ -211,7 +212,22 @@ pub fn parse_module<'a>(
     source: &'a [u8],
     options: &ParseOptions,
 ) -> Result<ParsedModule<'a>, LlError> {
-    parser::run(source, options).map_err(|failure| failure.locate(source))
+    parser::run(source, options, 1).map_err(|failure| failure.locate(source))
+}
+
+/// [`parse_module`] with the index scan on up to `threads` threads, the
+/// calling one among them (`spec/ll.md` §4.4): [`scan_threads`] of the
+/// source's size and `threads` run. The result, errors included, is
+/// that of [`parse_module`], to the byte.
+///
+/// # Errors
+/// As [`parse_module`].
+pub fn parse_module_on<'a>(
+    source: &'a [u8],
+    options: &ParseOptions,
+    threads: usize,
+) -> Result<ParsedModule<'a>, LlError> {
+    parser::run(source, options, threads).map_err(|failure| failure.locate(source))
 }
 
 /// The number of top-level entities of `source` and the bytes of

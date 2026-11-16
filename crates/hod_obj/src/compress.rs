@@ -23,9 +23,19 @@ pub enum Compression {
     Zlib,
 }
 
-/// The uncompressed size an `SHF_COMPRESSED` section's header records,
-/// or 0 when its data is too short to hold a header.
-pub(crate) fn uncompressed_size(data: &[u8]) -> u64 {
+/// The size of an `Elf32_Chdr` (WP-284): `ch_type`, `ch_size`,
+/// `ch_addralign`, four bytes each.
+pub const CHDR32_SIZE: usize = 12;
+
+/// The uncompressed size an `SHF_COMPRESSED` section's header records
+/// (an `Elf32_Chdr` when `elf32`), or 0 when its data is too short to hold
+/// a header.
+pub(crate) fn uncompressed_size(data: &[u8], elf32: bool) -> u64 {
+    if elf32 {
+        return data
+            .get(4..8)
+            .map_or(0, |b| u64::from(u32::from_le_bytes(b.try_into().unwrap_or([0; 4]))));
+    }
     data.get(8..16).map_or(0, |b| u64::from_le_bytes(b.try_into().unwrap_or([0; 8])))
 }
 
@@ -89,10 +99,11 @@ impl Object {
         compression: Compression,
         deflater: &mut Deflater,
     ) -> Result<bool, Error> {
-        let sec = &mut self.sections[section.0 as usize];
         if compression == Compression::None {
             return Ok(false);
         }
+        let elf32 = self.machine.is_elf32();
+        let sec = &self.sections[section.0 as usize];
         let (sh_type, sh_flags, sh_entsize) = header_fields(sec.kind);
         if sec.kind.is_nobits() || sh_flags & (SHF_ALLOC | SHF_COMPRESSED) != 0 {
             return Err(Error::NotCompressible { section });
@@ -101,18 +112,31 @@ impl Object {
         if size > MAX_INPUT {
             return Err(Error::TooLarge(Limit::CompressedBytes));
         }
-        let mut out = Vec::with_capacity(CHDR_SIZE + sec.data.len() / 3 + 64);
+        // An `SHT_REL` object's addends are in the bytes: they are added
+        // before compression, which hides the fields (WP-284).
+        let patched = if elf32 { crate::elf::addends_into(self, section)? } else { None };
+        let sec = &mut self.sections[section.0 as usize];
+        let input = patched.as_deref().unwrap_or(&sec.data);
+        let mut out = Vec::with_capacity(CHDR_SIZE + input.len() / 3 + 64);
         out.extend_from_slice(&ELFCOMPRESS_ZLIB.to_le_bytes());
-        out.extend_from_slice(&0u32.to_le_bytes()); // ch_reserved
-        out.extend_from_slice(&size.to_le_bytes());
-        out.extend_from_slice(&sec.align().to_le_bytes());
-        deflater.zlib(&sec.data, &mut out).map_err(|()| Error::TooLarge(Limit::CompressedBytes))?;
+        if elf32 {
+            // `Elf32_Chdr`; the size is below `MAX_INPUT`, the alignment
+            // was checked by `addends_into`.
+            out.extend_from_slice(&(size as u32).to_le_bytes());
+            out.extend_from_slice(&(sec.align() as u32).to_le_bytes());
+        } else {
+            out.extend_from_slice(&0u32.to_le_bytes()); // ch_reserved
+            out.extend_from_slice(&size.to_le_bytes());
+            out.extend_from_slice(&sec.align().to_le_bytes());
+        }
+        deflater.zlib(input, &mut out).map_err(|()| Error::TooLarge(Limit::CompressedBytes))?;
         if out.len() as u64 >= size {
             return Ok(false);
         }
         sec.data = out;
         sec.kind = SectionKind::Elf { sh_type, sh_flags: sh_flags | SHF_COMPRESSED, sh_entsize };
-        sec.align_log2 = 3;
+        // LLVM aligns a compressed section to its class's word.
+        sec.align_log2 = if elf32 { 2 } else { 3 };
         Ok(true)
     }
 }

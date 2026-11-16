@@ -10,7 +10,9 @@ The crate has two parts:
 - the **model** (`Object` and the types around it): sections, symbols,
   relocations, section groups and names, addressed by `u32` ids;
 - the **ELF writer** (`hod_obj::elf`): an ELF64 little-endian relocatable
-  file (`ET_REL`) for AArch64 (`EM_AARCH64`) or x86-64 (`EM_X86_64`).
+  file (`ET_REL`) for AArch64 (`EM_AARCH64`) or x86-64 (`EM_X86_64`), or
+  an ELF32 one with `SHT_REL` relocations for 32-bit x86 (`EM_386`,
+  WP-284, "ELF32 and `SHT_REL`" below).
 
 External formats are cited as: **gABI**, the System V ABI generic ELF
 specification, by chapter title; **AArch64 ELF**, "ELF for the Arm 64-bit
@@ -739,6 +741,92 @@ Each escape is used exactly when needed; otherwise header 0 is all zeros
 and there is no `.symtab_shndx`. `sh_link`, `sh_info` and group members are
 32-bit and need no escape.
 
+## ELF32 and `SHT_REL`
+
+WP-284 (design 0008 sections 1.2 and 3.2). A 32-bit x86 object is
+`Object::for_machine(Machine::I386)`.
+
+```rust
+enum Machine { AArch64, X86_64, I386 }   // From<Arch>; arch() -> Option<Arch>
+fn Machine::is_elf32(self) -> bool       // I386 only
+fn Machine::address_size(self) -> u8     // 4 for I386, else 8
+fn Object::for_machine(m: Machine) -> Object
+fn Object::machine(&self) -> Machine
+enum RelocKind { A64(A64Reloc), X64(X64Reloc), I386(I386Reloc) }
+fn RelocKind::machine(self) -> Machine
+fn RelocKind::for_machine(m: Machine, number: u32) -> RelocKind
+fn I386Reloc::field_size(self) -> Option<u8>
+const CHDR32_SIZE: usize = 12
+```
+
+`Arch` keeps its two variants so that code matching on it stays exhaustive:
+`Object::new(arch)` is `for_machine(arch.into())`. `Object::arch()` and
+`RelocKind::arch()` **panic** for an i386 object or kind (the one
+exception to "No call panics" under "Errors"): a caller that can meet one
+asks `machine()`. A relocation kind of another machine is
+`RelocationArchMismatch`, as between the two 64-bit architectures.
+
+`I386Reloc`, named after the i386 psABI ("System V ABI, Intel386
+Architecture Processor Supplement") and checked against `llvm-readelf -r`
+of `llvm-mc -triple=i686-linux-gnu` objects: `None` (0), `Abs32`
+`R_386_32` (1), `Pc32` (2), `Plt32` (4), `GotOff` (9), `GotPc` (10),
+`TlsIe` (15), `TlsGotIe` (16), `TlsLe` (17), `TlsGd` (18), `TlsLdm`
+(19), `TlsLdo32` `R_386_TLS_LDO_32` (32), `Got32X` (43), and `Other(n)`.
+`field_size` is 4 for every named kind but `None` (0), and unknown for
+`Other`.
+
+The ELF32 file differs from the ELF64 one in its records and nothing
+else; the section and symbol orders, groups, `.symtab_shndx`, the
+escaped counts of "Large section counts", the stack note, names and
+string tables are as for ELF64.
+
+- **File header** (`Elf32_Ehdr`, 52 bytes): `ELFCLASS32`, `e_machine`
+  `EM_386` (3), `e_ehsize` 52, `e_shentsize` 40, `e_flags` as set (0 by
+  default, as LLVM writes), `e_entry`/`e_phoff`/`e_shoff` 32-bit.
+- **Section headers** (`Elf32_Shdr`, 40 bytes); the header table is
+  aligned to 4.
+- **Symbols** (`Elf32_Sym`, 16 bytes: `st_name`, `st_value`, `st_size`,
+  `st_info`, `st_other`, `st_shndx`); `.symtab` has alignment 4, entry
+  size 16.
+- **Relocations**: for each caller's section with relocations, a section
+  named **`.rel<name>`** of type `SHT_REL`, flags `SHF_INFO_LINK` (plus
+  `SHF_GROUP`), entry size 8, alignment 4; entries `Elf32_Rel`
+  (`r_offset`; `r_info` = symbol index `<< 8` | type), in the order of
+  "Relocation sections".
+- **Addends in the bytes.** An `Elf32_Rel` has no addend: the writer
+  stores it in the section's bytes at the relocated place, by the rule
+  **field := field + addend (mod 2^32)**, the field a 4-byte little-endian
+  word at `r_offset`. It adds into the bytes it writes, not into the
+  model: `data()` and `relocations()` still return what the caller gave,
+  and an object can be written again. A field that already holds a value
+  (a producer's `.long sym+4` with the 4 in the data) keeps it plus the
+  addend, so exactly one of the two may carry the addend. A relocation
+  with addend 0 writes nothing.
+- **Refusals** (never a truncation; LLVM's assembler, measured with
+  `llvm-mc` 22, silently keeps the low 32 bits of `.long ext+0x100000000`
+  and of `.long ext-0x80000001`): `AddendNotRepresentable` for an addend
+  outside `-2^31 ..= 2^32 - 1`, and for a nonzero addend on `None` or
+  `Other(n)` (no field of known width); `RelocationOutOfBounds { offset }`
+  when a nonzero addend's 4-byte field does not lie wholly inside its
+  section; `TooLarge(Elf32Field)` for a type above 255 (eight bits of
+  `r_info`), more than 2^24 symbols, a symbol value or size, section
+  flags, entry size, alignment or size above `u32::MAX`, or a file of
+  4 GiB or more.
+- **Compressed sections**: `compress_section` writes an `Elf32_Chdr`
+  (`ch_type` 1, `ch_size`, `ch_addralign`, 12 bytes) and gives the
+  section alignment 4 (LLVM does the same). Because the fields are inside
+  the compressed stream, it **adds the addends of the section's
+  relocations into the bytes it compresses** (checked as above; a refusal
+  leaves the section unchanged), and the writer adds nothing to a
+  compressed section. A nonzero addend added to an i386 section that is
+  already `SHF_COMPRESSED` is refused (`AddendNotRepresentable`, deferred
+  from `add_relocation`).
+- **Conventions**: `add_init_array` and `add_fini_array` align to the
+  address size (4). `add_gnu_property_note` and `add_gnu_properties` are
+  `NotInElf32` (i386 CET is refused until asked for, design 0008 section
+  3.5). `.eh_frame` is the caller's `SHT_PROGBITS`
+  (`SHT_X86_64_UNWIND` is x86-64's; the writer does not check it).
+
 ## Errors
 
 `Error` is `Copy + Eq`, implements `std::error::Error`, and names the id
@@ -761,6 +849,9 @@ involved.
 | `BadSymbol { symbol, problem }` | writer | see "Symbols" |
 | `TooLarge(Limit)` | `add_string`, `add_section`, writer, `compress_section` | `StringBytes`, `SectionNameBytes`: more than 4 GiB of names; `Sections`, `Symbols`, `Relocations`, `Groups`: the 32-bit index space is exhausted; `FileBytes`: the file would pass 2^64 bytes or cannot be allocated by `to_vec`; `CompressedBytes`: a section to compress holds 4 GiB or more |
 | `NotCompressible { section }` | `compress_section` | the section is `SHF_ALLOC`, has no file space, or is compressed (WP-061) |
+| `AddendNotRepresentable { section, offset, addend }` | writer, `compress_section`; deferred from `add_relocation` | an `SHT_REL` (i386) addend that cannot be stored in its field; see "ELF32 and `SHT_REL`" (WP-284) |
+| `TooLarge(Elf32Field)` | writer, `compress_section` | in an ELF32 object, a value does not fit its 32-bit field (WP-284) |
+| `NotInElf32 { what }` | `add_gnu_property_note`, `add_gnu_properties` | the object is ELF32 (WP-284) |
 
 No call panics on any input other than an id that the object did not issue
 (see "Ids"). Internal invariants (the layout's sizes against the bytes
@@ -830,8 +921,9 @@ same. Deliberate differences:
 
 ## Deliberately unsupported
 
-- ELF32, big-endian, executables and shared objects, `SHT_REL` relocation
-  sections, architectures other than AArch64 and x86-64.
+- Big-endian, executables and shared objects, `SHT_RELA` in ELF32 or
+  `SHT_REL` in ELF64, architectures other than AArch64, x86-64 and i386
+  (ELF32 is i386 only: "ELF32 and `SHT_REL`").
 - A caller's section with a nonzero `sh_info`, with `SHF_INFO_LINK`, or
   with an `sh_link` that is not a link-order target: nothing a producer of
   relocatable objects emits needs one, except sections that refer to

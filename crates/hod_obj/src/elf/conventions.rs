@@ -72,7 +72,8 @@ fn priority_name(base: &[u8; 11], priority: u16) -> ([u8; 17], usize) {
 /// As [`Object::add_section`].
 pub fn add_init_array(obj: &mut Object, priority: u16) -> Result<SectionId, Error> {
     let (name, len) = priority_name(b".init_array", priority);
-    obj.add_section(&name[..len], SectionKind::InitArray, 8)
+    let align = u64::from(obj.machine().address_size());
+    obj.add_section(&name[..len], SectionKind::InitArray, align)
 }
 
 /// Adds a section of pointers to functions that run at exit, in decreasing
@@ -83,7 +84,17 @@ pub fn add_init_array(obj: &mut Object, priority: u16) -> Result<SectionId, Erro
 /// As [`Object::add_section`].
 pub fn add_fini_array(obj: &mut Object, priority: u16) -> Result<SectionId, Error> {
     let (name, len) = priority_name(b".fini_array", priority);
-    obj.add_section(&name[..len], SectionKind::FiniArray, 8)
+    let align = u64::from(obj.machine().address_size());
+    obj.add_section(&name[..len], SectionKind::FiniArray, align)
+}
+
+/// GNU property notes have no ELF32 form here (design 0008 section 3.5:
+/// i386 CET is refused until it is asked for).
+fn refuse_elf32(obj: &Object) -> Result<(), Error> {
+    if obj.machine().is_elf32() {
+        return Err(Error::NotInElf32 { what: "a `.note.gnu.property` section" });
+    }
+    Ok(())
 }
 
 /// The contents of a `.note.gnu.property` section that declares `features`
@@ -111,6 +122,7 @@ pub const fn gnu_property_note(arch: Arch, features: u32) -> [u8; 32] {
 /// # Errors
 /// As [`Object::add_section`].
 pub fn add_gnu_property_note(obj: &mut Object, features: u32) -> Result<SectionId, Error> {
+    refuse_elf32(obj)?;
     let section = obj.add_section(b".note.gnu.property", SectionKind::Note, 8)?;
     obj.append(section, &gnu_property_note(obj.arch(), features));
     Ok(section)
@@ -154,6 +166,7 @@ pub fn add_gnu_properties(
     obj: &mut Object,
     properties: &[(u32, &[u8])],
 ) -> Result<SectionId, Error> {
+    refuse_elf32(obj)?;
     let section = obj.add_section(b".note.gnu.property", SectionKind::Note, 8)?;
     obj.append(section, &gnu_properties(properties));
     Ok(section)

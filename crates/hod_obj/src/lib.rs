@@ -1,4 +1,4 @@
-//! Object-file model and the ELF64 relocatable writer.
+//! Object-file model and the ELF relocatable writer (ELF64, and ELF32 for i386).
 //!
 //! See `docs/ARCHITECTURE.md` for this crate's role and `spec/object.md` for
 //! its contract. In short: build an [`Object`] (sections, symbols,
@@ -31,10 +31,10 @@ mod model;
 mod names;
 mod reloc;
 
-pub use compress::{CHDR_SIZE, Compression, ELFCOMPRESS_ZLIB};
+pub use compress::{CHDR_SIZE, CHDR32_SIZE, Compression, ELFCOMPRESS_ZLIB};
 pub use error::{Error, Limit, SymbolProblem, WriteError};
 pub use model::{
-    Arch, Binding, GroupId, GroupKind, Object, Relocation, SectionId, SectionKind, StackNote,
-    StrId, Symbol, SymbolId, SymbolKind, SymbolPlace, Visibility,
+    Arch, Binding, GroupId, GroupKind, Machine, Object, Relocation, SectionId, SectionKind,
+    StackNote, StrId, Symbol, SymbolId, SymbolKind, SymbolPlace, Visibility,
 };
-pub use reloc::{A64Reloc, RelocKind, X64Reloc};
+pub use reloc::{A64Reloc, I386Reloc, RelocKind, X64Reloc};

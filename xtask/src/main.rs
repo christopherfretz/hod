@@ -9,6 +9,7 @@
 //! `cargo xtask debug ...` runs the debuggers on hod's programs (layer L7).
 //! `cargo xtask x64census ...` checks the front half on x86-64 modules.
 //! `cargo xtask fuzz ...` runs random programs through hod and `llc` (L10).
+//! `cargo xtask compare-binaries ...` compares two hod binaries object by object.
 
 use std::process::ExitCode;
 
@@ -25,6 +26,7 @@ usage: cargo xtask ci [--quick] [--step <step>]... [--part a64|x64|harness|front
        cargo xtask debug [run|kiln|verify] [options]              (--help for the options)
        cargo xtask x64census [options] <dir or file.ll>...        (--help for the options)
        cargo xtask fuzz [options]                                 (--help for the options)
+       cargo xtask compare-binaries --base <hod> --head <hod> [options]   (--help)
 ";
 
 fn main() -> ExitCode {
@@ -51,6 +53,8 @@ fn main() -> ExitCode {
         Some("x64census") => ExitCode::from(xtask::x64census::command(&args[1..])),
         #[cfg(unix)]
         Some("fuzz") => ExitCode::from(xtask::fuzz::command(&args[1..])),
+        #[cfg(unix)]
+        Some("compare-binaries") => ExitCode::from(xtask::compare_binaries::command(&args[1..])),
         _ => {
             eprint!("{USAGE}");
             ExitCode::from(2)

@@ -571,7 +571,10 @@ placed:
 - has no rows (hod's own rule: its code is not covered either; `llc`
   always has at least the subprogram's row);
 
-and at the end of the module. Measured with `llvm-dwarfdump
+and at the end of the module. The first three are the unit's runs of
+§6.17 (WP-305): the bridge ends the sequence whenever `unit_span` starts
+a span, so a sequence never continues where the unit's range does not;
+the last two end a sequence inside a run. Measured with `llvm-dwarfdump
 --debug-line` against `llc` 19 and 22 on AArch64 and x86-64: a C file
 whose `.text` functions are separated by a function in its own section
 and by a `nodebug` function gets the same four sequences, with the same
@@ -1251,8 +1254,10 @@ refusals. `LineTablesOnly` and `DebugDirectivesOnly` units are §6.10 (WP-061).
   padding). Each entry is relocated `ABS64` /
   `R_X86_64_64` against the symbol the caller gave (the variable's own,
   or its section's for an internal one, as `llc` does; a function's
-  section symbol plus offset, §1.3). Spans of one symbol that touch or
-  overlap are merged before numbering.
+  section symbol plus offset, §1.3). Spans of one symbol that overlap
+  are merged before numbering; spans that only touch are not (WP-305):
+  each span is a run of functions (§6.17), and `llc` writes two runs
+  that meet as two ranges.
 - **`.debug_rnglists`**: written only when some unit's code is in several
   sections.
 
@@ -2417,6 +2422,23 @@ end). The bridge does the same (`emit/lines.rs`, `unit_span`): x86-64
 pads functions to 16 bytes, so without it every unit had `DW_AT_ranges`
 where `llc`'s has one range. AArch64 functions have no padding between
 them; its objects are byte-identical before and after.
+
+**Runs** (WP-305; `spec/landed/dwarf/WP-305.md`). A run of functions is
+the functions placed one after another that are of one unit and one
+section, with no function between them that has no subprogram of a
+written unit (a `nodebug` function, or one whose subprogram's unit is
+`NoDebug`). Such a function ends the run before it
+(`DwarfDebug::skippedNonDebugFunction` forgets the previous unit, so the
+next function's `addRange` starts a range): the unit's range does not
+cover it, whether it is first, last or between, one or several in a row.
+Each run is one span of the unit, and one range of its `DW_AT_ranges`
+even where it starts at the end of the run before it (AArch64; the
+writer merges spans that overlap, not spans that touch). A unit whose
+code is one run has `DW_AT_low_pc`/`DW_AT_high_pc`; with two runs or
+more, `DW_AT_ranges`. `unit_span` decides whether a function continues
+the run, and the line table's sequence (§5.6) continues only where it
+does: the two cannot disagree. `.debug_aranges` is not written (§1.1),
+by `llc` either on these shapes.
 
 **Line table**: unchanged (§4, §5); `prologue_end` at the first row
 after the prologue, as `llc`'s. The `(function, line)` comparison of
@@ -3865,9 +3887,11 @@ are the same by construction.
 The writer makes the output independent of how the rows arrive. A
 global's address-table entry is numbered by its DIE's place in the walk,
 not by its place in the input. Spans are sorted by (symbol, start, size)
-and merged before they are numbered. So the bytes depend on the rows as
+and merged, where they overlap, before they are numbered (spans that
+only touch stay two, WP-305, §6.17). So the bytes depend on the rows as
 sets. `tests/dies.rs` checks this by shuffling the globals and the spans,
-cutting every span in two at a random point, repeating pieces, dealing
+cutting every span in two overlapping pieces at a random point,
+repeating pieces, dealing
 the rows into one to five chunks joined in random order, and building
 plans and writing on other threads. Every variant gives the same bytes
 on both targets.

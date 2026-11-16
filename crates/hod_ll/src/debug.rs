@@ -903,8 +903,10 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
         };
         let next = if after == end {
             end
-        } else if src[after] == b',' {
-            if src.get(after + 1) == Some(&b' ') && after + 1 < end { after + 2 } else { after + 1 }
+        } else if src.get(after..after + 2) == Some(b", ") && after + 2 < end {
+            // `, ` and the next field: a trailing comma, another blank
+            // or a comment is the token path's to judge.
+            after + 2
         } else {
             return Ok(None);
         };

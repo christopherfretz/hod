@@ -10,20 +10,28 @@
 //!
 //! # Carried results (excess precision as `llc` has it)
 //!
-//! `llc -O0` keeps a result in an x87 register, at 80 bits, while its
-//! use is in the same block and nothing in between clobbers the stack:
-//! `(a * b) + c` in `double` adds the unrounded product. hod does the
-//! same with a *carried* result ([`carried`]): one that is left on the
-//! x87 stack for its only use, under rules that make the stack a
-//! function of the IR alone (no state across instructions): the use is
-//! in the same block within [`WINDOW`] instructions, is an operation that
-//! takes an operand from the stack ([`consumes`]), and every instruction
-//! in between is one that touches the x87 stack only in a balanced way
-//! and calls nothing ([`neutral`]), any carried result defined in
-//! between being used no later than that use (the stack stays LIFO).
-//! At most [`DEPTH`] results are carried at once. Every other value is
-//! stored, rounded to its type, as `llc` spills at a block's end and
-//! around a call. The x87 stack is empty at every call and block end.
+//! `llc -O0` (19 and 22 alike, measured) keeps a computed result in an
+//! x87 register, at 80 bits, for every use in its block that comes
+//! before the next call; a use in another block or after a call reads it
+//! rounded to its type (a spill), and so do some uses when more values
+//! are live than the 7 registers hold (which ones depends on its
+//! allocator). `freeze`, `fpext`, `fptrunc (fpext x)` back to `x`'s type
+//! and, with `cmov`, `select` (`fcmov`) pass the 80 bits on.
+//!
+//! hod does the same with a *carried* result ([`carried`]): one left on
+//! the x87 stack, one copy per operand that takes it ([`copies`]), under
+//! rules that make the stack a function of the IR alone (no state across
+//! instructions): at most [`USES`] uses, all in the same block within
+//! [`WINDOW`] instructions, each an operation that takes the operand
+//! from the stack ([`consumes`]), every instruction in between touching
+//! the stack only in a balanced way and calling nothing ([`neutral`]),
+//! and every carried result defined before a use being used up by that
+//! use (the stack stays LIFO). At most [`DEPTH`] copies are carried at
+//! once. Every other value is stored, rounded to its type, for all its
+//! uses: where `llc` would keep some of them at 80 bits (a use after a
+//! non-LIFO definition, beyond the window, beside a use after a call or
+//! in another block) hod rounds them (`spec/codegen-x86.md` §9). The
+//! x87 stack is empty at every call and block end.
 
 use hod_cg::const_fold::Action as FoldAction;
 use hod_cg::sym::{FpOp, FpType, fp_routine};
@@ -63,9 +71,11 @@ pub const CAST: &str = "x86:float:cast";
 
 /// The instructions between a carried result and its use, at most.
 const WINDOW: u32 = 12;
-/// The carried results on the x87 stack at most (of 8 registers; an
-/// operation pushes at most two more).
+/// The copies of carried results on the x87 stack at most (of 8
+/// registers; an operation pushes at most two more).
 const DEPTH: u32 = 4;
+/// The uses of a carried result at most.
+const USES: u32 = 4;
 
 /// One of the three x87 types.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -206,8 +216,9 @@ fn consumes(cx: &FnCx<'_, X86>, inst: Inst<'_>, operand: InstId) -> bool {
         InstKind::Binary { .. } => {
             matches!(inst.opcode(), Opcode::FAdd | Opcode::FSub | Opcode::FMul | Opcode::FDiv)
         }
-        InstKind::Unary { .. } => inst.opcode() == Opcode::FNeg,
+        InstKind::Unary { .. } => matches!(inst.opcode(), Opcode::FNeg | Opcode::Freeze),
         InstKind::FCmp { .. } => true,
+        InstKind::Select { cond, .. } => !is(cond) && fcmov(cx, inst),
         InstKind::Store { value, ptr, mem } => is(value) && !is(ptr) && mem.ordering().is_none(),
         InstKind::Cast { .. } => match inst.opcode() {
             Opcode::FPExt | Opcode::FPTrunc => true,
@@ -247,75 +258,106 @@ fn neutral(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
     }
 }
 
-/// Whether `inst` could be carried, its use not yet checked: a floating
-/// result with one use, in its block.
-fn single(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
+/// Whether `inst` could be carried, its uses not yet checked: a floating
+/// result with at most [`USES`] uses, all in its block.
+fn candidate(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
+    // Only a result computed on the stack is left there: not a load, a
+    // `select` without `fcmov` or a `copysign` (copies in memory).
+    let computed = match inst.kind() {
+        InstKind::Binary { .. } | InstKind::Cast { .. } => true,
+        InstKind::Unary { .. } => matches!(inst.opcode(), Opcode::FNeg | Opcode::Freeze),
+        InstKind::Select { .. } => fcmov(cx, inst),
+        InstKind::Call(site) => {
+            site.intrinsic().is_some_and(|i| i != Intrinsic::CopySign && fp_intrinsic(i))
+        }
+        _ => false,
+    };
     let uses = inst.uses();
-    uses.count() == 1 && !uses.used_outside_block() && is_fp(cx, inst.ty())
+    computed
+        && (1..=USES).contains(&uses.count())
+        && !uses.used_outside_block()
+        && is_fp(cx, inst.ty())
 }
 
-/// The use of `p` if `p` is carried to it ([`carried`]'s rule but the
-/// depth).
-fn carry_user<'a>(cx: &FnCx<'a, X86>, p: Inst<'a>) -> Option<Inst<'a>> {
-    if !single(cx, p) || cx.fold_action(p) != FoldAction::Emit {
+/// The operands `q` takes from the stack when `of` is carried to it: one
+/// per operand that is `of`, but one for an ordered compare of `of` with
+/// itself (`fld st0` duplicates it).
+fn takes(q: Inst<'_>, of: InstId) -> u32 {
+    let n = q.operands().iter().filter(|v| v.as_inst() == Some(of)).count() as u32;
+    match q.kind() {
+        InstKind::FCmp { pred, lhs, rhs }
+            if lhs == rhs && !matches!(pred, FloatPredicate::True | FloatPredicate::False) =>
+        {
+            n.min(1)
+        }
+        _ => n,
+    }
+}
+
+/// Whether every use of `m` is at or before instruction `raw`.
+fn used_by(cx: &FnCx<'_, X86>, m: Inst<'_>, raw: u32) -> bool {
+    let seen: u32 = (m.id().raw() + 1..=raw)
+        .filter_map(|u| inst_at(cx, u))
+        .map(|u| u.operands().iter().filter(|v| v.as_inst() == Some(m.id())).count() as u32)
+        .sum();
+    seen >= m.uses().count()
+}
+
+/// The copies of `p` left on the stack if `p` is carried to all of its
+/// uses ([`carried`]'s rule but the depth), else `None`.
+fn carry_uses(cx: &FnCx<'_, X86>, p: Inst<'_>) -> Option<u32> {
+    if !candidate(cx, p) || cx.fold_action(p) != FoldAction::Emit {
         return None;
     }
     let start = p.id().raw();
+    let mut seen = 0;
+    let mut copies = 0;
     for raw in start + 1..=start + WINDOW {
         let q = inst_at(cx, raw)?;
         if uses_value(q, p.id()) {
             if !consumes(cx, q, p.id()) {
                 return None;
             }
-            // Every result in between that might be carried is used by
-            // `q` at the latest.
+            // Every result since the last use that might be carried is
+            // used by `q` at the latest (the stack stays LIFO).
             for mid in start + 1..raw {
                 let m = inst_at(cx, mid)?;
-                if single(cx, m)
-                    && !(mid + 1..=raw)
-                        .any(|u| inst_at(cx, u).is_some_and(|u| uses_value(u, m.id())))
-                {
+                if candidate(cx, m) && !used_by(cx, m, raw) {
                     return None;
                 }
             }
-            return Some(q);
-        }
-        if !neutral(cx, q) {
+            seen += q.operands().iter().filter(|v| v.as_inst() == Some(p.id())).count() as u32;
+            copies += takes(q, p.id());
+            if seen >= p.uses().count() {
+                return Some(copies);
+            }
+        } else if !neutral(cx, q) {
             return None;
         }
     }
     None
 }
 
-/// Whether the result of `inst` stays on the x87 stack for its only use
-/// (the module comment).
-pub fn carried(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
-    // Only a result computed on the stack is left there: not a load, a
-    // `select`, a `freeze` or a `copysign` (copies in memory).
-    let computed = match inst.kind() {
-        InstKind::Binary { .. } | InstKind::Cast { .. } => true,
-        InstKind::Unary { .. } => inst.opcode() == Opcode::FNeg,
-        InstKind::Call(site) => {
-            site.intrinsic().is_some_and(|i| i != Intrinsic::CopySign && fp_intrinsic(i))
-        }
-        _ => false,
-    };
-    if !computed || carry_user(cx, inst).is_none() {
-        return false;
-    }
-    // The results that may be on the stack under it: those of the
-    // window before it whose use comes after it (an upper bound).
+/// The copies of `inst`'s result left on the x87 stack for its uses
+/// (the module comment): 0 when it is stored.
+pub fn copies(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> u32 {
+    let Some(own) = carry_uses(cx, inst) else { return 0 };
+    // The copies that may be on the stack under it: those of the results
+    // of the window before it with a use after it (an upper bound).
     let at = inst.id().raw();
-    let mut depth = 0;
+    let mut depth = own;
     for raw in at.saturating_sub(WINDOW)..at {
         let Some(m) = inst_at(cx, raw) else { continue };
-        if single(cx, m)
-            && !(raw + 1..=at).any(|u| inst_at(cx, u).is_some_and(|u| uses_value(u, m.id())))
-        {
-            depth += 1;
+        if candidate(cx, m) && !used_by(cx, m, at) {
+            depth += m.uses().count();
         }
     }
-    depth < DEPTH
+    if depth <= DEPTH { own } else { 0 }
+}
+
+/// Whether the result of `inst` stays on the x87 stack for its uses.
+pub fn carried(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
+    copies(cx, inst) > 0
 }
 
 /// Whether operand `v` is on the x87 stack.
@@ -382,7 +424,12 @@ fn push_two(cx: &mut FnCx<'_, X86>, a: Value, b: Value, fp: Fp) -> CgResult<()> 
 
 /// The result in `st0`: left there if carried, else popped to its slot.
 fn result(cx: &mut FnCx<'_, X86>, inst: Inst<'_>, fp: Fp) -> CgResult<()> {
-    if carried(cx, inst) {
+    let copies = copies(cx, inst);
+    if copies > 0 {
+        // One copy per operand that takes it from the stack.
+        for _ in 1..copies {
+            put(cx, mc::fld_st(St::St0));
+        }
         return Ok(());
     }
     let r = def_mem(cx, inst)?;
@@ -561,6 +608,11 @@ fn binary<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, lhs: Value, rhs: Value) ->
 fn unary<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, arg: Value) -> CgResult<()> {
     let fp = fp_of(cx, inst.ty())?;
     if inst.opcode() != Opcode::FNeg {
+        // `freeze` passes a carried value on at 80 bits, as `llc` does.
+        if on_stack(cx, arg) || carried(cx, inst) {
+            push(cx, arg, fp)?;
+            return result(cx, inst, fp);
+        }
         return copy_of(cx, inst, arg, fp);
     }
     sign_op(cx, inst, arg, fp, mc::fchs(), |m| mc::xor_mi(Size::B, m, -0x80))
@@ -671,7 +723,17 @@ fn fcmp<'a>(
     cx.finish(inst, rd)
 }
 
-/// `select` of floating values: a branch on the condition and one copy.
+/// Whether `select` `inst` is an `fcmov` on the stack (a scalar `i1`
+/// condition with `cmov`); else a branch and a copy in memory.
+fn fcmov(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
+    let InstKind::Select { cond, .. } = inst.kind() else { return false };
+    features(cx).has(X86Features::CMOV)
+        && cx.types().int_bits(value_ty(cx, cond)) == Some(1)
+        && is_fp(cx, inst.ty())
+}
+
+/// `select` of floating values: `fcmov` on the stack with `cmov` ([`fcmov`]),
+/// else a branch on the condition and one copy.
 fn select<'a>(
     cx: &mut FnCx<'a, X86>,
     inst: Inst<'a>,
@@ -680,6 +742,17 @@ fn select<'a>(
     if_false: Value,
 ) -> CgResult<()> {
     let fp = fp_of(cx, inst.ty())?;
+    if fcmov(cx, inst) {
+        // `st1` = the false value, `st0` = the true one; `fcmove` takes
+        // the false one when the condition's bit is clear; the result is
+        // computed on the stack (kept at 80 bits, as `llc` has it).
+        cx.put(cond, crate::reg::EAX)?;
+        push_two(cx, if_false, if_true, fp)?;
+        put(cx, mc::test_ri(Size::B, EAX, 1));
+        put(cx, mc::fcmov(Cond::E, St::St1));
+        put(cx, mc::fstp_st(St::St1));
+        return result(cx, inst, fp);
+    }
     let t = cx.use_mem(if_true)?;
     let f = cx.use_mem(if_false)?;
     let r = cx.def_mem(inst)?;
@@ -702,8 +775,16 @@ fn cast<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, arg: Value) -> CgResult<()> 
     match inst.opcode() {
         Opcode::FPExt | Opcode::FPTrunc if is_fp(cx, from) && is_fp(cx, inst.ty()) => {
             let (a, b) = (fp_of(cx, from)?, fp_of(cx, inst.ty())?);
+            // `fptrunc (fpext x)` back to `x`'s type is `x` (`llc` folds
+            // it): no rounding while the `fpext` is on the stack.
+            let undoes = on_stack(cx, arg)
+                && arg.as_inst().is_some_and(|id| {
+                    let ext = cx.body.inst(id);
+                    matches!(ext.kind(), InstKind::Cast { arg: x } if ext.opcode() == Opcode::FPExt
+                        && value_ty(cx, x) == inst.ty())
+                });
             push(cx, arg, a)?;
-            if inst.opcode() == Opcode::FPTrunc && carried(cx, inst) {
+            if inst.opcode() == Opcode::FPTrunc && carried(cx, inst) && !undoes {
                 round(cx, b);
             }
             result(cx, inst, b)

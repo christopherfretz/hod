@@ -112,8 +112,7 @@ their values).
 | `x86:float` | a floating-point value, `fcmp`, `fneg` | I9 (`x87.rs`) |
 | `x86:vector` | a vector value, a vector `ptradd`, the element operations | I12 |
 | `x86:aggregate` | an aggregate value, `extractvalue`, `insertvalue`, a result in memory | I11 |
-| `x86:pic` | a relocation model other than static | I8 (`pic.rs`) |
-| `x86:tls` | a thread-local access, `llvm.threadlocal.address`, `llvm.thread.pointer` | I8 (`tls.rs`) |
+| `x86:tls:dynamic` | a thread-local access in the general- or local-dynamic model (a shared object's default; §8.4) | — (needs `___tls_get_addr` in `hod_cg`'s run-time functions) |
 | `x86:eh` | `invoke`, `landingpad`, `resume`; a call that may unwind in a function that may unwind (no unwind tables) | I10 |
 | `x86:debug-info` | a module with debug information (`hod_cg`'s emitter) | I10 |
 | `x86:cf-protection` | `cf-protection-*` module flags (`hod_cg`'s `.note.gnu.property`) | — |
@@ -135,3 +134,73 @@ their values).
 A nonzero `NumRegisterParameters` module flag stays refused by the front
 half. A test does not name the first refusal of a program with several
 constructs.
+
+## 8. Position-independent code and TLS (`pic`, `tls`; WP-299, design 0008 I8)
+
+### 8.1 The access choice
+
+Every symbol reference goes through `pic`: `common::sym_address` (an
+address in a register) is `pic::address`, `common::sym_inst` (a memory
+operand) is `pic::mem_inst`, `Target::emit_call` is `pic::emit_call`.
+The choice follows `llc` 19 and 22 (`X86Subtarget::classifyGlobalReference`
+for 32-bit ELF) on top of `hod_cg::sym_access`; functions and data alike:
+
+| relocation model | `dso_local` (local, hidden, protected, PIE definitions) | preemptible (declarations, default-visibility definitions in a shared object) |
+|---|---|---|
+| static, dynamic-no-pic: data, function address | `[sym]` / `lea rd, [sym]`, `R_386_32` | the same, `R_386_32` |
+| static: call | `call f`, `R_386_PC32` | `call f@PLT`, `R_386_PLT32`, no `ebx` |
+| PIC: data, function address | GOT pointer, `sym@GOTOFF(r)`, `R_386_GOTOFF` (addend folded) | GOT pointer, `mov r, sym@GOT(r)`, `R_386_GOT32X`, the addend added by `lea` |
+| PIC: call | `call f`, `R_386_PC32` | GOT pointer in `ebx`, `call f@PLT`, `R_386_PLT32` |
+
+A program (PIE) and a shared object differ only through `sym_access`
+(`dso_local` as LLVM implies it; a shared object's default-visibility
+definition is reached through its local alias, `hod_cg` §9.7). `nonlazybind`
+does not change the 32-bit call at `-O0` (`llc` 22 measured). Runtime
+functions are called as preemptible ones.
+
+### 8.2 The GOT pointer
+
+Computed where it is needed, never kept: `call .L` (`e8 00 00 00 00`, no
+relocation), `.L: pop r`, `lea r, [r + disp32]` with `R_386_GOTPC`
+against `_GLOBAL_OFFSET_TABLE_`, addend 3 (from `.L` to the field). `llc`
+writes the same call/pop with `addl` (no `__x86.get_pc_thunk.*` at
+`-O0`, both majors); `lea` keeps the flags. The sequence writes `r` and
+the word below `esp` only.
+
+- `pic::address` computes it in `rd` itself: it writes `rd` and nothing
+  else, flags kept, at any point of a lowering.
+- `pic::mem_inst` computes it in `eax`: `eax` holds no value across
+  instructions, and the instruction built over the operand must not read
+  `eax` (a store of `eax`, an operation with `eax` as source over a
+  symbol): such an instruction is an internal error, never emitted.
+- `pic::emit_call` displaces the value `ebx` holds (`FnCx::take_reg`)
+  and computes it in `ebx` immediately before `call f@PLT` (i386 psABI).
+
+### 8.3 Tables and constants
+
+hod builds no jump tables (`switch` is a compare chain). There are no
+constant pools yet; I9's constants reach memory through `pic::mem_inst`
+with the pool's symbol, which gives `@GOTOFF` under PIC as `llc` does.
+
+### 8.4 Thread-local storage
+
+The thread pointer is `gs:[0]`. The model is `hod_cg::sym_access`'s
+(`TargetMachine::getTLSModel`: a program's are local or initial exec
+whatever `-ftls-model=` asks for; a shared object's are general or local
+dynamic unless initial exec is asked). Both ways in (a symbol operand,
+`llvm.threadlocal.address`) are `tls::address`, which writes `rd` only,
+the flags kept; `llvm.thread.pointer` is `mov rd, gs:[0]`.
+
+| model | sequence | relocation |
+|---|---|---|
+| local exec | `mov rd, gs:[0]`; `lea rd, [rd + x@NTPOFF + addend]` | `R_386_TLS_LE` |
+| initial exec, static | `mov rd, [x@INDNTPOFF]` (`A1` for `eax`, else `8B` r/m=101) | `R_386_TLS_IE` |
+| initial exec, PIC | GOT pointer in `rd`; `mov rd, [rd + x@GOTNTPOFF]` (disp32) | `R_386_TLS_GOTIE` |
+| initial exec, then | `push t; mov t, gs:[0]; lea rd, [rd + t]; pop t`; `lea rd, [rd + addend]` (`t` = `ecx`, `edx` if `rd` is `ecx`) | — |
+| general, local dynamic | refused: `x86:tls:dynamic` | — |
+
+The initial-exec loads are the forms GNU ld, lld and mold relax to local
+exec. The dynamic models need `leal x@TLSGD(,%ebx,1), %eax; call
+___tls_get_addr@PLT` (design 0008 §3.3) and `hod_cg::RuntimeFn` has only
+`__tls_get_addr` (the stack-argument entry, which the linkers' relaxation
+does not recognize).

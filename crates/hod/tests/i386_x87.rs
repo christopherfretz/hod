@@ -22,6 +22,9 @@
 //!   that pass 80 bits on). Every shape runs as `llc`'s but the `many*`
 //!   ones, where `llc`'s allocator decides ([`divergent`]): those are
 //!   compared with a model of hod's rule built by `llc` ([`model`]).
+//! - `int-shapes-{float,double}.ll` (i386 join C, `int_shapes.py`): the
+//!   integer intrinsics `llc` lowers with a branch without `cmov` (a
+//!   barrier) and those it does not, between an x87 result and its use.
 //!
 //! A missing tool is skipped with a note, unless `HOD_REQUIRE_TOOLS=1`.
 
@@ -384,6 +387,83 @@ fn rounding_shapes_run_as_llc_s_or_as_the_model() {
         "i386 x87 shapes: {equal} equal llc's, {modelled} equal the model \
          ({apart} of them differ from llc's)"
     );
+}
+
+/// The shapes of `int-shapes-*.ll` (written by `int_shapes.py`), in
+/// order: an integer intrinsic between an x87 result and its use
+/// (`spec/codegen-x86.md` §11 "Integer intrinsics", i386 join C).
+const INT_SHAPES: [&str; 24] = [
+    "ctlz32_between",
+    "ctlz32_poison",
+    "cttz32_between",
+    "cttz16_between",
+    "ctlz64_poison",
+    "umax32_between",
+    "umax32_zero",
+    "smin8_between",
+    "smax32_self",
+    "umin64_between",
+    "uaddsat32_between",
+    "saddsat1_between",
+    "ssubsat32_self",
+    "usubsat64_between",
+    "ushlsat32_between",
+    "sshlsat32_zero",
+    "fshl32_var",
+    "fshl64_var",
+    "fshr64_const",
+    "bswap64_between",
+    "abs64_between",
+    "ctpop32_between",
+    "scmp32_between",
+    "ucmp64_between",
+];
+
+/// Where `llc` 19 and 22 differ and hod follows 22: LLVM 19 branches for
+/// a saturating addition of `i1` without `cmov`, 22 does not.
+fn follows_22(shape: &str, major: u32, cpu: &str) -> bool {
+    shape == "saddsat1_between" && major == 19 && cpu == "generic"
+}
+
+/// Every integer-intrinsic shape runs as `llc`'s (but the one LLVM 19
+/// lowers differently, [`follows_22`]), at CPU `generic` (where `llc`
+/// branches for some of them, a barrier) and `pentiumpro` (`cmov`: none),
+/// hod plain and under `Stress::ALL`.
+#[test]
+fn integer_intrinsic_shapes_run_as_llc_s() {
+    let Some(tools) = tools() else { return };
+    let scratch = Scratch::new("i386-x87-int-shapes");
+    let (mut equal, mut skipped) = (0, 0);
+    let mut failures = String::new();
+    for (ty, defines) in [("float", &["-DFLT"][..]), ("double", &[][..])] {
+        let drv = driver(&tools, &scratch, "shapes.c", defines, &format!("ints-{ty}-driver"));
+        let source = std::fs::read_to_string(data(&format!("int-shapes-{ty}.ll"))).unwrap();
+        for major in LLVM_MAJORS {
+            let Some(llc) = llvm_tool(major, "llc") else { continue };
+            for cpu in ["generic", "pentiumpro"] {
+                let name = format!("ints-{ty}-{major}-{cpu}");
+                let text = with_cpu(&source, cpu);
+                let [want, got, _] = three_runs(&tools, &scratch, &llc, &text, &[&drv], &name);
+                let (want, got) =
+                    (String::from_utf8(want).unwrap(), String::from_utf8(got).unwrap());
+                let (want, got): (Vec<_>, Vec<_>) = (want.lines().collect(), got.lines().collect());
+                assert_eq!(got.len(), INT_SHAPES.len(), "{name}: {got:?}");
+                for (k, shape) in INT_SHAPES.iter().enumerate() {
+                    if follows_22(shape, major, cpu) {
+                        skipped += 1;
+                        continue;
+                    }
+                    equal += 1;
+                    if got[k] != want[k] {
+                        writeln!(failures, "{name} {shape}: hod {} != llc {}", got[k], want[k])
+                            .unwrap();
+                    }
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "integer-intrinsic shapes that differ:\n{failures}");
+    eprintln!("i386 x87 integer-intrinsic shapes: {equal} equal llc's, {skipped} follow LLVM 22");
 }
 
 /// A `float` operation of clang's default i686 CPU (`pentium4`, SSE2) is

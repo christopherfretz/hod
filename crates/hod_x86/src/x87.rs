@@ -275,7 +275,8 @@ fn inst_at<'a>(cx: &FnCx<'a, X86>, raw: u32) -> Option<Inst<'a>> {
 /// intrinsics (calls); an integer division wider than 32 bits
 /// (`__divdi3` and kin); and, without `cmov`, a `select` on a variable
 /// condition that is no `i1` and no choice of two integer constants
-/// (`llc` branches for it, its fast allocator spills at the block end).
+/// (`llc` branches for it, its fast allocator spills at the block end),
+/// and the integer intrinsics [`int_branch`] lists.
 fn barrier(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
     if inst.is_terminator() {
         return true;
@@ -300,7 +301,10 @@ fn barrier(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
                 !small(len, INLINE_COPY)
             }
             (Some(Intrinsic::Memset), &[_, _, len, ..]) => !small(len, INLINE_SET),
-            (Some(which), _) => routine_op(which).is_some() && !folded(cx, inst, FOLD_DEPTH),
+            (Some(which), args) => {
+                (routine_op(which).is_some() && !folded(cx, inst, FOLD_DEPTH))
+                    || int_branch(cx, inst, which, args)
+            }
         },
         InstKind::Binary { .. } => match inst.opcode() {
             Opcode::FRem => !folded(cx, inst, FOLD_DEPTH),
@@ -318,6 +322,84 @@ fn barrier(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
                 && bits != Some(1)
                 && !constants
                 && !features(cx).has(X86Features::CMOV)
+        }
+        _ => false,
+    }
+}
+
+/// Whether `llc` lowers the integer intrinsic `which` (call `inst` with
+/// `args`) with a branch: only without `cmov` (its select expansion
+/// splits the block; measured with `llc` 19 and 22 at widths 1 to 64,
+/// `spec/codegen-x86.md` §11 "Integer intrinsics"). At a result of `N`
+/// bits: `ctlz` with zero defined at `N` >= 2, with zero poison at `N` >
+/// 32; `cttz` with zero defined at `N` >= 32, with zero poison at `N` >
+/// 32; `smax`, `smin`, `umax`, `umin`, the saturating additions,
+/// subtractions and shifts at `N` >= 2 (LLVM 19 also branches for the
+/// saturating additions and subtractions at `N` = 1; hod follows 22);
+/// `fshl`/`fshr` by a variable amount at `N` > 32. Never `bswap`,
+/// `ctpop`, `bitreverse`, `abs`, `scmp`, `ucmp`, a funnel shift by a
+/// constant. `llc`'s DAG folds, and does not branch for: operands that
+/// are all constants or folded results; min/max of one value twice, or
+/// with the type's least or greatest value; an addition of 0; a
+/// subtraction of one value from itself or of 0, `usub.sat` from all
+/// ones; a saturating shift of 0 or by 0; a funnel shift of one constant
+/// twice.
+fn int_branch(cx: &FnCx<'_, X86>, inst: Inst<'_>, which: Intrinsic<'_>, args: &[Value]) -> bool {
+    use Intrinsic as I;
+    if features(cx).has(X86Features::CMOV) {
+        return false;
+    }
+    let Some(bits) = cx.types().int_bits(inst.ty()) else { return false };
+    let all_ones = if bits >= 64 { u64::MAX } else { (1u64 << bits) - 1 };
+    let sign = 1u64 << (bits.clamp(1, 64) - 1);
+    let constant = |v: Value| match v.kind() {
+        ValueKind::Const(id) => match cx.module.consts.get(id) {
+            Const::Int { value, .. } => Some(value & all_ones),
+            Const::Null(_) | Const::Zero(_) | Const::Undef(_) | Const::Poison(_) => Some(0),
+            _ => None,
+        },
+        _ => None,
+    };
+    let is = |v: Value, k: u64| constant(v) == Some(k);
+    let (data, rest): (&[Value], &[Value]) = match which {
+        I::Ctlz | I::Cttz => (args.get(..1).unwrap_or(args), args.get(1..).unwrap_or(&[])),
+        _ => (args, &[]),
+    };
+    if data.is_empty() || operands_folded(cx, inst, data, FOLD_DEPTH) {
+        return false;
+    }
+    let poison = rest.first().is_some_and(|&f| constant(f).is_some_and(|k| k != 0));
+    match (which, args) {
+        (I::Ctlz, _) => {
+            if poison {
+                bits > 32
+            } else {
+                bits >= 2
+            }
+        }
+        (I::Cttz, _) => {
+            if poison {
+                bits > 32
+            } else {
+                bits >= 32
+            }
+        }
+        (I::Umax | I::Umin, &[a, b]) => {
+            bits >= 2 && a != b && ![a, b].iter().any(|&v| is(v, 0) || is(v, all_ones))
+        }
+        (I::Smax | I::Smin, &[a, b]) => {
+            bits >= 2 && a != b && ![a, b].iter().any(|&v| is(v, sign) || is(v, sign - 1))
+        }
+        (I::SaddSat | I::UaddSat | I::SshlSat | I::UshlSat, &[a, b]) => {
+            bits >= 2 && !is(a, 0) && !is(b, 0)
+        }
+        (I::SsubSat | I::UsubSat, &[a, b]) => {
+            bits >= 2 && a != b && !is(b, 0) && !(which == I::UsubSat && is(a, all_ones))
+        }
+        (I::Fshl | I::Fshr, &[a, b, amount]) => {
+            bits > 32
+                && !operands_folded(cx, inst, &[amount], FOLD_DEPTH)
+                && !(a == b && constant(a).is_some())
         }
         _ => false,
     }
@@ -433,7 +515,13 @@ fn folded(cx: &FnCx<'_, X86>, inst: Inst<'_>, depth: u32) -> bool {
         InstKind::Call(site) => site.args(),
         _ => inst.operands(),
     };
-    args && depth > 0
+    args && operands_folded(cx, inst, operands, depth)
+}
+
+/// Whether every one of `operands` of `inst` is a constant or a
+/// [`folded`] result of its block, within `depth` levels.
+fn operands_folded(cx: &FnCx<'_, X86>, inst: Inst<'_>, operands: &[Value], depth: u32) -> bool {
+    depth > 0
         && operands.iter().all(|&v| match v.kind() {
             ValueKind::Const(_) => true,
             _ => v.as_inst().is_some_and(|id| {

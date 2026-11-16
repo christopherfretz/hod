@@ -501,9 +501,11 @@ Speed and memory are properties with tests, not goals with hopes.
   a counts baseline of their own (`bench/baselines/<machine
   id>[-<arch>]-counts.tsv`); wall time is shown and not judged. More
   than 1% more instructions on an input, more than 0.5% on the sum over
-  the inputs, or the memory bound fails; fewer is "improved: re-record".
-  It is a step of the full gate per target (`bench-aarch64`,
-  `bench-x86_64`, about two minutes each) and not of the hosted lanes,
+  the inputs, or more than 2% and 3 MiB more peak memory (hod on one
+  thread; the peak resident set moves by up to 2.2 MiB under load) fails;
+  fewer is "improved: re-record". It is a step of the full gate per
+  target (`bench-aarch64`, `bench-x86_64`, about 90 s each with the
+  release build current) and not of the hosted lanes,
   which have no baseline of their own (`spec/harness.md` "bench", "The
   counts gate").
 - The harness also reports time per phase (ingest, analysis, emission,

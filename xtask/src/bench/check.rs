@@ -660,7 +660,7 @@ impl Check {
             text,
             "bench: check: {} inputs: {} ok, {} improved, {} new, {} advisory, {} REGRESSED, {} LOST, \
              {} without a count, {} not judged; thresholds: instructions +{} per input and +{} on \
-             the sum, memory +{}; wall time is not judged",
+             the sum, memory +{} and {} MiB; wall time is not judged",
             self.judged.len(),
             count(|v| *v == Verdict::Ok),
             count(|v| *v == Verdict::Improved),
@@ -673,6 +673,7 @@ impl Check {
             percent(Some(thresholds.inst_bp as i64)).trim_start_matches('+'),
             percent(Some(thresholds.inst_sum_bp as i64)).trim_start_matches('+'),
             percent(Some(thresholds.mem_bp as i64)).trim_start_matches('+'),
+            thresholds.count_mem_slack_kib / 1024,
         );
         if improved > 0 {
             text.push_str(

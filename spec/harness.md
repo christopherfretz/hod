@@ -3557,8 +3557,10 @@ thresholds and `wall time is not judged`.
 **In the gate.** `cargo xtask ci` runs it per target
 (`bench-aarch64`, `bench-x86_64`, full gate only). Counting every input
 costs about a minute of callgrind per target on the development host at
-load 30 (hod executes 5.6 G instructions over the 20 inputs), and the
-whole step about two minutes, so the step judges every input; there is no
+load 30 (hod executes 5.6 G instructions over the 20 inputs on aarch64,
+5.7 G on x86-64), and the whole step 88 to 97 s per target at load 28 to
+40 with the release build current (a rebuild of hod's release profile
+adds its own minutes), so the step judges every input; there is no
 subset. The hosted lanes do not run it: a hosted runner has no baseline
 of its own (its machine id changes with the processor the job lands on),
 and a check against another machine's baseline is advisory, so the job

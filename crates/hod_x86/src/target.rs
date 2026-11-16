@@ -234,7 +234,7 @@ impl Target for X86 {
             | InstKind::Load { .. }
             | InstKind::Select { .. } => refuse(cx, inst.ty()),
             InstKind::Call(site) => call::lower(cx, inst, &site),
-            InstKind::VaArg { .. } => unsupported(call::VARARGS),
+            InstKind::VaArg { list } => crate::va::va_arg(cx, inst, list),
             InstKind::LandingPad(_) | InstKind::Resume { .. } => unsupported(call::EH),
             InstKind::Br { target } => control::br(cx, target),
             InstKind::CondBr { cond, if_true, if_false } => {

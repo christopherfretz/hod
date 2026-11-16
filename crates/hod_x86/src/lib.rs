@@ -26,6 +26,7 @@ pub mod pic;
 pub mod reg;
 pub mod target;
 pub mod tls;
+pub mod va;
 pub mod x87;
 
 use std::fmt;

@@ -227,7 +227,7 @@ pub(crate) trait Field<'a>: Copy {
     fn out(&self) -> DiFieldOut<'a>;
     /// Calls `visit` for every node the value names.
     #[inline]
-    fn refs(&self, _visit: &mut dyn FnMut(DiId)) {}
+    fn refs(&self, _visit: &mut impl FnMut(DiId)) {}
     /// Consumes the stored value from `dec` as [`Field::get`] does and
     /// calls `visit` with the number of cells left in `dec` at each cell
     /// that holds a node id (the uniquing pass, §6.3, rewrites them).
@@ -471,7 +471,7 @@ impl<'a> Field<'a> for Option<DiId> {
         }
     }
     #[inline]
-    fn refs(&self, visit: &mut dyn FnMut(DiId)) {
+    fn refs(&self, visit: &mut impl FnMut(DiId)) {
         if let Some(id) = *self {
             visit(id);
         }
@@ -528,7 +528,7 @@ impl<'a> Field<'a> for &'a [DiId] {
         }
     }
     #[inline]
-    fn refs(&self, visit: &mut dyn FnMut(DiId)) {
+    fn refs(&self, visit: &mut impl FnMut(DiId)) {
         self.iter().filter(|id| !id.is_none()).for_each(|&id| visit(id));
     }
     fn ref_cells<L: Layering>(dec: &mut Dec<'a, L>, visit: &mut dyn FnMut(usize)) {
@@ -657,7 +657,7 @@ impl<'a> Field<'a> for DiBound {
         }
     }
     #[inline]
-    fn refs(&self, visit: &mut dyn FnMut(DiId)) {
+    fn refs(&self, visit: &mut impl FnMut(DiId)) {
         if let DiBound::Node(id) = *self {
             visit(id);
         }
@@ -965,7 +965,8 @@ macro_rules! nodes {
                 /// [`Self::refs`] of the node stored with `mask` (`dec`
                 /// holds the cells after the mask), without decoding it.
                 #[allow(unused_assignments, unused_variables, reason = "the last field's bit is not read; a kind may have no field")]
-                fn stored_refs<L: Layering>(mask: u32, dec: &mut Dec<'a, L>, visit: &mut dyn FnMut(&'static str, u32, DiId)) {
+                #[inline]
+                fn stored_refs<L: Layering>(mask: u32, dec: &mut Dec<'a, L>, visit: &mut impl FnMut(&'static str, u32, DiId)) {
                     let mut bit = 1u32;
                     $(
                         if mask & bit != 0 {
@@ -1077,7 +1078,7 @@ macro_rules! nodes {
             /// [`DiNode::refs`] of the node of `kind` stored with `mask`
             /// (`dec` holds the cells after the mask; its strings are not
             /// read), without decoding the node.
-            pub(crate) fn stored_refs<L: Layering>(kind: DiKind, mask: u32, dec: &mut Dec<'a, L>, visit: &mut dyn FnMut(&'static str, u32, DiId)) {
+            pub(crate) fn stored_refs<L: Layering>(kind: DiKind, mask: u32, dec: &mut Dec<'a, L>, visit: &mut impl FnMut(&'static str, u32, DiId)) {
                 match kind {
                     DiKind::Undefined => {}
                     $( DiKind::$variant => <$name>::stored_refs(mask, dec, visit), )*

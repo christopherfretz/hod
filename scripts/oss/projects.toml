@@ -12,7 +12,8 @@
 #
 #   url            git URL (cloned with --depth 1 --branch <tag>)
 #   tag            pinned release tag
-#   build          cmake (the only build system the lane drives today)
+#   build          cmake, or autotools (a committed or generated `configure`
+#                  in source_subdir, run out of source; native builds only)
 #   cxx_std        CMAKE_CXX_STANDARD
 #   configure      extra configure flags, a list
 #   build_targets  optional list of make targets (default: all)
@@ -29,6 +30,10 @@
 #   test_timeout   seconds, default 1800
 #   vmem_kb        the address-space cap of one compile or test, default 3000000
 #   test_vmem_kb   optional: the test step's cap instead (at most 100000000)
+#   link_vmem_kb   optional: the cap of a link (a compiler call without -c/-S/-E;
+#                  default vmem_kb, at most 16000000)
+#   rerun          optional: the command `oss-report.py rerun` runs one test with
+#                  (`{test}` its name, quoted) when the test step is not ctest
 #   drop_flags     optional: compiler arguments the wrappers leave out of every
 #                  kiln command (a flag kiln does not accept that the project
 #                  hard-codes, e.g. highway's -fmerge-all-constants), in every mode
@@ -641,3 +646,95 @@ c_compiler = "clang-19"
 wave = 4
 verified = true
 notes = "WP-789. NVIDIA's P2300 std::execution reference implementation; tests (Catch2 3.14, fetched by rapids-cmake/CPM at configure time) and examples on, its defaults (C++20)."
+
+# ---------------------------------------------------------------- WP-223
+# Real projects, fourth set (native AArch64 host).
+
+[duckdb]
+url = "https://github.com/duckdb/duckdb"
+tag = "v1.5.6"
+build = "cmake"
+cxx_std = 17
+c = "kiln"
+# kiln's row, without the unity build (every source its own object).
+# The shim gives allocator_jemalloc.cpp the header it misses outside a unity TU.
+# duckdb's Debug build type turns on ASan and UBSan (-fsanitize=address,undefined):
+# off, the lane builds plain -O0 objects (its Debug flags keep -DDEBUG, duckdb's assertions).
+configure = ["-DBUILD_UNITTESTS=ON", "-DBUILD_SHELL=ON", "-DDISABLE_UNITY=1", "-DENABLE_SANITIZER=FALSE", "-DENABLE_UBSAN=FALSE", "-DCMAKE_PROJECT_DuckDB_INCLUDE=@HOD_OSS@/shims/duckdb-no-unity.cmake"]
+build_targets = ["unittest", "shell"]
+# The list of the test cases first (catch-tests.log, projects.py reads it
+# for the per-case results), then kiln's test: the default (non-slow) cases.
+test = "test/unittest --list-test-names-only > catch-tests.log 2>/dev/null; DUCKDB_TEST_MAX_THREADS=4 SUMMARIZE_FAILURES=1 test/unittest"
+test_timeout = 14400
+# One case again (oss-report.py rerun): unittest takes its name.
+rerun = "DUCKDB_TEST_MAX_THREADS=4 SUMMARIZE_FAILURES=1 test/unittest {test}"
+# unittest links libduckdb_static.a (about 830 MB at -O0 -g0, several GB with -g).
+link_vmem_kb = 12000000
+# Under 3 GB the control's unittest runs out of address space (16 MB block
+# allocations fail, thread creation EAGAIN, an abort in a concurrent test):
+# jemalloc and duckdb's threads reserve far more address space than they use.
+test_vmem_kb = 16000000
+c_compiler = "clang-19"
+wave = 4
+notes = "WP-223, from kiln's row (WP-799): release v1.5.6, default extensions (core_functions, parquet), not the amalgamation, DISABLE_UNITY so every source is a TU (shims/duckdb-no-unity.cmake: v1.5.6's allocator_jemalloc.cpp lacks an include then, clang 19 rejects it alike). The test is unittest with no arguments (the default, non-slow, Catch2 and sqllogictest cases), at most 4 threads per database; the per-case results come from Catch's failure headers and the --list-test-names-only list."
+
+[icu4c]
+url = "https://github.com/unicode-org/icu"
+tag = "release-79.1"
+build = "autotools"
+source_subdir = "icu4c/source"
+checkout = "icu"
+cxx_std = 17
+c = "kiln"
+configure = ["--disable-samples", "--enable-tests"]
+# kiln (1.2.0) rejects `-nodefaultlibs` (findings oss4/kiln/driver-nodefaultlibs),
+# which config/mh-linux puts on the stub data library's link beside
+# `-nostdlib`: a make variable override keeps only `-nostdlib` (which
+# implies it), in the build and in the test step's make.
+build_targets = ["all", "LDFLAGSICUDT=-nostdlib"]
+# ICU's own test suites (test/Makefile's check-recursive: intltest,
+# cintltst, iotest, ...); the result is the ALL TESTS SUMMARY block.
+test = "make -k check LDFLAGSICUDT=-nostdlib"
+test_timeout = 7200
+wave = 4
+notes = "WP-223. ICU4C through its committed configure (autotools row), out of source; C (common's C parts, stubdata, cintltst) through kiln-cc. Tests: make check, one result per suite."
+
+[onetbb]
+url = "https://github.com/uxlfoundation/oneTBB"
+tag = "v2022.3.0"
+build = "cmake"
+cxx_std = 20
+c = "kiln"
+# kiln's row, without IPO: kiln offers hod only -O0 objects, never LTO bitcode.
+configure = ["-DTBB_TEST=ON", "-DTBB_STRICT=OFF", "-DTBBMALLOC_BUILD=ON", "-DTBB_EXAMPLES=OFF", "-DTBB_ENABLE_IPO=OFF"]
+test = "ctest --output-on-failure -j 4 --timeout 600"
+test_timeout = 7200
+c_compiler = "clang-19"
+wave = 4
+notes = "WP-223, from kiln's row (WP-803): libtbb, libtbbmalloc and the conformance and unit tests, TBB_ENABLE_IPO off. ctest -j 4, 600 s per test (300 in kiln's Release row). kiln's note: test_concurrent_map aborts intermittently under the control too."
+
+[bullet3]
+url = "https://github.com/bulletphysics/bullet3"
+tag = "3.25"
+build = "cmake"
+cxx_std = 17
+c = "kiln"
+configure = ["-DBUILD_UNIT_TESTS=ON", "-DBUILD_EXTRAS=ON", "-DBUILD_PYBULLET=OFF", "-DBUILD_OPENGL3_DEMOS=OFF", "-DBUILD_BULLET2_DEMOS=OFF", "-DBUILD_CPU_DEMOS=OFF", "-DUSE_GRAPHICAL_BENCHMARK=OFF"]
+test = "ctest --output-on-failure -j 4 --timeout 900"
+test_timeout = 7200
+c_compiler = "clang-19"
+wave = 4
+notes = "WP-223. Bullet 2 and 3 libraries, the extras (inverse dynamics, serialization, HACD, ...), its unit tests (test/: collision, BulletDynamics, InverseDynamics, SharedMemory, the bundled gtest 1.7); no OpenGL demos, no pybullet. C (enet, the bundled C parts) through kiln-cc."
+
+[ninja]
+url = "https://github.com/ninja-build/ninja"
+tag = "v1.13.2"
+build = "cmake"
+cxx_std = 17
+c = "kiln"
+# googletest fetched at configure time, never the system's prebuilt one.
+configure = ["-DBUILD_TESTING=ON", "-DCMAKE_DISABLE_FIND_PACKAGE_GTest=ON"]
+test = "ctest --output-on-failure"
+c_compiler = "clang-19"
+wave = 4
+notes = "WP-223. ninja and ninja_test (all of its gtest unit tests in one program, googletest 1.16 fetched by FetchContent)."

@@ -3,7 +3,7 @@
 
 A port of kiln's scripts/oss/projects.py (kiln:spec/landed/harness/
 WP-666.md): the same projects.toml format, the same `shell` and
-`report-json` commands, reduced to the cmake rows the lane drives, and a
+`report-json` commands, reduced to the cmake and autotools rows the lane drives, and a
 report that adds the lane's mode and flavour, hod's census of the build
 and the project's per-test results.
 
@@ -32,7 +32,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 TOML = os.path.join(HERE, "projects.toml")
 
 REQUIRED = ("url", "tag", "build", "cxx_std", "test")
-BUILDS = ("cmake",)
+BUILDS = ("cmake", "autotools")
 MODES = ("llc", "hod", "strict")
 FLAVOURS = {"O0": "-O0 -g0", "O0g": "-O0 -g"}
 # What a build is for (oss-build.sh --target): aarch64 native, x86_64
@@ -42,10 +42,20 @@ VMEM_MAX_KB = 6000000
 # The test step's cap may go higher, for a test that reserves address
 # space it never touches (mold reserves 8 GiB per arena, up to ten).
 TEST_VMEM_MAX_KB = 100000000
+LINK_VMEM_MAX_KB = 16000000
 CTEST_RE = re.compile(r"(\d+)% tests passed, (\d+) tests? failed out of (\d+)")
 # One ctest result line: `  3/12 Test  #3: name ....   Passed    0.01 sec`,
 # `***Failed`, `***Timeout`, `***Exception: SegFault`, `***Not Run`.
 CTEST_LINE_RE = re.compile(r"^\s*\d+/\d+ Test\s+#\d+: (\S+) \.+\s*(\S.*?)\s+[\d.]+ sec\s*$")
+# Catch2 v2's totals (duckdb's unittest, kiln's CATCH_RE), its all-passed
+# line, and the rules around a failed test case's header; the list of the
+# cases a row's test command writes (`unittest --list-test-names-only`).
+CATCH_RE = re.compile(r"^test cases:\s*(\d+)\s*\|\s*(\d+) passed\s*\|\s*(\d+) failed")
+CATCH_ALL_RE = re.compile(r"^All tests passed \(\d+ assertions? in (\d+) test cases?\)")
+CATCH_RULE_RE = re.compile(r"^-{79}\s*$")
+CATCH_DOTS_RE = re.compile(r"^\.{79}\s*$")
+CATCH_LIST = "catch-tests.log"
+CATCH_PROGRESS_RE = re.compile(r"^\[\d+/\d+\] \(\d+%\): (.+)$")
 # The reason name of a hod refusal as a directory name (hod-shim's rule).
 SAFE_RE = re.compile(r"[^A-Za-z0-9:_.+-]")
 
@@ -58,7 +68,7 @@ def load(path=TOML):
         if missing:
             raise SystemExit(f"{path}: [{name}] lacks {', '.join(missing)}")
         if p["build"] not in BUILDS:
-            raise SystemExit(f"{path}: [{name}] build must be one of {BUILDS} (the lane drives cmake rows only)")
+            raise SystemExit(f"{path}: [{name}] build must be one of {BUILDS} (the lane drives cmake and autotools rows)")
         p.setdefault("configure", [])
         p.setdefault("build_targets", [])
         p.setdefault("c_compiler", "clang-19")
@@ -79,6 +89,11 @@ def load(path=TOML):
         p.setdefault("test_vmem_kb", p["vmem_kb"])
         if not (isinstance(p["test_vmem_kb"], int) and 0 < p["test_vmem_kb"] <= TEST_VMEM_MAX_KB):
             raise SystemExit(f"{path}: [{name}] test_vmem_kb must be an integer in 1..{TEST_VMEM_MAX_KB}")
+        # A link's cap (kiln-cxx's KILN_OSS_LINK_VMEM_KB): a big program's
+        # link maps every archive (duckdb's -O0 library is about 1 GB).
+        p.setdefault("link_vmem_kb", p["vmem_kb"])
+        if not (isinstance(p["link_vmem_kb"], int) and 0 < p["link_vmem_kb"] <= LINK_VMEM_MAX_KB):
+            raise SystemExit(f"{path}: [{name}] link_vmem_kb must be an integer in 1..{LINK_VMEM_MAX_KB}")
         if not (isinstance(p["test_timeout"], int) and p["test_timeout"] > 0):
             raise SystemExit(f"{path}: [{name}] test_timeout must be a positive integer")
     for name, p in data.items():
@@ -237,8 +252,93 @@ def test_results(log_path):
         if m:
             total, failed = int(m.group(3)), int(m.group(2))
             return line.strip(), {"passed": total - failed, "failed": failed, "total": total}, per
+    catch = catch_results(lines, os.path.join(os.path.dirname(log_path), CATCH_LIST))
+    if catch:
+        return catch
+    icu = icu_results(lines)
+    if icu:
+        return icu
     last = next((l.strip() for l in reversed(lines) if l.strip()), "")
     return last, None, per
+
+
+def icu_results(lines):
+    """ICU4C's `make check` (test/Makefile's check-recursive): the last
+    `ALL TESTS SUMMARY:` block, `All tests OK: <suites>` or `ok: <suites>`
+    then `===== ERRS: <suites>`, one status per test suite (intltest,
+    cintltst, iotest, ...). None for another log."""
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i].strip() != "ALL TESTS SUMMARY:":
+            continue
+        per = {}
+        for l in lines[i + 1:i + 3]:
+            for prefix, status in (("All tests OK:", "Passed"), ("ok:", "Passed"), ("===== ERRS:", "Failed")):
+                if l.startswith(prefix):
+                    per.update({t: status for t in l[len(prefix):].split()})
+        if not per:
+            return None
+        failed = sum(1 for s in per.values() if s != "Passed")
+        return lines[i + 1].strip() + (f"; {lines[i + 2].strip()}" if failed else ""), \
+            {"passed": len(per) - failed, "failed": failed, "total": len(per)}, per
+    return None
+
+
+def catch_results(lines, list_path):
+    """A Catch2 (v2) console log (duckdb's unittest): (totals line, counts,
+    {test case: status}) or None. A failed case's header is the dashed
+    rule, its name, another rule, its location and a dotted rule; every
+    case of `list_path` (the row's `--list-test-names-only` output, when
+    the test command wrote one) not failed is `Passed`. A progress line
+    ending in a carriage return is split there."""
+    parts = []
+    for p in (p for l in lines for p in l.split("\r")):
+        # A failed case's rule printed after a progress line without its newline.
+        if len(p) > 79 and p.endswith("-" * 79) and not CATCH_RULE_RE.match(p):
+            parts += [p[:-79], "-" * 79]
+        else:
+            parts.append(p)
+    totals = None
+    for i in range(len(parts) - 1, -1, -1):
+        m = CATCH_RE.match(parts[i].strip())
+        if m:
+            total, passed, failed = (int(x) for x in m.groups())
+            totals = (parts[i].strip(), {"passed": passed, "failed": failed, "total": total})
+            break
+        m = CATCH_ALL_RE.match(parts[i].strip())
+        if m:
+            total = int(m.group(1))
+            totals = (parts[i].strip(), {"passed": total, "failed": 0, "total": total})
+            break
+    if totals is None:
+        return None
+    failed = set()
+    for i in range(len(parts) - 3):
+        if CATCH_RULE_RE.match(parts[i]) and parts[i + 1].strip() and not CATCH_RULE_RE.match(parts[i + 1]):
+            j = i + 1
+            while j < len(parts) and not CATCH_RULE_RE.match(parts[j]):
+                j += 1
+            # The rule after the name (and its sections), then file:line and dots.
+            if j + 2 < len(parts) and CATCH_DOTS_RE.match(parts[j + 2]):
+                failed.add(parts[i + 1].strip())
+    # The cases that ran: duckdb's progress lines (`[n/N] (p%): <case>`);
+    # a case's own output (or the abort of the case running when the
+    # program died) can be glued on after its name.
+    ran = [m.group(1) for m in (CATCH_PROGRESS_RE.match(p) for p in parts) if m]
+    ran_set = set(ran)
+    per = {}
+    try:
+        with open(list_path, encoding="utf-8", errors="replace") as f:
+            names = [l.strip() for l in f if l.strip()]
+    except FileNotFoundError:
+        names = []
+    for t in names:
+        if not ran or t in ran_set or any(r.startswith(t) for r in ran):
+            per[t] = "Passed"
+        else:
+            per[t] = "Not Run"
+    for t in failed:
+        per[t] = "Failed"
+    return totals[0], totals[1], per
 
 
 # One ctest test whose command is a path (CTestTestfile.cmake, as CMake
@@ -610,7 +710,7 @@ def main():
             sys.exit(f"projects.py: unknown project '{a.project}' (see {TOML})")
         p = data[a.project]
         q = shlex.quote
-        for k in ("url", "tag", "build", "cxx_std", "test", "c", "c_compiler", "source_subdir", "checkout", "test_timeout", "vmem_kb", "test_vmem_kb"):
+        for k in ("url", "tag", "build", "cxx_std", "test", "c", "c_compiler", "source_subdir", "checkout", "test_timeout", "vmem_kb", "test_vmem_kb", "link_vmem_kb"):
             print(f"P_{k.upper()}={q(str(p[k]))}")
         print(f"P_SUBMODULES={'1' if p['submodules'] else ''}")
         print("P_CONFIGURE=(" + " ".join(q(x) for x in p["configure"]) + ")")

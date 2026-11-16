@@ -4491,8 +4491,17 @@ It needs the network (it clones) and never runs in the gate.
 
 **Rows.** `scripts/oss/projects.toml` has kiln's format: a row copied
 from kiln's file works unchanged (the keys the lane does not use are
-accepted and ignored), but only `build = "cmake"` rows are driven; any
-other build system is an error naming the row.
+accepted and ignored), but only `build = "cmake"` and `build =
+"autotools"` rows are driven; any other build system is an error naming
+the row. An autotools row (WP-223) runs the project's `configure` in
+`source_subdir` from the build tree, with `CC`, `CXX` the wrappers',
+`CFLAGS` the flavour's and `CXXFLAGS` the flavour's with `-std=c++<cxx_std>`
+(and `--prefix` for a dependency build, installed by `make install`); it
+builds natively only and takes no `deps`. A test log that is Catch2's
+console output (duckdb's `unittest`) is read for its totals and the
+failed cases' names; the row's test command writes the list of every case
+(`--list-test-names-only`) to `catch-tests.log`, and the cases of it that
+did not fail are the passed ones.
 
 **One build** (`oss-build.sh <project> --mode M --flavour F`) is a tree
 `<root>/build/<project>/<F>-<M>/` (`<root>`: `$HOD_OSS_ROOT`, else
@@ -4517,7 +4526,8 @@ other build system is an error naming the row.
   alike, so a feature test hod declines changes nothing that is built.
   The build (`make -k`, the shared jobserver, else `-j 4`) and the tests
   run in the mode. Every compile runs under the row's address-space cap
-  (`vmem_kb`, `KILN_OSS_VMEM_KB`) and a 600 s limit (the wrapper's); the
+  (`vmem_kb`, `KILN_OSS_VMEM_KB`; a link under the row's `link_vmem_kb`,
+  at most 16 GB, when it sets one) and a 600 s limit (the wrapper's); the
   tests run under the same cap (or the row's `test_vmem_kb`, at most
   100 GB, for a test that reserves address space it never touches),
   under the row's `test_timeout`, ctest
@@ -4579,7 +4589,12 @@ root.
 
 **Pages.** `oss-report.py status` prints `docs/status/oss.md`: a row per
 project and flavour (TUs, objects, built by hod, fell back, not offered,
-the hybrid and strict builds, passed/total tests per mode, the tests that
+the hybrid and strict builds: `TUs` are the build step's, from the
+wrapper's log; `objects` are the `-c` jobs of kiln's statistics log, which
+spans the build and the test steps, so a TU compiled for two targets is
+two objects, a test step's compiles are counted, and a job kiln's front end
+rejected appears as `(n no backend)`; compile-and-link jobs are not
+objects; passed/total tests per mode, the tests that
 do worse or better than the control, the hod binary of the hod and
 strict builds, by file name (a frozen copy is `hod-<commit>`), and the
 kiln commit of the row's builds, each report's `kiln`: `$HOD_OSS_KILN`,

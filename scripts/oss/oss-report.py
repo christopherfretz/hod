@@ -53,6 +53,7 @@ $HOD_OSS_FINDINGS, else <build root>/findings/oss. `--target x86_64`
 import argparse
 import glob
 import json
+import shlex
 import os
 import shutil
 import stat
@@ -368,6 +369,15 @@ def hod_commits(*rs):
     return sorted({hod_commit(r) for r in rs if r} - {""})
 
 
+def objects_cell(c):
+    """The statistics log's object jobs, with those no back end ran for
+    (kiln's front end rejected them) named, since no other column counts them."""
+    if not c:
+        return "-"
+    none = c.get("backends", {}).get("none", 0)
+    return f"{c.get('objects', '-')} ({none} no backend)" if none else f"{c.get('objects', '-')}"
+
+
 def hod_cell(*rs):
     """The hod commits of the hod and strict builds (`hod_commit`)."""
     return ", ".join(f"`{n}`" for n in hod_commits(*rs)) or "-"
@@ -452,7 +462,7 @@ def status_rows(reps, notes=None):
             elif reran:
                 diffs.append(", ".join(f"note {n}" for n in reran))
             out.append(
-                f"| {p} | {ref.get('tag') or '-'} | {fl} | {ref['tus']['total']} | {c.get('objects', '-')} | {be.get('hod', '-') if c else '-'} | "
+                f"| {p} | {ref.get('tag') or '-'} | {fl} | {ref['tus']['total']} | {objects_cell(c)} | {be.get('hod', '-') if c else '-'} | "
                 f"{fell if c else '-'} | {no if c else '-'} | {build_cell(h)} | {build_cell(s)} | "
                 f"{test_cell(l)} | {test_cell(h)} | {test_cell(s)} | {'; '.join(diffs) or '-'} | {hod_cell(h, s)} | {kiln_cell(l, h, s)} |"
                 + (f" {candidate_cell(h, s)} |" if CANDIDATE else "")
@@ -705,17 +715,20 @@ def write(text, out):
 
 
 def cmd_rerun(a):
-    """Run one test of a kept tree `a.times` times under the row's cap."""
+    """Run one test of a kept tree `a.times` times under the row's test
+    cap: `ctest -R ^<test>$`, or the row's `rerun` command with `{test}`
+    (a test program that is not ctest's, duckdb's unittest)."""
     import resource
     import subprocess
     import time
 
     oss, _ = roots()
     tree = os.path.join(trees(oss), a.project, f"{a.flavour}-{a.mode}")
-    if not os.path.exists(os.path.join(tree, "CTestTestfile.cmake")):
-        sys.exit(f"oss-report: {tree} is not a kept build tree")
     row = projects.load()[a.project]
-    cap = int(os.environ.get("KILN_OSS_VMEM_KB") or row["vmem_kb"]) * 1024
+    if not os.path.exists(os.path.join(tree, "CTestTestfile.cmake")) and not (row.get("rerun") and os.path.exists(os.path.join(tree, "Makefile"))):
+        sys.exit(f"oss-report: {tree} is not a kept build tree")
+    # The test step's cap, as oss-build.sh's test run.
+    cap = int(os.environ.get("KILN_OSS_VMEM_KB") or row["test_vmem_kb"]) * 1024
     tmp = os.path.join(tree, "test-tmp")
     os.makedirs(tmp, exist_ok=True)
     env = dict(os.environ, TMPDIR=tmp, TEST_TMPDIR=tmp)
@@ -731,13 +744,16 @@ def cmd_rerun(a):
     # named in its log (WP-268; spec/harness.md "A phase's leftovers").
     phase = [sys.executable, os.path.join(HERE, "projects.py"), "run-phase", "--phase", "rerun", "--"]
     for i in range(a.times):
-        p = subprocess.run([*phase, "ctest", "-R", f"^{a.test}$", "--output-on-failure"], cwd=tree, env=env,
-                           preexec_fn=limit, capture_output=True, text=True)
-        log = os.path.join(tree, f"rerun-{a.test}-{int(time.time())}-{i}.log")
+        cmd = ["ctest", "-R", f"^{a.test}$", "--output-on-failure"]
+        if row.get("rerun"):
+            cmd = ["bash", "-c", row["rerun"].replace("{test}", shlex.quote(a.test))]
+        p = subprocess.run([*phase, *cmd], cwd=tree, env=env, preexec_fn=limit, capture_output=True, text=True)
+        log = os.path.join(tree, f"rerun-{safe(a.test)}-{int(time.time())}-{i}.log")
         with open(log, "w", encoding="utf-8") as f:
             f.write(p.stdout + p.stderr)
-        per = projects.test_results(log)[2]
-        ok = per.get(a.test) == "Passed"
+        _, counts, per = projects.test_results(log)
+        ok = per.get(a.test) == "Passed" or (bool(row.get("rerun")) and p.returncode == 0
+                                             and bool(counts) and counts["failed"] == 0 and counts["total"] >= 1)
         with open(os.path.join(tree, "reruns.jsonl"), "a", encoding="utf-8") as f:
             f.write(json.dumps({"test": a.test, "passed": ok, "rc": p.returncode, "log": os.path.basename(log),
                                 "arena": env.get("MALLOC_ARENA_MAX"),
@@ -810,8 +826,15 @@ def main():
         "(docs/VALIDATION.md \"Real projects (L9)\"): each project built through its own "
         "build system with kiln at `-O0` (flavour `O0`) and `-O0 -g` (`O0g`), three ways: "
         "`llc` (kiln's LLVM back end, the control), `hod` (kiln with hod, falling back to llc "
-        "where hod declines), `strict` (no fallback). `objects`: the objects kiln made in the "
-        "hybrid build; `fell back`: offered to hod and declined or failed; `not offered`: "
+        "where hod declines), `strict` (no fallback). `TUs`: the translation units of the build "
+        "step (the compile wrapper's log). `objects`: the object jobs (`-c`) in kiln's statistics "
+        "log of the hybrid build, which covers the build and the test steps, so it counts a TU "
+        "compiled for several targets once per target and the compiles a project's tests run "
+        "(compile-failure tests, package tests); `no backend` among them: jobs kiln's front end "
+        "rejected before any back end ran (a compile-failure test's expected rejection), "
+        "counted in no later column. Compile-and-link jobs (`kiln++ x.cc -o prog`) are not "
+        "objects and are not counted. `built by hod`: objects whose `backend` is `hod`; "
+        "`fell back`: offered to hod and declined or failed; `not offered`: "
         "kiln took the LLVM route itself (an `opt` trigger). Tests: passed/total (ctest). "
         "`revision`: the project's tag or commit; `hod`: the hod commit of the hod and strict builds; "
         "`kiln`: the kiln commit of the row's builds (the control's included)"

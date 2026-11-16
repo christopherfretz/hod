@@ -57,6 +57,7 @@ mkdir "$SNAP" && cp -p "$HERE"/oss-build.sh "$HERE"/oss-report.py "$HERE"/projec
 # The list of expected results (spec/harness.md "Expected results"), read
 # by oss-report.py from beside itself.
 cp -p "$HERE/../../docs/status/oss-expected.tsv" "$SNAP/oss-expected.tsv" || exit 2
+[ ! -d "$HERE/shims" ] || cp -Rp "$HERE/shims" "$SNAP/shims" || exit 2
 trap 'find "$SNAP" -mindepth 1 -delete; rmdir "$SNAP"' EXIT
 HERE="$SNAP"
 # Where a crash's dump would go and the core limit the lane inherited

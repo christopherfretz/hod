@@ -110,7 +110,7 @@ pub fn landing_pad<'a>(
 ///
 /// # Errors
 /// [`RESUME`]; what the call sequence reports.
-pub fn resume<'a>(cx: &mut FnCx<'a, X86>, value: Value) -> CgResult<()> {
+pub fn resume(cx: &mut FnCx<'_, X86>, value: Value) -> CgResult<()> {
     if !is_pad_type(cx, value_ty(cx, value)) {
         return unsupported(RESUME);
     }
@@ -154,8 +154,8 @@ pub fn insert_value<'a>(
 ) -> CgResult<()> {
     let src = cx.use_reg(value)?;
     let home = cx.def_mem(inst)?;
-    match agg.kind() {
-        ValueKind::Const(id) => match cx.module.consts.get(id) {
+    if let ValueKind::Const(id) = agg.kind() {
+        match cx.module.consts.get(id) {
             Const::Poison(_) | Const::Undef(_) => {}
             Const::Zero(_) => {
                 let other = home.offset_by(4 - offset as u32);
@@ -163,12 +163,11 @@ pub fn insert_value<'a>(
                 store_gpr(cx, gp(EAX), other, 4);
             }
             _ => return unsupported(crate::target::AGGREGATE),
-        },
-        _ => {
-            let from = cx.use_mem(agg)?;
-            if from != home {
-                crate::common::copy_frame(cx, home, from, 8);
-            }
+        }
+    } else {
+        let from = cx.use_mem(agg)?;
+        if from != home {
+            crate::common::copy_frame(cx, home, from, 8);
         }
     }
     store_gpr(cx, gp(src), home.offset_by(offset as u32), 4);

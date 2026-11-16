@@ -772,22 +772,17 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
         // that does not, and every one after it, through the tokens.
         let end = span.end as usize;
         let mut pos = span.start as usize;
-        loop {
-            if pos >= end {
+        while pos < end {
+            let Some((index, value, next)) =
+                self.quick_field(kind, pos, end, hint, met, scratch)?
+            else {
+                self.goto(pos as u32);
                 break;
-            }
-            match self.quick_field(kind, pos, end, hint, met, scratch)? {
-                Some((index, value, next)) => {
-                    met |= 1 << index;
-                    hint = index + 1;
-                    scratch.fields.push((Key::At(index as u8), value));
-                    pos = next;
-                }
-                None => {
-                    self.goto(pos as u32);
-                    break;
-                }
-            }
+            };
+            met |= 1 << index;
+            hint = index + 1;
+            scratch.fields.push((Key::At(index as u8), value));
+            pos = next;
         }
         while pos < end && self.tok.start < span.end {
             let (field, at) = self.field_name()?;
@@ -877,6 +872,7 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
     /// for a field outside the record or met before, and for a value
     /// whose reading the token path must judge: that path then reads the
     /// field from `pos`, with its diagnostics.
+    #[allow(clippy::too_many_lines)] // Measured: split in two, -g inputs lost 23 M (WP-328).
     fn quick_field(
         &mut self,
         kind: DiKind,
@@ -978,9 +974,8 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
                 self.list_span(node.span, scratch)?;
                 Val::List(mark, scratch.lists.len() as u32)
             }
-            (Some(DiShape::List), _) => return Ok(None),
+            (Some(DiShape::List), _) | (Some(DiShape::Node), Quick::Int(..)) => return Ok(None),
             (_, Quick::Str(start, close)) => Val::Src(start as u32, close as u32),
-            (Some(DiShape::Node), Quick::Int(..)) => return Ok(None),
             (_, Quick::Int(start, digits)) => {
                 let text = &src[start..digits];
                 if let Some(negative) = text.strip_prefix(b"-") {
@@ -1045,7 +1040,7 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
             };
             let slot = match (&src[pos..name_end], reference) {
                 (b"line", false) => &mut line,
-                (b"column", false) if value <= u32::from(u16::MAX) => &mut column,
+                (b"column", false) if u16::try_from(value).is_ok() => &mut column,
                 (b"scope", true) => &mut scope,
                 (b"inlinedAt", true) if scope.is_some() && self.has_md_node(value) => &mut inlined,
                 _ => return Ok(None),

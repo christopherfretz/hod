@@ -4,8 +4,8 @@
 //! `.debug_rnglists`.
 
 use hod_ir::{
-    ChecksumKind, ConstPool, DebugInfo, DiCompileUnit, DiFile, DiId, DiKind, DiNode, EmissionKind,
-    ExprId, Module, TypeTable,
+    ChecksumKind, ConstPool, DebugInfo, DiCompileUnit, DiFile, DiId, DiKind, DiNode, DiRecord,
+    DiView, EmissionKind, ExprId, Module, TypeTable,
 };
 use hod_obj::elf::{SHF_MERGE, SHF_STRINGS, SHT_PROGBITS};
 use hod_obj::{Object, SectionId, SectionKind, SymbolId};
@@ -419,6 +419,17 @@ impl<'a> UnitPlan<'a> {
             return Err(bad(from, field));
         }
         Ok(self.debug.node(id))
+    }
+
+    /// Node `id` as a record of `R`'s kind, its fields read one at a time
+    /// (WP-311); `bad(from, field)` when it is not a node of that kind.
+    pub(crate) fn view_of<R: DiRecord>(
+        &self,
+        from: DiId,
+        field: &'static str,
+        id: DiId,
+    ) -> Result<DiView<'a, R>, Error> {
+        self.debug.view::<R>(id).ok_or(bad(from, field))
     }
 
     fn discover_global(&mut self, gve: DiId, chain: &mut Vec<DiId>) -> Result<(), Error> {

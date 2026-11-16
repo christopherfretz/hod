@@ -149,10 +149,6 @@ fn ops_run_as_llc_s() {
                 let ll = clang_module(&scratch, &clang, &data("sse/ops.c"), &all, &name);
                 let text = std::fs::read_to_string(&ll).unwrap();
                 check_cpu(&text, cpu);
-                if cpu == "pentium3" && !hod_compiles(&text) {
-                    eprintln!("{name}: refused at SSE without SSE2 (x86:float:sse1-fptrunc)");
-                    continue;
-                }
                 let [want, got] = runs(&tools, &scratch, &llc, &text, &[&x87], &name);
                 assert!(want == got, "{name}: {}", first_difference(&want, &got));
                 assert!(got.contains("\nmixed "), "{name}: no mixed line");
@@ -161,23 +157,6 @@ fn ops_run_as_llc_s() {
         }
     }
     eprintln!("i386 sse ops: {runs_n} runs equal llc's");
-}
-
-/// Whether hod compiles `text`; a refusal must be the one this package
-/// keeps at SSE without SSE2.
-fn hod_compiles(text: &str) -> bool {
-    let options = Options {
-        output_kind: OutputKind::Object,
-        triple: Some(TRIPLE.into()),
-        ..Options::default()
-    };
-    match hod::compile(text.as_bytes(), &options) {
-        Ok(_) => true,
-        Err(e) => {
-            assert!(e.to_string().contains("x86:float:sse1-fptrunc"), "{e}");
-            false
-        }
-    }
 }
 
 #[test]
@@ -196,10 +175,6 @@ fn x87_arith_runs_as_llc_s_with_sse() {
             let ll = clang_module(&scratch, &clang, &data("x87/arith.c"), &all, &name);
             let text = std::fs::read_to_string(&ll).unwrap();
             check_cpu(&text, cpu);
-            if cpu == "pentium3" && !hod_compiles(&text) {
-                eprintln!("{name}: refused at SSE without SSE2 (x86:float:sse1-fptrunc)");
-                continue;
-            }
             let [want, got] = runs(&tools, &scratch, &llc, &text, &[], &name);
             assert!(want == got, "{name}: {}", first_difference(&want, &got));
             runs_n += 3;
@@ -303,12 +278,18 @@ fn x87_shapes_run_as_llc_s_with_sse() {
 }
 
 /// A function without SSE calling one with SSE2 and back, by attribute,
-/// in one module: `float`/`double` through `st0` both ways, a `fastcc`
-/// free C convention, `x86_stdcallcc` callee pop with float arguments.
+/// in one module: `float`/`double` through `st0` both ways, and a
+/// callee-pop convention (`sret`: `retl $4`) with floating arguments.
 const MIXED: &str = r#"
 target triple = "i686-unknown-linux-gnu"
 declare i32 @printf(ptr, ...)
-@fmt = private constant [16 x i8] c"%a %a %a %a %a\0A\00"
+@fmt = private constant [25 x i8] c"%a %a %a %a %a %a %a %a\0A\00"
+
+define internal float @p3(double %a, double %b) #2 {
+  %m = fmul double %a, %b
+  %r = fptrunc double %m to float
+  ret float %r
+}
 
 define internal double @sse2(double %a, float %b, i32 %k) #1 {
   %e = fpext float %b to double
@@ -322,10 +303,11 @@ define internal float @plain(float %a, double %b) #0 {
   %r = fmul float %a, %t
   ret float %r
 }
-define internal x86_stdcallcc double @popper(double %a, float %b) #1 {
+define internal void @popper(ptr sret(double) %o, double %a, float %b) #1 {
   %e = fpext float %b to double
   %r = fsub double %a, %e
-  ret double %r
+  store double %r, ptr %o
+  ret void
 }
 define internal double @from_x87(double %a) #0 {
   %r = call double @sse2(double %a, float 0x3FB99999A0000000, i32 3)
@@ -336,16 +318,27 @@ define i32 @main() #1 {
   %a = call double @from_x87(double 0x3FD3333333333333)
   %b = call float @plain(float 1.0e+01, double 0x3FB999999999999A)
   %bd = fpext float %b to double
-  %c = call x86_stdcallcc double @popper(double 1.0e+00, float 0x3F50624DE0000000)
+  %cs = alloca double
+  call void @popper(ptr sret(double) %cs, double 1.0e+00, float 0x3F50624DE0000000)
+  %c = load double, ptr %cs
   %d = call double @sse2(double %c, float %b, i32 7)
   %x = fpext double %d to x86_fp80
   %y = fmul x86_fp80 %x, %x
   %yd = fptrunc x86_fp80 %y to double
-  call i32 (ptr, ...) @printf(ptr @fmt, double %a, double %bd, double %c, double %d, double %yd)
+  %r = call double @from_x87(double 0x3FB999999999999A)
+  %rt = fptrunc double %r to float
+  %rtd = fpext float %rt to double
+  %rx = fpext double %r to x86_fp80
+  %rxd = fmul x86_fp80 %rx, 0xK3FFF8000000000000001
+  %rxt = fptrunc x86_fp80 %rxd to double
+  %e = call float @p3(double 0x3FB999999999999A, double 0x3FE6666666666666)
+  %ed = fpext float %e to double
+  call i32 (ptr, ...) @printf(ptr @fmt, double %a, double %bd, double %c, double %d, double %yd, double %rtd, double %rxt, double %ed)
   ret i32 0
 }
 attributes #0 = { nounwind "target-cpu"="i686" }
 attributes #1 = { nounwind "target-cpu"="pentium4" }
+attributes #2 = { nounwind "target-cpu"="pentium3" }
 "#;
 
 #[test]
@@ -364,23 +357,25 @@ fn mixed_feature_calls_run_as_llc_s() {
 }
 
 #[test]
-fn fptrunc_of_a_computed_double_at_sse_without_sse2_is_refused() {
-    let text = format!(
-        "target triple = \"{TRIPLE}\"\n\
-         define float @f(double %a, double %b) #0 {{\n\
-         \x20 %m = fmul double %a, %b\n  %r = fptrunc double %m to float\n  ret float %r\n}}\n\
-         define float @g(double %a) #0 {{\n  %r = fptrunc double %a to float\n  ret float %r\n}}\n\
-         attributes #0 = {{ nounwind \"target-cpu\"=\"pentium3\" }}\n"
-    );
+fn half_bfloat_fp128_and_vectors_stay_refused_with_sse2() {
     let options = Options {
         output_kind: OutputKind::Object,
         triple: Some(TRIPLE.into()),
         ..Options::default()
     };
-    let err = hod::compile(text.as_bytes(), &options).expect_err("refused");
-    assert!(err.to_string().contains("x86:float:sse1-fptrunc"), "{err}");
-    // An argument has no 80-bit copy: `@g` alone compiles.
-    let start = text.find("define float @g").unwrap();
-    let only_g = format!("target triple = \"{TRIPLE}\"\n{}", &text[start..]);
-    hod::compile(only_g.as_bytes(), &options).expect("an fptrunc of an argument compiles");
+    for (ty, name) in [
+        ("half", "x86:float:half"),
+        ("bfloat", "x86:float:bfloat"),
+        ("fp128", "x86:float:fp128"),
+        ("<4 x float>", "x86:vector"),
+    ] {
+        let text = format!(
+            "target triple = \"{TRIPLE}\"\n\
+             define void @f(ptr %p) #0 {{\n  %x = load {ty}, ptr %p\n\
+             \x20 %y = fadd {ty} %x, %x\n  store {ty} %y, ptr %p\n  ret void\n}}\n\
+             attributes #0 = {{ nounwind \"target-cpu\"=\"pentium4\" }}\n"
+        );
+        let err = hod::compile(text.as_bytes(), &options).expect_err(ty);
+        assert!(err.to_string().contains(name), "{ty}: {err}");
+    }
 }

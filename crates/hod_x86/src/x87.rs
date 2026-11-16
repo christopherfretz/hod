@@ -229,10 +229,6 @@ pub struct Copies {
 /// What allocating the copy's slot reports.
 pub fn call_result(cx: &mut FnCx<'_, X86>, inst: Inst<'_>, on: bool) -> CgResult<()> {
     cx.state.x87.call = None;
-    // An SSE result: `llc` stores `st0` at the type's width at once.
-    if crate::sse::is_sse(cx, inst.ty()) {
-        return Ok(());
-    }
     let wide = matches!(cx.types().kind(inst.ty()), TypeKind::Float | TypeKind::Double);
     if on && wide && !inst.uses().is_unused() {
         cx.state.x87.call = copy_slot(cx, inst)?.map(|slot| (inst.id().raw(), slot));

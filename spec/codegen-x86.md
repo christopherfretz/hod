@@ -170,7 +170,6 @@ their values).
 | `x86:i64:wide` | an integer wider than 64 bits (§8), also as a `switch` condition, a `ptradd` index and the result of an integer intrinsic of §8 | — |
 | `x86:float` | a floating-point value in a register where §11 takes none (arguments and results are I6's since the join) | — |
 | `x86:float:half`, `x86:float:bfloat`, `x86:float:fp128` | a value of those types | — |
-| `x86:float:sse` | a `float` operation with SSE, a `double` one with SSE2 (`llc` uses `xmm`) | I12 |
 | `x86:float:i64-cast` | a conversion between a floating type and an integer of 33 to 63 or more than 64 bits (§11; `fptoui` to `i64` is lowered since the i386 join C) | — |
 | `x86:float:intrinsic` | a floating-point intrinsic §11 does not lower | — |
 | `x86:float:cast` | a `bitcast` of a floating value, another cast not in §11 | — |
@@ -479,8 +478,8 @@ written as on the other targets.
 
 **Types and homes.** `float`, `double` and `x86_fp80` are class `Mem`:
 a home in the frame of 4, 8 or 12 bytes (`x86_fp80`'s image is the low
-10). A function whose CPU has SSE (`float`) or SSE2 (`double`) is
-refused `x86:float:sse` (`llc` computes in `xmm`); the CPU is the
+10). In a function whose CPU has SSE (`float`) or SSE2 (`double`)
+those types are §12's (`llc` computes in `xmm`); the CPU is the
 function's `target-cpu`/`target-features`, else the tool's `-mcpu`/
 `-mattr` (`generic` without them; `X86::with_cpu`, as `llc` takes its
 options for a function without the attributes).
@@ -636,3 +635,76 @@ of range). A conversion between a floating type and an integer of 33 to
 their width (12 bytes for `x86_fp80`), the result is `st0`. Under PIC
 the call goes through `pic::emit_call` (`ebx` holds the GOT pointer at
 the PLT call, §9.2), as every call does.
+
+## 12. Scalar SSE (`sse`, WP-317, design 0008 I12)
+
+**Which values.** In a function whose CPU has SSE, `float` is an SSE
+type; with SSE2, `double` too (the CPU as §11 decides it: the
+function's `target-cpu`/`target-features`, else `-mcpu`).
+`sse::owns` is the one decision point: an instruction with an SSE value
+as its result or an operand (`fcmp`, a store, a cast, an intrinsic) is
+lowered by `sse`; every other floating instruction by `x87` as §11
+says, unchanged. `x86_fp80` is always §11's; at SSE without SSE2
+(`pentium3`) so is `double`.
+
+**Homes, ABI, glue.** SSE values are class `Mem` as on the x87 (4 or 8
+bytes): arguments on the stack, `phi`s, and `float`/`double` returns
+and call results through `st0` are §11's glue. A call result of an SSE
+type is stored by `fstp` at its type's width, which every SSE use
+reads; §11 also keeps its 80-bit copy for its run, which only an
+`fpext`/`fptrunc` reads (below). A return loads the home (`fld`), as
+`llc` writes `movsd` to a stack slot and `fldl`.
+
+**Operations.** The first operand is loaded into `xmm6`
+(`movss`/`movsd`), the operation takes the second from its home, the
+result is stored to its home: every result is rounded to its type at
+once, as `llc`'s, so no SSE value has an 80-bit copy. `fadd`, `fsub`,
+`fmul`, `fdiv` (`adds`...), `sqrt` (`sqrts`), `fmuladd` (`muls` then
+`adds`: two roundings, as `llc` at these CPUs), `minnum`/`maxnum` as
+`llc`: `b` where `a` is a NaN, else `mins b, a` (`b < a ? b : a`;
+`maxs` `b > a ? b : a`). `fneg`, `fabs`, `copysign` change the sign bit
+of the copy in memory (bit-exact as `llc`'s masks). Loads and stores
+through `xmm6`; `freeze` and a `select` of a constant condition copy;
+`select` takes the address of the chosen home by `cmov` (every SSE CPU
+has it) and copies through `xmm6`. `fcmp`: `ucomis` with §11's operand
+order and flag reading. Constants are written into the home by `mov`
+immediates (§11; no constant pool, no relocation under PIC).
+
+**Conversions.** `fpext`/`fptrunc` (between `float`, `double`,
+`x86_fp80`, at least one an SSE type): `fld` of the operand's 80-bit
+copy for this use if §11 keeps one, else of its home, and `fstp` to
+the result's home (one rounding). Two operands have a copy, as in
+`llc`: a call result of an SSE type (`llc` takes it out of `st0` as an
+exact `fp_round` that its DAG folds into the `fpext`/`fptrunc`: the
+80-bit register is stored at the result's width), and at SSE without
+SSE2 a computed `double` (an x87 value, which `llc` rounds to `float`
+directly). Known divergence: `llc`'s fold holds for the whole block,
+§11's copy for its run, so a call between a call result and its
+`fpext` makes hod read the rounded home. `sitofp` of at most 32 bits: `cvtsi2s` of the
+extended value; `uitofp` of an `i32`: `fild` of 64 bits with a zero
+high word and `fstp` (one rounding, as `llc`'s `2^52` sequence).
+`fptosi` to at most 32 bits: `cvtts2si` (a narrower result is its low
+bits); `fptoui` to `i32` as `llc`: `x - 2^31` and `x` truncated, the
+first masked by the sign of the second, or-ed. 64-bit integers, as
+`llc` on the x87 from the home: `sitofp` = `fild`, `fstp`; `uitofp` to
+`float` = `fild`, `fadd` of 0 or `2^64` at 80 bits, `fstp`; `uitofp`
+to `double` = high word times `2^32` plus the low word, both exact,
+`addsd` (one rounding, as `llc`'s `2^52`/`2^84` sequence); `fptosi`/
+`fptoui` to `i64` = §11's control-word sequence on the home's value.
+`bitcast` between an SSE type and the integer of its width is a copy.
+Integers of 33 to 63 or more than 64 bits: `x86:float:i64-cast`.
+
+**Calls.** `frem` and the libm intrinsics are calls of `fmodf`/`fmod`,
+`floorf`/`floor`, ... (`fma` too) through `pic::emit_call`, arguments
+copied to the outgoing area at their width, the result stored from
+`st0` at its type's width. Barriers (§11) are unchanged: no new
+construct of this section is lowered by `llc` with a branch or a call
+that §11 does not already list (`frem` and the libm intrinsics are
+calls there for every type).
+
+**Remains refused.** `half`, `bfloat` (`x86:float:half`,
+`x86:float:bfloat`: with SSE2 `llc` returns them in `xmm0`, which the
+ABI does not have yet), `fp128` (`x86:float:fp128`: libgcc calls with a
+hidden result pointer, and LLVM 19 and 22 align its arguments
+differently), vectors and vector operands (`x86:vector`), other
+intrinsics (`x86:float:intrinsic`).

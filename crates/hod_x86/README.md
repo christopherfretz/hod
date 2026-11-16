@@ -30,6 +30,7 @@ refusal table of `spec/codegen-x86.md` §7) belong to WP-293's owner of
 | `pic.rs` | **I8** (WP-299) | the access choice (`address`, `mem_inst`, `emit_call`), the GOT pointer, `R_386_GOTPC`/`GOTOFF`/`GOT32X`, PLT calls with `ebx` | I9 (constants through `mem_inst`) | — | `x86:pic` (removed) |
 | `tls.rs` | **I8** (WP-299) | `%gs` TLS: all four models (general and local dynamic through `___tls_get_addr`), `llvm.thread.pointer` | — | — | `x86:tls`, `x86:tls:dynamic` (removed) |
 | `x87.rs` | **I9** (WP-300) | `float`/`double`/`x86_fp80` on the x87 stack, compares, casts, libm calls, the 80-bit copies of a run, call results and returns at 80 bits, `double` folding (`spec/codegen-x86.md` §11); `FnState::x87` | I12 (SSE), any package lowering a call-like or branching instruction (`barrier`) | `target.rs` arms, `materialize_mem`, `barrier`, `call_result`/`store_call_result`, `ret_copy`/`load_ret` | `x86:float*` |
+| `sse.rs` | **I12** (WP-317) | scalar `float` (SSE) and `double` (SSE2) as class `Mem` computed through `xmm6` (`spec/codegen-x86.md` §12); `sse::owns` is the one decision point, before `x87::owns`; vectors not yet | — | `target.rs`'s `lower` arm and `materialize_mem` test | `x86:float:sse` |
 | `asm.rs`, `hod_asm::x86` | **I13** (WP-301) | inline assembly in 32-bit mode (`spec/asm.md` §22) | — | `call::lower`'s asm arm | `x86:inline-asm` (now `x86:inline-asm:<detail>`) |
 
 Outside the crate, `hod_cg` refuses `x86:debug-info` (`emit/mod.rs`,

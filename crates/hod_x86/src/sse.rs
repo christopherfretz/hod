@@ -14,9 +14,10 @@
 //! An operation loads its first operand into `xmm6` (`movss`/`movsd`),
 //! operates with the second from its slot, and stores the result to its
 //! home: every result is rounded to its type at once, as `llc`'s, so
-//! no value of this module has an 80-bit copy (`x87::call_result` takes
-//! none for a call result of an SSE type: `llc` stores `st0` at the
-//! type's width before any use).
+//! no value computed here has an 80-bit copy. A call result of an SSE
+//! type is stored from `st0` at its type's width (§11's glue), and also
+//! at 80 bits for its run as on the x87 path: only an `fpext`/`fptrunc`
+//! reads that copy ([`fp_cast`]), as `llc` does.
 //!
 //! What `llc` computes on the x87 in an SSE function is computed there
 //! here too, from the value's home: `x86_fp80` conversions, conversions
@@ -38,11 +39,6 @@ use crate::common::{
 };
 use crate::target::X86;
 use crate::x87::{CAST, I64_CAST, INTRINSIC};
-
-/// At SSE without SSE2 (`pentium3`), an `fptrunc` of a computed `double`
-/// (an x87 value that may have an 80-bit copy, which `llc` rounds to
-/// `float` directly) to `float`.
-pub const SSE1_FPTRUNC: &str = "x86:float:sse1-fptrunc";
 
 /// The first operand and the result. (`minnum`/`maxnum` also take
 /// `xmm4` and `xmm5`: no value of this target is in an `xmm` register.)
@@ -451,23 +447,18 @@ fn x87_of(cx: &FnCx<'_, X86>, ty: TypeId) -> CgResult<X87Size> {
     }
 }
 
-/// Whether `v` is a value that has no 80-bit copy for `user`: no result
-/// of an instruction of `user`'s block that computes (an argument, a
-/// constant, a load or a `phi`, or a result of another block).
-fn exact_in_home(cx: &FnCx<'_, X86>, v: Value, user: Inst<'_>) -> bool {
-    let Some(id) = v.as_inst() else { return true };
-    let def = cx.body.inst(id);
-    if matches!(def.kind(), InstKind::Load { .. } | InstKind::Phi(_)) {
-        return true;
-    }
-    (id.raw() + 1..user.id().raw()).any(|raw| cx.body.inst(hod_ir::InstId::new(raw)).is_terminator())
-        || id >= user.id()
-}
-
-/// `fpext`/`fptrunc`: between `float` and `double` both SSE,
-/// `cvtss2sd`/`cvtsd2ss`; with an x87 type on one side (`x86_fp80`, or
-/// `double` at SSE without SSE2), `fld` of the source's home and `fstp`
-/// to the result's, rounding once.
+/// `fpext`/`fptrunc` (`float`, `double`, `x86_fp80`): the operand's
+/// 80-bit copy for this use if `x87` keeps one, else its home, pushed
+/// (`x87::ret_copy`/`load_ret`: the bracket that serves a `ret` serves
+/// any user), and `fstp` to the result's home: one rounding.
+///
+/// The copy matters for two operands (measured, `llc` 19 and 22): a
+/// call result of an SSE type, which `llc` takes out of `st0` as an
+/// exact `fp_round` that its DAG folds into an `fpext` or `fptrunc` of
+/// the result (`fstpl` of the 80-bit register: `x87_half` in
+/// `tests/i386_sse.rs`); and at SSE without SSE2 a computed `double`,
+/// an x87 value that `llc` rounds to `float` directly (`fstps`). Every
+/// other operand has no copy and its home holds it exactly.
 fn fp_cast<'a>(
     cx: &mut FnCx<'a, X86>,
     inst: Inst<'a>,
@@ -475,30 +466,19 @@ fn fp_cast<'a>(
     from: TypeId,
     to: TypeId,
 ) -> CgResult<()> {
-    match (sse_of(cx, from), sse_of(cx, to)) {
-        (Some(a), Some(b)) if a == b => copy_of(cx, inst, arg, a.bytes()),
-        (Some(a), Some(b)) => {
-            let src = cx.use_mem(arg)?;
-            let cvt = if a == Sse::S { mc::cvtss2sd_rm } else { mc::cvtsd2ss_rm };
-            frame_inst(cx, src, |m| cvt(X, m));
-            set(cx, inst, b, X)
-        }
-        _ => {
-            let (a, b) = (x87_of(cx, from)?, x87_of(cx, to)?);
-            if inst.opcode() == Opcode::FPTrunc
-                && a != X87Size::T
-                && !is_sse(cx, from)
-                && !exact_in_home(cx, arg, inst)
-            {
-                return unsupported(SSE1_FPTRUNC);
-            }
-            let src = cx.use_mem(arg)?;
-            frame_inst(cx, src, |m| mc::fld_m(a, m));
-            let r = cx.def_mem(inst)?;
-            frame_inst(cx, r, |m| mc::fstp_m(b, m));
-            Ok(())
-        }
-    }
+    let (a, b) = (x87_of(cx, from)?, x87_of(cx, to)?);
+    let bytes = match a {
+        X87Size::S => 4,
+        X87Size::D => 8,
+        _ => 10,
+    };
+    let src = cx.use_mem(arg)?;
+    crate::x87::ret_copy(cx, inst, arg, true);
+    crate::x87::load_ret(cx, src, bytes);
+    let inst = cx.body.inst(inst.id());
+    let r = cx.def_mem(inst)?;
+    frame_inst(cx, r, |m| mc::fstp_m(b, m));
+    Ok(())
 }
 
 /// `bitcast` between an SSE type and the integer of its width: a copy.
@@ -796,13 +776,7 @@ fn intrinsic<'a>(
 
 /// `minnum`/`maxnum` as `llc` (measured, 19 and 22): `b` where `a` is a
 /// NaN, else `mins b, a` (`b < a ? b : a`; `maxs`: `b > a ? b : a`).
-fn min_max<'a>(
-    cx: &mut FnCx<'a, X86>,
-    inst: Inst<'a>,
-    s: Sse,
-    a: Value,
-    b: Value,
-) -> CgResult<()> {
+fn min_max<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, s: Sse, a: Value, b: Value) -> CgResult<()> {
     let (ap, bp) = (cx.use_mem(a)?, cx.use_mem(b)?);
     let (mask, other) = (Xmm::Xmm5, Xmm::Xmm4);
     load_x(cx, s, mask, ap);

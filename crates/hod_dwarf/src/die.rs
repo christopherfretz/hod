@@ -1200,6 +1200,10 @@ impl<'a> Writer<'a> {
             | Kind::AbstractBlock
             | Kind::Inlined => return self.inline_die(plan, die, d.kind, d.node, children),
             Kind::CallSite => return self.call_site_die(plan, die), // WP-113: §6.19
+            // WP-320: the type DIEs whose writer does not read the node.
+            Kind::Param | Kind::Unspecified | Kind::IndexType => {
+                return self.type_die(plan, die, d, DiNode::Undefined, children);
+            }
             Kind::Unit => unreachable!("the unit DIE is written by `unit`"),
             _ => {}
         }

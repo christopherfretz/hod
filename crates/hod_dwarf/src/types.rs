@@ -315,7 +315,10 @@ impl<'a> UnitPlan<'a> {
         self.wide_values.sort_unstable_by_key(|v| v.0);
         for i in 0..self.dies.len() {
             if self.dies[i].kind == Kind::Method {
-                let a = method_attrs(self, i as u32);
+                let a = match self.debug.node(self.dies[i].node) {
+                    DiNode::Subprogram(sp) => method_attrs(self, i as u32, &sp),
+                    _ => MethodAttrs::default(),
+                };
                 if method_family(&a).is_none()
                     && crate::call_sites::c_declaration(self, i as u32).is_none()
                 {
@@ -1024,14 +1027,13 @@ const fn has_sp(flags: SpFlags, f: SpFlags) -> bool {
     flags.0 & f.0 != 0
 }
 
-/// The attributes of member function DIE `die`.
-fn method_attrs(plan: &UnitPlan<'_>, die: u32) -> MethodAttrs {
-    let d = plan.dies[die as usize];
-    // WP-311: the fields read one at a time, not the whole subprogram.
-    let Some(sp) = plan.debug.view::<DiSubprogram>(d.node) else {
-        return MethodAttrs::default();
-    };
-    let ty = sp.ty();
+/// The attributes of member function DIE `die`, whose node is `sp`.
+///
+/// WP-320: from the decoded node. Eight fields read through a view (WP-311)
+/// stepped over the fields before each of them, which cost more than one
+/// decode: `method_attrs` 6.1 -> 2.4 M instructions on stl-heavy `-g`.
+fn method_attrs(plan: &UnitPlan<'_>, die: u32, sp: &DiSubprogram<'_>) -> MethodAttrs {
+    let ty = sp.ty;
     let (ret, cc) = match ty.and_then(|t| plan.debug.view::<DiSubroutineType>(t)) {
         Some(s) => {
             let cc = s.cc();
@@ -1040,14 +1042,14 @@ fn method_attrs(plan: &UnitPlan<'_>, die: u32) -> MethodAttrs {
         None => (false, false),
     };
     let wide_cc = cc && method_cc(plan, ty).is_none();
-    let (flags, sp_flags) = (sp.flags(), sp.sp_flags());
+    let (flags, sp_flags) = (sp.flags, sp.sp_flags);
     let virtuality = sp_flags.0 & 3 != 0;
     let fortran =
         SpFlags::PURE.0 | SpFlags::ELEMENTAL.0 | SpFlags::RECURSIVE.0 | SpFlags::MAIN_SUBPROGRAM.0;
     MethodAttrs {
-        link: !sp.linkage_name().is_empty(),
-        name: !sp.name().is_empty(),
-        decl: sp.line() != 0,
+        link: !sp.linkage_name.is_empty(),
+        name: !sp.name.is_empty(),
+        decl: sp.line != 0,
         ty: ret,
         virt: virtuality,
         cont: virtuality && plan.aux_of(die) != NONE,
@@ -1061,7 +1063,7 @@ fn method_attrs(plan: &UnitPlan<'_>, die: u32) -> MethodAttrs {
         del: has_sp(sp_flags, SpFlags::DELETED),
         cc,
         other: wide_cc
-            || (virtuality && sp.virtual_index() == u32::MAX)
+            || (virtuality && sp.virtual_index == u32::MAX)
             || sp_flags.0 & fortran != 0
             || (has(flags, DiFlags::PROTOTYPED) && is_c(plan.cu.language)),
     }
@@ -1515,7 +1517,7 @@ impl<'a> Writer<'a> {
             }
             (Kind::Unspecified, _) => self.abbrev(code(fam::UNSPECIFIED_PARAMETERS, 0, false)),
             (Kind::Method, DiNode::Subprogram(sp)) => {
-                let a = method_attrs(plan, die);
+                let a = method_attrs(plan, die, &sp);
                 let (family, mask) = crate::call_sites::c_declaration(plan, die) // WP-113: §6.19
                     .or_else(|| method_family(&a))
                     .ok_or(unsupported(n, "a member function declaration"))?;

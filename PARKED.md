@@ -1,78 +1,82 @@
-# WP-314 parked (session 2 of 3)
+# WP-314 parked (session 3 of 3, Part 2 code done, evidence partly in)
 
 Branch `wp/314-i386-eh-debug`, worktree `.worktrees/wp-314`, build dir
-`/Volumes/AgentWork/hod-helper/.build/target-wp-314`. Base binary of
-`31400b11` (a `hod_cli` build): `/Volumes/AgentWork/hod-helper/.build/target-wp-314-base/release/hod`;
-base sources `.build/target-wp-314/base-src`. Keep both until Part 2's
-compare-binaries, then delete each by one literal absolute path.
-NOTE: the `hod` binary is the `hod_cli` package: `cargo build --release
--p hod_cli` (`-p hod` builds the library only and leaves a stale binary).
+`/Volumes/AgentWork/hod-helper/.build/target-wp-314`. The `hod` binary is
+`cargo build --release -p hod_cli`. Base for the comparison = the merge
+commit `1742ae7e` (wave/42 `8e441c4b` merged, no conflict), built into
+`/Volumes/AgentWork/hod-helper/.build/target-wp-314-base/release/hod`
+from `.build/target-wp-314/base-src`. Delete both (one literal path each,
+`find <dir> -mindepth 1 -delete`) once the numbers are in the record.
 
-## Done
+## Post-merge state (Part 1 lands in it)
 
-- Part 1 (exceptions) complete, with evidence in
-  `spec/landed/codegen/WP-314.md` (irdiff i686 22/19: 0 FAIL, 0 ERROR;
-  compare-binaries: AArch64/x86-64 0 different, 0 changed outcome).
-- `hod_cg/src/emit/mod.rs:1383` structor entries of the address's size
-  (supervisor-authorized; own commit).
-- New tests in `crates/hod/tests/i386_eh.rs`: `callconv.ll` runs (sret
-  callee pop, i64, fastcc, x87 across an invoke and inside a pad),
-  stdcall/fastcall invoke refusal by name, `lsdas_decode_as_llc_s`.
-- Spec `spec/codegen-x86.md` §12 (x87 measurement, static-model
-  deviation, tests).
+fmt clean; clippy `-D warnings` clean; unit tests of hod_x86 hod_eh
+hod_dwarf hod_cg 229 passed / 0 failed / 11 ignored; the 15 `i386*`
+binaries of `-p hod`: 49 passed, 0 failed; x87 shapes 288 / 72,
+integer-intrinsic shapes 190 + 2 = 192. irdiff i686 full: LLVM 22 93
+PASS / 0 FAIL / 111 UNSUPPORTED / 0 ERROR (31 of 68 objects built); LLVM
+19 93 PASS / 0 FAIL / 108 UNSUPPORTED / 0 ERROR (31 of 67).
 
-## Part 2 (debug information): measured, designed, not started in code
+## Done in code (commit 06430652)
 
-Measured (`clang --target=i686-linux-gnu -O0 -g`, `llc` 22 and 19,
-`llvm-dwarfdump`; sample in `.build/target-wp-314/meas/dbg.c`): DWARF 5,
-CU `addr_size = 4`; `.debug_addr` entries 4 bytes, header address size
-4; every relocation in `.debug_info`, `.debug_str_offsets`,
-`.debug_addr`, `.debug_line` is `R_386_32`; `DW_AT_frame_base
-DW_OP_reg5 EBP`; parameters `DW_OP_fbreg +8, +12` (hod's
-`hod_x86::frame::base_offset` gives `Incoming` the same base), locals
-`fbreg -N`. Thread-local variable: `DW_OP_const4u 0 (R_386_TLS_LDO_32),
-DW_OP_GNU_push_tls_address`. `gdb-multiarch` against `qemu-i386 -g
-<port>` on llc's static program works (break, bt through 3 frames, info
-args/locals, up, print) — see the command in the next steps.
+- `hod_dwarf`: `target.rs` `LineTarget.machine`, `I386`, `for_machine`;
+  `line.rs` constructors take `impl Into<Machine>`, `machine()`;
+  `die.rs` `Writer.addr_size` (unit header, ranges `low_pc` 0,
+  `.debug_addr`, rnglists header); `loclists.rs` loclists header and
+  `fits_i386` (no value-list entry needing a 64-bit DWARF stack);
+  `x86_64.rs` TLS location `DW_OP_const4u` + `R_386_TLS_LDO_32`;
+  `split.rs` `write_unit_dies` refuses `debug:dwarf-4-i386`,
+  `debug:split-dwarf-i386` on i386.
+- `hod_cg`: `emit/mod.rs:420` `DebugLines::new(module, machine, ..)` for
+  every machine, `X86_DEBUG_INFO` deleted; `emit/lines.rs:146,167`
+  `Machine`; `emit/lines.rs:519` `tls_by_symbol` also i386.
+- `crates/hod/tests/inlining.rs:1029` comment updated.
+- New `crates/hod/tests/i386_debug.rs` + `tests/data/i386/debug/`.
+  Its first run failed on two test bugs, both fixed in the commit but
+  NOT re-run: the split name (clang's `vals.dwo`) and `llc`'s line-0
+  rows (§5.7 P2) excluded from the row-subset check.
 
-Next, in order (keep each edit local; WP-305/308/311/318 also edit
-`hod_dwarf`):
-1. `hod_dwarf/src/target.rs`: field `arch: Arch` -> `machine: Machine`;
-   add `I386` (`address_size` 4, `offset_reloc` and `address_reloc`
-   `I386Reloc::Abs32`); `for_machine(Machine)`; keep `for_arch`.
-2. `line.rs`: `LineProgram::new/for_version/with_capacity` take `impl
-   Into<Machine>` (callers passing `Arch` still compile); `arch()` ->
-   `machine()`; lines 383, 678 compare `.machine`; 647, 653, 675 use
-   `obj.machine()`/`for_machine`. `dwarf4.rs:138` `line_program` the
-   same.
-3. `die.rs`: `Writer` gets `addr_size: u8` (set in `write_debug_info`
-   from `for_machine(obj.machine())`; 8 in `dwarf4.rs:822` and
-   `split.rs:202`, which i386 refuses); sites: 910 (unit header), 1007
-   (`DW_AT_low_pc` 0), 1082/1085/1092 (`.debug_addr` length, header,
-   entries), 1107 (rnglists header); `loclists.rs:873` (loclists
-   header); 1286 `for_machine`. `dwarf4.rs:931`, `split.rs:472`
-   `for_machine` too (they panic on `obj.arch()` otherwise).
-4. `split.rs` `write_unit_dies`: on `Machine::I386` refuse a DWARF 4 unit
-   (`debug:dwarf-4-i386`) and split DWARF (`debug:split-dwarf-i386`)
-   before dispatch: stable names, `debug:` prefix so `hod_cg`'s
-   `dwarf_err` keeps them.
-5. `x86_64.rs:88` `tls_offset_reloc(target.arch)` -> by machine. TLS
-   location on i386 (const4u + `R_386_TLS_LDO_32`): optional; else
-   leave `tls_has_location` false for i386 (no location, as AArch64)
-   and record the gap.
-6. `hod_cg/src/emit/mod.rs:423-428`: `DebugLines::new(module, machine,
-   ...)` for every machine; remove `X86_DEBUG_INFO` use (keep the
-   constant only if referenced). `emit/lines.rs:146,167` take
-   `Machine`.
-7. Remove `x86:debug-info` from `spec/codegen-x86.md` §7 row 179 and
-   README line 37; `crates/hod/tests/inlining.rs:1029` comment names
-   it (not this package's file: report).
-8. Evidence: `llvm-dwarfdump --verify` on i386 objects of the debug
-   seeds (`tests/debug/`), irdiff i686 22/19, compare-binaries (64-bit
-   byte-identical), a gdb test: build `meas/dbg.c` by hod (static, `-g`),
-   then `qemu-i386 -g <port> ./prog &` and `gdb-multiarch -batch -ex
-   "file prog" -ex "target remote :<port>" -ex "break add" -ex continue
-   -ex bt -ex "info args" -ex "info locals" -ex up -ex "print x"`.
-   The xtask debug lane refuses `--target i686` (`xtask/src/debug.rs:74`
-   `NO_I686_LANE`; `debug/cross.rs` has the qemu/gdb cross runner for
-   x86-64): adding the column is xtask work beyond this package; park.
+## Measured by hand (build dir `meas/p2`, scripts `run.sh`, `cmp.py`,
+`rows.py`, `gdb.sh`)
+
+- `llvm-dwarfdump --verify` (19 and 22) clean on hod's objects of
+  vals.c, tlsg.c (static and PIC), eh.cpp (static): 10 objects.
+- DIE trees (name, type, location with fbreg by operation, frame base
+  `DW_OP_reg5 EBP`, low/high_pc, ranges) equal `llc`'s (reference
+  options) in all 10, except the `byval` parameter `b`: hod `fbreg o,
+  deref`, llc `fbreg +8` (spec/dwarf.md §6.17 rule). TLS `const4u 0x0,
+  GNU_push_tls_address` and globals `addrx` equal; parameters described
+  in hod's slots (fbreg -N) where llc describes them in place (+8): the
+  §6.17 "memory arguments" rule.
+- Line rows: is_stmt and prologue_end rows equal for vals/tlsg; eh.cpp
+  has one extra is_stmt `epilogue_begin` row (line 6 col 3) after the
+  pad, identical on x86-64 (a 64-bit behaviour; no explicit spec rule
+  found: report as a finding). hod's (line, col) set is a superset of
+  llc's (§5.7 columns).
+- gdb-multiarch on `qemu-i386 -g` of dbg.c (static), hod vs llc: the
+  same transcript after normalising addresses and uninitialised `s`/`t`
+  (break add, bt 3 frames, info args/locals, up, print x, print g).
+
+## Next, in order
+
+1. Wait for / read compare-binaries (`.build/target-wp-314/cmp-p2`,
+   log `cmp-p2.log`, head binary = commit 06430652's code): AArch64 and
+   x86-64 must be 0 different; i686 changes only "x86:debug-info ->
+   compiles" or a narrower name.
+2. `cargo test -q -p hod --test i386_debug -- --nocapture`; then clippy
+   workspace, unit tests of hod_dwarf hod_cg, all `i386*`, and
+   `debug_frame debug_e2e inlining debug_unit_ranges`; irdiff i686 22/19.
+3. Docs: `spec/codegen-x86.md` §7 row `x86:debug-info` -> remove, add
+   rows `debug:dwarf-4-i386` (needs dwarf4.rs at address size 4:
+   `.debug_ranges`/`.debug_loc` 4-byte pairs, `DW_OP_addr` 4) and
+   `debug:split-dwarf-i386` (needs split.rs at address size 4 and the
+   `.dwo` path); append §13 (debug information) with the measurements
+   above; `spec/dwarf.md` §1 line 48, §4.1, §4.2 table (i386 column),
+   §6.4 unit header line 1232: "address size 8 (4 on i386)";
+   `crates/hod_x86/README.md:37`; record Part 2 in
+   `spec/landed/codegen/WP-314.md` (incl. the xtask debug lane brief:
+   `xtask/src/debug.rs:74` `NO_I686_LANE`: needs gdb-multiarch +
+   `qemu-i386 -g` in `debug/cross.rs`, clang `--target=i686-linux-gnu`,
+   the i686 sysroot linkers; transcripts differ by design where
+   parameters are in hod's slots only in `info frame`-style output).
+4. Delete the base build dir and base-src; remove this file.

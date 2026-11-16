@@ -109,7 +109,7 @@ struct Scanner<'a> {
 pub(crate) fn scan(src: &[u8]) -> PResult<Index> {
     let mut scanner = Scanner { lx: Lexer::new(src), index: Index::default() };
     let token = scanner.next()?;
-    scanner.run::<false>(token, usize::MAX)?;
+    scanner.run(token, usize::MAX)?;
     Ok(scanner.index)
 }
 
@@ -216,7 +216,7 @@ fn scan_split(src: &[u8], threads: usize, piece_bytes: usize) -> PResult<Index> 
         } else {
             let mut scanner = Scanner { lx: Lexer::new(src), index };
             scanner.lx.set_pos(token.end as usize);
-            end = scanner.run::<true>(token, stop(at + 1));
+            end = scanner.run(token, stop(at + 1));
             index = scanner.index;
         }
     }
@@ -232,7 +232,7 @@ fn scan_piece(src: &[u8], from: usize, stop: usize) -> Piece {
     let end = if token.kind == Tok::Error {
         fail(LlErrorKind::Lex, token.start, scanner.lx.error())
     } else {
-        scanner.run::<true>(token, stop)
+        scanner.run(token, stop)
     };
     Piece { first, index: scanner.index, end }
 }
@@ -276,18 +276,15 @@ impl Index {
 
 impl Scanner<'_> {
     /// The scan from `token`, the first of an entity, to the end of the
-    /// source; `BOUNDED`, only up to the first entity that begins at or
-    /// after `stop`, whose first token is the answer.
-    #[allow(clippy::inline_always)] // The serial scan is this loop, as before WP-303.
-    #[inline(always)]
-    fn run<const BOUNDED: bool>(
-        &mut self,
-        mut token: Token,
-        stop: usize,
-    ) -> PResult<Option<Token>> {
+    /// source, or only up to the first entity that begins at or after
+    /// `stop`, whose first token is the answer. One body for the serial
+    /// scan and the pieces, out of line, so that what it calls is inlined
+    /// into it as into the serial scan before WP-303.
+    #[inline(never)]
+    fn run(&mut self, mut token: Token, stop: usize) -> PResult<Option<Token>> {
         let scanner = self;
         loop {
-            if BOUNDED && token.start as usize >= stop && token.kind != Tok::Eof {
+            if token.start as usize >= stop && token.kind != Tok::Eof {
                 return Ok(Some(token));
             }
             token = match token.kind {

@@ -58,8 +58,7 @@ the end of the function); an incoming argument `Incoming(n)` is
 `[ebp + 8 + n]`; an outgoing one `[esp + n]`. The DWARF frame base is
 `ebp`, the frame description `12 + FRAME` bytes below it. The CFI rows are
 recorded (CFA `ebp + 8`, `ebp` at -8, `ebx`, `esi`, `edi` at -12, -16,
--20), but no `.eh_frame` is written (I10): `hod_cg`'s unwind tables skip
-`EM_386`.
+-20); `hod_cg` writes them to `.eh_frame` (§12, WP-314).
 
 ## 4. Integers (`alu`)
 
@@ -176,7 +175,7 @@ their values).
 | `x86:float:cast` | a `bitcast` of a floating value, another cast not in §11 | — |
 | `x86:vector` | a vector value, a vector `ptradd`, the element operations | I12 |
 | `x86:aggregate` | an aggregate value, `extractvalue`, `insertvalue`, a result in memory | I11 |
-| `x86:eh` | `invoke`, `landingpad`, `resume`; a call that may unwind in a function that may unwind (no unwind tables) | I10 |
+| `x86:eh:landingpad`, `x86:eh:landingpad-clause`, `x86:eh:resume`, `x86:eh:typeid` | a `landingpad` or `resume` of a type other than `{ ptr, i32 }`; a clause that is not a symbol, `null` or an array of them; `llvm.eh.typeid.for` of a non-symbol (§12; `x86:eh` itself removed by WP-314) | — |
 | `x86:debug-info` | a module with debug information (`hod_cg`'s emitter) | I10 |
 | `x86:cf-protection` | `cf-protection-*` module flags (`hod_cg`'s `.note.gnu.property`) | — |
 | `x86:atomic` | an ordered load or store, `fence`, `cmpxchg`, `atomicrmw` | I11 |
@@ -636,3 +635,60 @@ of range). A conversion between a floating type and an integer of 33 to
 their width (12 bytes for `x86_fp80`), the result is `st0`. Under PIC
 the call goes through `pic::emit_call` (`ebx` holds the GOT pointer at
 the PLT call, §9.2), as every call does.
+
+## 12. Exceptions (`eh`, WP-314, design 0008 I10)
+
+- **Tables.** `hod_cg`'s unwind tables (`spec/eh.md`) are written for
+  `EM_386` with `hod_eh::I386` (`spec/eh.md` §2.1): CIE `esp+4`, `eip`
+  at `CFA-4`, the PIC encodings (FDE `0x1b`, personality `0x9b` through
+  `DW.ref.<personality>`, a 4-byte hidden weak COMDAT slot, LSDA `0x1b`,
+  type table `0x9b` through 4-byte stubs in `.data`), all `R_386_PC32`,
+  in every relocation model. The FDE rows are §3's: `def_cfa_offset 8`,
+  `ebp` at -8, `def_cfa_register ebp`, `ebx`/`esi`/`edi` at -12/-16/-20
+  after the pushes, `def_cfa esp+4` after the one epilogue. Which
+  functions get an FDE (`uwtable`, may unwind) is `hod_cg`'s rule, as on
+  the other targets.
+- **`invoke`** is the call sequence (`FnCx::call`, `pic::emit_call`
+  under it): `hod_cg` records the call site and its pad. A callee-pop
+  callee, an `sret` result, an `i64` or `x86_fp80`/`double` result (§8,
+  §11) are those of a call; the result is stored on the normal path. The
+  constant fold's rewrites (`spec/codegen.md` §5.6.8 step 4: an
+  `invoke` of a `nounwind` or `noreturn` callee, ...) are honoured as on
+  the 64-bit targets (the call sequence reads `FoldAction`). `musttail`
+  is never an `invoke` (the IR verifier rejects it).
+- **`landingpad`** (`{ ptr, i32 }`, class `Mem`, 8 bytes): the clauses go
+  to the pad's row; the exception pointer (`eax`) and the selector
+  (`edx`) are stored to the value's home at the pad's first instruction,
+  as `llc` does. `eax` holds no value across instructions and `edx` is
+  scratch (§2), so both are still the unwinder's there. `extractvalue`
+  of field 0 or 1 is a load of the home at 0 or 4; `insertvalue` into
+  such a value copies it (`poison`/`undef` copy nothing,
+  `zeroinitializer` writes zeros) and stores the field. Every other
+  aggregate stays `x86:aggregate`'s.
+- **`resume`**: the exception pointer to `_Unwind_Resume` through the
+  call sequence (`@PLT` with `ebx` under PIC), then `ud2`.
+- **`llvm.eh.typeid.for(@ti)`**: the type id of `@ti` in the function's
+  table, an `i32` constant.
+- **PIC.** No GOT pointer survives into a pad: it is computed where it is
+  needed (§9.2), so a pad's first PLT call or `@GOTOFF` access computes
+  it again.
+- **x87 (§11).** An `invoke` is a terminator, so a barrier: no 80-bit
+  copy lives across it; its `double` result is stored at 64 bits on the
+  normal path. A landing pad starts a block (a new run). `resume` ends
+  one.
+- **Tests** (`crates/hod/tests/i386_eh.rs`, programs in
+  `tests/data/i386/eh/`): C++ programs by clang 19 and 22 (throw and
+  catch by value, reference and base class, rethrow, nested `try`,
+  catch-all, destructors in cleanups, dynamic exception specifications,
+  `noexcept` and `std::terminate`), a hand-written module with values
+  live in `ebx`/`esi`/`edi` across throwing calls, an `i64` and a
+  `double` `invoke` result, `llvm.eh.typeid.for`, a filter and a
+  `resume`; static, PIE and `-march=i586` (no `cmov`), each by `llc`,
+  hod and hod under `Stress::ALL`, linked by GNU ld, lld and mold, run
+  under `qemu-i386`: every run equals `llc`'s. A throw across a shared
+  library boundary both ways with a general-dynamic thread-local
+  variable in the catching frame. The tables pass `llvm-dwarfdump
+  --verify` (19, 22) and decode as `llc`'s: the same CIEs, the same FDE
+  count and LSDA count, the same prologue rules per FDE (without
+  `ebx`/`esi`/`edi`, which hod always saves), the same relocation kinds
+  of `.eh_frame`, `.gcc_except_table` and the `DW.ref` slot.

@@ -32,6 +32,8 @@ refusal table of `spec/codegen-x86.md` §7) belong to WP-293's owner of
 | `x87.rs` | **I9** (WP-300) | `float`/`double`/`x86_fp80` on the x87 stack, compares, casts, libm calls, the 80-bit copies of a run, call results and returns at 80 bits, `double` folding (`spec/codegen-x86.md` §11); `FnState::x87` | I12 (SSE), any package lowering a call-like or branching instruction (`barrier`) | `target.rs` arms, `materialize_mem`, `barrier`, `call_result`/`store_call_result`, `ret_copy`/`load_ret` | `x86:float*` |
 | `asm.rs`, `hod_asm::x86` | **I13** (WP-301) | inline assembly in 32-bit mode (`spec/asm.md` §22) | — | `call::lower`'s asm arm | `x86:inline-asm` (now `x86:inline-asm:<detail>`) |
 
+| `eh.rs` | **I10** (WP-314) | `landingpad` (`eax`/`edx`), `resume`, `llvm.eh.typeid.for`, `extractvalue`/`insertvalue` of `{ ptr, i32 }`; `invoke` is `hod_cg`'s call sequence, the tables `hod_eh::I386` (`spec/codegen-x86.md` §12) | — | `target.rs` arms, `call::lower`'s `eh.typeid.for` arm | `x86:eh` (removed; `x86:eh:<detail>` remain) |
+
 Outside the crate, `hod_cg` refuses `x86:debug-info` (`emit/mod.rs`,
 removed by I10 with the unwind tables in `emit/unwind.rs`) and
 `x86:cf-protection`.

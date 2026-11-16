@@ -2,7 +2,8 @@
 ; defines functions and data the IR uses (declared here, defined there),
 ; calls an IR function, reads IR variables and a thread-local (LE through
 ; @ntpoff, IE through @indntpoff; @tpoff is `tls32.ll`'s), and gives
-; directives to symbols of both sides.
+; directives to symbols of both sides; function-level assembly in
+; `prog_main` calls a function of the module text.
 target triple = "i686-unknown-linux-gnu"
 
 module asm ".text"
@@ -86,7 +87,7 @@ module asm ".hidden ir_hidden_fn"
 @asm_table = external global [4 x i32]
 @asm_count = external global i32
 @asm_ptr = external global ptr
-@fmt = private constant [31 x i8] c"%d %d %d %d %d %d %d %d %d %s\0A\00"
+@fmt = private constant [34 x i8] c"%d %d %d %d %d %d %d %d %d %d %s\0A\00"
 
 declare i32 @asm_add(i32, i32)
 declare i32 @asm_sum()
@@ -120,7 +121,9 @@ define i32 @prog_main() #0 {
   store i32 8, ptr @tls_v
   %i = call i32 @asm_tls()
   %m = call ptr @asm_hidden()
-  %r = call i32 (ptr, ...) @printf(ptr @fmt, i32 %a, i32 %b, i32 %c, i32 %d, i32 %e, i32 %f, i32 %g, i32 %h, i32 %i, ptr %m)
+  ; Function-level assembly calls into the module's text.
+  %j = call i32 asm sideeffect "pushl $$5\0A\09pushl $$6\0A\09call asm_add\0A\09addl $$8, %esp", "={eax},~{ecx},~{edx},~{memory},~{dirflag},~{fpsr},~{flags}"()
+  %r = call i32 (ptr, ...) @printf(ptr @fmt, i32 %a, i32 %b, i32 %c, i32 %d, i32 %e, i32 %f, i32 %g, i32 %h, i32 %i, i32 %j, ptr %m)
   ret i32 0
 }
 

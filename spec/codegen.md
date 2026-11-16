@@ -6872,6 +6872,38 @@ normalised from 1 to 4); the three corpus modules with code and data in
 their text link (bfd, lld, mold) and behave as `llc`'s. For §9.1's
 sections also `crates/hod_cg/tests/emit_module_asm_link.rs`.
 
+#### 9.7.4 Excluded variables (WP-273, `emit/section.rs` `Kind::Exclude`)
+
+A variable marked `Symbol::is_excluded()` (`!exclude !{}`, `spec/ir.md`
+§2.2) that has an explicit section, is not thread-local and is not
+common gets the section kind `Exclude` (`getKindForGlobal`: after the
+thread-local, common and BSS kinds, before the read-only ones; with a
+section a variable is never BSS), whatever its constness, initializer
+or relocations. Its flags are exactly `SHF_EXCLUDE` (no `SHF_ALLOC`,
+`SHF_WRITE` or `SHF_MERGE`; `getELFSectionFlags`), plus what any explicit
+section adds: `SHF_GROUP` in a COMDAT, `SHF_GNU_RETAIN` for an
+`llvm.used` member, `SHF_X86_64_LARGE` for a large name. The name then
+refines the kind as for every explicit section (`getELFKindForNamedSection`):
+`.bss*`, `.sbss*`, `.tbss*`, `.tdata*` give those kinds and the mark is
+lost; and the type is the name's (`getELFSectionType`): `.note*` is
+`SHT_NOTE`, `.init_array*`, `.fini_array*`, `.preinit_array*` their
+array types, anything else `SHT_PROGBITS` (a zero initializer stays
+`SHT_PROGBITS`). The bytes are the flattened initializer and its
+relocations go to a `.rela` section as anywhere. Sections of one name
+are one section per (name, flags, entry size, group), so two excluded
+variables of one name share one section and an excluded and a plain one
+of one name are two sections (`calcUniqueIDUpdateFlagsAndSize`). The
+variable is emitted whether or not it is in `llvm.used`,
+`llvm.compiler.used` or neither (`llc -O0` discards no global). Without
+a section, on a thread-local variable or a common one, the mark changes
+nothing.
+
+The oracle is `crates/hod_cg/tests/emit_llc.rs` (snippet `exclude`, LLVM
+19 and 22, both targets); `crates/hod/tests/exclude.rs` checks the
+header fields and the bytes of `crates/hod_cg/tests/data/exclude/mason_meta.ll`
+through the session from text and from bitcode, and links it with bfd,
+lld and mold (the section is not in the program, which runs).
+
 ## 10. Errors and limits
 
 ```rust

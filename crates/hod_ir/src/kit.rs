@@ -822,6 +822,12 @@ pub enum GlobalAttachment {
     /// Dropped: `!type`, `!vcall_visibility`, `!prof`, `!section_prefix`,
     /// `!annotation`.
     Dropped,
+    /// `!exclude` (WP-273): on a variable, the first one marks it with
+    /// `Module::exclude` when its node is a tuple without operands, and
+    /// is dropped when the tuple has operands (`llc` ignores it then);
+    /// any other node is recorded as [`global_attachment_construct`]. On
+    /// a function it is dropped (`llc` ignores it).
+    Exclude,
     /// Any other: unsupported, recorded as [`global_attachment_construct`].
     Unsupported,
 }
@@ -835,6 +841,7 @@ impl GlobalAttachment {
             b"type" | b"vcall_visibility" | b"prof" | b"section_prefix" | b"annotation" => {
                 GlobalAttachment::Dropped
             }
+            b"exclude" => GlobalAttachment::Exclude,
             _ => GlobalAttachment::Unsupported,
         }
     }

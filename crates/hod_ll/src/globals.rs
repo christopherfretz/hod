@@ -2,7 +2,10 @@
 //! IFUNCs, function headers, COMDATs and the special LLVM arrays.
 
 use hod_ir::Layering;
-use hod_ir::kit::{SpecialDeliveryError, SpecialGlobal, annotations_construct, deliver_special};
+use hod_ir::kit::{
+    SpecialDeliveryError, SpecialGlobal, annotations_construct, deliver_special,
+    global_attachment_construct,
+};
 use hod_ir::{
     AliasDesc, ComdatId, ComdatKind, Const, FunctionDesc, IFuncDesc, Linkage, SymId, TlsModel,
     UnnamedAddr, VariableDesc, Visibility,
@@ -304,6 +307,7 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
             let item = self.index.items[at];
             self.goto(item.start);
             self.dbg.clear();
+            self.exclude = None;
             match item.kind {
                 ItemKind::Assign => self.assignment(item)?,
                 ItemKind::Declare | ItemKind::Define => self.function(item)?,
@@ -581,6 +585,14 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
             init,
         };
         ir(ty_at, self.module.set_variable(sym, &desc))?;
+        if let Some((node, at)) = self.exclude.take() {
+            match self.exclude_node(node, at)? {
+                Some(true) => ir(at, self.module.exclude(sym))?,
+                // `llc` ignores a node with operands.
+                Some(false) => {}
+                None => self.note(global_attachment_construct(b"exclude")),
+            }
+        }
         self.variable_dbg(sym)?;
         self.finish_symbol(sym);
         Ok(())

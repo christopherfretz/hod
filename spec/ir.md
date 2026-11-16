@@ -359,7 +359,15 @@ instrumentation passes only.
 Metadata attached to a symbol, other than `!dbg` (§6): `!type`,
 `!vcall_visibility`, `!prof`, `!section_prefix` and `!annotation` are
 dropped (they are read by link-time or profile-guided passes, or only
-move a function between sections). Any other kind is recorded as
+move a function between sections). `!exclude` (WP-273): a variable
+whose first `!exclude` node is a tuple without operands is marked with
+`Module::exclude(sym)` and read as `Symbol::is_excluded()` (a flag of the
+symbol, set after its description and cleared by a new one; only a
+variable takes it, `InvalidSymbol` otherwise; printed `, !exclude !{}`
+after the alignment); one with operands, and `!exclude` on a function,
+are dropped (`llc` ignores them); a node that is not a tuple is recorded
+as `global-metadata:exclude`. What the mark does to the object is
+`spec/codegen.md` §9.7.4. Any other kind is recorded as
 `global-metadata:<kind>`: `!associated`, `!absolute_symbol` and
 `!kcfi_type` change the object, and a kind hod does not know may.
 
@@ -2582,7 +2590,8 @@ null. `llvm.global.annotations` delivers nothing;
 `special-global:llvm.global.annotations` unless the section is
 `llvm.metadata`. `GlobalAttachment::of(kind)`: `!dbg` is debug
 information; `!type`, `!vcall_visibility`, `!prof`, `!section_prefix`,
-`!annotation` are dropped; any other is recorded as
+`!annotation` are dropped; `!exclude` is `GlobalAttachment::Exclude`,
+which the producer reads as §2.2 says; any other is recorded as
 `global-metadata:<kind>`. Which other `llvm.*` variable names a producer
 records as `special-global:<name>` is lexical and stays the producer's.
 

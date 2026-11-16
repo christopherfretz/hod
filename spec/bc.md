@@ -416,7 +416,11 @@ Only what `hod_ll` uses is built. The rest takes an id and is never read.
 - **Nodes** are read without recursion. A flag's value is an integer, a
   string or a node. A node value is `Other`, as `hod_ll` keeps it.
 - **Attachments.** GLOBAL_DECL_ATTACHMENT of a declaration gives the
-  `global-metadata:<kind>` notes of `ll.md §5.7`.
+  `global-metadata:<kind>` notes of `ll.md §5.7`. `!exclude` (WP-273):
+  on a variable, the first one whose node is a NODE or DISTINCT_NODE
+  record without operands marks it with `Module::exclude` after its
+  description; one with operands is dropped; any other node gives
+  `global-metadata:exclude`; on a function it is dropped.
   - A definition's own attachments live in its function block, so stage
     1 does not see them (§10). The body reader records their
     `global-metadata:<kind>` notes and keeps them as
@@ -1025,8 +1029,9 @@ The rest follows `hod_ll`'s order:
 The function block's METADATA_ATTACHMENT block holds the definition's
 own attachments in its one record of even length (`[kind, node]…`;
 an odd-length record is an instruction's, skipped). Each kind other
-than `dbg`, `type`, `vcall_visibility`, `prof`, `section_prefix` and
-`annotation` gives the module note `global-metadata:<kind>` for the
+than `dbg`, `type`, `vcall_visibility`, `prof`, `section_prefix`,
+`annotation` and `exclude` (`llc` ignores it on a function, WP-273)
+gives the module note `global-metadata:<kind>` for the
 definition, as `hod_ll` notes `define … !kind !N`. The body is still
 delivered.
 

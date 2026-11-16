@@ -256,6 +256,7 @@ fn metadata_names_and_branch_protection_flags() {
     assert_eq!(GlobalAttachment::of(b"dbg"), GlobalAttachment::Debug);
     assert_eq!(GlobalAttachment::of(b"type"), GlobalAttachment::Dropped);
     assert_eq!(GlobalAttachment::of(b"absolute_symbol"), GlobalAttachment::Unsupported);
+    assert_eq!(GlobalAttachment::of(b"exclude"), GlobalAttachment::Exclude);
     assert_eq!(NamedMetadataKind::of(b"llvm.module.flags"), NamedMetadataKind::ModuleFlags);
     assert_eq!(NamedMetadataKind::of(b"llvm.ident"), NamedMetadataKind::Dropped);
     assert_eq!(NamedMetadataKind::of(b"llvm.foo"), NamedMetadataKind::Unsupported);

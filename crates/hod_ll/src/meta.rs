@@ -437,15 +437,44 @@ impl<L: Layering> Parser<'_, '_, L> {
     /// collected in `self.dbg`, the kinds of `spec/ir.md` §2.2 are
     /// dropped, any other is noted as unsupported.
     pub(crate) fn attachment(&mut self) -> PResult<()> {
+        let at = self.tok.start;
         let kind = &self.text()[1..];
         self.bump();
         let node = self.md_ref()?;
         match GlobalAttachment::of(kind) {
             GlobalAttachment::Debug => self.dbg.push(node),
             GlobalAttachment::Dropped => {}
+            GlobalAttachment::Exclude => {
+                // The first one counts, as `getMetadata` returns it; a
+                // variable reads it (`exclude_node`), a function drops it.
+                if self.exclude.is_none() {
+                    self.exclude = Some((node, at));
+                }
+            }
             GlobalAttachment::Unsupported => self.note(global_attachment_construct(kind)),
         }
         Ok(())
+    }
+
+    /// An `!exclude` node: whether it is a tuple without operands, or
+    /// `None` for a node that is not a tuple, or one hod does not read
+    /// (a comment between its braces).
+    pub(crate) fn exclude_node(&self, node: MdRef, at: u32) -> PResult<Option<bool>> {
+        let (kind, span) = match node {
+            MdRef::Inline(kind, span) => (kind, span),
+            MdRef::Node(id) => {
+                let Some(node) = self.md.node(id) else {
+                    let message = format!("use of undefined metadata '!{id}'");
+                    return fail(LlErrorKind::Undefined, at, message);
+                };
+                (node.kind, node.span)
+            }
+        };
+        let inside = &self.src[span.start as usize..span.end as usize];
+        if kind != MdKind::Tuple || inside.contains(&b';') {
+            return Ok(None);
+        }
+        Ok(Some(inside.iter().all(u8::is_ascii_whitespace)))
     }
 }
 

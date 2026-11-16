@@ -685,6 +685,12 @@ impl<'m> ModuleEmitter<'m> {
                 };
             }
         }
+        if has_section && tls == TlsModel::None && symbol.is_excluded() {
+            // `getKindForGlobal`: after thread-local, common and BSS
+            // (never with a section), before the read-only kinds
+            // (§9.7.4, WP-273).
+            kind = Kind::Exclude;
+        }
         if let Some(name) = symbol.section() {
             let named = section::named_kind(name, kind);
             if named.is_nobits() && !kind.is_nobits() && !zero {

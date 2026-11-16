@@ -416,6 +416,9 @@ const CONSTANT: u16 = 1 << 5;
 const HAS_BODY: u16 = 1 << 6;
 const USED: u16 = 1 << 7;
 const COMPILER_USED: u16 = 1 << 8;
+/// A variable with an `!exclude !{}` attachment (§2.2, WP-273); cleared
+/// by a new description.
+const EXCLUDE: u16 = 1 << 9;
 /// The flags that are not part of a description and survive one.
 const STICKY: u16 = USED | COMPILER_USED;
 
@@ -993,6 +996,15 @@ impl SymbolTable {
         Ok(())
     }
 
+    /// Marks variable `sym` as carrying `!exclude !{}`.
+    pub(crate) fn exclude(&mut self, sym: SymId) -> IrResult<()> {
+        if self.entries[sym.index()].kind != Kind::Variable {
+            return self.invalid(sym, "only a variable is excluded");
+        }
+        self.entries[sym.index()].flags |= EXCLUDE;
+        Ok(())
+    }
+
     /// The end-of-module checks; see `Module::verify_symbols`.
     pub(crate) fn verify<L: Layering>(
         &self,
@@ -1317,6 +1329,13 @@ impl<'a> Symbol<'a> {
     #[inline]
     pub fn is_compiler_used(&self) -> bool {
         self.entry.flags & COMPILER_USED != 0
+    }
+
+    /// Whether the variable carries `!exclude !{}` (an attachment whose
+    /// node has no operands; §2.2, WP-273).
+    #[inline]
+    pub fn is_excluded(&self) -> bool {
+        self.entry.flags & EXCLUDE != 0
     }
 
     /// Whether the symbol is retained: a member of either array.
@@ -1905,6 +1924,21 @@ mod tests {
         assert_eq!(bits(&f, d), (false, false, false));
         let anon = f.table.anonymous().unwrap();
         assert_eq!(kind(f.table.retain(anon, Retained::Used)), IrErrorKind::InvalidSymbol);
+    }
+
+    /// §2.2 "excluded" (WP-273): a mark on a variable only, cleared by a
+    /// new description.
+    #[test]
+    fn excluded_bit() {
+        let mut f = fixture();
+        let a = f.table.named(b"a").unwrap();
+        assert_eq!(kind(f.table.exclude(a)), IrErrorKind::InvalidSymbol);
+        f.var(a, &VariableDesc::new(TypeId::I32)).unwrap();
+        assert!(!f.table.get(a).is_excluded());
+        f.table.exclude(a).unwrap();
+        assert!(f.table.get(a).is_excluded());
+        f.var(a, &VariableDesc::new(TypeId::I32)).unwrap();
+        assert!(!f.table.get(a).is_excluded());
     }
 
     /// §2.2 "Immediate checks": what a variable description is refused

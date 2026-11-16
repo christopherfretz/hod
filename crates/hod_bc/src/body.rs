@@ -641,7 +641,10 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
                             );
                         };
                         match GlobalAttachment::of(name) {
-                            GlobalAttachment::Debug | GlobalAttachment::Dropped => {}
+                            // `llc` ignores `!exclude` on a function.
+                            GlobalAttachment::Debug
+                            | GlobalAttachment::Dropped
+                            | GlobalAttachment::Exclude => {}
                             GlobalAttachment::Unsupported => {
                                 let construct: Cow<'static, str> =
                                     Cow::Owned(global_attachment_construct(name));

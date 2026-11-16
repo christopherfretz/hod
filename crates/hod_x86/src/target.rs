@@ -22,7 +22,7 @@ use hod_ir::{
     X86Features,
 };
 use hod_mc_x64 as mc;
-use hod_mc_x64::Size;
+use hod_mc_x64::{Size, Xmm};
 
 use crate::common::{self, gp, put, unsupported};
 use crate::reg::{EAX, EBX, ECX, EDI, EDX, ESI, xmm};
@@ -204,6 +204,7 @@ impl Target for X86 {
         }
         let gpr = abi::is_gpr(cx.types(), inst.ty());
         match inst.kind() {
+            _ if crate::vector::owns(cx, inst) => crate::vector::lower(cx, inst),
             _ if crate::sse::owns(cx, inst) => crate::sse::lower(cx, inst),
             _ if crate::x87::owns(cx, inst) => crate::x87::lower(cx, inst),
             InstKind::Binary { lhs, rhs } if gpr => alu::binary(cx, inst, lhs, rhs),
@@ -290,8 +291,9 @@ impl Target for X86 {
         if reg == abi::ST0 {
             return crate::x87::load_ret(cx, src, bytes);
         }
-        if reg == xmm(0) {
-            return crate::sse::load_xmm0(cx, src);
+        if !crate::reg::is_gpr(reg) {
+            let x = Xmm::ALL[usize::from(reg.index() - xmm(0).index())];
+            return crate::sse::load_xmm(cx, x, src, bytes);
         }
         // Only general registers hold values of this package.
         common::load_gpr(cx, gp(reg), src, bytes);
@@ -301,8 +303,9 @@ impl Target for X86 {
         if reg == abi::ST0 {
             return crate::x87::store_call_result(cx, dst, bytes);
         }
-        if reg == xmm(0) {
-            return crate::sse::store_xmm0(cx, dst);
+        if !crate::reg::is_gpr(reg) {
+            let x = Xmm::ALL[usize::from(reg.index() - xmm(0).index())];
+            return crate::sse::store_xmm(cx, x, dst, bytes);
         }
         common::store_gpr(cx, gp(reg), dst, bytes);
     }
@@ -346,6 +349,9 @@ impl Target for X86 {
     ) -> CgResult<()> {
         if int::is_wide(cx, value) {
             return int::materialize_mem(cx, dst, value);
+        }
+        if cx.types().is_vector(common::value_ty(cx, value)) {
+            return crate::vector::materialize_mem(cx, dst, value);
         }
         if crate::sse::is_sse_or_half(cx, common::value_ty(cx, value)) {
             return crate::sse::materialize_mem(cx, dst, value);

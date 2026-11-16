@@ -175,7 +175,15 @@ their values).
 | `x86:float:i64-cast` | a conversion between a floating type and an integer of 33 to 63 or more than 64 bits (§11; `fptoui` to `i64` is lowered since the i386 join C) | — |
 | `x86:float:intrinsic` | a floating-point intrinsic §11 does not lower | — |
 | `x86:float:cast` | a `bitcast` of a floating value, another cast not in §11 | — |
-| `x86:vector` | a vector value, a vector `ptradd`, the element operations | I12 |
+| `x86:vector` | a vector `ptradd` | I12 |
+| `x86:vector:no-sse2` | a vector in a function without SSE2 | — |
+| `x86:vector:wide` | a vector of more than 16 bytes passed or returned | — |
+| `x86:vector:abi` | a vector of `i1`, of one lane or of odd-width integers passed or returned | — |
+| `x86:vector:element` | lanes of `half`, `bfloat`, `fp128`, `x86_fp80`, odd-width integers | — |
+| `x86:vector:scalable` / `:length` | a scalable vector; more than 256 lanes | — |
+| `x86:vector:i64-op` | `i64` lanes: an operation other than `add`, `sub`, bitwise, compares, moves | — |
+| `x86:vector:frem` / `:cast` | `frem`; casts with unsigned 32-bit or 64-bit lanes and floating point | — |
+| `x86:vector:intrinsic` | an intrinsic on vectors other than the integer and `i1` reductions | — |
 | `x86:aggregate` | an aggregate value, `extractvalue`, `insertvalue`, a result in memory | I11 |
 | `x86:eh` | `invoke`, `landingpad`, `resume`; a call that may unwind in a function that may unwind (no unwind tables) | I10 |
 | `x86:debug-info` | a module with debug information (`hod_cg`'s emitter) | I10 |
@@ -781,5 +789,47 @@ part of its operations, "Unsupported library call operation" and
 "soft promote", and errors on its return without SSE: no oracle),
 `fp128` (`x86:float:fp128`: libgcc calls with a
 hidden result pointer, and LLVM 19 and 22 align its arguments
-differently), vectors and vector operands (`x86:vector`), other
+differently), other
 intrinsics (`x86:float:intrinsic`).
+
+## 13. Vectors (`vector`, WP-317, design 0008 I12 step C)
+
+**Measured** (`llc` 19 and 22, `-O0 -global-isel=0 -fast-isel=0`, at
+`pentium4`): a vector of at most 16 bytes, at least two lanes and lanes
+of 8 to 64 bits is one `xmm`, its bytes packed from lane 0 (`<2 x
+i32>`, `<4 x i8>`, `<3 x i32>` widened, not promoted). The result is in
+`xmm0`; the first three arguments in `xmm0`-`xmm2` (`fastcc` and
+`inreg` the same); every other one, and every vector of a variadic
+call, in a 16-byte stack slot aligned 16. `<1 x T>` is scalarized, `<N
+x i1>` promoted, a wider vector split over several `xmm`: refused at
+the boundary (`x86:vector:abi`, `x86:vector:wide`). Without SSE2
+(`pentium3`, `generic`) `llc` scalarizes every vector: refused
+(`x86:vector:no-sse2`). `llc` does not realign the stack for a 16-byte
+slot: it relies on `esp` being 16-aligned after its prologue, which
+hod's frame keeps (§ "Frame"), so `frame.rs` is unchanged.
+
+**Values.** Every vector is of class `Mem`; its home holds its memory
+image (lanes packed; `i1` lanes bit by bit, lane 0 in bit 0), so
+`load`, `store`, `bitcast`, `freeze` and `phi` are copies and a
+constant is its flattened image. The boundary is `sse::vector_place`
+(the part's size is the allocation size: 2, 4, 8 or 16) with the glue
+moves `sse::load_xmm` / `store_xmm` (`movzx`+`movd`, `movd`, `movsd`,
+`movdqu`).
+
+**Operations**, lane by lane through `eax`, `ecx`, `edx`, `xmm6`:
+integer `add` .. `ashr`, `udiv` .. `srem` (lanes of 1 to 4 bytes,
+extended to 32 bits; a lane divided by zero traps, as `llc`'s);
+`i64` lanes `add`/`adc`, `sub`/`sbb`, bitwise; `i1` lanes bitwise on
+bytes; `fadd` .. `fdiv` (`adds`.. on `xmm6`), `fneg` (the sign bit);
+`icmp` (`i64` lanes by `cmp`/`sbb` of the halves), `fcmp` (§12's
+conditions) into an `i1` vector; `select` by a scalar or an `i1`
+vector without a branch (`f ^ ((t ^ f) & m)`); `extractelement` /
+`insertelement` with a constant or variable index (masked with `N-1`
+for a power-of-two `N`, else 0 when `≥ N`); `shufflevector`; `trunc`,
+`zext`, `sext` (with `i1` lanes), `fpext`, `fptrunc`, `sitofp` and
+`fptosi` (lanes up to 32 bits, `uitofp` / `fptoui` up to 16);
+`llvm.vector.reduce.{add,mul,and,or,xor,smax,smin,umax,umin}` of lanes
+up to 32 bits (`cmov` for the extremes) and of at most 32 `i1`. A
+result whose lanes move (shuffle, cast, compare, `i1`) is built in a
+slot of its own and copied to its home. Nothing branches or calls: no
+vector construct is an x87 barrier.

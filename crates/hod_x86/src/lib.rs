@@ -27,6 +27,7 @@ pub mod reg;
 pub mod sse;
 pub mod target;
 pub mod tls;
+pub mod vector;
 pub mod x87;
 
 use std::fmt;

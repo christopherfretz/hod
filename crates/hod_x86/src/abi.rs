@@ -372,6 +372,7 @@ fn assign_into(
     let mut at = assign_ret(types, sig, conv, out, features)?;
     let mut regs =
         Regs { list: if conv == Conv::Fast { &FASTCC } else { &INREG }, next: 0, taken: 0 };
+    let mut xmm = 0;
     for (index, &ty) in sig.params.iter().enumerate() {
         if index == sig.fixed as usize {
             out.va.stack_offset = at;
@@ -423,6 +424,12 @@ fn assign_into(
                 size: 4,
                 place: Place::Reg(reg),
             });
+            continue;
+        }
+        if types.is_vector(ty) {
+            let (place, size) =
+                crate::sse::vector_place(types, ty, features, sig.variadic, &mut xmm, &mut at)?;
+            out.args.push(Part { arg, kind: PartKind::Value, offset: 0, size, place });
             continue;
         }
         if matches!(types.kind(ty), TypeKind::Half) {
@@ -496,6 +503,12 @@ fn assign_ret(
         || !matches!(attrs.mem(), ParamMem::None | ParamMem::ElementType)
     {
         return Err(ATTR);
+    }
+    if types.is_vector(sig.ret) {
+        let (place, size) =
+            crate::sse::vector_place(types, sig.ret, features, false, &mut 0, &mut 0)?;
+        out.ret.push(Part { arg: 0, kind: PartKind::Value, offset: 0, size, place });
+        return Ok(0);
     }
     if matches!(types.kind(sig.ret), TypeKind::Half) {
         if let Some(reg) = crate::sse::half_place(features, conv == Conv::Fast, true)? {

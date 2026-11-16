@@ -1,4 +1,4 @@
-# WP-317 (design 0008 I12) parked after session 3
+# WP-317 (design 0008 I12) parked after session 4
 
 Branch `wp/317-i386-sse2`, worktree `.worktrees/wp-317`, build dir
 `/Volumes/AgentWork/hod-helper/.build/target-wp-317`. Base of the group
@@ -6,40 +6,45 @@ Branch `wp/317-i386-sse2`, worktree `.worktrees/wp-317`, build dir
 
 ## Done
 
-- Sessions 1-2: scalar SSE (`sse.rs`, §12), the call-result views.
-- Session 3: the pentium3 finding fixed (`x87::push`, `x87::cast`
-  bodies read `sse` views; test un-ignored; I9 counts 288/72, 190+2;
-  112 x87 objects identical to base). `half` with SSE2 (§12 "`half`
-  with SSE2", record "Third session"); `half` without SSE2 stays
-  `x86:float:half` (libgcc's `__truncsfhf2` returns only in `xmm0`);
-  new name `x86:float:half:intrinsic`. `bfloat`, `fp128`: refused,
-  measured only.
+- Sessions 1-3: scalar SSE (§12), `half` with SSE2, pentium3 fix.
+- Session 4, step C (vectors), §13 and the record "Fourth session":
+  - Measured (llc 19 = 22 at `pentium4`): vectors of <= 16 bytes, >= 2
+    lanes of 8..64 bits in one `xmm`, packed (widened); result `xmm0`;
+    args `xmm0`-`xmm2` (fastcc, inreg the same), then 16-byte stack
+    slots aligned 16; a variadic call puts every vector on the stack.
+    `<1 x T>` scalarized, `<N x i1>` promoted, wide split: refused at
+    the boundary. No SSE2: llc scalarizes: refused. llc does not
+    realign for 16-byte slots; hod's `esp` is 16-aligned after the
+    prologue, so `frame.rs` is unchanged.
+  - (a) done: `sse::vector_place` + `sse::load_xmm`/`store_xmm`,
+    hooks in `abi.rs` (arg, ret) and `target.rs` (`load`/`store` of
+    any `xmm`, dispatch, `materialize_mem`).
+  - (b) done, (c) done, (d) partly: `crates/hod_x86/src/vector.rs`
+    (all Mem, lane by lane): load/store/extract/insert (variable
+    index)/shuffle/bitcast/freeze, int and float arithmetic, i64
+    add/sub/bitwise, i1 bitwise, icmp/fcmp to masks, select, casts,
+    integer and i1 reductions.
+  - Tests: `crates/hod/tests/i386_vector.rs` (8 runs equal llc's incl.
+    the boundary both ways; 10 refusals by name).
+  - Evidence: fmt, clippy `-D warnings` clean; hod_x86/hod_cg/
+    hod_mc_x64 pass; every `i386*` test passes (x87 288/72, 190+2);
+    irdiff i686 22 and 19: 0 FAIL, 0 ERROR.
 
 ## Remaining, in order
 
-1. Step C, vectors (`x86:vector`), not started. Measure first: `llc`
-   22 and 19 `-O0 -global-isel=0 -fast-isel=0
-   -mtriple=i686-unknown-linux-gnu` at `pentium4`, `pentium3` and
-   `generic` (legal IR, llc splits it). Start with the shapes of the
-   three seeds of `tests/ir` kept off i686 / refused under
-   `x86:vector` (`grep -rn "kept-off(i686" tests/ir`; irdiff census
-   counts 3), then 128-bit integer and float vectors at `pentium4`.
-   Plan (supervisor-approved): class `Mem`, operations through
-   `xmm6`/`xmm7`, `hod_x64`'s lane code (`crates/hod_x64/src/lanes.rs`)
-   as the model; arguments `xmm0`-`xmm2` and the `xmm0` return through
-   `sse::half_place`'s sibling in `sse.rs`, called from
-   `abi::assign_for` (the features already reach it). Wider vectors,
-   MMX, vectors without SSE2 may stay refused under narrower names.
-2. Evidence after each vector step (list in the brief) and
-   compare-binaries against `31400b11` at the end (base build:
-   `git archive 31400b11 | tar -x -C <build dir>/base-src`, `cargo
-   build --release -p hod_cli` with
-   `CARGO_TARGET_DIR=/Volumes/AgentWork/hod-helper/.build/target-wp-317-base`;
-   delete that directory by its literal path when done).
-
-## Ruled out
-
-- `Class::Fpr` for SSE scalars; reading `w`'s home in `fptrunc (fpext
-  w)` (homes of non-operands may be reused).
-- `half` at `generic`/`pentium3` "as llc": its code reads `ax` after
-  libgcc writes `xmm0` (and libgcc uses SSE2): it cannot run correctly.
+1. compare-binaries against `31400b11` (not run): base build as
+   session 3 did (`git archive 31400b11` into `<build>/base-src`,
+   `CARGO_TARGET_DIR=/Volumes/AgentWork/hod-helper/.build/target-wp-317-base`),
+   corpora `tests/ir`, `.build/corpus/kiln`, `.build/corpus-x64/kiln`;
+   classify every i686 changed outcome; delete the base dir.
+2. The three seeds (`vectors.ll`, `vector_masks.ll`,
+   `drift_lanes.ll`) now refuse `x86:eh` (I10's), so they do not run
+   on i686 yet; after the join with I10, run them (they use `<8 x
+   i32>` bodies, `<5 x i8>`, `<3 x i1>`, reductions) and fix what
+   differs.
+3. Still refused: `uitofp`/`fptoui` with 32-bit lanes, i64-lane
+   mul/div/shift, `frem` (libm per lane: would need an `x87::barrier`
+   check), float reductions and other vector intrinsics, vector
+   `ptradd` (plain `x86:vector`). Add tests per family as in
+   `i386_vector.rs`.
+4. README row for WP-317; remove `PARKED.md` in the last commit.

@@ -621,7 +621,7 @@ fn bfloat_fp128_and_vectors_stay_refused_with_sse2() {
     for (ty, name) in [
         ("bfloat", "x86:float:bfloat"),
         ("fp128", "x86:float:fp128"),
-        ("<4 x float>", "x86:vector"),
+        // `<4 x float>` with SSE2: `i386_vector.rs`.
     ] {
         let text = format!(
             "target triple = \"{TRIPLE}\"\n\

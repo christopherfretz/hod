@@ -328,7 +328,7 @@ fn unary<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, arg: Value) -> CgResult<()>
 // ---- compares ----
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FpCond {
+pub(crate) enum FpCond {
     One(Cond),
     All(Cond, Cond),
     Any(Cond, Cond),
@@ -336,7 +336,7 @@ enum FpCond {
 
 /// Whether the operands are swapped and how the flags of `ucomis x, y`
 /// read (unordered sets `ZF`, `PF`, `CF`), as `x87`'s `fucomi`.
-const fn conditions(pred: FloatPredicate) -> (bool, FpCond) {
+pub(crate) const fn conditions(pred: FloatPredicate) -> (bool, FpCond) {
     use FloatPredicate as P;
     match pred {
         P::Oeq => (false, FpCond::All(Cond::E, Cond::Np)),
@@ -1119,16 +1119,85 @@ pub fn half_place(
     Ok(ret.then(|| crate::reg::xmm(0)))
 }
 
-/// Glue `load` of a `half` result into `xmm0` (`movzx`, `movd`).
-pub fn load_xmm0(cx: &mut FnCx<'_, X86>, src: FrameRef) {
-    frame_inst(cx, src, |m| mc::movzx_rm(Size::D, EAX, Size::W, m));
-    put(cx, mc::movd_xr(Size::D, Xmm::Xmm0, EAX));
+/// The place of a vector argument or result at the boundary
+/// (`abi::assign_for`; measured `llc` 19 and 22 at `pentium4`, §13
+/// "Vectors at the boundary"): with SSE2, a vector of at most 16 bytes,
+/// at least two lanes and elements of 8, 16, 32 or 64 bits is one `xmm`
+/// (its bytes packed from lane 0 up, the rest unspecified): a result in
+/// `xmm0`; the first three arguments of a call that is not variadic in
+/// `xmm0`-`xmm2` (`fastcc` and `inreg` alike), every other one in a
+/// 16-byte stack slot aligned 16. Answers the place and the part's
+/// size (the type's allocation size: 2, 4, 8 or 16 bytes) and moves
+/// `next` (the `xmm` arguments taken) and `at` (the stack offset).
+///
+/// # Errors
+/// [`crate::vector::NO_SSE2`], [`crate::vector::WIDE`],
+/// [`crate::vector::ABI`].
+pub fn vector_place(
+    types: &hod_ir::TypeTable,
+    ty: TypeId,
+    features: X86Features,
+    variadic: bool,
+    next: &mut u8,
+    at: &mut u32,
+) -> Result<(hod_cg::abi::Place, u32), &'static str> {
+    use hod_cg::abi::Place;
+    let TypeKind::Vector { elem, len } = types.kind(ty) else {
+        return Err(crate::vector::ABI);
+    };
+    if !features.has(X86Features::SSE2) {
+        return Err(crate::vector::NO_SSE2);
+    }
+    let size = types.alloc_size_of(ty);
+    if size > 16 {
+        return Err(crate::vector::WIDE);
+    }
+    let lane = match types.kind(elem) {
+        TypeKind::Int(bits) => bits,
+        TypeKind::Float | TypeKind::Ptr { addr_space: 0 } => 32,
+        TypeKind::Double => 64,
+        _ => 0,
+    };
+    if len < 2 || !matches!(lane, 8 | 16 | 32 | 64) {
+        return Err(crate::vector::ABI);
+    }
+    let size = size as u32;
+    if *next < 3 && !variadic {
+        *next += 1;
+        return Ok((Place::Reg(crate::reg::xmm(*next - 1)), size));
+    }
+    let slot = at.next_multiple_of(16);
+    *at = slot.checked_add(16).ok_or(hod_cg::abi::SIZE_LIMIT)?;
+    Ok((Place::Stack(slot), size))
 }
 
-/// Glue `store` of a `half` call result from `xmm0` (`movd`, 16 bits).
-pub fn store_xmm0(cx: &mut FnCx<'_, X86>, dst: FrameRef) {
-    put(cx, mc::movd_rx(Size::D, EAX, Xmm::Xmm0));
-    frame_inst(cx, dst, |m| mc::mov_mr(Size::W, m, EAX));
+/// Glue `load` of `bytes` (2, 4, 8 or 16) into `xmm<x>`: a `half` result
+/// (`movzx`, `movd`) or a vector at the boundary (`movd`, `movsd`,
+/// `movdqu`).
+pub fn load_xmm(cx: &mut FnCx<'_, X86>, x: Xmm, src: FrameRef, bytes: u32) {
+    match bytes {
+        2 => {
+            frame_inst(cx, src, |m| mc::movzx_rm(Size::D, EAX, Size::W, m));
+            put(cx, mc::movd_xr(Size::D, x, EAX));
+        }
+        4 => frame_inst(cx, src, |m| mc::movd_rm(Size::D, x, m)),
+        8 => frame_inst(cx, src, |m| mc::movs_rm(FpSize::D, x, m)),
+        _ => frame_inst(cx, src, |m| mc::movdqu_rm(x, m)),
+    }
+}
+
+/// Glue `store` of `bytes` (2, 4, 8 or 16) from `xmm<x>`: a `half` call
+/// result (`movd`, 16 bits) or a vector at the boundary.
+pub fn store_xmm(cx: &mut FnCx<'_, X86>, x: Xmm, dst: FrameRef, bytes: u32) {
+    match bytes {
+        2 => {
+            put(cx, mc::movd_rx(Size::D, EAX, x));
+            frame_inst(cx, dst, |m| mc::mov_mr(Size::W, m, EAX));
+        }
+        4 => frame_inst(cx, dst, |m| mc::movd_mr(Size::D, m, x)),
+        8 => frame_inst(cx, dst, |m| mc::movs_mr(FpSize::D, m, x)),
+        _ => frame_inst(cx, dst, |m| mc::movdqu_mr(m, x)),
+    }
 }
 
 /// Whether `inst` has a `half` result or operand in a function with

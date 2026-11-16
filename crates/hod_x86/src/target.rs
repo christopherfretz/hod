@@ -318,6 +318,10 @@ impl Target for X86 {
         if dst == src || bytes == 0 {
             return;
         }
+        if let FrameRef::Incoming(_) = dst {
+            // WP-324: a `musttail` call's arguments go to the real area.
+            return crate::ssp::raw_incoming(cx, |cx| common::copy_frame(cx, dst, src, bytes));
+        }
         common::copy_frame(cx, dst, src, bytes);
     }
 

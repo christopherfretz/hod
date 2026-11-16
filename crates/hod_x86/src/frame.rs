@@ -97,6 +97,7 @@ pub fn begin(cx: &mut FnCx<'_, X86>) -> CgResult<()> {
     cx.state.frame.frame_imm = cx.offset() + sub.bytes().len() as u32 - 4;
     put(cx, sub);
     crate::ssp::reserve(cx)?; // WP-324: the low guard, first in the local area
+    crate::ssp::copy_arguments(cx)?; // WP-324: stack arguments below the guard
     // `spec/abi-x86.md` §5.2: a function that writes its result through
     // a hidden pointer finds it in the first stack argument (`agg`);
     // §6.1: an `inreg sret` pointer is kept for the return, before any

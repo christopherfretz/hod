@@ -151,6 +151,7 @@ fn frame_mem(place: FrameRef) -> (Mem, bool) {
 
 /// Emits the instruction `make` builds over the operand of `place`.
 pub fn frame_inst(cx: &mut FnCx<'_, X86>, place: FrameRef, make: impl FnOnce(Mem) -> Inst) {
+    let place = crate::ssp::incoming(cx, place); // WP-324: the arguments' copy
     let (mem, local) = frame_mem(place);
     let inst = make(mem);
     let at = cx.offset();

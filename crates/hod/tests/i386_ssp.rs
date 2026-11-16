@@ -94,7 +94,7 @@ fn an_overflow_aborts_as_under_llc() {
         let (Some(clang), Some(llc)) = (llvm_tool(major, "clang"), llvm_tool(major, "llc")) else {
             continue;
         };
-        for case in 1..=5 {
+        for case in 1..=6 {
             for pic in [false, true] {
                 let define = format!("-DOVERFLOW={case}");
                 let pie = if pic { "-fPIE" } else { "-fno-pic" };
@@ -133,6 +133,71 @@ fn an_overflow_aborts_as_under_llc() {
         }
     }
     eprintln!("i386 ssp: {runs} overflow runs abort as llc's");
+}
+
+/// `ssp/args.ll`: the hidden result pointer, a pointer argument and a
+/// scalar argument, all on the stack, used after a protected buffer was
+/// written. In bounds the program prints what `llc`'s prints; with the
+/// overflow (`@over` = 200) it reaches all three, and every build aborts
+/// on the guard instead of storing through an overwritten pointer (CPU
+/// `generic` and `i686`, static and PIE, `llc` 19 and 22, every linker).
+#[test]
+fn stack_arguments_are_read_from_their_copy() {
+    let Some(tools) = tools() else { return };
+    let scratch = Scratch::new("i386-ssp-args");
+    let text = std::fs::read_to_string(data("ssp", "args.ll")).unwrap();
+    let over = text.replace("@over = global i32 0", "@over = global i32 200");
+    assert_ne!(text, over);
+    let target = Target::I686;
+    let mut runs = 0;
+    for major in LLVM_MAJORS {
+        let Some(llc) = llvm_tool(major, "llc") else { continue };
+        for (cpu, smash) in [("generic", false), ("i686", false), ("generic", true), ("i686", true)] {
+            for pic in [false, true] {
+                let label = format!("args-{major}-{cpu}-{}-{}", u8::from(pic), u8::from(smash));
+                let module = if smash { &over } else { &text };
+                let ll = scratch.write(&format!("{label}.ll"), module);
+                let build = Build { pic, mcpu: Some(cpu), ..STATIC };
+                let (plain, stressed) = hod_objects(module.as_bytes(), build, &label);
+                let mcpu = format!("-mcpu={cpu}");
+                let mut flags = vec![mcpu.as_str()];
+                if pic {
+                    flags.push("-relocation-model=pic");
+                }
+                let objects = [
+                    ("llc", llc_object(&scratch, &llc, &ll, &flags, &format!("{label}-llc"))),
+                    ("hod", scratch.write(&format!("{label}-hod.o"), plain)),
+                    ("stress", scratch.write(&format!("{label}-stress.o"), stressed)),
+                ];
+                let mut expected = None;
+                for (linker, program) in &tools.linkers {
+                    for (who, object) in &objects {
+                        let exe = scratch.join(format!("{label}-{who}-{linker}"));
+                        let mut command = Command::new(&tools.gcc);
+                        command.args(linkers::driver_flags(scratch.path(), linker, program));
+                        command.arg(if pic { "-pie" } else { "-no-pie" });
+                        command.arg(object).arg("-o").arg(&exe);
+                        checked(&format!("{linker} link of {label} ({who})"), &mut command);
+                        runs += 1;
+                        if smash {
+                            if let Err(what) = aborts_smashed(&tools, &exe) {
+                                panic!("{label} ({who}, {linker}) did not abort: {what}");
+                            }
+                            continue;
+                        }
+                        let mut command = Command::new(&tools.qemu);
+                        command.args(target.emulator_args(&target.sysroot())).arg(&exe);
+                        let outcome = run_with(&mut command, &[], DEFAULT_TIMEOUT);
+                        let got = (outcome.status.and_then(|s| s.code()), outcome.stdout_text());
+                        assert_eq!(got.0, Some(0), "{label} ({who}, {linker})");
+                        let first = expected.get_or_insert_with(|| got.clone());
+                        assert_eq!(&got, first, "{label} ({who}, {linker}) differs from llc's");
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("i386 ssp: {runs} stack-argument runs as llc's");
 }
 
 #[test]

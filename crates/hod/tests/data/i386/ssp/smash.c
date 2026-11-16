@@ -76,8 +76,9 @@ __attribute__((noinline)) float fover(int n, float x) {
     return r;
 }
 
-/* A struct result through a hidden pointer (no overflow case: the
- * pointer is an incoming stack argument, above the guard). */
+/* A struct result through a hidden pointer: an incoming stack argument,
+ * above the guard. The overflow (case 6) reaches it before the stores of
+ * the result: they go through the copy made at entry, below the guard. */
 struct big { int v[5]; };
 __attribute__((noinline)) struct big make(int n) {
     struct big r;
@@ -106,7 +107,7 @@ int main(void) {
     printf("dproduct %a\n", dproduct(1.1, 3.3));
     printf("wide %lld\n", wide(k == 4 ? 12 + over : 12));
     printf("fover %a\n", (double)fover(k == 5 ? 8 + over : 8, 2.5f));
-    struct big b = make(20);
+    struct big b = make(k == 6 ? 20 + over : 20);
     printf("make %d %d\n", b.v[0], b.v[4]);
     printf("rec %d\n", rec(5));
     return 0;

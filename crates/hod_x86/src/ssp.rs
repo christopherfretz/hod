@@ -39,10 +39,11 @@
 //! `control::ret`); one only hod protects keeps the copy (hod's check
 //! does not touch the x87 stack).
 
+use hod_cg::abi::{Assignment, PartKind, Place, RetMemory};
 use hod_cg::{CallTarget, CfiOp, CgResult, FnCx, FrameRef, Label, RuntimeFn, SymRef};
 use hod_ir::{FnAttrs, SymbolKind};
 use hod_mc_x64 as mc;
-use hod_mc_x64::{Cond, Mem, Seg, Size};
+use hod_mc_x64::{Cond, Mem, Reg, Seg, Size};
 
 use crate::common::{ECX, EDX, INCOMING_BASE, branch_cond, frame_inst, put};
 use crate::reg::DWARF_EBP;
@@ -51,6 +52,10 @@ use crate::target::X86;
 /// Where glibc keeps the guard value on i386: `gs:[0x14]`, the TCB's
 /// `stack_guard` (what `llc` reads for Linux).
 const GUARD_TLS_OFFSET: i32 = 0x14;
+
+/// The scratch of [`copy_arguments`]: saved by the prologue, never an
+/// argument register.
+const ESI: Reg = Reg::Rsi;
 
 /// The low guard's slot: the start of the local area, the first thing a
 /// dynamic allocation's overflow reaches.
@@ -66,6 +71,19 @@ pub struct GuardState {
     guard: Option<u32>,
     /// The label of the call of `__stack_chk_fail`.
     fail: Option<Label>,
+    /// The incoming arguments' copy ([`copy_arguments`]): the span
+    /// `[lo, hi)` of the incoming area and the local slot it is at.
+    args: Option<ArgsCopy>,
+    /// Set while a `musttail` call writes the real incoming area.
+    raw: bool,
+}
+
+/// The copy of the incoming stack arguments below the guarded block.
+#[derive(Clone, Copy, Debug)]
+struct ArgsCopy {
+    lo: u32,
+    hi: u32,
+    slot: u32,
 }
 
 fn guard_value() -> Mem {
@@ -116,6 +134,82 @@ pub fn reserve(cx: &mut FnCx<'_, X86>) -> CgResult<()> {
         return cx.bug("the low guard is not at the start of the local area");
     }
     Ok(())
+}
+
+/// Whether the bytes `[at, at + len)` of the incoming area hold an
+/// argument the body reads as a value: the hidden result pointer, or a
+/// part that is not a `byval` copy (`llc` reads those in place).
+fn copied(asg: &Assignment, at: u32, len: u32) -> bool {
+    let overlaps = |start: u32, size: u32| at < start + size.max(1) && start < at + len;
+    let hidden = matches!(asg.ret_memory, Some(RetMemory { address: Place::Stack(0), .. }));
+    (hidden && overlaps(0, 4))
+        || asg.args.iter().any(|p| {
+            p.kind != PartKind::Pointee
+                && matches!(p.place, Place::Stack(start) if overlaps(start, p.size))
+        })
+}
+
+/// `begin_function`, after [`reserve`]: in a protected function the
+/// incoming stack arguments (the hidden result pointer, every part that
+/// is not a `byval` copy) are copied into a local slot, below the guarded
+/// block, before any argument register is read; every later access of
+/// those bytes is to the copy ([`incoming`]). An overflow that reaches
+/// the incoming area then changes nothing the body reads or writes
+/// through before the check, as under `llc`, which loads each stack
+/// argument at entry and keeps it in a spill slot below its protected
+/// arrays. Scratch: `esi` (saved by the prologue, never an argument).
+///
+/// # Errors
+/// What allocating the slot reports.
+pub fn copy_arguments(cx: &mut FnCx<'_, X86>) -> CgResult<()> {
+    if !cx.stack_guard().is_on() {
+        return Ok(());
+    }
+    let asg = cx.fn_assignment();
+    let hidden = matches!(asg.ret_memory, Some(RetMemory { address: Place::Stack(0), .. }));
+    let spans = asg.args.iter().filter(|p| p.kind != PartKind::Pointee).filter_map(|p| match p.place {
+        Place::Stack(start) => Some((start, start + p.size.max(1))),
+        Place::Reg(_) => None,
+    });
+    let spans = spans.chain(hidden.then_some((0, 4)));
+    let Some((lo, hi)) = spans.fold(None, |acc: Option<(u32, u32)>, (s, e)| {
+        Some(acc.map_or((s, e), |(lo, hi)| (lo.min(s), hi.max(e))))
+    }) else {
+        return Ok(());
+    };
+    // The copy keeps each byte's offset modulo 16 (an over-aligned part
+    // stays aligned) and is whole words.
+    let (lo, hi) = (lo & !15, hi.next_multiple_of(4));
+    let FrameRef::Local(slot) = cx.alloc_slot(u64::from(hi - lo), 16)? else {
+        return cx.bug("the arguments' copy is outside the local area");
+    };
+    for at in (lo..hi).step_by(4) {
+        if copied(cx.fn_assignment(), at, 4) {
+            frame_inst(cx, FrameRef::Incoming(at), |m| mc::mov_rm(Size::D, ESI, m));
+            frame_inst(cx, FrameRef::Local(slot + at - lo), |m| mc::mov_mr(Size::D, m, ESI));
+        }
+    }
+    cx.state.ssp.args = Some(ArgsCopy { lo, hi, slot });
+    Ok(())
+}
+
+/// Where an access of `place` goes: an incoming argument's bytes that
+/// [`copy_arguments`] copied are read and written in the copy.
+pub fn incoming(cx: &FnCx<'_, X86>, place: FrameRef) -> FrameRef {
+    let (FrameRef::Incoming(at), Some(copy)) = (place, cx.state.ssp.args) else { return place };
+    if cx.state.ssp.raw || at < copy.lo || at >= copy.hi || !copied(cx.fn_assignment(), at, 1) {
+        return place;
+    }
+    FrameRef::Local(copy.slot + at - copy.lo)
+}
+
+/// `f` with the real incoming area: a `musttail` call writes its stack
+/// arguments there, over the caller's.
+pub fn raw_incoming(cx: &mut FnCx<'_, X86>, f: impl FnOnce(&mut FnCx<'_, X86>)) {
+    let was = cx.state.ssp.raw;
+    cx.state.ssp.raw = true;
+    f(cx);
+    cx.state.ssp.raw = was;
 }
 
 /// `Target::enter_guard`: the guard words and the block's pointers.

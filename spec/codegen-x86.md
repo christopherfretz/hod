@@ -1007,20 +1007,44 @@ a `noreturn` call or `resume`). The i386 parts:
   bytes or more under `ssp`) a `float`/`double` result live into the
   return is rounded by hod and not by `llc`. The check is no barrier
   elsewhere: nothing else is live across it.
-- A struct result's hidden pointer is an incoming stack argument, above
-  the guard, and hod reads it there at the return (`spec/abi-x86.md`
-  §5.2) where `llc` keeps a copy below the guard: an overflow that
-  reaches it makes hod's store of the result fault before the check, as
-  any use of an overwritten incoming argument does (both are undefined
-  behaviour; the stack is not returned through).
+- **The incoming stack arguments are copied below the guard.** They lie
+  above the return address, so an overflow that gets past the guard
+  reaches them before the check runs. `llc` 19 and 22 (`-O0`, CPU
+  `generic` and `i686`, static and PIC) load every stack argument the
+  body uses after the entry block in the entry block, and keep it in a
+  spill slot below the protected arrays: the struct result's hidden
+  pointer (`spec/abi-x86.md` §5.2) for each store of the result and for
+  the `eax` result, a scalar or pointer argument for each later use. It
+  reads `byval` copies in place. In a protected function hod copies, in
+  `begin_function` right after the low guard's slot and before any
+  argument register is read, every word of the incoming area that holds
+  the hidden pointer or a part that is not `byval` (scratch `esi`, which
+  the prologue saved and which carries no argument). The copy goes into
+  one local slot, 16-aligned, that keeps each byte's offset modulo 16.
+  Like every slot outside the guarded block, it lies below the block
+  (`spec/codegen.md` §5.6.24 rule 3). From then on every access to those
+  bytes (`ssp::incoming`, applied by `common::frame_inst`) goes to the
+  copy: argument homes, the hidden pointer for the stores of the result
+  and for `eax`. The exception is a `musttail` call's copy of its stack
+  arguments into the real incoming area. An overflow therefore never
+  makes the body write through an overwritten pointer before the check
+  aborts. `byval` copies stay in place, as under `llc`. Debug locations
+  of stack arguments still name the incoming slot, which holds the same
+  value until it is overwritten.
 
 Evidence: `tests/i386_ssp.rs`: `ssp/smash.c` with `-fstack-protector`,
 `-strong` and `-all` and `ssp/tail.ll` run as `llc`'s (output and status;
 `-march=i586` and the default CPU, static and PIE, GNU ld, lld and mold,
-`llc` 19 and 22, also under `Stress::ALL`); with `-DOVERFLOW=1..5` (one
-buffer, several slots, the low guard, an `i64` result, a `float` result)
-every build aborts with `*** stack smashing detected ***` and SIGABRT,
-as `llc`'s.
+`llc` 19 and 22, also under `Stress::ALL`); with `-DOVERFLOW=1..6` (one
+buffer, several slots, the low guard, an `i64` result, a `float` result,
+a struct result through its hidden pointer) every build aborts with
+`*** stack smashing detected ***` and SIGABRT, as `llc`'s. `ssp/args.ll`
+(the hidden pointer, a pointer argument and a scalar argument on the
+stack, used after the buffer is written) runs as `llc`'s in bounds. With
+its overflow, every build aborts the same way (CPU `generic` and
+`i686`, static and PIE, `llc` 19 and 22, every linker, also under
+`Stress::ALL`). Without the copy, hod's build faulted on the store
+through the overwritten result pointer.
 
 ## 17. Control-flow protection (`cet`, WP-324)
 

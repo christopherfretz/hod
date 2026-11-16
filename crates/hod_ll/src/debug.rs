@@ -805,7 +805,14 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
             }
             _ => {}
         }
-        let named = |text: &[u8]| named_code(shape, field, text);
+        // A word's code, looked up once (the `true`, `false` and `null`
+        // arms come first and never consult it).
+        let code = match token.kind {
+            Tok::Word if !matches!(text, b"true" | b"false" | b"null") => {
+                named_code(shape, field, text)
+            }
+            _ => None,
+        };
         let value = match token.kind {
             Tok::Str => {
                 let string = self.string(token);
@@ -839,9 +846,9 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
                 self.bump();
                 Val::Bool(text == b"true")
             }
-            Tok::Word if text != b"null" && named(text).is_some() => {
+            Tok::Word if code.is_some() => {
                 self.bump();
-                Val::UInt(named(text).unwrap_or(0))
+                Val::UInt(code.unwrap_or(0))
             }
             Tok::Word
                 if !matches!(shape, Some(DiShape::Node | DiShape::Bound))

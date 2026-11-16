@@ -323,15 +323,27 @@ fn barrier(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
     }
 }
 
-/// The key of `llc`'s `___tls_get_addr` call for operand `v`: the symbol
-/// of a general-dynamic thread-local, `None` (the module's block) for a
-/// local-dynamic one; nothing for any other value.
-fn tls_key(cx: &FnCx<'_, X86>, v: Value) -> Option<Option<hod_ir::SymId>> {
-    let (sym, _, model) = crate::tls::dynamic_symbol(cx, v)?;
-    Some((model == hod_cg::TlsAccess::GeneralDynamic).then_some(sym))
+/// What one `___tls_get_addr` call of `llc` computes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TlsKey {
+    /// A general-dynamic thread-local's address.
+    Symbol(hod_ir::SymId),
+    /// The module's block (local dynamic, for all its symbols).
+    Module,
 }
 
-fn operands_of<'a>(inst: Inst<'a>) -> &'a [Value] {
+/// The key of `llc`'s `___tls_get_addr` call for operand `v`, if it is a
+/// thread-local of a dynamic model.
+fn tls_key(cx: &FnCx<'_, X86>, v: Value) -> Option<TlsKey> {
+    let (sym, _, model) = crate::tls::dynamic_symbol(cx, v)?;
+    Some(if model == hod_cg::TlsAccess::GeneralDynamic {
+        TlsKey::Symbol(sym)
+    } else {
+        TlsKey::Module
+    })
+}
+
+fn operands_of(inst: Inst<'_>) -> &[Value] {
     match inst.kind() {
         InstKind::Call(site) => site.args(),
         _ => inst.operands(),
@@ -601,13 +613,14 @@ fn const_bits(cx: &FnCx<'_, X86>, v: Value, fp: Fp, user: Inst<'_>, depth: u32) 
         Fp::F32 => f32::from_bits(bits as u32).is_nan(),
         _ => f64::from_bits(bits).is_nan(),
     };
-    let bits = match v.kind() {
-        ValueKind::Const(id) => match cx.module.consts.get(id) {
+    let bits = if let ValueKind::Const(id) = v.kind() {
+        match cx.module.consts.get(id) {
             Const::Float { bits, .. } => bits,
             Const::Zero(_) => 0,
             _ => return None,
-        },
-        _ => {
+        }
+    } else {
+        {
             let def = cx.body.inst(v.as_inst()?);
             let local = def.id() < user.id()
                 && (def.id().raw() + 1..user.id().raw())

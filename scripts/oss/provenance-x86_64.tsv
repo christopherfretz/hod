@@ -9,6 +9,10 @@
 hod	hod-715150d4	e7b8796d
 hod	hod-8ec6b21e	9e25d3f1
 hod	hod-f59b4cc6	56a4695f
+# re2: the hosted real-projects run 43779000922 of exactly cd6ef6bc, native
+# on GitHub's x86_64 runner (hod cd6ef6bc built by the job, binary `hod`;
+# kiln 8f93304ee, the re2 row below)
+hod	hod	cd6ef6bc (hosted run 43779000922)
 # frozen copies of the release candidates under other names: the third set's
 # copy of cd6ef6bc (WP-211) and the fifth set's copy of e98267c0 (WP-253)
 hod	hod-rc3-cd6ef6bc	cd6ef6bc
@@ -49,5 +53,6 @@ note	Boost (`boost_tmpl`): one of the 528 links fails in every build, the contro
 note	range_v3: one translation unit (`view/tokenize.cpp`) fails to compile upstream in every build, the control's included (clang 19 rejects it too); every object the strict build makes is hod's.
 note	A test that runs an x86-64 program itself rather than through ctest (a death test re-executing `/proc/self/exe`, a python test script) fails under qemu in the control and in hod's builds alike: the comparison with the control holds, the absolute count does not (googletest's 45 of 63).
 note	glog -O0: `logging` is a thread race of the test under qemu, failing and passing in the control and in strict alike (the lane's A/B runs); not a miscompile.
-note	zlib: one of 37 objects is not offered to hod by kiln (`infcover.c`, `coverage`); the strict build is marked `failed (0 TUs)`. `-O0 -g` strict at e98267c0: `zlib_static_example` failed once with "gzread err:" (it and `zlib_example` write `test/foo.gz` in the same directory under parallel ctest); run alone under qemu it passed 5 of 5 (the lane's notes; no rerun is recorded in the tree). projects.toml's test step for zlib now runs `ctest -j1`.
+note	zlib (the one stated exception of the lane rows, docs/RELEASE.md section 5): one of 37 objects, `infcover.c`, is compiled with `--coverage`, and kiln never offers such a translation unit to hod (skip reason `coverage`: the gcov instrumentation runs in kiln's LLVM pipeline), so 36 of 37 objects are hod's and the strict build is marked `failed`; the owner's decision of 2026-11-15: not hod's fault, does not block 1.0 (BACKLOG WP-279). `infcover` links in neither build (LLVM's profile runtime is absent on the lane host): 7 of 8 links. Both flavours measured at cd6ef6bc against fresh kiln 8f93304ee controls (WP-278), serial ctest: 5 of 6 tests, the control's. The `-O0 -g` difference seen at e98267c0 is a race in zlib's own tests: `zlib_example` and `zlib_static_example` write the same `foo.gz`; under `ctest -j2` it fails 27 to 36 of 40 runs in the control and in strict alike, serially 0 of 20 (WP-278).
 note	ctre has no ctest tests: its build (the compile-time tests) is the measurement.
+note	re2's rows (hod cell `cd6ef6bc (hosted run 43779000922)`) are from the hosted real-projects run 43779000922 of exactly cd6ef6bc: built and tested natively on GitHub's x86_64 runner, hod cd6ef6bc built by the job, kiln 8f93304ee, every tree (control, hybrid, strict). Every other row of this page is cross-built on the AArch64 lane host with its tests run under qemu-x86_64.

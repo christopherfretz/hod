@@ -6,65 +6,63 @@ Host: aarch64; target: aarch64.
 
 | project | revision | flavour | TUs | objects | built by hod | fell back | not offered | hybrid build | strict build | tests llc | tests hod | tests strict | against the control | hod | kiln | at the candidate |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| fmt | 12.1.0 | O0 | 50 | 50 | 50 | 0 | 0 | ok | ok | 21/21 | 21/21 | 21/21 | same | `77f1f69` | `21caaf874` | no: measured before the candidate |
-| fmt | 12.1.0 | O0g | 50 | 50 | 50 | 0 | 0 | ok | ok | 21/21 | 21/21 | 21/21 | same | `77f1f69` | `21caaf874` | no: measured before the candidate |
-| googletest | v1.17.0 | O0 | 85 | 85 | 85 | 0 | 0 | ok | ok | 62/63 | 62/63 | 62/63 | same | `77f1f69` | `21caaf874` | no: measured before the candidate |
-| googletest | v1.17.0 | O0g | 85 | 85 | 85 | 0 | 0 | ok | ok | 62/63 | 62/63 | 62/63 | same | `77f1f69` | `21caaf874` | no: measured before the candidate |
-| abseil | 20260107.1 | O0 | 413 | 413 | 413 | 0 | 0 | ok | ok | 230/232 | 229/232 | 229/232 | same (rerun, note 1, note 2) | `77f1f69` | `21caaf874` | no: measured before the candidate |
-| abseil | 20260107.1 | O0g | 413 | 413 | 413 | 0 | 0 | ok | ok | 230/232 | 231/232 | 231/232 | hod: 1 better; strict: 1 better | `7b127f48` | `21caaf874` | no: measured before the candidate |
-| re2 | 2025-11-05 | O0 | 51 | 51 | 51 | 0 | 0 | ok | ok | 20/20 | 20/20 | 20/20 | same | `77f1f69` | `21caaf874` | no: measured before the candidate |
-| re2 | 2025-11-05 | O0g | 51 | 51 | 51 | 0 | 0 | ok | ok | 20/20 | 20/20 | 20/20 | same | `77f1f69` | `21caaf874` | no: measured before the candidate |
-| benchmark | v1.9.5 | O0 | 73 | 73 | 73 | 0 | 0 | ok | ok | 83/84 | 83/84 | 83/84 | same | `7b127f48` | `21caaf874` | no: measured before the candidate |
-| benchmark | v1.9.5 | O0g | 73 | 73 | 73 | 0 | 0 | ok | ok | 83/84 | 83/84 | 83/84 | same | `7b127f48` | `21caaf874` | no: measured before the candidate |
-| protobuf | v33.1 | O0 | 653 | 653 | 653 | 0 | 0 | ok | ok | 4/4 | 4/4 | 4/4 | same | `7b127f48` | `21caaf874` | no: measured before the candidate |
-| protobuf | v33.1 | O0g | 653 | 653 | 653 | 0 | 0 | ok | ok | 4/4 | 3/4 | 4/4 | same (rerun, note 3) | `77f1f69` | `21caaf874` | no: measured before the candidate |
-| spdlog | v1.17.0 | O0 | 140 | 140 | 140 | 0 | 0 | ok | ok | 1/1 | 1/1 | 1/1 | same | `77f1f69` | `21caaf874` | no: measured before the candidate |
-| spdlog | v1.17.0 | O0g | 140 | 140 | 140 | 0 | 0 | ok | ok | 1/1 | 1/1 | 1/1 | same | `77f1f69` | `21caaf874` | no: measured before the candidate |
-| catch2 | v3.16.1 | O0 | 167 | 167 | 167 | 0 | 0 | ok | ok | 81/81 | 81/81 | 81/81 | same | `7b127f48` | `21caaf874` | no: measured before the candidate |
-| catch2 | v3.16.1 | O0g | 167 | 167 | 167 | 0 | 0 | ok | ok | 81/81 | 81/81 | 81/81 | same | `7b127f48` | `21caaf874` | no: measured before the candidate |
-| nlohmann_json | v3.12.0 | O0 | 93 | 108 | 108 | 0 | 0 | ok | ok | 97/97 | 97/97 | 97/97 | same | `7b127f48` | `21caaf874` | no: measured before the candidate |
-| nlohmann_json | v3.12.0 | O0g | 93 | 108 | 108 | 0 | 0 | ok | ok | 97/97 | 97/97 | 97/97 | same | `7b127f48` | `21caaf874` | no: measured before the candidate |
-| yaml_cpp | yaml-cpp-0.9.0 | O0 | 51 | 51 | 51 | 0 | 0 | ok | ok | 1/1 | 1/1 | 1/1 | same | `77f1f69` | `21caaf874` | no: measured before the candidate |
-| yaml_cpp | yaml-cpp-0.9.0 | O0g | 51 | 51 | 51 | 0 | 0 | ok | ok | 1/1 | 1/1 | 1/1 | same | `77f1f69` | `21caaf874` | no: measured before the candidate |
-| glog | v0.7.1 | O0 | 23 | 47 (2 no backend) | 45 | 0 | 0 | ok | ok | 22/24 | 22/24 | 22/24 | same | `77f1f69` | `21caaf874` | no: measured before the candidate |
-| glog | v0.7.1 | O0g | 23 | 47 (2 no backend) | 45 | 0 | 0 | ok | ok | 23/24 | 23/24 | 23/24 | same | `7b127f48` | `21caaf874` | no: measured before the candidate |
-| leveldb | 1.23 | O0 | 121 | 121 | 121 | 0 | 0 | ok | ok | 30/30 | 30/30 | 30/30 | same | `77f1f69` | `21caaf874` | no: measured before the candidate |
-| leveldb | 1.23 | O0g | 121 | 121 | 121 | 0 | 0 | ok | ok | 30/30 | 30/30 | 30/30 | same | `77f1f69` | `21caaf874` | no: measured before the candidate |
-| cli11 | v2.6.1 | O0 | 65 | 65 | 65 | 0 | 0 | ok | ok | 86/86 | 86/86 | 86/86 | same | `77f1f69` | `21caaf874` | no: measured before the candidate |
-| cli11 | v2.6.1 | O0g | 65 | 65 | 65 | 0 | 0 | ok | ok | 86/86 | 86/86 | 86/86 | same | `77f1f69` | `21caaf874` | no: measured before the candidate |
-| doctest | v2.5.3 | O0 | 121 | 121 | 121 | 0 | 0 | ok | ok | 193/193 | 193/193 | 193/193 | same | `77f1f69` | `21caaf874` | no: measured before the candidate |
-| doctest | v2.5.3 | O0g | 121 | 121 | 121 | 0 | 0 | ok | ok | 193/193 | 193/193 | 193/193 | same | `77f1f69` | `21caaf874` | no: measured before the candidate |
-| simdjson | v4.2.4 | O0 | 135 | 169 (15 no backend) | 154 | 0 | 0 | ok | ok | 117/117 | 117/117 | 117/117 | same | `3b14f8ff` | `21b9110a4` | no: measured before the candidate |
-| simdjson | v4.2.4 | O0g | 135 | 169 (15 no backend) | 154 | 0 | 0 | ok | ok | 117/117 | 117/117 | 117/117 | same | `3b14f8ff` | `21b9110a4` | no: measured before the candidate |
-| magic_enum | v0.9.7 | O0 | 22 | 22 | 22 | 0 | 0 | ok | ok | 15/15 | 15/15 | 15/15 | same | `3b14f8ff` | `21b9110a4` | no: measured before the candidate |
-| magic_enum | v0.9.7 | O0g | 22 | 22 | 22 | 0 | 0 | ok | ok | 15/15 | 15/15 | 15/15 | same | `3b14f8ff` | `21b9110a4` | no: measured before the candidate |
-| tl_expected | v1.3.1 | O0 | 13 | 13 | 13 | 0 | 0 | ok | ok | 1/1 | 1/1 | 1/1 | same | `3b14f8ff` | `21b9110a4` | no: measured before the candidate |
-| tl_expected | v1.3.1 | O0g | 13 | 13 | 13 | 0 | 0 | ok | ok | 1/1 | 1/1 | 1/1 | same | `3b14f8ff` | `21b9110a4` | no: measured before the candidate |
-| zlib | v1.3.2 | O0 | 37 | 37 | 36 | 0 | 1 | failed (0 TUs) | failed (0 TUs) | 5/6 | 5/6 | 5/6 | same | `3b14f8ff` | `21b9110a4` | no: measured before the candidate |
-| zlib | v1.3.2 | O0g | 37 | 37 | 36 | 0 | 1 | failed (0 TUs) | failed (0 TUs) | 5/6 | 5/6 | 5/6 | same | `3b14f8ff` | `21b9110a4` | no: measured before the candidate |
-| zstd | v1.5.7 | O0 | 118 | 118 | 118 | 0 | 0 | ok | ok | 2/3 | 2/3 | 2/3 | same | `3b14f8ff` | `21b9110a4` | no: measured before the candidate |
-| zstd | v1.5.7 | O0g | 118 | 118 | 118 | 0 | 0 | ok | ok | 2/3 | 2/3 | 2/3 | same | `3b14f8ff` | `21b9110a4` | no: measured before the candidate |
-| mold | v2.42.1 | O0 | 242 | 242 | 242 | 0 | 0 | ok | ok | 928/929 | 928/929 | 928/929 | same | `77873543` | `21caaf874` | no: measured before the candidate |
-| mold | v2.42.1 | O0g | 242 | 242 | 242 | 0 | 0 | ok | ok | 928/929 | 928/929 | 928/929 | same | `77873543` | `21caaf874` | no: measured before the candidate |
+| fmt | 12.1.0 | O0 | 50 | 50 | 50 | 0 | 0 | ok | ok | 21/21 | 21/21 | 21/21 | same | `cd6ef6bc (hosted run 43779000922)` | `8f93304ee` | yes |
+| fmt | 12.1.0 | O0g | 50 | 50 | 50 | 0 | 0 | ok | ok | 21/21 | 21/21 | 21/21 | same | `cd6ef6bc (hosted run 43779000922)` | `8f93304ee` | yes |
+| googletest | v1.17.0 | O0 | 85 | 85 | 85 | 0 | 0 | ok | ok | 63/63 | 63/63 | 63/63 | same | `cd6ef6bc (hosted run 43779000922)` | `8f93304ee` | yes |
+| googletest | v1.17.0 | O0g | 85 | 85 | 85 | 0 | 0 | ok | ok | 63/63 | 63/63 | 63/63 | same | `cd6ef6bc (hosted run 43779000922)` | `8f93304ee` | yes |
+| abseil | 20260107.1 | O0 | 413 | 413 | 413 | 0 | 0 | ok | ok | 231/232 | 231/232 | 231/232 | same | `cd6ef6bc (hosted run 43779000922)` | `8f93304ee` | yes |
+| abseil | 20260107.1 | O0g | 413 | 413 | 413 | 0 | 0 | ok | ok | 231/232 | 231/232 | 231/232 | same | `cd6ef6bc (hosted run 43779000922)` | `8f93304ee` | yes |
+| re2 | 2025-11-05 | O0 | 51 | 51 | 51 | 0 | 0 | ok | ok | 20/20 | 20/20 | 20/20 | same | `cd6ef6bc (hosted run 43779000922)` | `8f93304ee` | yes |
+| re2 | 2025-11-05 | O0g | 51 | 51 | 51 | 0 | 0 | ok | ok | 20/20 | 20/20 | 20/20 | same | `cd6ef6bc (hosted run 43779000922)` | `8f93304ee` | yes |
+| benchmark | v1.9.5 | O0 | 73 | 73 | 73 | 0 | 0 | ok | ok | 83/84 | 83/84 | 83/84 | same | `cd6ef6bc (hosted run 43779000922)` | `8f93304ee` | yes |
+| benchmark | v1.9.5 | O0g | 73 | 73 | 73 | 0 | 0 | ok | ok | 83/84 | 83/84 | 83/84 | same | `cd6ef6bc (hosted run 43779000922)` | `8f93304ee` | yes |
+| protobuf | v33.1 | O0 | 653 | 653 | 653 | 0 | 0 | ok | ok | 3/4 | 3/4 | 3/4 | same | `cd6ef6bc (hosted run 43779000922)` | `8f93304ee` | yes |
+| protobuf | v33.1 | O0g | 653 | 653 | 653 | 0 | 0 | ok | ok | 3/4 | 3/4 | 3/4 | same | `cd6ef6bc (hosted run 43779000922)` | `8f93304ee` | yes |
+| spdlog | v1.17.0 | O0 | 140 | 140 | 140 | 0 | 0 | ok | ok | 1/1 | 1/1 | 1/1 | same | `cd6ef6bc (hosted run 43779000922)` | `8f93304ee` | yes |
+| spdlog | v1.17.0 | O0g | 140 | 140 | 140 | 0 | 0 | ok | ok | 1/1 | 1/1 | 1/1 | same | `cd6ef6bc (hosted run 43779000922)` | `8f93304ee` | yes |
+| catch2 | v3.16.1 | O0 | 167 | 167 | 167 | 0 | 0 | ok | ok | 82/82 | 82/82 | 82/82 | same | `cd6ef6bc (hosted run 43779000922)` | `8f93304ee` | yes |
+| catch2 | v3.16.1 | O0g | 167 | 167 | 167 | 0 | 0 | ok | ok | 82/82 | 82/82 | 82/82 | same | `cd6ef6bc (hosted run 43779000922)` | `8f93304ee` | yes |
+| nlohmann_json | v3.12.0 | O0 | 93 | 108 | 108 | 0 | 0 | ok | ok | 97/97 | 97/97 | 97/97 | same | `cd6ef6bc (hosted run 43779000922)` | `8f93304ee` | yes |
+| nlohmann_json | v3.12.0 | O0g | 93 | 103 | 103 | 0 | 0 | ok | ok | 97/97 | 97/97 | 97/97 | same | `cd6ef6bc (hosted run 43779000922)` | `8f93304ee` | yes |
+| yaml_cpp | yaml-cpp-0.9.0 | O0 | 51 | 51 | 51 | 0 | 0 | ok | ok | 1/1 | 1/1 | 1/1 | same | `cd6ef6bc (hosted run 43779000922)` | `8f93304ee` | yes |
+| yaml_cpp | yaml-cpp-0.9.0 | O0g | 51 | 51 | 51 | 0 | 0 | ok | ok | 1/1 | 1/1 | 1/1 | same | `cd6ef6bc (hosted run 43779000922)` | `8f93304ee` | yes |
+| glog | v0.7.1 | O0 | 23 | 47 (2 no backend) | 45 | 0 | 0 | ok | ok | 23/24 | 23/24 | 23/24 | same | `cd6ef6bc (hosted run 43779000922)` | `8f93304ee` | yes |
+| glog | v0.7.1 | O0g | 23 | 47 (2 no backend) | 45 | 0 | 0 | ok | ok | 23/24 | 23/24 | 23/24 | same | `cd6ef6bc (hosted run 43779000922)` | `8f93304ee` | yes |
+| leveldb | 1.23 | O0 | 121 | 121 | 121 | 0 | 0 | ok | ok | 30/30 | 30/30 | 30/30 | same | `cd6ef6bc (hosted run 43779000922)` | `8f93304ee` | yes |
+| leveldb | 1.23 | O0g | 121 | 121 | 121 | 0 | 0 | ok | ok | 30/30 | 30/30 | 30/30 | same | `cd6ef6bc (hosted run 43779000922)` | `8f93304ee` | yes |
+| cli11 | v2.6.1 | O0 | 65 | 65 | 65 | 0 | 0 | ok | ok | 86/86 | 86/86 | 86/86 | same | `cd6ef6bc (hosted run 43779000922)` | `8f93304ee` | yes |
+| cli11 | v2.6.1 | O0g | 65 | 65 | 65 | 0 | 0 | ok | ok | 86/86 | 86/86 | 86/86 | same | `cd6ef6bc (hosted run 43779000922)` | `8f93304ee` | yes |
+| doctest | v2.5.3 | O0 | 121 | 121 | 121 | 0 | 0 | ok | ok | 193/193 | 193/193 | 193/193 | same | `cd6ef6bc (hosted run 43779000922)` | `8f93304ee` | yes |
+| doctest | v2.5.3 | O0g | 121 | 121 | 121 | 0 | 0 | ok | ok | 193/193 | 193/193 | 193/193 | same | `cd6ef6bc (hosted run 43779000922)` | `8f93304ee` | yes |
+| simdjson | v4.2.4 | O0 | 135 | 169 (15 no backend) | 154 | 0 | 0 | ok | ok | 117/117 | 117/117 | 117/117 | same | `cd6ef6bc (hosted run 43779000922)` | `8f93304ee` | yes |
+| simdjson | v4.2.4 | O0g | 135 | 169 (15 no backend) | 154 | 0 | 0 | ok | ok | 117/117 | 117/117 | 117/117 | same | `cd6ef6bc (hosted run 43779000922)` | `8f93304ee` | yes |
+| magic_enum | v0.9.7 | O0 | 22 | 22 | 22 | 0 | 0 | ok | ok | 15/15 | 15/15 | 15/15 | same | `3b14f8ff`, `cd6ef6bc` | `21b9110a4`, `8f93304ee` | yes |
+| magic_enum | v0.9.7 | O0g | 22 | 22 | 22 | 0 | 0 | ok | ok | 15/15 | 15/15 | 15/15 | same | `3b14f8ff`, `cd6ef6bc` | `21b9110a4`, `8f93304ee` | yes |
+| tl_expected | v1.3.1 | O0 | 13 | 13 | 13 | 0 | 0 | ok | ok | 1/1 | 1/1 | 1/1 | same | `3b14f8ff`, `cd6ef6bc` | `21b9110a4`, `8f93304ee` | yes |
+| tl_expected | v1.3.1 | O0g | 13 | 13 | 13 | 0 | 0 | ok | ok | 1/1 | 1/1 | 1/1 | same | `3b14f8ff`, `cd6ef6bc` | `21b9110a4`, `8f93304ee` | yes |
+| zlib | v1.3.2 | O0 | 37 | 37 | 36 | 0 | 1 | failed (0 TUs) | failed (0 TUs) | 5/6 | 5/6 | 5/6 | same | `3b14f8ff`, `cd6ef6bc` | `21b9110a4`, `8f93304ee` | yes |
+| zlib | v1.3.2 | O0g | 37 | 37 | 36 | 0 | 1 | failed (0 TUs) | failed (0 TUs) | 5/6 | 5/6 | 5/6 | same | `3b14f8ff`, `cd6ef6bc` | `21b9110a4`, `8f93304ee` | yes |
+| zstd | v1.5.7 | O0 | 118 | 118 | 118 | 0 | 0 | ok | ok | 2/3 | 2/3 | 2/3 | same | `3b14f8ff`, `cd6ef6bc` | `21b9110a4`, `8f93304ee` | yes |
+| zstd | v1.5.7 | O0g | 118 | 118 | 118 | 0 | 0 | ok | ok | 2/3 | 2/3 | 2/3 | same | `3b14f8ff`, `cd6ef6bc` | `21b9110a4`, `8f93304ee` | yes |
+| mold | v2.42.1 | O0 | 242 | 242 | 242 | 0 | 0 | ok | ok | 928/929 | 928/929 | 928/929 | same | `77873543`, `cd6ef6bc` | `21caaf874`, `8f93304ee` | yes |
+| mold | v2.42.1 | O0g | 242 | 242 | 242 | 0 | 0 | ok | ok | 928/929 | 928/929 | 928/929 | same | `77873543`, `cd6ef6bc` | `21caaf874`, `8f93304ee` | yes |
 | cmake | v4.5.0 | O0 | 607 | 607 | 607 | 0 | 0 | ok | ok | 96/97 | 96/97 | 97/97 | hod: 1 worse (RunCMake.CommandLine); hod: 1 better; strict: 1 better | `02fe2d02`, `cd6ef6bc` | `8f93304ee` | yes |
 | cmake | v4.5.0 | O0g | 607 | 607 | 607 | 0 | 0 | ok | ok | 96/97 | 95/97 | 96/97 | hod: 1 worse (RunCMake.try_compile); strict: 1 worse (RunCMake.try_compile); strict: 1 better | `02fe2d02`, `cd6ef6bc` | `8f93304ee` | yes |
 | opencv | 4.14.0 | O0 | 419 | 419 | 419 | 0 | 0 | ok | ok | 1/2 | 1/2 | 1/2 | same | `02fe2d02`, `cd6ef6bc` | `8f93304ee` | yes |
 | opencv | 4.14.0 | O0g | 419 | 419 | 419 | 0 | 0 | ok | ok | 1/2 | 1/2 | 1/2 | same | `02fe2d02`, `cd6ef6bc` | `8f93304ee` | yes |
-| duckdb | v1.5.6 | O0 | 1901 | 1901 | 1900 | 1 | 0 | ok | ok | 4614/4629 | 4614/4629 | 4615/4629 | hod: 1 better; strict: 1 better; note 4 | `3b14f8ff`, `cd6ef6bc` | `21b9110a4`, `8f93304ee` | yes |
+| duckdb | v1.5.6 | O0 | 1901 | 1901 | 1900 | 1 | 0 | ok | ok | 4614/4629 | 4614/4629 | 4615/4629 | hod: 1 better; strict: 1 better; note 1 | `3b14f8ff`, `cd6ef6bc` | `21b9110a4`, `8f93304ee` | yes |
 | duckdb | v1.5.6 | O0g | 1901 | 1901 | 1901 | 0 | 0 | ok | ok | 4614/4629 | 4614/4629 | 4615/4629 | hod: 1 worse (test/sql/index/art/scan/test_random_uuid.test); hod: 1 better; strict: 1 better | `56a4695f`, `e98267c0` | `8f93304ee` | carried over from e98267c0 (see release.md) |
 
 Notes:
 
-1. abseil O0 hod: `absl_strerror_test` failed in the build's test run and passed 3 of 3 reruns under the same memory cap (`MALLOC_ARENA_MAX` 4).
-2. abseil O0 strict: `absl_strerror_test` failed in the build's test run and passed 3 of 3 reruns under the same memory cap (`MALLOC_ARENA_MAX` 4).
-3. protobuf O0g hod: `full-test` failed in the build's test run and passed 3 of 3 reruns under the same memory cap (`MALLOC_ARENA_MAX` 4).
-4. duckdb O0 hod: `test/sql/index/art/scan/test_random_uuid.test` failed in the build's test run and passed 3 of 3 reruns under the same memory cap (`MALLOC_ARENA_MAX` 4).
-5. zlib: one of 37 objects is not offered to hod by kiln (`coverage`); the strict build is marked `failed (0 TUs)`, its tests equal the control's.
-6. duckdb -O0 at hod 3b14f8ff: the strict build stopped at two jemalloc translation units refused as `alwaysinline:stacksave-escapes` (built since WP-237); the row is to be measured again.
-7. duckdb -O0 -g: `test/sql/index/art/scan/test_random_uuid.test` failed in the hybrid build's test run with an allocation failure under the 16 GB address-space cap, twice (in the -O0 hybrid run as well); run alone under the same cap it passes (reruns in the -O0 tree), and the strict build's tests equal the control's. Under investigation; not counted as same.
-8. gRPC (WP-211) has no row in the table: its control trees and reports were deleted for disk, so the generator has no control to compare with. The lane compared the strict re-runs program by program with the control's recorded results (CENSUS-3.md; reports `.build/findings/oss3/rc-e98267c0/` and `rc-cd6ef6bc/`), kiln 8f93304ee: `-O0` strict at e98267c0, 2002 of 2002 objects by hod, 26 links, 19 of 24 test programs pass, the control's 19 (carried over from e98267c0, see release.md); `-O0 -g` strict at cd6ef6bc, 2002 of 2002 objects by hod, 26 links, 19 of 24, the control's.
-9. CMake: every failing test of every tree, the control's included, fails in a sub-case with "Current working directory cannot be established." from the built cmake, a flake of the build volume, in a different RunCMake suite per tree (the lane's census, CENSUS-3.md "cmake"). `-O0` strict at cd6ef6bc: 97/97 (control 96/97). `-O0 -g` strict at cd6ef6bc: 96/97 against the control's 96/97, each with one such failure in a different suite (strict: RunCMake.try_compile); the failing test could not be rerun alone, the tree was pruned for disk.
-10. mold: the kiln commit of these builds is not in their reports; the lane's census names kiln 21caaf874 (hod 77873543).
+1. duckdb O0 hod: `test/sql/index/art/scan/test_random_uuid.test` failed in the build's test run and passed 3 of 3 reruns under the same memory cap (`MALLOC_ARENA_MAX` 4).
+2. zlib (the one stated exception of the lane rows, docs/RELEASE.md section 5): one of 37 objects, `infcover.c`, is compiled with `--coverage`, and kiln never offers such a translation unit to hod (skip reason `coverage`: the gcov instrumentation runs in kiln's LLVM pipeline), so 36 of 37 objects are hod's and the strict build is marked `failed`; the owner's decision of 2026-11-15: not hod's fault, does not block 1.0 (BACKLOG WP-279, coverage builds through hod). `infcover` does not link in either build (LLVM's profile runtime is absent on the lane host): 7 of 8 links and 5 of 6 tests, the control's.
+3. duckdb -O0 at hod 3b14f8ff: the strict build stopped at two jemalloc translation units refused as `alwaysinline:stacksave-escapes` (built since WP-237); the row is to be measured again.
+4. duckdb -O0 -g: `test/sql/index/art/scan/test_random_uuid.test` failed in the hybrid build's test run with an allocation failure under the 16 GB address-space cap, twice (in the -O0 hybrid run as well); run alone under the same cap it passes (reruns in the -O0 tree), and the strict build's tests equal the control's. Under investigation; not counted as same.
+5. gRPC (WP-211) has no row in the table: its control trees and reports were deleted for disk, so the generator has no control to compare with. The lane compared the strict re-runs program by program with the control's recorded results (CENSUS-3.md; reports `.build/findings/oss3/rc-e98267c0/` and `rc-cd6ef6bc/`), kiln 8f93304ee: `-O0` strict at e98267c0, 2002 of 2002 objects by hod, 26 links, 19 of 24 test programs pass, the control's 19 (carried over from e98267c0, see release.md); `-O0 -g` strict at cd6ef6bc, 2002 of 2002 objects by hod, 26 links, 19 of 24, the control's.
+6. CMake: every failing test of every tree, the control's included, fails in a sub-case with "Current working directory cannot be established." from the built cmake, a flake of the build volume, in a different RunCMake suite per tree (the lane's census, CENSUS-3.md "cmake"). `-O0` strict at cd6ef6bc: 97/97 (control 96/97). `-O0 -g` strict at cd6ef6bc: 96/97 against the control's 96/97, each with one such failure in a different suite (strict: RunCMake.try_compile); the failing test could not be rerun alone, the tree was pruned for disk.
+7. mold: the control and the strict build are WP-278's at kiln 8f93304ee (strict at cd6ef6bc); the hybrid build is the third set's at hod 77873543, whose report has no kiln commit: the lane's census names kiln 21caaf874.
+8. benchmark, re2, abseil, googletest, fmt, protobuf, yaml_cpp, glog, nlohmann_json, doctest, spdlog, catch2, cli11, simdjson, leveldb: every tree of these rows (control, hybrid, strict) is from the hosted real-projects run 43779000922 (hod cell `cd6ef6bc (hosted run 43779000922)`): built and tested natively on GitHub's aarch64 runner, hod cd6ef6bc built by the job, kiln 8f93304ee.
 
 ## Refusal census (hybrid builds)
 
@@ -86,25 +84,25 @@ Objects kiln did not offer hod (kiln's statistics log: the `opt` triggers, `-` f
 |---|---|---|---|---|---|---|---|---|---|
 | fmt | O0 | 50 | 50 | 0 | 0 | 0 | ok | 21/21 | - |
 | fmt | O0g | 50 | 50 | 0 | 0 | 0 | ok | 21/21 | - |
-| googletest | O0 | 85 | 85 | 0 | 0 | 0 | ok | 62/63 | - |
-| googletest | O0g | 85 | 85 | 0 | 0 | 0 | ok | 62/63 | - |
-| abseil | O0 | 413 | 413 | 0 | 0 | 0 | ok | 229/232 | - |
+| googletest | O0 | 85 | 85 | 0 | 0 | 0 | ok | 63/63 | - |
+| googletest | O0g | 85 | 85 | 0 | 0 | 0 | ok | 63/63 | - |
+| abseil | O0 | 413 | 413 | 0 | 0 | 0 | ok | 231/232 | - |
 | abseil | O0g | 413 | 413 | 0 | 0 | 0 | ok | 231/232 | - |
 | re2 | O0 | 51 | 51 | 0 | 0 | 0 | ok | 20/20 | - |
 | re2 | O0g | 51 | 51 | 0 | 0 | 0 | ok | 20/20 | - |
 | benchmark | O0 | 73 | 73 | 0 | 0 | 0 | ok | 83/84 | - |
 | benchmark | O0g | 73 | 73 | 0 | 0 | 0 | ok | 83/84 | - |
-| protobuf | O0 | 653 | 653 | 0 | 0 | 0 | ok | 4/4 | - |
-| protobuf | O0g | 653 | 653 | 0 | 0 | 0 | ok | 4/4 | - |
+| protobuf | O0 | 653 | 653 | 0 | 0 | 0 | ok | 3/4 | - |
+| protobuf | O0g | 653 | 653 | 0 | 0 | 0 | ok | 3/4 | - |
 | spdlog | O0 | 140 | 140 | 0 | 0 | 0 | ok | 1/1 | - |
 | spdlog | O0g | 140 | 140 | 0 | 0 | 0 | ok | 1/1 | - |
-| catch2 | O0 | 167 | 167 | 0 | 0 | 0 | ok | 81/81 | - |
-| catch2 | O0g | 167 | 167 | 0 | 0 | 0 | ok | 81/81 | - |
-| nlohmann_json | O0 | 108 | 108 | 0 | 0 | 0 | ok | 97/97 | - |
+| catch2 | O0 | 167 | 167 | 0 | 0 | 0 | ok | 82/82 | - |
+| catch2 | O0g | 167 | 167 | 0 | 0 | 0 | ok | 82/82 | - |
+| nlohmann_json | O0 | 105 | 105 | 0 | 0 | 0 | ok | 97/97 | - |
 | nlohmann_json | O0g | 108 | 108 | 0 | 0 | 0 | ok | 97/97 | - |
 | yaml_cpp | O0 | 51 | 51 | 0 | 0 | 0 | ok | 1/1 | - |
 | yaml_cpp | O0g | 51 | 51 | 0 | 0 | 0 | ok | 1/1 | - |
-| glog | O0 | 47 | 45 | 0 | 0 | 0 | ok | 22/24 | - |
+| glog | O0 | 47 | 45 | 0 | 0 | 0 | ok | 23/24 | - |
 | glog | O0g | 47 | 45 | 0 | 0 | 0 | ok | 23/24 | - |
 | leveldb | O0 | 121 | 121 | 0 | 0 | 0 | ok | 30/30 | - |
 | leveldb | O0g | 121 | 121 | 0 | 0 | 0 | ok | 30/30 | - |

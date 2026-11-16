@@ -23,9 +23,30 @@ kiln	mold	*	*	21caaf874
 hod	hod-rc3-cd6ef6bc	cd6ef6bc
 hod	hod-rc-02fe2d02	02fe2d02
 #
-note	zlib: one of 37 objects is not offered to hod by kiln (`coverage`); the strict build is marked `failed (0 TUs)`, its tests equal the control's.
+# The 15 projects of the hosted real-projects run 43779000922 of exactly
+# cd6ef6bc (GitHub's aarch64 runner, native; hod cd6ef6bc built by the job,
+# binary `hod`; kiln 8f93304ee): their reports carry no kiln commit
+hod	hod	cd6ef6bc (hosted run 43779000922)
+kiln	benchmark	*	*	8f93304ee
+kiln	re2	*	*	8f93304ee
+kiln	abseil	*	*	8f93304ee
+kiln	googletest	*	*	8f93304ee
+kiln	fmt	*	*	8f93304ee
+kiln	protobuf	*	*	8f93304ee
+kiln	yaml_cpp	*	*	8f93304ee
+kiln	glog	*	*	8f93304ee
+kiln	nlohmann_json	*	*	8f93304ee
+kiln	doctest	*	*	8f93304ee
+kiln	spdlog	*	*	8f93304ee
+kiln	catch2	*	*	8f93304ee
+kiln	cli11	*	*	8f93304ee
+kiln	simdjson	*	*	8f93304ee
+kiln	leveldb	*	*	8f93304ee
+#
+note	zlib (the one stated exception of the lane rows, docs/RELEASE.md section 5): one of 37 objects, `infcover.c`, is compiled with `--coverage`, and kiln never offers such a translation unit to hod (skip reason `coverage`: the gcov instrumentation runs in kiln's LLVM pipeline), so 36 of 37 objects are hod's and the strict build is marked `failed`; the owner's decision of 2026-11-15: not hod's fault, does not block 1.0 (BACKLOG WP-279, coverage builds through hod). `infcover` does not link in either build (LLVM's profile runtime is absent on the lane host): 7 of 8 links and 5 of 6 tests, the control's.
 note	duckdb -O0 at hod 3b14f8ff: the strict build stopped at two jemalloc translation units refused as `alwaysinline:stacksave-escapes` (built since WP-237); the row is to be measured again.
 note	duckdb -O0 -g: `test/sql/index/art/scan/test_random_uuid.test` failed in the hybrid build's test run with an allocation failure under the 16 GB address-space cap, twice (in the -O0 hybrid run as well); run alone under the same cap it passes (reruns in the -O0 tree), and the strict build's tests equal the control's. Under investigation; not counted as same.
 note	gRPC (WP-211) has no row in the table: its control trees and reports were deleted for disk, so the generator has no control to compare with. The lane compared the strict re-runs program by program with the control's recorded results (CENSUS-3.md; reports `.build/findings/oss3/rc-e98267c0/` and `rc-cd6ef6bc/`), kiln 8f93304ee: `-O0` strict at e98267c0, 2002 of 2002 objects by hod, 26 links, 19 of 24 test programs pass, the control's 19 (carried over from e98267c0, see release.md); `-O0 -g` strict at cd6ef6bc, 2002 of 2002 objects by hod, 26 links, 19 of 24, the control's.
 note	CMake: every failing test of every tree, the control's included, fails in a sub-case with "Current working directory cannot be established." from the built cmake, a flake of the build volume, in a different RunCMake suite per tree (the lane's census, CENSUS-3.md "cmake"). `-O0` strict at cd6ef6bc: 97/97 (control 96/97). `-O0 -g` strict at cd6ef6bc: 96/97 against the control's 96/97, each with one such failure in a different suite (strict: RunCMake.try_compile); the failing test could not be rerun alone, the tree was pruned for disk.
-note	mold: the kiln commit of these builds is not in their reports; the lane's census names kiln 21caaf874 (hod 77873543).
+note	mold: the control and the strict build are WP-278's at kiln 8f93304ee (strict at cd6ef6bc); the hybrid build is the third set's at hod 77873543, whose report has no kiln commit: the lane's census names kiln 21caaf874.
+note	benchmark, re2, abseil, googletest, fmt, protobuf, yaml_cpp, glog, nlohmann_json, doctest, spdlog, catch2, cli11, simdjson, leveldb: every tree of these rows (control, hybrid, strict) is from the hosted real-projects run 43779000922 (hod cell `cd6ef6bc (hosted run 43779000922)`): built and tested natively on GitHub's aarch64 runner, hod cd6ef6bc built by the job, kiln 8f93304ee.

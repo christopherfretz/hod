@@ -4,6 +4,8 @@ target triple = "i686-unknown-linux-gnu"
 declare void @ext() nounwind
 declare float @llvm.sqrt.f32(float)
 declare float @llvm.fmuladd.f32(float, float, float)
+declare void @llvm.memcpy.p0.p0.i32(ptr, ptr, i32, i1)
+declare void @llvm.memset.p0.i32(ptr, i8, i32, i1)
 
 define void @single(ptr %in, ptr %out) nounwind {
 entry:
@@ -1258,5 +1260,182 @@ entry:
   ret void
 }
 
-@names = constant [37 x ptr] [ptr @single, ptr @twice, ptr @twice_sep, ptr @call, ptr @call_between, ptr @call_before, ptr @block, ptr @block_and_local, ptr @stored, ptr @stored_after, ptr @nonlifo, ptr @far_int, ptr @far_fp, ptr @many6_fifo, ptr @many6_lifo, ptr @many7_fifo, ptr @many7_lifo, ptr @many8_fifo, ptr @many8_lifo, ptr @many9_fifo, ptr @many9_lifo, ptr @many12_fifo, ptr @many12_lifo, ptr @sqrt_between, ptr @frem_between, ptr @chain_use_twice, ptr @phi_use, ptr @select_use, ptr @cmp_twice, ptr @select_var, ptr @freeze_use, ptr @fpext_use, ptr @fptrunc_use, ptr @sitofp_use, ptr @sitofp_var, ptr @fneg_use, ptr @fmuladd]
-@count = constant i32 37
+define void @intsel_between(ptr %in, ptr %out) nounwind {
+entry:
+  %ga = getelementptr float, ptr %in, i32 0
+  %a = load float, ptr %ga
+  %gb = getelementptr float, ptr %in, i32 1
+  %b = load float, ptr %gb
+  %gc = getelementptr float, ptr %in, i32 2
+  %c = load float, ptr %gc
+  %gi = getelementptr i8, ptr %in, i32 180
+  %i = load i32, ptr %gi
+  %gj = getelementptr i8, ptr %in, i32 184
+  %j = load i32, ptr %gj
+  %p = fmul float %a, %b
+  %gn = getelementptr float, ptr %in, i32 3
+  %n = load float, ptr %gn
+  %x = fsub float %p, %n
+  %ox0 = getelementptr float, ptr %out, i32 0
+  store float %x, ptr %ox0
+  %k = icmp eq i32 %i, %j
+  %s = select i1 %k, i32 %i, i32 %j
+  %y = fadd float %p, %c
+  %oy1 = getelementptr float, ptr %out, i32 1
+  store float %y, ptr %oy1
+  %os = getelementptr i8, ptr %out, i32 200
+  store i32 %s, ptr %os
+  ret void
+}
+
+define void @intsel_const(ptr %in, ptr %out) nounwind {
+entry:
+  %ga = getelementptr float, ptr %in, i32 0
+  %a = load float, ptr %ga
+  %gb = getelementptr float, ptr %in, i32 1
+  %b = load float, ptr %gb
+  %gc = getelementptr float, ptr %in, i32 2
+  %c = load float, ptr %gc
+  %gi = getelementptr i8, ptr %in, i32 180
+  %i = load i32, ptr %gi
+  %gj = getelementptr i8, ptr %in, i32 184
+  %j = load i32, ptr %gj
+  %p = fmul float %a, %b
+  %k = icmp eq i32 %i, %j
+  %s = select i1 %k, i32 5, i32 9
+  %y = fadd float %p, %c
+  %oy0 = getelementptr float, ptr %out, i32 0
+  store float %y, ptr %oy0
+  %os = getelementptr i8, ptr %out, i32 200
+  store i32 %s, ptr %os
+  ret void
+}
+
+define void @memcpy_small(ptr %in, ptr %out) nounwind {
+entry:
+  %buf = alloca [128 x i8]
+  %ga = getelementptr float, ptr %in, i32 0
+  %a = load float, ptr %ga
+  %gb = getelementptr float, ptr %in, i32 1
+  %b = load float, ptr %gb
+  %gc = getelementptr float, ptr %in, i32 2
+  %c = load float, ptr %gc
+  %p = fmul float %a, %b
+  call void @llvm.memcpy.p0.p0.i32(ptr %buf, ptr %in, i32 32, i1 false)
+  %y = fadd float %p, %c
+  %oy0 = getelementptr float, ptr %out, i32 0
+  store float %y, ptr %oy0
+  %gw = getelementptr i8, ptr %buf, i32 4
+  %w = load i32, ptr %gw
+  %ow = getelementptr i8, ptr %out, i32 200
+  store i32 %w, ptr %ow
+  ret void
+}
+
+define void @memcpy_big(ptr %in, ptr %out) nounwind {
+entry:
+  %buf = alloca [128 x i8]
+  %ga = getelementptr float, ptr %in, i32 0
+  %a = load float, ptr %ga
+  %gb = getelementptr float, ptr %in, i32 1
+  %b = load float, ptr %gb
+  %gc = getelementptr float, ptr %in, i32 2
+  %c = load float, ptr %gc
+  %p = fmul float %a, %b
+  %gn = getelementptr float, ptr %in, i32 3
+  %n = load float, ptr %gn
+  %x = fsub float %p, %n
+  %ox0 = getelementptr float, ptr %out, i32 0
+  store float %x, ptr %ox0
+  call void @llvm.memcpy.p0.p0.i32(ptr %buf, ptr %in, i32 33, i1 false)
+  %y = fadd float %p, %c
+  %oy1 = getelementptr float, ptr %out, i32 1
+  store float %y, ptr %oy1
+  %gw = getelementptr i8, ptr %buf, i32 4
+  %w = load i32, ptr %gw
+  %ow = getelementptr i8, ptr %out, i32 200
+  store i32 %w, ptr %ow
+  ret void
+}
+
+define void @memset_small(ptr %in, ptr %out) nounwind {
+entry:
+  %buf = alloca [128 x i8]
+  %ga = getelementptr float, ptr %in, i32 0
+  %a = load float, ptr %ga
+  %gb = getelementptr float, ptr %in, i32 1
+  %b = load float, ptr %gb
+  %gc = getelementptr float, ptr %in, i32 2
+  %c = load float, ptr %gc
+  %p = fmul float %a, %b
+  call void @llvm.memset.p0.i32(ptr %buf, i8 7, i32 64, i1 false)
+  %y = fadd float %p, %c
+  %oy0 = getelementptr float, ptr %out, i32 0
+  store float %y, ptr %oy0
+  %gw = getelementptr i8, ptr %buf, i32 4
+  %w = load i32, ptr %gw
+  %ow = getelementptr i8, ptr %out, i32 200
+  store i32 %w, ptr %ow
+  ret void
+}
+
+define void @memset_big(ptr %in, ptr %out) nounwind {
+entry:
+  %buf = alloca [128 x i8]
+  %ga = getelementptr float, ptr %in, i32 0
+  %a = load float, ptr %ga
+  %gb = getelementptr float, ptr %in, i32 1
+  %b = load float, ptr %gb
+  %gc = getelementptr float, ptr %in, i32 2
+  %c = load float, ptr %gc
+  %p = fmul float %a, %b
+  %gn = getelementptr float, ptr %in, i32 3
+  %n = load float, ptr %gn
+  %x = fsub float %p, %n
+  %ox0 = getelementptr float, ptr %out, i32 0
+  store float %x, ptr %ox0
+  call void @llvm.memset.p0.i32(ptr %buf, i8 7, i32 65, i1 false)
+  %y = fadd float %p, %c
+  %oy1 = getelementptr float, ptr %out, i32 1
+  store float %y, ptr %oy1
+  %gw = getelementptr i8, ptr %buf, i32 4
+  %w = load i32, ptr %gw
+  %ow = getelementptr i8, ptr %out, i32 200
+  store i32 %w, ptr %ow
+  ret void
+}
+
+define void @fold_const(ptr %in, ptr %out) nounwind {
+entry:
+  %q = fdiv float 1.0, 3.0
+  %x = fsub float %q, 0x3FD5555560000000
+  %ox0 = getelementptr float, ptr %out, i32 0
+  store float %x, ptr %ox0
+  ret void
+}
+
+define void @frem_const_between(ptr %in, ptr %out) nounwind {
+entry:
+  %ga = getelementptr float, ptr %in, i32 0
+  %a = load float, ptr %ga
+  %gb = getelementptr float, ptr %in, i32 1
+  %b = load float, ptr %gb
+  %gc = getelementptr float, ptr %in, i32 2
+  %c = load float, ptr %gc
+  %gn = getelementptr float, ptr %in, i32 3
+  %n = load float, ptr %gn
+  %p = fmul float %a, %b
+  %x = fadd float %p, %c
+  %ox0 = getelementptr float, ptr %out, i32 0
+  store float %x, ptr %ox0
+  %r = frem float 5.0, 3.0
+  %y = fsub float %p, %n
+  %oy1 = getelementptr float, ptr %out, i32 1
+  store float %y, ptr %oy1
+  %or2 = getelementptr float, ptr %out, i32 2
+  store float %r, ptr %or2
+  ret void
+}
+
+@names = constant [45 x ptr] [ptr @single, ptr @twice, ptr @twice_sep, ptr @call, ptr @call_between, ptr @call_before, ptr @block, ptr @block_and_local, ptr @stored, ptr @stored_after, ptr @nonlifo, ptr @far_int, ptr @far_fp, ptr @many6_fifo, ptr @many6_lifo, ptr @many7_fifo, ptr @many7_lifo, ptr @many8_fifo, ptr @many8_lifo, ptr @many9_fifo, ptr @many9_lifo, ptr @many12_fifo, ptr @many12_lifo, ptr @sqrt_between, ptr @frem_between, ptr @chain_use_twice, ptr @phi_use, ptr @select_use, ptr @cmp_twice, ptr @select_var, ptr @freeze_use, ptr @fpext_use, ptr @fptrunc_use, ptr @sitofp_use, ptr @sitofp_var, ptr @fneg_use, ptr @fmuladd, ptr @intsel_between, ptr @intsel_const, ptr @memcpy_small, ptr @memcpy_big, ptr @memset_small, ptr @memset_big, ptr @fold_const, ptr @frem_const_between]
+@count = constant i32 45

@@ -16,14 +16,12 @@
 //!   spell most) over signed zeros, infinities, NaNs with payloads,
 //!   subnormals, used by `zext`, an integer `select`, `br` and a floating
 //!   `select`, also of an `fneg` result left on the stack.
-//! - `shapes-{float,double}.ll`: where a result stays at 80 bits. Most
-//!   shapes run as `llc`'s; in the DIVERGENT ones `llc` keeps a value at
-//!   80 bits that hod rounds to its type (§9: a use after a later
-//!   definition, beyond the window, beside a use after a call or in
-//!   another block, or `llc` folding `select i1 true`), and hod is
-//!   compared with a model of its rule instead: the same module with a
-//!   block boundary after every floating result, built by `llc` (which
-//!   rounds every value used in another block).
+//! - `shapes-{float,double}.ll`: where a result stays at 80 bits (§9's
+//!   run rule: calls, inline and called `memcpy`/`memset`, `select`s
+//!   that `llc` branches for, blocks, non-LIFO and far uses, the operations
+//!   that pass 80 bits on). Every shape runs as `llc`'s but the `many*`
+//!   ones, where `llc`'s allocator decides ([`divergent`]): those are
+//!   compared with a model of hod's rule built by `llc` ([`model`]).
 //!
 //! A missing tool is skipped with a note, unless `HOD_REQUIRE_TOOLS=1`.
 
@@ -221,7 +219,7 @@ fn fcmp_predicates_run_as_llc_s() {
 }
 
 /// The shapes of `shapes-*.ll`, in order (the driver prints one line each).
-const SHAPES: [&str; 37] = [
+const SHAPES: [&str; 45] = [
     "single",
     "twice",
     "twice_sep",
@@ -259,36 +257,66 @@ const SHAPES: [&str; 37] = [
     "sitofp_var",
     "fneg_use",
     "fmuladd",
+    "intsel_between",
+    "intsel_const",
+    "memcpy_small",
+    "memcpy_big",
+    "memset_small",
+    "memset_big",
+    "fold_const",
+    "frem_const_between",
 ];
 
-/// The shapes where hod rounds a value `llc` keeps at 80 bits (§9).
-fn divergent(shape: &str, cpu: &str) -> bool {
-    shape.starts_with("many")
-        || shape.starts_with("far_")
-        || matches!(
-            shape,
-            "twice" | "call_between" | "block_and_local" | "nonlifo" | "sqrt_between"
-        )
-        || (shape == "select_use" && cpu == "generic")
+/// The shapes where `llc`'s own result depends on its register
+/// allocator, not on the IR (§9): six to twelve products live at once in
+/// one block without a call. `llc` 19 and 22 keep some of them in x87
+/// registers (80 bits) and spill others rounded to their type (which
+/// ones follows its fast allocator's choices: measured, the first
+/// product, and further the first and last ones in FIFO order, the
+/// middle ones in LIFO order);
+/// hod keeps every one at 80 bits (its run rule), so these lines compare
+/// with a model of that rule, not with `llc`. (`many6_fifo`, where `llc`
+/// spills nothing that is used again, compares with `llc`.)
+fn divergent(shape: &str) -> bool {
+    shape.starts_with("many") && shape != "many6_fifo"
 }
 
-/// The model of hod's rule for the divergent shapes: a block boundary
-/// after every floating result of theirs.
-fn model(text: &str, cpu: &str) -> String {
+/// The model of hod's rule for the divergent shapes, built by `llc`:
+/// their loads extended to `x86_fp80`, the arithmetic at `x86_fp80`
+/// (whose spills keep 80 bits), each store of the value rounded to `ty`
+/// (`fptrunc`), as hod's home of an 80-bit result is.
+fn model(text: &str, ty: &str) -> String {
     let mut out = String::new();
     let mut current: Option<&str> = None;
-    for (k, line) in text.lines().enumerate() {
-        out.push_str(line);
-        out.push('\n');
+    let load = format!(" = load {ty}, ");
+    let store = format!("  store {ty} %");
+    for line in text.lines() {
         if let Some(rest) = line.strip_prefix("define void @") {
             current = rest.split('(').next();
         }
-        let computes = line.starts_with("  %")
-            && [" fmul ", " fadd ", " fsub ", " fdiv ", " fneg ", " frem ", " call ", " select "]
-                .iter()
-                .any(|op| line.contains(op));
-        if computes && current.is_some_and(|s| divergent(s, cpu)) {
-            writeln!(out, "  br label %split{k}\nsplit{k}:").unwrap();
+        if !current.is_some_and(divergent) {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        let ops = [" = fmul ", " = fadd "];
+        if let Some((name, rest)) = line.split_once(&load) {
+            writeln!(
+                out,
+                "{name}.r{load}{rest}\n{name} = fpext {ty} {}.r to x86_fp80",
+                name.trim()
+            )
+            .unwrap();
+        } else if let Some(op) = ops.iter().find(|op| line.contains(*op)) {
+            out.push_str(&line.replace(&format!("{op}{ty} "), &format!("{op}x86_fp80 ")));
+            out.push('\n');
+        } else if let Some(rest) = line.strip_prefix(&store) {
+            let (v, ptr) = rest.split_once(", ").unwrap();
+            writeln!(out, "  %{v}.t = fptrunc x86_fp80 %{v} to {ty}\n  store {ty} %{v}.t, {ptr}")
+                .unwrap();
+        } else {
+            out.push_str(line);
+            out.push('\n');
         }
     }
     out
@@ -310,6 +338,9 @@ fn rounding_shapes_run_as_llc_s_or_as_the_model() {
     let scratch = Scratch::new("i386-x87-shapes");
     let mut equal = 0;
     let mut modelled = 0;
+    let mut failures = String::new();
+    // The model lines that differ from `llc`'s (its allocator rounding).
+    let mut apart = 0;
     for (ty, defines) in [("float", &["-DFLT"][..]), ("double", &[][..])] {
         let drv = driver(&tools, &scratch, "shapes.c", defines, &format!("shapes-{ty}-driver"));
         let source = std::fs::read_to_string(data(&format!("shapes-{ty}.ll"))).unwrap();
@@ -319,7 +350,7 @@ fn rounding_shapes_run_as_llc_s_or_as_the_model() {
                 let name = format!("shapes-{ty}-{major}-{cpu}");
                 let text = with_cpu(&source, cpu);
                 let [want, got, _] = three_runs(&tools, &scratch, &llc, &text, &[&drv], &name);
-                let ll = scratch.write(&format!("{name}-model.ll"), model(&text, cpu).as_bytes());
+                let ll = scratch.write(&format!("{name}-model.ll"), model(&text, ty).as_bytes());
                 let model_o = llc_object(&scratch, &llc, &ll, &[], &format!("{name}-model"));
                 let modelled_out =
                     link_run(&tools, &scratch, &[&model_o, &drv], &format!("{name}-m"));
@@ -332,18 +363,27 @@ fn rounding_shapes_run_as_llc_s_or_as_the_model() {
                 let (want, got, by_model) = (lines(&want), lines(&got), lines(&by_model));
                 assert_eq!(got.len(), SHAPES.len(), "{name}: {got:?}");
                 for (k, shape) in SHAPES.iter().enumerate() {
-                    if divergent(shape, cpu) {
-                        assert_eq!(got[k], by_model[k], "{name} {shape}: hod is not its model");
+                    let (reference, what) = if divergent(shape) {
                         modelled += 1;
+                        apart += usize::from(want[k] != by_model[k]);
+                        (&by_model[k], "the model")
                     } else {
-                        assert_eq!(got[k], want[k], "{name} {shape}: hod differs from llc");
                         equal += 1;
+                        (&want[k], "llc")
+                    };
+                    if got[k] != *reference {
+                        writeln!(failures, "{name} {shape}: hod {} != {what} {reference}", got[k])
+                            .unwrap();
                     }
                 }
             }
         }
     }
-    eprintln!("i386 x87 shapes: {equal} equal llc's, {modelled} equal the model");
+    assert!(failures.is_empty(), "shapes that differ:\n{failures}");
+    eprintln!(
+        "i386 x87 shapes: {equal} equal llc's, {modelled} equal the model \
+         ({apart} of them differ from llc's)"
+    );
 }
 
 /// A `float` operation of clang's default i686 CPU (`pentium4`, SSE2) is

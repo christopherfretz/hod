@@ -40,10 +40,12 @@ pub const STACK_PROTECTOR: &str = "x86:stack-protector";
 pub struct X86;
 
 /// What the target remembers about the function being compiled.
-#[derive(Clone, Copy, Default, Debug)]
+#[derive(Clone, Default, Debug)]
 pub struct FnState {
     /// The frame: the prologue's patched immediate.
     pub frame: frame::FrameState,
+    /// The 80-bit copies of `float`/`double` results (I9).
+    pub x87: crate::x87::Copies,
 }
 
 /// The registers: pool and holdable `ebx`, `esi`, `edi` (and `xmm0`..

@@ -232,7 +232,7 @@ fn what_stays_refused() {
             "x86:atomic:libatomic",
         ),
         (
-            "define float @f(ptr %p, float %v) {\n  %o = atomicrmw fadd ptr %p, float %v seq_cst\n  ret float %o\n}",
+            "define float @f(ptr %p, float %v) {\n  %o = atomicrmw fmax ptr %p, float %v seq_cst\n  ret float %o\n}",
             None,
             "x86:atomic:float-op",
         ),
@@ -247,8 +247,12 @@ fn what_stays_refused() {
         assert!(error.contains(name), "{body}\n{error}");
     }
     // What compiles alone: a `float` atomic load, store and `xchg`, a
-    // single-thread fence, a 64-bit store on `pentium4`.
+    // single-thread fence, a 64-bit store on `pentium4`, `fadd` and
+    // `fsub` (lowered since join D; run in `i386_join_d.rs`).
     let fine = [
+        "define double @f(ptr %p, ptr %q, float %v, double %w) {\n  \
+         %o = atomicrmw fadd ptr %p, float %v seq_cst\n  \
+         %d = atomicrmw fsub ptr %q, double %w seq_cst\n  ret double %d\n}",
         "define float @f(ptr %p, float %v) {\n  store atomic float %v, ptr %p seq_cst, align 4\n  \
          %o = atomicrmw xchg ptr %p, float %v monotonic\n  %w = load atomic float, ptr %p acquire, align 4\n  \
          fence syncscope(\"singlethread\") seq_cst\n  ret float %w\n}",

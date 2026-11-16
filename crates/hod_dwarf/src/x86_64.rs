@@ -85,7 +85,10 @@ pub const fn tls_offset_reloc(arch: hod_obj::Arch) -> Option<RelocKind> {
 /// [`tls_offset_reloc`]).
 pub(crate) fn reloc_kind(to: Target, wide: bool, target: &crate::target::LineTarget) -> RelocKind {
     match to {
-        Target::Tls(_) => tls_offset_reloc(target.arch).unwrap_or(target.address_reloc),
+        Target::Tls(_) => match target.machine.arch() {
+            Some(arch) => tls_offset_reloc(arch).unwrap_or(target.address_reloc),
+            None => RelocKind::I386(hod_obj::I386Reloc::TlsLdo32), // WP-314
+        },
         _ if wide => target.address_reloc,
         _ => target.offset_reloc,
     }
@@ -93,6 +96,8 @@ pub(crate) fn reloc_kind(to: Target, wide: bool, target: &crate::target::LineTar
 
 /// `DW_OP_const8u`.
 const DW_OP_CONST8U: u8 = 0x0e;
+/// `DW_OP_const4u` (i386, WP-314).
+const DW_OP_CONST4U: u8 = 0x0c;
 /// `DW_OP_GNU_push_tls_address`: `llc`'s choice when it tunes for gdb,
 /// the default for every ELF target but the `PlayStation`'s.
 const DW_OP_GNU_PUSH_TLS_ADDRESS: u8 = 0xe0;
@@ -102,9 +107,10 @@ const DW_OP_GNU_CONST_INDEX: u8 = 0xfc;
 const TLS_EXPR_LEN: u8 = 10;
 
 /// Whether a thread-local variable of a module for `arch` gets a
-/// location (x86-64), so that its DIE is written with one.
+/// location (x86-64; i386 since WP-314), so that its DIE is written with
+/// one.
 pub(crate) fn tls_has_location(arch: Option<Arch>) -> bool {
-    arch == Some(Arch::X86_64)
+    matches!(arch, Some(Arch::X86_64 | Arch::I386))
 }
 
 impl Writer<'_> {
@@ -125,11 +131,13 @@ impl Writer<'_> {
             self.info.push(DW_OP_GNU_PUSH_TLS_ADDRESS);
             return;
         }
-        self.info.push(TLS_EXPR_LEN);
-        self.info.push(DW_OP_CONST8U);
+        // WP-314: i386's is `DW_OP_const4u`, 4 bytes (`R_386_TLS_LDO_32`).
+        let size = self.addr_size;
+        self.info.push(TLS_EXPR_LEN - 8 + size);
+        self.info.push(if size == 4 { DW_OP_CONST4U } else { DW_OP_CONST8U });
         let offset = self.info.len();
         self.relocs.push(Reloc { sec: Sec::Info, offset, target: Target::Tls(symbol), addend });
-        self.info.extend_from_slice(&[0; 8]);
+        self.info.extend_from_slice(&[0; 8][..usize::from(size)]);
         self.info.push(DW_OP_GNU_PUSH_TLS_ADDRESS);
     }
 }

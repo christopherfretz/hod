@@ -1026,8 +1026,9 @@ fn frame_intrinsics_and_setjmp_behave_as_opt_inlined_them() {
     else {
         return;
     };
-    // Not i686, whose back end refuses debug information (`x86:debug-info`)
-    // (PIC it has compiled since WP-299).
+    // Not i686, whose back end refuses `llvm.frameaddress` and
+    // `llvm.returnaddress` (`x86:intrinsic`; debug information it has
+    // written since WP-314, PIC since WP-299).
     for target in [hod_testutil::Target::Aarch64, hod_testutil::Target::X86_64] {
         let dir = Scratch::new(&format!("hod-inlining-frame-{}", target.name()));
         let Some(toolchain) = Toolchain::for_target(&dir, target) else { continue };

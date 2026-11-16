@@ -620,6 +620,20 @@ fn arglist_width(ops: impl Iterator<Item = DiOp>, args: &[LocalRow]) -> Option<u
     }
 }
 
+/// WP-314 (`spec/codegen-x86.md` §13): on i386 the DWARF stack is 32
+/// bits wide and `DW_OP_deref_size` reads at most 4 bytes, so a range
+/// that pushes a wider value (a home or a constant), an address read
+/// from a home or a `DIArgList` gets no entry there (`<optimized out>`);
+/// a home itself (the empty expression) and a declared value do.
+fn fits_i386(debug: &hod_ir::DebugInfo, at: ValueLoc, expr: ExprId) -> bool {
+    match (at, shape(debug, expr)) {
+        (ValueLoc::Frame { .. }, Shape::Empty) | (ValueLoc::Address { .. }, _) => true,
+        (ValueLoc::Frame { size, .. }, Shape::Value) => size <= 4,
+        (ValueLoc::Const { width, .. }, Shape::Empty | Shape::Value) => width <= 32,
+        _ => false,
+    }
+}
+
 /// Whether a range at `at` with expression `expr` gets an entry (or,
 /// for a fragment, a piece): §6.23, and for a fragment of `size` bits a
 /// value at least that wide (the piece is its low bits). `args`: a
@@ -688,6 +702,9 @@ impl UnitPlan<'_> {
                 if end <= start || !located(debug, at, expr, arg_rows(vars, r, at), legacy) {
                     continue;
                 }
+                if self.scope_dies.arch == Some(hod_ir::Arch::I386) && !fits_i386(debug, at, expr) {
+                    continue;
+                }
                 let piece = self.piece(vars, r, at, expr);
                 if self.value_ranges.len() > first as usize
                     && let Some(last) = self.value_ranges.last_mut()
@@ -722,6 +739,9 @@ impl UnitPlan<'_> {
             };
             let legacy = self.legacy_converts;
             if end <= start || !located(debug, at, expr, arg_rows(vars, r, at), legacy) {
+                continue;
+            }
+            if self.scope_dies.arch == Some(hod_ir::Arch::I386) && !fits_i386(debug, at, expr) {
                 continue;
             }
             let bits = fragment(debug, expr).unwrap_or((0, u64::MAX));
@@ -870,7 +890,7 @@ impl Writer<'_> {
             self.loclists_unit = self.loclists.len();
             self.loclists.extend_from_slice(&[0; 4]);
             self.loclists.extend_from_slice(&5u16.to_le_bytes());
-            self.loclists.extend_from_slice(&[8, 0]);
+            self.loclists.extend_from_slice(&[self.addr_size, 0]);
             self.loclists.extend_from_slice(&0u32.to_le_bytes()); // offset_entry_count
         }
         let at = self.loclists.len();

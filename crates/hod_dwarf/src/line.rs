@@ -4,12 +4,12 @@
 use std::collections::HashMap;
 
 use hod_obj::elf::{SHF_MERGE, SHF_STRINGS, SHT_PROGBITS};
-use hod_obj::{Arch, Object, SectionId, SectionKind, SymbolId};
+use hod_obj::{Machine, Object, SectionId, SectionKind, SymbolId};
 
 use crate::Error;
 use crate::leb::{write_sleb, write_uleb};
 use crate::target::{
-    LINE_BASE, LINE_RANGE, LineTarget, OPCODE_BASE, STANDARD_OPCODE_LENGTHS, for_arch,
+    LINE_BASE, LINE_RANGE, LineTarget, OPCODE_BASE, STANDARD_OPCODE_LENGTHS, for_machine,
 };
 
 /// The flags of a line-table row (DWARF 5 §6.2.2).
@@ -265,10 +265,11 @@ pub struct LineProgram {
 }
 
 impl LineProgram {
-    /// An empty program for `arch`.
-    pub fn new(arch: Arch) -> Self {
+    /// An empty program for `machine` (an [`hod_obj::Arch`] or i386,
+    /// WP-314).
+    pub fn new(machine: impl Into<Machine>) -> Self {
         Self {
-            target: for_arch(arch),
+            target: for_machine(machine.into()),
             bytes: Vec::new(),
             addrs: Vec::new(),
             file_base: 0,
@@ -279,8 +280,8 @@ impl LineProgram {
     /// An empty program for `arch` of a unit of DWARF `version`: 4 numbers
     /// the header's files from 1 (`spec/dwarf.md` §6.20), any other
     /// version is DWARF 5's (the unit plan refuses the others).
-    pub fn for_version(arch: Arch, version: u16) -> Self {
-        Self { file_base: u32::from(version == 4), ..Self::new(arch) }
+    pub fn for_version(machine: impl Into<Machine>, version: u16) -> Self {
+        Self { file_base: u32::from(version == 4), ..Self::new(machine) }
     }
 
     /// The DWARF version of the unit the program is for: 4 or 5.
@@ -290,9 +291,9 @@ impl LineProgram {
 
     /// An empty program with room for about `rows` rows in `seqs`
     /// sequences.
-    pub fn with_capacity(arch: Arch, rows: usize, seqs: usize) -> Self {
+    pub fn with_capacity(machine: impl Into<Machine>, rows: usize, seqs: usize) -> Self {
         Self {
-            target: for_arch(arch),
+            target: for_machine(machine.into()),
             bytes: Vec::with_capacity(rows * 5 + seqs * 16),
             addrs: Vec::with_capacity(seqs),
             file_base: 0,
@@ -300,9 +301,9 @@ impl LineProgram {
         }
     }
 
-    /// The architecture.
-    pub fn arch(&self) -> Arch {
-        self.target.arch
+    /// The machine.
+    pub fn machine(&self) -> Machine {
+        self.target.machine
     }
 
     /// Empties the program, keeping its allocations.
@@ -380,7 +381,7 @@ impl LineProgram {
     /// `TooLarge`; `ArchMismatch` if the two are for different
     /// architectures or DWARF versions. The program is then unchanged.
     pub fn append(&mut self, other: &LineProgram) -> Result<(), Error> {
-        if other.target.arch != self.target.arch || other.file_base != self.file_base {
+        if other.target.machine != self.target.machine || other.file_base != self.file_base {
             return Err(Error::ArchMismatch);
         }
         // An end is at most 3 + 10 bytes.
@@ -644,13 +645,13 @@ pub fn write_debug_line(
     header: &LineHeader<'_>,
     seqs: &[Sequence<'_>],
 ) -> Result<LineSections, Error> {
-    let target = for_arch(obj.arch());
+    let target = for_machine(obj.machine());
     let min = u32::from(target.min_inst_length);
 
     // Check everything before writing anything.
     let sorted = check(header, seqs, min)?;
     let rows: usize = seqs.iter().map(|s| s.rows.len()).sum();
-    let mut program = LineProgram::with_capacity(obj.arch(), rows, seqs.len());
+    let mut program = LineProgram::with_capacity(obj.machine(), rows, seqs.len());
     for &i in &sorted {
         program.encode(&seqs[i as usize], true)?;
     }
@@ -672,10 +673,10 @@ pub fn write_debug_line_units(
     obj: &mut Object,
     units: &[LineUnit<'_>],
 ) -> Result<LineUnits, Error> {
-    let target = for_arch(obj.arch());
+    let target = for_machine(obj.machine());
     for u in units {
         check_header(&u.header)?;
-        if u.program.target.arch != target.arch {
+        if u.program.target.machine != target.machine {
             return Err(Error::ArchMismatch);
         }
     }

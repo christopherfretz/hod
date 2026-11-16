@@ -16,7 +16,7 @@ use crate::abbrev::{Used, code, fam, write_abbrev};
 use crate::leb::write_uleb;
 use crate::line::FileTable;
 use crate::strings::{DebugStrings, FxBuild};
-use crate::target::for_arch;
+use crate::target::for_machine;
 
 pub(crate) const NONE: u32 = u32::MAX;
 const DW_UT_COMPILE: u8 = 0x01;
@@ -736,6 +736,8 @@ pub(crate) struct Writer<'a> {
     /// `UnitPlan::base_types` (empty in a split unit, whose conversions
     /// take `llc`'s legacy form, §6.31).
     pub(crate) base_type_dies: Vec<u32>,
+    /// WP-314: the size of an address, 8 (4 on i386).
+    pub(crate) addr_size: u8,
 }
 
 /// Writes `v` as a ULEB128 of exactly `out.len()` bytes, padded with
@@ -954,7 +956,7 @@ impl<'a> Writer<'a> {
         self.info.extend_from_slice(&[0; 4]);
         self.info.extend_from_slice(&5u16.to_le_bytes());
         self.info.push(DW_UT_COMPILE);
-        self.info.push(8);
+        self.info.push(self.addr_size);
         self.sec_offset(Target::Abbrev, 0);
         debug_assert_eq!(self.info.len() - unit_start, UNIT_HEADER);
         unit_start
@@ -1052,7 +1054,8 @@ impl<'a> Writer<'a> {
         self.strx(plan.comp_dir)?;
         let low_pc_at = if pc { Some(self.reserve_low_pc(bound)?) } else { None };
         if ranges {
-            self.info.extend_from_slice(&[0; 8]); // DW_AT_low_pc 0, no relocation
+            let zero = &[0; 8][..usize::from(self.addr_size)];
+            self.info.extend_from_slice(zero); // DW_AT_low_pc 0, no relocation
             write_uleb(&mut self.info, lists as u64); // the unit's list, the last
         }
         if has_addr {
@@ -1127,17 +1130,18 @@ impl<'a> Writer<'a> {
         // `.debug_addr` (DWARF 5 §7.27).
         self.pool_spans();
         if has_addr {
-            let length = u32::try_from(4 + 8 * self.addrs.len()).map_err(|_| Error::TooLarge)?;
+            let size = usize::from(self.addr_size);
+            let length = u32::try_from(4 + size * self.addrs.len()).map_err(|_| Error::TooLarge)?;
             self.addr.extend_from_slice(&length.to_le_bytes());
             self.addr.extend_from_slice(&5u16.to_le_bytes());
-            self.addr.extend_from_slice(&[8, 0]);
+            self.addr.extend_from_slice(&[self.addr_size, 0]);
             for (i, &(symbol, addend)) in self.addrs.iter().enumerate() {
                 let offset = self.addr.len();
                 // WP-189: a split unit's thread-local offset (§6.24).
                 let tls = self.tls_addrs.binary_search(&(i as u32)).is_ok();
                 let target = if tls { Target::Tls(symbol) } else { Target::Symbol(symbol) };
                 self.relocs.push(Reloc { sec: Sec::Addr, offset, target, addend });
-                self.addr.extend_from_slice(&[0; 8]);
+                self.addr.extend_from_slice(&[0; 8][..size]);
             }
         }
 
@@ -1152,7 +1156,7 @@ impl<'a> Writer<'a> {
             let count = u32::try_from(lists).map_err(|_| Error::TooLarge)?;
             self.rnglists.extend_from_slice(&[0; 4]);
             self.rnglists.extend_from_slice(&5u16.to_le_bytes());
-            self.rnglists.extend_from_slice(&[8, 0]);
+            self.rnglists.extend_from_slice(&[self.addr_size, 0]);
             self.rnglists.extend_from_slice(&count.to_le_bytes()); // offset_entry_count
             let own = ranges.then_some(self.block_lists.len());
             for &at in self.block_starts.iter().chain(own.iter()) {
@@ -1311,6 +1315,7 @@ pub fn write_debug_info(
         split: false,
         tls_addrs: Vec::new(),
         base_type_dies: Vec::new(),
+        addr_size: for_machine(obj.machine()).address_size, // WP-314
     };
     if let Some(u) = units.iter().find(|u| !u.plan.sealed) {
         return Err(unsupported(u.plan.unit, "a unit plan that is not sealed"));
@@ -1329,7 +1334,7 @@ pub fn write_debug_info(
     }
 
     // Only now touch the object.
-    let target = for_arch(obj.arch());
+    let target = for_machine(obj.machine());
     let abbrev_sec = obj.add_section(b".debug_abbrev", SectionKind::Debug, 1)?;
     let info = obj.add_section(b".debug_info", SectionKind::Debug, 1)?;
     let str_offsets = obj.add_section(b".debug_str_offsets", SectionKind::Debug, 1)?;

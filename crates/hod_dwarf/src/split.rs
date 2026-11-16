@@ -53,7 +53,7 @@ use crate::die::{
 };
 use crate::leb::write_uleb;
 use crate::strings::DebugStrings;
-use crate::target::for_arch;
+use crate::target::for_machine;
 
 /// A unit with a DWO id: it stands for an external split unit (a clang
 /// module's skeleton, `-gmodules`), which `llc` writes as
@@ -140,6 +140,19 @@ pub fn write_unit_dies(
     units: &[UnitInput<'_, '_>],
     split: SplitDwarf,
 ) -> Result<(), Error> {
+    // WP-314 (`spec/codegen-x86.md` §13): i386 gets DWARF 5 in one object.
+    if obj.machine() == hod_obj::Machine::I386 {
+        let dwarf4 = units.iter().find(|u| u.plan.version() == 4);
+        let what = match (dwarf4, split) {
+            (Some(_), _) => Some("debug:dwarf-4-i386"),
+            (None, SplitDwarf::Off) => None,
+            (None, _) => Some("debug:split-dwarf-i386"),
+        };
+        if let Some(what) = what {
+            let node = dwarf4.or(units.first()).map_or(0, |u| u.plan.unit().raw());
+            return Err(Error::Unsupported { node, what });
+        }
+    }
     if let Some(result) = crate::dwarf4::write_unit_dies(obj, line, units, split) {
         return result; // WP-114: §6.20
     }
@@ -226,6 +239,7 @@ impl<'a> Writer<'a> {
             split: true,
             tls_addrs: Vec::new(),
             base_type_dies: Vec::new(),
+            addr_size: 8, // i386 is refused (`write_unit_dies`)
         }
     }
 
@@ -470,7 +484,7 @@ pub fn write_split_debug_info(
     }
 
     // Only now touch the object.
-    let target = for_arch(obj.arch());
+    let target = for_machine(obj.machine());
     let abbrev_sec = obj.add_section(b".debug_abbrev", SectionKind::Debug, 1)?;
     let info = obj.add_section(b".debug_info", SectionKind::Debug, 1)?;
     let str_offsets = obj.add_section(b".debug_str_offsets", SectionKind::Debug, 1)?;

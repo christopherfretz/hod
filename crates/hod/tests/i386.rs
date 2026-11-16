@@ -129,17 +129,14 @@ fn every_i386_triple_reaches_hod_x86() {
     assert!(refused_by_x86(&hod::compile(text.as_bytes(), &options)));
 }
 
-/// `-relocation-model=pic` is refused as `x86:pic` (the static model
-/// only, design 0008's I8).
+/// `-relocation-model=pic` compiles (design 0008's I8, WP-299: it was
+/// refused as `x86:pic`; the run tests are `i386_pic.rs`).
 #[test]
-fn pic_is_refused() {
+fn pic_compiles() {
     let ints = format!("{}{INTEGERS}", header("i686-unknown-linux-gnu"));
     let options = Options { relocation_model: Some(hod::RelocModel::Pic), ..obj() };
     let result = hod::compile(ints.as_bytes(), &options);
-    let Err(CompileError::Unsupported(Unsupported { construct, .. })) = &result else {
-        panic!("{result:?}");
-    };
-    assert_eq!(construct.name(), "x86:pic");
+    assert!(result.is_ok(), "{result:?}");
 }
 
 /// What is not 32-bit x86 Linux with the GNU environment, a layout that is

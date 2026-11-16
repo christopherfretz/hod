@@ -17,11 +17,12 @@ use std::process::Command;
 
 use hod::{Options, OutputKind};
 use hod_testutil::target::Target;
-use hod_testutil::{
-    DEFAULT_TIMEOUT, LLVM_MAJORS, Outcome, Scratch, linkers, run_with, tools_required,
-};
+use hod_testutil::{LLVM_MAJORS, Scratch, linkers, tools_required};
 
-const TRIPLE: &str = "i686-unknown-linux-gnu";
+mod i386_support;
+use i386_support::{
+    TRIPLE, checked, clang_module, llc_object, llvm_tool, run, stressed_object, tool,
+};
 
 /// The programs of `tests/data/i386`.
 const PROGRAMS: [&str; 5] = ["loops.c", "switch.c", "calls.c", "memory.c", "bytes.c"];
@@ -30,71 +31,15 @@ const PROGRAMS: [&str; 5] = ["loops.c", "switch.c", "calls.c", "memory.c", "byte
 const RET42: &str =
     "target triple = \"i686-unknown-linux-gnu\"\n\ndefine i32 @main() {\n  ret i32 42\n}\n";
 
-fn llvm_tool(major: u32, name: &str) -> Option<PathBuf> {
-    let path = PathBuf::from(format!("/usr/lib/llvm-{major}/bin/{name}"));
-    if path.exists() {
-        return Some(path);
-    }
-    assert!(!tools_required(), "no {name} {major} (HOD_REQUIRE_TOOLS=1)");
-    eprintln!("note: no {name} {major}; skipping its part");
-    None
-}
-
-fn tool(name: &str) -> Option<PathBuf> {
-    let found = hod_testutil::tool(name);
-    if found.is_none() {
-        assert!(!tools_required(), "no {name} (HOD_REQUIRE_TOOLS=1)");
-        eprintln!("note: no {name}; skipping");
-    }
-    found
-}
-
-fn checked(what: &str, command: &mut Command) -> Outcome {
-    let outcome = run_with(command, &[], DEFAULT_TIMEOUT);
-    assert!(outcome.success(), "{what}: {}", outcome.stderr_text());
-    outcome
-}
-
 /// The module of `program` by clang `major`, in text.
 fn module(scratch: &Scratch, clang: &Path, major: u32, program: &str) -> PathBuf {
-    let out = scratch.join(format!("{program}-{major}.ll"));
     if program == "ret42" {
+        let out = scratch.join(format!("{program}-{major}.ll"));
         std::fs::write(&out, RET42).unwrap();
         return out;
     }
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/i386").join(program);
-    let mut command = Command::new(clang);
-    command.args(["--target=i686-linux-gnu", "-O0", "-fno-pic", "-fno-pie", "-S", "-emit-llvm"]);
-    command.arg("-o").arg(&out).arg(source);
-    checked(&format!("clang {major} {program}"), &mut command);
-    out
-}
-
-/// What running `exe` under `qemu-i386` did: its status and output.
-fn run(qemu: &Path, exe: &Path) -> (Option<i32>, Vec<u8>) {
-    let target = Target::I686;
-    let mut command = Command::new(qemu);
-    command.args(target.emulator_args(&target.sysroot())).arg(exe);
-    let outcome = run_with(&mut command, &[], DEFAULT_TIMEOUT);
-    assert!(!outcome.timed_out(), "{} timed out", exe.display());
-    (outcome.status.and_then(|s| s.code()), outcome.stdout)
-}
-
-/// `hod_x86`'s object of `text` under `Stress::ALL` (`min_pool`, far
-/// branches, displaced registers), from the back end directly.
-fn stressed_object(text: &[u8]) -> Vec<u8> {
-    let parsed = hod_ll::parse_module(text, &hod_ll::ParseOptions::default())
-        .unwrap_or_else(|e| panic!("hod_ll: {e}"));
-    let side = parsed.text;
-    let mut module = parsed.module;
-    let mut bodies = Vec::new();
-    hod_ll::parse_bodies(&mut module, &side, |_, read| {
-        bodies.push(read.body.expect("every body is read").clone());
-        Ok::<(), hod_ll::LlError>(())
-    })
-    .unwrap_or_else(|e| panic!("hod_ll: {e}"));
-    let options = hod_cg::Options { stress: hod_cg::Stress::ALL, ..hod_cg::Options::default() };
-    hod_x86::compile_to_object(&module, &bodies, &options).unwrap_or_else(|e| panic!("stress: {e}"))
+    clang_module(scratch, clang, &source, &["-fno-pic", "-fno-pie"], &format!("{program}-{major}"))
 }
 
 /// Each program built by `llc`, by hod, and by `hod_x86` under every
@@ -130,11 +75,7 @@ fn milestone_a_programs_run_as_llc_s() {
             let hod_o = scratch.write(&format!("{program}-{major}-hod.o"), object);
             let stressed = stressed_object(&std::fs::read(&ll).unwrap());
             let stress_o = scratch.write(&format!("{program}-{major}-stress.o"), stressed);
-            let llc_o = scratch.join(format!("{program}-{major}-llc.o"));
-            let mut command = Command::new(&llc);
-            command.args(["-O0", "-global-isel=0", "-fast-isel=0", "-filetype=obj"]);
-            command.arg(format!("-mtriple={TRIPLE}")).arg(&ll).arg("-o").arg(&llc_o);
-            checked(&format!("llc {major} {program}"), &mut command);
+            let llc_o = llc_object(&scratch, &llc, &ll, &[], &format!("{program}-{major}-llc"));
             for (linker, program_path) in &linkers {
                 let mut results = Vec::new();
                 for (who, object) in [("llc", &llc_o), ("hod", &hod_o), ("stress", &stress_o)] {

@@ -1198,8 +1198,21 @@ refusals. `LineTablesOnly` and `DebugDirectivesOnly` units are §6.10 (WP-061).
   `export_symbols` (inline), with their children.
 - **Base types**: `name`, `encoding`, `byte_size`.
 - **Pointer types**: `type` (absent for `void *`), `name` (when set).
-- **`.debug_addr`**, per unit: the globals' entries in DIE order, then
-  one per merged code span. Each entry is relocated `ABS64` /
+- **`.debug_addr`**, per unit, an address pool (WP-296): in DIE order,
+  one entry per **distinct** address the DIEs use (symbol, addend, and
+  whether it is a thread-local offset), then one per merged code span
+  not already among them: a subprogram that starts a span, an inlined
+  call or block that starts where its parent does, a call site's return
+  address equal to a label, all share one entry. This is `llc`'s
+  `AddressPool`: one entry per distinct address, numbered in the order
+  asked for, the unit's own `DW_AT_low_pc` and range list last (`llc`
+  22, `stl-heavy -g` on x86-64: 4,111 entries; hod 4,109, 7,398 before
+  the pool). The unit DIE of a non-split unit with one span comes before
+  its index is known: its `DW_AT_low_pc` ULEB is reserved at the width
+  of the largest index the unit could have (its entry count without the
+  pool, less one) and patched, `0x80`-padded when the index is shorter
+  (a split unit's skeleton is written after its DIEs and needs no
+  padding). Each entry is relocated `ABS64` /
   `R_X86_64_64` against the symbol the caller gave (the variable's own,
   or its section's for an internal one, as `llc` does; a function's
   section symbol plus offset, §1.3). Spans of one symbol that touch or

@@ -9,12 +9,13 @@ use hod_ir::{
 };
 use hod_obj::elf::{SHF_MERGE, SHF_STRINGS, SHT_PROGBITS};
 use hod_obj::{Object, SectionId, SectionKind, SymbolId};
+use std::collections::HashMap;
 
 use crate::Error;
 use crate::abbrev::{Used, code, fam, write_abbrev};
 use crate::leb::write_uleb;
 use crate::line::FileTable;
-use crate::strings::DebugStrings;
+use crate::strings::{DebugStrings, FxBuild};
 use crate::target::for_arch;
 
 pub(crate) const NONE: u32 = u32::MAX;
@@ -685,7 +686,13 @@ pub(crate) struct Writer<'a> {
     pub(crate) stack: Vec<(u32, usize)>,
     pub(crate) addr_of: Vec<u32>,
     pub(crate) addrs: Vec<(SymbolId, i64)>,
+    /// WP-296: the index of each distinct entry of `addrs`, by symbol,
+    /// addend and whether it is a thread-local offset (§6.4).
+    pub(crate) addr_index: HashMap<(SymbolId, i64, bool), u32, FxBuild>,
     pub(crate) spans: Vec<CodeSpan>,
+    /// The `.debug_addr` index of each span, pooled after the DIEs'
+    /// addresses (`contributions`, WP-296).
+    pub(crate) span_index: Vec<u32>,
     /// The current unit's start in `info`, and its globals' addresses.
     pub(crate) unit_start: usize,
     pub(crate) cur: Vec<(SymbolId, i64)>,
@@ -713,6 +720,17 @@ pub(crate) struct Writer<'a> {
     pub(crate) base_type_dies: Vec<u32>,
 }
 
+/// Writes `v` as a ULEB128 of exactly `out.len()` bytes, padded with
+/// `0x80` continuation bytes if it needs fewer (DWARF 5 §7.6 allows it).
+fn put_uleb_padded(out: &mut [u8], mut v: u64) {
+    let last = out.len() - 1;
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = (v & 0x7f) as u8 | if i < last { 0x80 } else { 0 };
+        v >>= 7;
+    }
+    debug_assert_eq!(v, 0, "the reserved width holds the index");
+}
+
 #[inline]
 pub(crate) fn uleb_len(mut v: u64) -> usize {
     let mut n = 1;
@@ -737,10 +755,23 @@ impl<'a> Writer<'a> {
         Ok(())
     }
 
-    /// A new `.debug_addr` entry of the unit; its index.
+    /// The unit's `.debug_addr` entry for `symbol` + `addend`, added if it
+    /// is new: one entry per distinct address, as `llc`'s address pool
+    /// (WP-296, §6.4). Its index.
     pub(crate) fn push_addr(&mut self, symbol: SymbolId, addend: i64) -> u32 {
-        self.addrs.push((symbol, addend));
-        (self.addrs.len() - 1) as u32
+        self.pool_addr(symbol, addend, false).0
+    }
+
+    /// The entry for a thread-local offset (`Target::Tls`), kept apart
+    /// from an address of the same symbol; its index, and whether it is
+    /// new.
+    pub(crate) fn pool_addr(&mut self, symbol: SymbolId, addend: i64, tls: bool) -> (u32, bool) {
+        let next = self.addrs.len() as u32;
+        let index = *self.addr_index.entry((symbol, addend, tls)).or_insert(next);
+        if index == next {
+            self.addrs.push((symbol, addend));
+        }
+        (index, index == next)
     }
 
     /// The `DW_AT_ranges` of the scope whose list starts at `at` in
@@ -813,16 +844,41 @@ impl<'a> Writer<'a> {
         Ok(())
     }
 
-    /// The functions' state of a unit (§6.4): their `.debug_addr`
-    /// entries follow the globals', in DIE order, then the spans'. The
-    /// first span's address index.
-    pub(crate) fn begin_functions(&mut self, plan: &UnitPlan<'a>, globals: usize) -> usize {
-        let span_base = globals + plan.code_addrs() as usize;
+    /// The functions' state of a unit (§6.4). The `.debug_addr` entries
+    /// are the DIEs' distinct addresses in DIE order, then the spans' not
+    /// already among them, as `llc`'s address pool (WP-296). Whether the
+    /// unit has an address, and a bound on its entry count (what it was
+    /// without the pool).
+    pub(crate) fn begin_functions(&mut self, plan: &UnitPlan<'a>, globals: usize) -> (bool, usize) {
+        let bound = globals + plan.code_addrs() as usize + self.spans.len();
         self.fn_addr.clear();
         self.fn_addr.resize(plan.funcs.len(), 0);
         self.block_lists.clear();
         self.block_starts.clear();
-        span_base
+        (bound > 0, bound)
+    }
+
+    /// The unit's one span, `DW_AT_low_pc` and `DW_AT_high_pc`: the
+    /// span's index is known after the DIEs, so its ULEB is reserved at
+    /// the width of the largest index the unit's `bound` entries can
+    /// have, to be patched (WP-296). Where, and the width.
+    fn reserve_low_pc(&mut self, bound: usize) -> Result<(usize, usize), Error> {
+        let size = u32::try_from(self.spans[0].size).map_err(|_| Error::TooLarge)?;
+        let at = self.info.len();
+        let width = uleb_len(bound as u64 - 1);
+        self.info.resize(at + width, 0);
+        self.info.extend_from_slice(&size.to_le_bytes());
+        Ok((at, width))
+    }
+
+    /// Pools the spans' entries, after the DIEs' (WP-296).
+    fn pool_spans(&mut self) {
+        self.span_index.clear();
+        for k in 0..self.spans.len() {
+            let s = self.spans[k];
+            let index = self.push_addr(s.symbol, s.addend);
+            self.span_index.push(index);
+        }
     }
 
     /// The unit header (DWARF 5 §7.5.1.1), its length patched later; where
@@ -842,6 +898,7 @@ impl<'a> Writer<'a> {
     /// Empties the unit's address pool and its thread-local entries.
     pub(crate) fn clear_addrs(&mut self) {
         self.addrs.clear();
+        self.addr_index.clear();
         self.tls_addrs.clear();
     }
 
@@ -887,8 +944,8 @@ impl<'a> Writer<'a> {
             self.addr_of[die as usize] = i as u32;
         }
         self.spans(u.code, symbols)?;
-        // `.debug_addr`: the globals' entries in DIE order, then one per
-        // span.
+        // `.debug_addr`: one entry per span, then the DIEs' distinct
+        // addresses in DIE order (`begin_functions`).
         let globals = u
             .globals
             .iter()
@@ -907,13 +964,12 @@ impl<'a> Writer<'a> {
         let unit_start = self.unit_header();
 
         let ranges = self.spans.len() > 1;
-        let span_base = self.begin_functions(plan, globals);
+        let (has_addr, bound) = self.begin_functions(plan, globals);
         let lists = plan.scope_lists(); // WP-163: numbered before the unit's
 
         // The unit DIE.
         let cu = &plan.cu;
         let pc = self.spans.len() == 1;
-        let has_addr = span_base > 0 || !self.spans.is_empty();
         // One span and scope lists: `DW_AT_rnglists_base`, no `ranges`
         // (version 4 has no base: `crate::dwarf4` reads the table).
         let pc_lists = pc && lists > 0 && plan.version == 5;
@@ -928,11 +984,7 @@ impl<'a> Writer<'a> {
         self.sec_offset(Target::StrOffsets, str_offsets_base as i64);
         self.sec_offset(Target::Line, i64::from(u.line_offset));
         self.strx(plan.comp_dir)?;
-        if pc {
-            let size = u32::try_from(self.spans[0].size).map_err(|_| Error::TooLarge)?;
-            write_uleb(&mut self.info, span_base as u64);
-            self.info.extend_from_slice(&size.to_le_bytes());
-        }
+        let low_pc_at = if pc { Some(self.reserve_low_pc(bound)?) } else { None };
         if ranges {
             self.info.extend_from_slice(&[0; 8]); // DW_AT_low_pc 0, no relocation
             write_uleb(&mut self.info, lists as u64); // the unit's list, the last
@@ -961,7 +1013,6 @@ impl<'a> Writer<'a> {
                 self.stack.push((child, plan.children_of(child).start));
             }
         }
-        debug_assert_eq!(self.addrs.len(), span_base);
         if self.block_starts.len() != lists {
             return Err(unsupported(plan.unit, "a scope range list the plan did not count"));
         }
@@ -977,18 +1028,17 @@ impl<'a> Writer<'a> {
             .ok_or(Error::TooLarge)?;
         self.info[unit_start..unit_start + 4].copy_from_slice(&length.to_le_bytes());
 
-        self.contributions(has_addr, ranges, span_base)
+        self.contributions(has_addr, ranges)?;
+        if let Some((at, width)) = low_pc_at {
+            put_uleb_padded(&mut self.info[at..at + width], u64::from(self.span_index[0]));
+        }
+        Ok(())
     }
 
     /// The unit's contributions to `.debug_str_offsets`, `.debug_addr`
     /// and `.debug_rnglists`, after its DIEs; its `.debug_loclists`
     /// contribution is closed (WP-162).
-    pub(crate) fn contributions(
-        &mut self,
-        has_addr: bool,
-        ranges: bool,
-        span_base: usize,
-    ) -> Result<(), Error> {
+    pub(crate) fn contributions(&mut self, has_addr: bool, ranges: bool) -> Result<(), Error> {
         self.finish_loclists()?;
         // `.debug_str_offsets` (DWARF 5 §7.26).
         let offs = self.strings.unit_offsets();
@@ -1009,10 +1059,8 @@ impl<'a> Writer<'a> {
         }
 
         // `.debug_addr` (DWARF 5 §7.27).
+        self.pool_spans();
         if has_addr {
-            for s in &self.spans {
-                self.addrs.push((s.symbol, s.addend));
-            }
             let length = u32::try_from(4 + 8 * self.addrs.len()).map_err(|_| Error::TooLarge)?;
             self.addr.extend_from_slice(&length.to_le_bytes());
             self.addr.extend_from_slice(&5u16.to_le_bytes());
@@ -1047,9 +1095,9 @@ impl<'a> Writer<'a> {
             }
             self.rnglists.extend_from_slice(&self.block_lists);
             if ranges {
-                for (k, s) in self.spans.iter().enumerate() {
+                for (s, &index) in self.spans.iter().zip(&self.span_index) {
                     self.rnglists.push(DW_RLE_STARTX_LENGTH);
-                    write_uleb(&mut self.rnglists, (span_base + k) as u64);
+                    write_uleb(&mut self.rnglists, u64::from(index));
                     write_uleb(&mut self.rnglists, s.size);
                 }
                 self.rnglists.push(DW_RLE_END_OF_LIST);
@@ -1104,9 +1152,8 @@ impl<'a> Writer<'a> {
                     write_uleb(&mut self.info, u64::from(v.align / 8));
                 }
                 if addr != NONE {
-                    let index = self.addrs.len() as u64;
-                    let g = self.cur[addr as usize];
-                    self.addrs.push(g);
+                    let (symbol, addend) = self.cur[addr as usize];
+                    let index = u64::from(self.push_addr(symbol, addend));
                     write_uleb(&mut self.info, 1 + uleb_len(index) as u64);
                     self.info.push(DW_OP_ADDRX);
                     write_uleb(&mut self.info, index);
@@ -1159,6 +1206,7 @@ impl<'a> Writer<'a> {
 /// `NoUnit`; `GlobalNotInUnit`, `DuplicateGlobal`, `BadSymbol`,
 /// `BadSpan` for the addresses; `BadReference` for a file the plan does
 /// not number; `NulInName`; `TooLarge`; `Object`.
+#[expect(clippy::too_many_lines, reason = "the writer's state, then every section in order")]
 pub fn write_debug_info(
     obj: &mut Object,
     line: SectionId,
@@ -1183,7 +1231,9 @@ pub fn write_debug_info(
         stack: Vec::new(),
         addr_of: Vec::new(),
         addrs: Vec::new(),
+        addr_index: HashMap::default(),
         spans: Vec::new(),
+        span_index: Vec::new(),
         unit_start: 0,
         cur: Vec::new(),
         expr: Vec::new(),

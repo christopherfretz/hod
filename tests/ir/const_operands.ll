@@ -5,7 +5,8 @@
 ;@ covers: spec/ir.md §4.2 addresses as operands; spec/codegen.md §5.5.1 (WP-072)
 ;@ tier: quick
 ; Target-neutral since WP-147 (no triple, no target attributes): it runs on
-; both targets.
+; both targets. The i64 differences are printed with `%lld` (WP-302), which
+; is `long long` on every target, i686 included.
 ;@ stdout: cross=1 low=1 pair=1
 ;@ stdout: r1=25 r2=15 r3=5 r4=46 d=28 e=0 same=1
 
@@ -27,7 +28,7 @@ $_ZTV1S = comdat any
 @table_in_code = dso_local global [2 x ptr] zeroinitializer, align 8
 @_ZL7counter = internal global i32 0, align 4
 @.str = private unnamed_addr constant [25 x i8] c"cross=%d low=%d pair=%d\0A\00", align 1
-@.str.1 = private unnamed_addr constant [45 x i8] c"r1=%d r2=%d r3=%d r4=%d d=%ld e=%ld same=%d\0A\00", align 1
+@.str.1 = private unnamed_addr constant [47 x i8] c"r1=%d r2=%d r3=%d r4=%d d=%lld e=%lld same=%d\0A\00", align 1
 @_ZTV1S = linkonce_odr dso_local unnamed_addr constant { [3 x ptr] } { [3 x ptr] [ptr null, ptr null, ptr @_ZNK1S4virtEi] }, comdat, align 8
 
 ; Function Attrs: mustprogress noinline norecurse nounwind optnone uwtable

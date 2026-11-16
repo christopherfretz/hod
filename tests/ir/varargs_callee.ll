@@ -7,6 +7,8 @@
 ; enough for both. The C library receives a pointer to it on both targets
 ; (an array that decays on x86-64, a struct passed by reference on AArch64).
 ;@ covers: spec/ir.md §5.4 call (variadic callee), §5.5 intrinsics (va_start, va_copy, va_end)
+; The C library gets the va_list's address; i686's va_list is a pointer passed by value.
+;@ kept-off(i686): va-list-abi
 ;@ tier: quick
 ;@ stdout: tag 0 scale 0.5: no arguments
 ;@ stdout: tag 1 scale 1.5: 1 2 3 4 5 6 7 8 9 10

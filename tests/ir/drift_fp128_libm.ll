@@ -8,6 +8,8 @@
 ; bits. Expected values computed by a script (Python's math module and
 ; integer square root), not a compiler.
 ;@ covers: spec/ir.md §5.5 intrinsics (sin, cos, exp, log, pow, sqrt, floor on fp128), §5.4 floating point (frem fp128); spec/codegen.md §7.2 (runtime routines by type and target: fp128 libm)
+; LLVM 19's llc calls `sinl` (x86_fp80 on i686) for an fp128 `llvm.sin`; LLVM 22's calls `sinf128`.
+;@ kept-off(i686,llvm19): llc-abi
 ;@ link: m
 ;@ stdout: sin(1) 0.8414709848078965
 ;@ stdout: cos(0.5) 0.87758256189037276

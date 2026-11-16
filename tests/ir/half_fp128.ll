@@ -8,6 +8,8 @@
 ; Expected values computed by a script with exact rational arithmetic,
 ; not a compiler.
 ;@ covers: spec/ir.md §5.4 floating point (half, fp128)
+; i686's libgcc has no `__floattitf` (128-bit integers) nor, for LLVM 19, `__gnu_h2f_ieee`.
+;@ kept-off(i686): runtime-routine
 ;@ stdout: half 1.5 -2.25: add ba00 sub 4380 mul c2c0 div b955 lt 0
 ;@ stdout: half 0.0999755859375 1000: add 63d0 sub e3d0 mul 5640 div 068d lt 1
 ;@ stdout: half 1000 5.9604644775390625e-08: add 63d0 sub 63d0 mul 03e8 div 7c00 lt 0

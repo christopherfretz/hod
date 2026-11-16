@@ -3,6 +3,8 @@
 ; suffix, and `llvm.va_copy.p0.p0` (WP-147). The copy is consumed after
 ; the original has been, so both walk the same arguments.
 ;@ covers: spec/ir.md §5.5 intrinsics (the upgraded va_* spellings, WP-147)
+; vprintf gets the va_list's address; i686's va_list is a pointer passed by value.
+;@ kept-off(i686): va-list-abi
 ;@ tier: quick
 ;@ stdout: 7 2.50 -3 x
 ;@ stdout: 7 2.50 -3 x

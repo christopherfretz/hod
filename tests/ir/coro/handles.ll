@@ -7,6 +7,8 @@
 ; promise aligned to 8 and one aligned to 32. What opt's coroutine passes
 ; make of these is what hod must do without them.
 ;@ covers: spec/ir.md §5.5 intrinsics (coro.resume, coro.destroy, coro.done, coro.promise)
+; Frames of 8-byte words, the offsets printed with `%ld` (spec/harness.md "Kept off a target").
+;@ kept-off(i686): lp64-abi
 ;@ input: pre-opt
 ;@ link: c++
 ;@ stdout: small: promise +16 back 1, done 0

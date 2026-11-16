@@ -624,7 +624,7 @@ with what there is.
 
 ### What a test does
 
-For a test whose `target`, `llvm` and `dialect` directives admit this
+For a test whose `target`, `llvm`, `dialect` and `kept-off` directives admit this
 run (else it is SKIP), in its own directory under the work directory:
 
 0. **opt**, for a test with `input: pre-opt` ("Pre-opt input, dialects
@@ -805,6 +805,79 @@ the ramp's free, crashes without any environment poisoning. WP-106's
 LLVM's split keeps the exception slots off the frame and its oracle is
 right.
 
+### Kept off a target
+
+`;@ kept-off(<target>[,llvm<N>]): <class>` (WP-302) keeps a test off one
+target, or off one target with one oracle: there the test is SKIP with
+the detail `kept off <target>: <class>` before anything is built, and the
+summary counts such tests per class ("Summary"). It is for the case
+where the ORACLE side cannot serve as a reference there, never for a
+finding about hod: `llc` and that target's toolchain cannot build or run
+the seed, or the seed's expectation is by construction another target's.
+A seed whose subject does not depend on the pointer size is made valid
+for every target instead (WP-302 did that for `const_operands.ll`,
+`frame_intrinsics.ll` and `coro/noop.ll`). The classes are a fixed list
+(`xtask::irdiff::directives::KEPT_OFF_REASONS`); the last three are
+defects of the oracle (`spec/landed/harness/WP-302.md` has the evidence):
+
+| class | the seed |
+|---|---|
+| `lp64-abi` | is written for an LP64 C or C++ library ABI: `long`, `size_t` or `pthread_t` as `i64`, `operator new(unsigned long)` (`_Znwm`), `%ld` or `%lx` of an `i64`, a layout of 8-byte words printed |
+| `va-list-abi` | passes a `va_list` the way only the 64-bit targets do (its address, to `vprintf`) |
+| `runtime-routine` | needs a runtime routine the target's libraries lack (i686's libgcc: no 128-bit integer routines, no `__gnu_h2f_ieee`) or cannot run on the runner's CPU (i686's libgcc `__truncsfhf2`, `__truncsfbf2` use SSE2) |
+| `llc-crash` | makes the oracle's `llc` crash or fail to select |
+| `llc-abi` | makes the oracle's `llc` call a C library routine of another type (LLVM 19 for i686: `sinl` for an `fp128` `llvm.sin`) |
+| `x87-precision` | is miscompiled by the oracle's x87 code, which compares a `double` quotient without rounding it to `double` |
+
+Every `kept-off` of `tests/ir/`, one row each (`irdiff_real`'s
+`dialects_come_in_pairs_and_oracle_skips_are_listed` checks this, and
+that only i686 is ever named):
+
+| test | condition | class |
+|---|---|---|
+| `tests/ir/coro/await-bool-19.ll` | i686 | lp64-abi |
+| `tests/ir/coro/await-bool-22.ll` | i686 | lp64-abi |
+| `tests/ir/coro/deep-transfer-19.ll` | i686 | lp64-abi |
+| `tests/ir/coro/deep-transfer-22.ll` | i686 | lp64-abi |
+| `tests/ir/coro/destroy-19.ll` | i686 | lp64-abi |
+| `tests/ir/coro/destroy-22.ll` | i686 | lp64-abi |
+| `tests/ir/coro/done-19.ll` | i686 | lp64-abi |
+| `tests/ir/coro/done-22.ll` | i686 | lp64-abi |
+| `tests/ir/coro/escaped-local-19.ll` | i686 | lp64-abi |
+| `tests/ir/coro/escaped-local-22.ll` | i686 | lp64-abi |
+| `tests/ir/coro/exceptions-19.ll` | i686 | lp64-abi |
+| `tests/ir/coro/exceptions-22.ll` | i686 | lp64-abi |
+| `tests/ir/coro/gen-19.ll` | i686 | lp64-abi |
+| `tests/ir/coro/gen-22.ll` | i686 | lp64-abi |
+| `tests/ir/coro/gro-throws-19.ll` | i686 | lp64-abi |
+| `tests/ir/coro/gro-throws-22.ll` | i686 | lp64-abi |
+| `tests/ir/coro/gro-throws-uaf-19.ll` | i686 | lp64-abi |
+| `tests/ir/coro/gro-throws-uaf-22.ll` | i686 | lp64-abi |
+| `tests/ir/coro/handle-throws-19.ll` | i686 | lp64-abi |
+| `tests/ir/coro/handle-throws-22.ll` | i686 | lp64-abi |
+| `tests/ir/coro/handles.ll` | i686 | lp64-abi |
+| `tests/ir/coro/params-before-begin-19.ll` | i686 | lp64-abi |
+| `tests/ir/coro/params-before-begin-22.ll` | i686 | lp64-abi |
+| `tests/ir/coro/ramp-throw-19.ll` | i686 | lp64-abi |
+| `tests/ir/coro/ramp-throw-22.ll` | i686 | lp64-abi |
+| `tests/ir/drift_bfloat.ll` | i686 | runtime-routine |
+| `tests/ir/drift_fp128_libm.ll` | i686,llvm19 | llc-abi |
+| `tests/ir/exit_float.ll` | i686 | x87-precision |
+| `tests/ir/fp_intrinsics.ll` | i686 | llc-crash |
+| `tests/ir/half_fp128.ll` | i686 | runtime-routine |
+| `tests/ir/preserve_cc.ll` | i686 | llc-crash |
+| `tests/ir/tail_wide.ll` | i686 | runtime-routine |
+| `tests/ir/tls.ll` | i686 | lp64-abi |
+| `tests/ir/tls_desc.ll` | i686 | lp64-abi |
+| `tests/ir/va_spellings.ll` | i686 | va-list-abi |
+| `tests/ir/varargs_callee.ll` | i686 | va-list-abi |
+| `tests/ir/varargs_caller.ll` | i686 | lp64-abi |
+| `tests/ir/vector_lanes.ll` | i686 | runtime-routine |
+
+`coro/gro-throws-uaf-{19,22}.ll` have an `oracle-skip` for their own
+major, so their oracle never ran for i686; they call `_Znwm` like their
+`gro-throws` twins and are kept off for the same reason.
+
 ### Cross runs
 
 `--target` names the architecture the objects are for. When it is not the
@@ -894,7 +967,10 @@ none is named (`fuzz`, `bench`'s report of cross runs) runs on
   note says that hod declined every test. The reference's program is
   linked and run as for any target, so a broken cross toolchain is an
   ERROR; an object hod does build is compared as on any target. The exit
-  status is that of a run whose refusals are all expected.
+  status is that of a run whose refusals are all expected. The seeds the
+  i686 oracle cannot serve are kept off with their class ("Kept off a
+  target"; WP-302: 38 seeds; with LLVM 22 or 19 every other seed's
+  reference side passes with each of the three linkers, so the run exits 0).
 - `fuzz --target i686`: csmith's program (csmith's headers with the i686
   system root, as clang `--target=i686-unknown-linux-gnu` finds it) goes
   through clang and `llc`; a seed hod refuses is counted as refused with
@@ -1051,6 +1127,14 @@ irdiff: coverage: hod built 0 of 29 objects; declined codegen-not-implemented: 2
 irdiff: results: <build directory>/irdiff/results-aarch64-llvm22.tsv
 ```
 
+When a `kept-off` directive kept tests off the run's target ("Kept off a
+target"), a line after the coverage counts them by class, in the order
+the classes first occur among the tests:
+
+```
+irdiff: kept off i686: 25 tests; lp64-abi: 16; runtime-routine: 4; x87-precision: 1; llc-crash: 2; va-list-abi: 2
+```
+
 Coverage is per test: how many of the objects hod was asked for it built
 itself, and the others by `declined <reason>` or `fallback <reason>`. A
 test of several modules counts once: built by hod when hod built every
@@ -1078,8 +1162,17 @@ runs").
 
 | tier | runs, in order |
 |---|---|
-| `ci --quick` | `irdiff --tier quick` with the default oracle; `irdiff --llvm 22 --target <other>` over every test (`xtask::ci::QUICK_CROSS_LLVM`) |
-| `ci` | `irdiff --witness` over every test with LLVM 22, then 19; `irdiff --hybrid` over every test with the default oracle; `irdiff --target <other>` over every test with LLVM 22, then 19 |
+| `ci --quick` | `irdiff --tier quick` with the default oracle; `irdiff --llvm 22 --target <other>` over every test (`xtask::ci::QUICK_CROSS_LLVM`); `irdiff --llvm 22 --target i686 --tier quick` |
+| `ci` | `irdiff --witness` over every test with LLVM 22, then 19; `irdiff --hybrid` over every test with the default oracle; `irdiff --target <other>` over every test with LLVM 22, then 19; `irdiff --llvm 22 --target i686 --tier quick` |
+
+The i686 run (WP-302) is the quick tier with LLVM 22 on every Linux host
+of a known architecture, in both tiers of the gate: hod builds no object
+of that tier for i686 yet, so the run proves that hod's refusals are
+clean (UNSUPPORTED, never a crash or a FAIL) and that the i686 oracle,
+cross driver, linkers and emulator are healthy. It took 1.2 to 1.8 s
+with `-j 6` on the AArch64 host (25 tests, 67 results: 63 UNSUPPORTED,
+4 kept off). It grows to every seed, and to both oracles in the full
+gate, as hod's i686 coverage does.
 
 The quick gate runs every seed for the other architecture with the newest
 oracle (WP-139; until then a fixed four): all of them take under 20 s
@@ -1754,7 +1847,7 @@ else is: not a `;@` after white space or after code. A directive is
 
 exactly: `;@`, one space, the key (lower-case letters and `-`), for
 `xfail` and `unsupported` optionally a parenthesised condition list
-without spaces (for `oracle-skip` a required `(llvm=<majors>)`), a colon, and the value. One space after the colon, if
+without spaces (for `kept-off` a required one; for `oracle-skip` a required `(llvm=<majors>)`), a colon, and the value. One space after the colon, if
 there is one, is not part of the value. A file with no directive is a test
 of a program that prints nothing and exits with status 0, valid
 everywhere.
@@ -1766,11 +1859,12 @@ everywhere.
 | `stdin` | one line of the program's standard input | any | no input |
 | `exit` | `N` (0 to 255): the exit status. `signal N` (1 to 64): terminated by that signal | once | `0` |
 | `args` | the program's arguments, separated by spaces or tabs | once | none |
-| `target` | the architectures the test is valid for: `aarch64`, `x86_64` | once | both |
+| `target` | the architectures the test is valid for: `aarch64`, `x86_64`, `i686` | once | all |
 | `llvm` | the LLVM majors the test is valid for: `N` (exactly) or `N+` (that or later); any one must hold | once | all |
 | `dialect` | `N`: the test is in LLVM `N`'s dialect and runs only with that oracle; excludes `llvm` ("Pre-opt input, dialects and oracle skips") | once | every LLVM |
 | `input` | `pre-opt`: IR before optimisation; the oracle and the witness run `opt -passes=default<O0>` first | once | IR `llc` builds as it is |
 | `oracle-skip` | `oracle-skip(llvm=N[,M...]): <reason>`: with those oracles, hod's program is compared with the directives only; the reason is free text, never empty, and the test is listed in "Oracle skips" | any | the oracle is used |
+| `kept-off` | `kept-off(<target>[,llvm<N>]): <reason class>`: the test is not run for that target (with that oracle), for a class of "Kept off a target"; the test is listed there | any | run on every target `target` admits |
 | `link` | what the link needs: `m` (the math library), `c++` (the C++ runtime), `no-pie` (a position-dependent program, compiled with the static relocation model), `pie` (the default, spelled out), `allow-warnings` (link without `-Wl,--fatal-warnings`) | once | the C library, PIE, warnings fatal |
 | `llc-args` | code-generation arguments the oracle, the witness and hod all get, from the allow-list below | once | none |
 | `cpu` | CPU features the emulated runner's model gets for this test, as words `+<feature>` in QEMU's names (lower-case letters, digits, `.`, `_`, `-`: `+cx16`, `+popcnt`, `+sse4.2`), each once; the test must have a `target` of exactly one architecture ("Cross runs") | once | the baseline CPU |
@@ -1809,13 +1903,15 @@ this construct with this name), and should name a construct no package
 is about to turn on (refused by design, unplanned, or a property of the
 command line).
 
-**Conditions** narrow an `unsupported` or `xfail` directive to part of the
-matrix. A condition is a target (`aarch64`, `x86_64`), a linker (`bfd`,
-`lld`, `mold`, `wild`) or an oracle major (`llvm19`, `llvm22`, ...). All
+**Conditions** narrow an `unsupported`, `xfail` or `kept-off` directive to part of the
+matrix. A condition is a target (`aarch64`, `x86_64`, `i686`), a linker (`bfd`,
+`lld`, `mold`, `wild`, `mortar`) or an oracle major (`llvm19`, `llvm22`, ...). All
 conditions of a directive must hold, and there is at most one of each
 kind. Several directives of the same key are alternatives; the first one
 in the file whose conditions hold is the one that applies. `unsupported`
-cannot depend on a linker, because hod declines before anything is linked.
+and `kept-off` cannot depend on a linker, because hod declines (and a
+test is kept off) before anything is linked; `kept-off` must name its
+target.
 
 **Several modules.** A `module` directive's value is a name of letters,
 digits, `.`, `_` and `-` that starts with a letter or a digit. A file with
@@ -1869,8 +1965,10 @@ a file is reported, with its line:
   key), has no `:` directly after the key or the condition list, or has an
   unclosed condition list;
 - an unknown key;
-- a condition list on a key other than `unsupported`, `xfail` and
-  `oracle-skip`;
+- a condition list on a key other than `unsupported`, `xfail`,
+  `kept-off` and `oracle-skip`;
+- `kept-off` without a target condition, with a linker condition, or
+  with a value that is not a reason class of "Kept off a target";
 - a second directive of a key that may appear once;
 - an empty value, for every key but `stdout` and `stdin`;
 - `exit` that is not `N` in 0 to 255 or `signal N` in 1 to 64;
@@ -1900,7 +1998,7 @@ a file is reported, with its line:
 `Expectations::to_directives` writes directives in this order, leaving
 out everything that is the default: `covers`, `tier`, `target`, `llvm`,
 `dialect`, `input`, `link` (libraries, then `no-pie`, then
-`allow-warnings`), `llc-args`, `cpu`, each `oracle-skip`, each `unsupported`, each `xfail`, `args`, each `stdin`, `exit`, each `stdout`,
+`allow-warnings`), `llc-args`, `cpu`, each `oracle-skip`, each `kept-off`, each `unsupported`, each `xfail`, `args`, each `stdin`, `exit`, each `stdout`,
 `stdout-no-newline`. `module` directives belong to the modules and are
 not written. Reading what it writes gives
 the same `Expectations` back. Files need not be in this order.

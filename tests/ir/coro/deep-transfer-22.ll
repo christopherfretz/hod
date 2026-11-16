@@ -71,6 +71,7 @@
 ; }
 ;
 ;@ covers: spec/ir.md §5.5 intrinsics (symmetric transfer; spec/codegen.md §7.6)
+;@ kept-off(i686): lp64-abi
 ;@ input: pre-opt
 ;@ dialect: 22
 ;@ link: c++

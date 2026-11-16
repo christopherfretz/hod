@@ -7,6 +7,8 @@
 ; that all passed (7). The operands are volatile loads of globals, so
 ; nothing is folded.
 ;@ covers: spec/ir.md §5.4 floating point (call-free; WP-043)
+; llc's x87 code compares 6.5 / -0.375 unrounded, so check 3 fails (exit 103).
+;@ kept-off(i686): x87-precision
 ;@ tier: quick
 ;@ exit: 7
 

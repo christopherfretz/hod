@@ -17,6 +17,7 @@ use crate::kw::Kw;
 use crate::lexer::{Lexer, MAX_SOURCE_BYTES, Recording, Tok, Token, unescape};
 use crate::meta::{MdRef, MetadataIndex, Upgrade};
 use crate::names::NameMap;
+use crate::prelex::{self, Closing, Feed, PRELEX_PIECE_BYTES, PRELEX_THREADS};
 use crate::skip::skip_group;
 use crate::{AttrGroup, FunctionText, ModuleText, ParseOptions, ParsedModule, Span, limits};
 
@@ -131,11 +132,22 @@ pub(crate) fn ir<T>(at: u32, result: IrResult<T>) -> PResult<T> {
 }
 
 /// Parses `src` (`spec/ll.md` §4).
-/// The index scan runs on up to `threads` threads (§4.4).
+/// The index scan runs on up to `threads` threads (§4.4), and the debug
+/// nodes' bodies are lexed ahead on the others (§4.5).
 pub(crate) fn run<'a>(
     src: &'a [u8],
     options: &ParseOptions,
     threads: usize,
+) -> PResult<ParsedModule<'a>> {
+    run_split(src, options, threads, PRELEX_PIECE_BYTES)
+}
+
+/// [`run`] with the debug nodes cut in pieces of `prelex_piece` bytes.
+pub(crate) fn run_split<'a>(
+    src: &'a [u8],
+    options: &ParseOptions,
+    threads: usize,
+    prelex_piece: usize,
 ) -> PResult<ParsedModule<'a>> {
     if src.len() > MAX_SOURCE_BYTES {
         return fail(LlErrorKind::Limit, 0, "source is larger than MAX_SOURCE_BYTES");
@@ -155,12 +167,45 @@ pub(crate) fn run<'a>(
     parser.define_groups()?;
     parser.index_metadata()?;
     parser.named_metadata()?;
-    parser.build_debug()?;
+    if threads > 1 {
+        debug_on(&mut parser, threads, prelex_piece)?;
+    } else {
+        parser.build_debug()?;
+    }
     parser.flush(None);
     parser.items()?;
     parser.finish_debug()?;
     let text = parser.finish()?;
     Ok(ParsedModule { module, text })
+}
+
+/// The debug nodes (§7.4) on `threads` threads (§4.5): the calling one
+/// reads them, the others lex their bodies ahead, in pieces of about
+/// `piece_bytes` bytes of bodies. With fewer than two pieces, the serial
+/// reading.
+fn debug_on<L: Layering>(
+    parser: &mut Parser<'_, '_, L>,
+    threads: usize,
+    piece_bytes: usize,
+) -> PResult<()> {
+    // The scan's node entries are read no more: the lexing threads read
+    // them while the parser reads its own index of the nodes.
+    let nodes = std::mem::take(&mut parser.index.nodes);
+    let cuts = prelex::cuts(&nodes, piece_bytes);
+    let pieces = cuts.len() - 1;
+    if pieces < 2 {
+        return parser.build_debug();
+    }
+    let lexers = (threads - 1).min(pieces).min(PRELEX_THREADS);
+    let feed = Feed::new(pieces, lexers);
+    let src = parser.src;
+    std::thread::scope(|scope| {
+        for _ in 0..lexers {
+            scope.spawn(|| feed.work(src, &nodes, &cuts));
+        }
+        let _closing = Closing(&feed);
+        parser.build_debug_fed(Some((&feed, &cuts)))
+    })
 }
 
 /// The target: the module's triple, or the caller's default; the

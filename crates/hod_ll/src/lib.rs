@@ -23,6 +23,7 @@ mod lexer;
 mod meta;
 mod names;
 mod parser;
+mod prelex;
 mod skip;
 mod types;
 

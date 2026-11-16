@@ -306,6 +306,16 @@ impl Recording {
             self.0.push(Replayed { from: from as u32, token });
         }
     }
+
+    /// Empties it, keeping its storage.
+    pub(crate) fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    /// The offset the last token kept was looked for at.
+    pub(crate) fn last_from(&self) -> Option<usize> {
+        self.0.last().map(|entry| entry.from as usize)
+    }
 }
 
 impl<'a> Lexer<'a> {
@@ -357,6 +367,23 @@ impl<'a> Lexer<'a> {
         self.replay = recording.0;
         self.replay_at = 0;
         self.set_replay_from(self.replay.first().map_or(usize::MAX, |entry| entry.from as usize));
+    }
+
+    /// Moves to `pos`, as [`Lexer::set_pos`], with every recorded token
+    /// looked for at or after `pos` wanted again and none before it: a
+    /// move either way keeps the replay (§2.8) without stepping over the
+    /// entries in between.
+    pub(crate) fn seek(&mut self, pos: usize) {
+        self.set_pos(pos);
+        let pos = self.pos;
+        let at = self.replay_at;
+        let behind = at == 0 || (self.replay[at - 1].from as usize) < pos;
+        let ahead = self.replay.get(at).is_none_or(|entry| entry.from as usize >= pos);
+        if !(behind && ahead) {
+            self.replay_at = self.replay.partition_point(|entry| (entry.from as usize) < pos);
+        }
+        let next = self.replay.get(self.replay_at).map_or(usize::MAX, |entry| entry.from as usize);
+        self.set_replay_from(next);
     }
 
     /// Sets where the next token to replay was looked for, and with it

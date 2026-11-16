@@ -715,6 +715,8 @@ vectors).
 A dynamic `alloca` (a variable count, or outside the entry block) moves
 `esp` down by its size rounded up to 16, then, for an alignment above
 16, rounds `esp` down with `and`; the new `esp` is the address. The
+count is zero-extended or truncated to 32 bits, as `llc` does; a count
+of 33 to 64 bits (§13.4) gives its low word (join D). The
 frame is `ebp`-based (§3), so nothing reads `esp` but the call sequence,
 which reserves its outgoing area below every dynamic area.
 `llvm.stacksave` reads `esp`, `llvm.stackrestore` writes it. **Deviation:**

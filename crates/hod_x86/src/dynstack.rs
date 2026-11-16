@@ -82,11 +82,12 @@ pub fn dynamic_slot(cx: &mut FnCx<'_, X86>, ptr: FrameRef, size: u64, align: u64
 
 /// `%p = alloca <ty>, <iN> %count, align <align>` that the frame does not
 /// hold: `count` (zero-extended: a negative count is undefined) times
-/// `elem_size`, modulo 2^32 as `llc` computes it.
+/// `elem_size`, modulo 2^32 as `llc` computes it. A count of 33 to 64
+/// bits is truncated to its low word, as `llc` does (join D).
 ///
 /// # Errors
 /// `limit:frame-size` for a constant size or an alignment above 2^30; the
-/// refusal of a count of more than 32 bits; what the operands report.
+/// refusal of a count of more than 64 bits; what the operands report.
 pub fn alloca<'a>(
     cx: &mut FnCx<'a, X86>,
     inst: Inst<'a>,
@@ -102,13 +103,20 @@ pub fn alloca<'a>(
         let Some(size) = size else { return Err(CgError::unsupported(LIMIT_FRAME_SIZE)) };
         put(cx, mc::mov_ri(Size::D, ECX, size as i64));
     } else {
-        if width(cx, count) > 32 {
+        let bits = width(cx, count);
+        if bits > 64 {
             return Err(crate::target::refusal_of(cx, crate::common::value_ty(cx, count)));
         }
-        let bits = width(cx, count);
-        let n = gp(cx.use_reg(count)?);
-        put(cx, mc::mov_rr(Size::D, ECX, n));
-        crate::alu::extend_to(cx, ECX, bits, crate::alu::Ext::Zero);
+        if bits > 32 {
+            // 33 to 64 bits (a two-word slot, §8, §13.4): `llc` truncates
+            // the count to the pointer width, the slot's low word.
+            let slot = cx.use_mem(count)?;
+            crate::common::load_gpr(cx, ECX, slot, 4);
+        } else {
+            let n = gp(cx.use_reg(count)?);
+            put(cx, mc::mov_rr(Size::D, ECX, n));
+            crate::alu::extend_to(cx, ECX, bits, crate::alu::Ext::Zero);
+        }
         let elem = elem_size as u32;
         if elem == 0 {
             put(cx, mc::mov_ri(Size::D, ECX, 0));

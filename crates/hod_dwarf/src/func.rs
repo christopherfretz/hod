@@ -14,7 +14,7 @@
 //! the writer needs is three side tables sorted by DIE.
 
 use hod_ir::{
-    DiFlags, DiId, DiKind, DiLocalVariable, DiLocation, DiNode, DiOp, DiSubprogram,
+    DiFlags, DiId, DiKind, DiLabel, DiLocalVariable, DiLocation, DiNode, DiOp, DiSubprogram,
     DiSubroutineType, ExprId, LocId, SpFlags,
 };
 
@@ -1075,7 +1075,9 @@ impl<'a> Writer<'a> {
                 write_uleb(&mut self.info, u64::from(sp.line));
             }
             if link {
-                self.strx(sp.linkage_name)?;
+                self.strx_of::<DiSubprogram>(plan.debug, sp_id, sp.linkage_name, |v| {
+                    v.linkage_name()
+                })?;
             }
             self.ref4(spec);
             return Ok(());
@@ -1107,10 +1109,10 @@ impl<'a> Writer<'a> {
         self.addr_attrs(index, fd.code.size);
         self.exprloc();
         if link {
-            self.strx(sp.linkage_name)?;
+            self.strx_of::<DiSubprogram>(plan.debug, sp_id, sp.linkage_name, |v| v.linkage_name())?;
         }
         if name {
-            self.strx(sp.name)?;
+            self.strx_of::<DiSubprogram>(plan.debug, sp_id, sp.name, |v| v.name())?;
         }
         self.decl(decl);
         if let Some(t) = ty {
@@ -1245,12 +1247,12 @@ impl<'a> Writer<'a> {
                 {
                     // `llc` 21 and later write the column of a label.
                     self.abbrev(code(fam::LABEL_COLUMN, 1, false));
-                    self.strx(n.name)?;
+                    self.strx_of::<DiLabel>(plan.debug, node, n.name, |v| v.name())?;
                     self.decl(Some(d));
                     write_uleb(&mut self.info, u64::from(n.column));
                 } else {
                     self.abbrev(code(fam::LABEL, b(decl.is_some()) | 2, false));
-                    self.strx(n.name)?;
+                    self.strx_of::<DiLabel>(plan.debug, node, n.name, |v| v.name())?;
                     self.decl(decl);
                 }
                 let index = self.push_addr(fd.code.symbol, fd.code.addend + i64::from(offset));

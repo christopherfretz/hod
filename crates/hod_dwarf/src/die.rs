@@ -4,8 +4,8 @@
 //! `.debug_rnglists`.
 
 use hod_ir::{
-    ChecksumKind, ConstPool, DebugInfo, DiCompileUnit, DiFile, DiId, DiIds, DiKind, DiNode,
-    DiRecord, DiStr, DiView, EmissionKind, ExprId, Module, TypeTable,
+    ChecksumKind, ConstPool, DebugInfo, DiCompileUnit, DiFile, DiGlobalVariable, DiId, DiIds,
+    DiKind, DiNamespace, DiNode, DiRecord, DiStr, DiView, EmissionKind, ExprId, Module, TypeTable,
 };
 use hod_obj::elf::{SHF_MERGE, SHF_STRINGS, SHT_PROGBITS};
 use hod_obj::{Object, SectionId, SectionKind, SymbolId};
@@ -1223,7 +1223,7 @@ impl<'a> Writer<'a> {
                     self.abbrev(code(fam::GLOBAL_NAMELESS, mask, false));
                 } else {
                     self.abbrev(code(fam::GLOBAL_VARIABLE, mask, false));
-                    self.strx(v.name)?;
+                    self.strx_of::<DiGlobalVariable>(plan.debug, d.node, v.name, |v| v.name())?;
                 }
                 self.ref_to(plan, d.node, v.ty.unwrap_or(DiId::NONE))?;
                 if let Some(file) = file {
@@ -1240,16 +1240,14 @@ impl<'a> Writer<'a> {
                     self.info.push(DW_OP_ADDRX);
                     write_uleb(&mut self.info, index);
                 }
-                if !v.linkage_name.is_empty() {
-                    self.strx(v.linkage_name)?;
-                }
+                self.opt_name_of::<DiGlobalVariable>(plan.debug, d.node, v.linkage_name, |v| {
+                    v.linkage_name()
+                })?;
             }
             (Kind::Namespace, DiNode::Namespace(ns)) => {
                 let mask = u32::from(!ns.name.is_empty()) | u32::from(ns.export_symbols) << 1;
                 self.abbrev(code(fam::NAMESPACE, mask, children));
-                if !ns.name.is_empty() {
-                    self.strx(ns.name)?;
-                }
+                self.opt_name_of::<DiNamespace>(plan.debug, d.node, ns.name, |v| v.name())?;
             }
             (Kind::Subprogram, DiNode::Subprogram(sp)) => {
                 self.subprogram_die(plan, die, d.node, &sp, children)?;

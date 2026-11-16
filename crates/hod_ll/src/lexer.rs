@@ -809,10 +809,11 @@ impl<'a> Lexer<'a> {
     /// A token that starts with a letter or `_`. Most are a word or an
     /// integer type (`i` and digits) of at most 15 bytes with sixteen
     /// bytes of source from its start, not `u0…`, `s0…` or `cc` and a
-    /// digit, and followed by a byte that neither goes on a label nor
-    /// ends one: for those the rules of [`Lexer::word_rule`] all come to
-    /// the word or the type itself, which is found, and its key made,
-    /// from those sixteen bytes. Everything else goes through the rules.
+    /// digit, and followed by a byte that does not go on a label: for
+    /// those the rules of [`Lexer::word_rule`] all come to the word or
+    /// the type itself, which is found, and its key made, from those
+    /// sixteen bytes, or, before a colon, to the label of the word and
+    /// the colon. Everything else goes through the rules.
     #[inline(never)]
     fn word(&mut self, c: u8, start: usize) -> Token {
         let Some(bytes) = self.bytes.get(start..).and_then(<[u8]>::first_chunk::<16>) else {
@@ -829,8 +830,13 @@ impl<'a> Lexer<'a> {
             rest.iter().position(|&b| !is(b, WORD))
         }
         .map_or(16, |n| n + 1);
-        if special || len == 16 || is(bytes[len], LABEL) || bytes[len] == b':' {
+        if special || len == 16 || is(bytes[len], LABEL) {
             return self.word_rule(c, start);
+        }
+        // The run of label characters ends at the colon: a label (as
+        // `line:` in a metadata node), what `word_rule` makes of it too.
+        if bytes[len] == b':' {
+            return self.token(Tok::Label, start, start + len + 1);
         }
         let (first, rest) = bytes.split_at(8);
         let lo = u64::from_le_bytes(first.try_into().unwrap_or_default());
@@ -1036,6 +1042,21 @@ mod tests {
                 (Tok::Word, "b"),
             ]
         );
+    }
+
+    /// §2.3: a keyword or an integer type before a colon is a label, with
+    /// no keyword code, whether sixteen bytes follow its start or not.
+    #[test]
+    fn keyword_labels() {
+        for text in [&b"define: i8: line: x"[..], b"define: i8: line:                 x"] {
+            let mut lexer = Lexer::new(text);
+            for want in ["define:", "i8:", "line:"] {
+                let token = lexer.next_token();
+                assert_eq!((token.kind, token.kw), (Tok::Label, Kw::Other));
+                assert_eq!(lexer.text(token), want.as_bytes());
+            }
+            assert_eq!(lexer.next_token().kind, Tok::Word);
+        }
     }
 
     /// §2.3: labels win over everything a run of label characters could

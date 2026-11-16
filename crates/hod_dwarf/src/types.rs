@@ -282,10 +282,13 @@ impl UnitPlan<'_> {
                 Task::Create { node, want } => self.create(node, want, work)?,
                 Task::Template { parent, node } => self.template_task(parent, node, work)?,
                 Task::Construct { die, step } => {
-                    if !self.construct(die, step, work)?
-                        && let Some(o) = self.build.open.get_mut(die as usize)
-                    {
-                        *o = false;
+                    if !self.construct(die, step, work)? {
+                        if let Some(at) = self.constructing.iter().rposition(|e| e.0 == die) {
+                            self.constructing.remove(at);
+                        }
+                        if let Some(o) = self.build.open.get_mut(die as usize) {
+                            *o = false;
+                        }
                     }
                 }
             }
@@ -319,6 +322,7 @@ impl UnitPlan<'_> {
             }
         }
         self.build = Build::default();
+        self.constructing = Vec::new();
         Ok(())
     }
 
@@ -770,7 +774,25 @@ impl UnitPlan<'_> {
     fn construct(&mut self, die: u32, step: u32, work: &mut Vec<Task>) -> Result<bool, Error> {
         let Die { node, kind, .. } = self.dies[die as usize];
         let ensure = |field, t: DiId| Task::Ensure { from: node, field, node: t, want: Want::Type };
-        match (kind, self.debug.node(node)) {
+        let open = self.constructing.iter().rev().find(|e| e.0 == die);
+        let (decoded, method_types) = match open {
+            Some(&(_, decoded, types)) => (decoded, types),
+            None => {
+                let decoded = self.debug.node(node);
+                let types = match (kind, decoded) {
+                    (Kind::Method, DiNode::Subprogram(sp)) => {
+                        match sp.ty.map(|t| self.debug.node(t)) {
+                            Some(DiNode::SubroutineType(s)) => s.types,
+                            _ => &[],
+                        }
+                    }
+                    _ => &[],
+                };
+                self.constructing.push((die, decoded, types));
+                (decoded, types)
+            }
+        };
+        match (kind, decoded) {
             (Kind::Derived, DiNode::DerivedType(d)) => match step {
                 0 => Self::then(work, die, 1, d.base_type.map(|b| ensure("baseType", b))),
                 1 if d.tag == tag::PTR_TO_MEMBER_TYPE => {
@@ -845,12 +867,8 @@ impl UnitPlan<'_> {
             (Kind::Subroutine, DiNode::SubroutineType(s)) => {
                 return self.signature(node, die, s.types, step, work);
             }
-            (Kind::Method, DiNode::Subprogram(sp)) => {
-                let types = match sp.ty.map(|t| self.debug.node(t)) {
-                    Some(DiNode::SubroutineType(s)) => s.types,
-                    _ => &[],
-                };
-                return self.signature(node, die, types, step, work);
+            (Kind::Method, DiNode::Subprogram(_)) => {
+                return self.signature(node, die, method_types, step, work);
             }
             (Kind::Member | Kind::Friend, DiNode::DerivedType(d)) => match step {
                 0 => Self::then(work, die, 1, d.base_type.map(|b| ensure("baseType", b))),

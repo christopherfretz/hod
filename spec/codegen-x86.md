@@ -58,8 +58,7 @@ the end of the function); an incoming argument `Incoming(n)` is
 `[ebp + 8 + n]`; an outgoing one `[esp + n]`. The DWARF frame base is
 `ebp`, the frame description `12 + FRAME` bytes below it. The CFI rows are
 recorded (CFA `ebp + 8`, `ebp` at -8, `ebx`, `esi`, `edi` at -12, -16,
--20), but no `.eh_frame` is written (I10): `hod_cg`'s unwind tables skip
-`EM_386`.
+-20); `hod_cg` writes them to `.eh_frame` (§14, WP-314).
 
 ## 4. Integers (`alu`)
 
@@ -177,7 +176,7 @@ their values).
 | `x86:vector` | a vector value, a vector `ptradd`, the element operations | I12 |
 | `x86:aggregate` | since WP-315 (§13.2) only an aggregate argument of more than 16 leaves (`abi.rs`'s `MAX_LEAVES`) and an aggregate without a layout | — |
 | `x86:frame-depth` | `llvm.frameaddress`/`returnaddress` deeper than 256 frames (§13.5) | — |
-| `x86:eh` | `invoke`, `landingpad`, `resume`; a call that may unwind in a function that may unwind (no unwind tables) | I10 |
+| `x86:eh:landingpad`, `x86:eh:landingpad-clause`, `x86:eh:resume`, `x86:eh:typeid` | a `landingpad` or `resume` of a type other than `{ ptr, i32 }`; a clause that is not a symbol, `null` or an array of them; `llvm.eh.typeid.for` of a non-symbol (§14; `x86:eh` itself removed by WP-314) | — |
 | `x86:debug-info` | a module with debug information (`hod_cg`'s emitter) | I10 |
 | `x86:cf-protection` | `cf-protection-*` module flags (`hod_cg`'s `.note.gnu.property`) | — |
 | `x86:atomic:no-cx8` | an 8-byte atomic operation on a CPU without `cmpxchg8b` (§12.2) | — |
@@ -195,7 +194,7 @@ their values).
 | `x86:varargs` | `va_start` outside a variadic function (§12.1) | — |
 | `x86:varargs:va-arg-type` | `va_arg` of an aggregate, a vector, an integer wider than 64 bits (§12.1) | — |
 | `x86:probe-stack` | a function with `"probe-stack"="inline-asm"` (§12.3) | — |
-| `x86:intrinsic` | any other intrinsic (the integer intrinsics of §4.1 and §8 are lowered; the overflow and small intrinsics of §13 are lowered; still refused: `eh.typeid.for`, ...) | per family |
+| `x86:intrinsic` | any other intrinsic (the integer intrinsics of §4.1 and §8 are lowered; the overflow and small intrinsics of §13 and `eh.typeid.for` (§14) are lowered; still refused: every intrinsic none of them names) | per family |
 | `x86:call` | a call with operand bundles, `callbr` | — |
 | `x86:blockaddress`, `x86:indirect-branch` | `blockaddress`, `indirectbr` | — |
 | `x86:stack-protector` | a function with a stack guard | — |
@@ -839,4 +838,86 @@ is an x87 barrier.
 | `prefetch`, `clear_cache` | nothing |
 
 `expect*`, `assume`, `lifetime.*`, `invariant.*` and the other hints are
-removed in front of the back end. `eh.typeid.for` stays `x86:intrinsic`.
+removed in front of the back end. `eh.typeid.for` is §14's.
+
+## 14. Exceptions (`eh`, WP-314, design 0008 I10)
+
+- **Tables.** `hod_cg`'s unwind tables (`spec/eh.md`) are written for
+  `EM_386` with `hod_eh::I386` (`spec/eh.md` §2.1): CIE `esp+4`, `eip`
+  at `CFA-4`, the PIC encodings (FDE `0x1b`, personality `0x9b` through
+  `DW.ref.<personality>`, a 4-byte hidden weak COMDAT slot, LSDA `0x1b`,
+  type table `0x9b` through 4-byte stubs in `.data`), all `R_386_PC32`,
+  in every relocation model. The FDE rows are §3's: `def_cfa_offset 8`,
+  `ebp` at -8, `def_cfa_register ebp`, `ebx`/`esi`/`edi` at -12/-16/-20
+  after the pushes, `def_cfa esp+4` after the one epilogue. Which
+  functions get an FDE (`uwtable`, may unwind) is `hod_cg`'s rule, as on
+  the other targets.
+- **`invoke`** is the call sequence (`FnCx::call`, `pic::emit_call`
+  under it): `hod_cg` records the call site and its pad. A callee-pop
+  callee, an `sret` result, an `i64` or `x86_fp80`/`double` result (§8,
+  §11) are those of a call; the result is stored on the normal path. The
+  constant fold's rewrites (`spec/codegen.md` §5.6.8 step 4: an
+  `invoke` of a `nounwind` or `noreturn` callee, ...) are honoured as on
+  the 64-bit targets (the call sequence reads `FoldAction`). `musttail`
+  is never an `invoke` (the IR verifier rejects it).
+- **`landingpad`** (`{ ptr, i32 }`, class `Mem`, 8 bytes): the clauses go
+  to the pad's row; the exception pointer (`eax`) and the selector
+  (`edx`) are stored to the value's home at the pad's first instruction,
+  as `llc` does. `eax` holds no value across instructions and `edx` is
+  scratch (§2), so both are still the unwinder's there. `extractvalue`
+  of field 0 or 1 is a load of the home at 0 or 4; `insertvalue` into
+  such a value copies it (`poison`/`undef` copy nothing,
+  `zeroinitializer` writes zeros) and stores the field. `target.rs`
+  sends these two to `eh` before the general aggregate arms (§13.2),
+  whose layout of `{ ptr, i32 }` is the same (the pointer at 0, the
+  `i32` at 4), so a pad's value stored, loaded, selected or passed as an
+  aggregate reads the same; any other constant aggregate `insertvalue`
+  operand is `x86:aggregate`.
+- **`resume`**: the exception pointer to `_Unwind_Resume` through the
+  call sequence (`@PLT` with `ebx` under PIC), then `ud2`.
+- **`llvm.eh.typeid.for(@ti)`**: the type id of `@ti` in the function's
+  table, an `i32` constant.
+- **PIC.** No GOT pointer survives into a pad: it is computed where it is
+  needed (§9.2), so a pad's first PLT call or `@GOTOFF` access computes
+  it again.
+- **x87 (§11).** An `invoke` is a terminator, so a barrier: no 80-bit
+  copy lives across it; its `double` result is stored at 64 bits on the
+  normal path. A landing pad starts a block (a new run). `resume` ends
+  one. Measured in `llc -O0` assembly (19 and 22, CPU `generic` and
+  `pentiumpro`): a `double`/`float` product computed before an `invoke`
+  is stored rounded (`fstpl`/`fstps`) before the call and reloaded in
+  both successors; one computed and used inside the pad stays in an x87
+  register. `eh/callconv.ll` runs both shapes (§14 tests).
+- **Static model.** hod writes `llc`'s PIC encodings in the tables in
+  every relocation model (as on x86-64); `llc`'s static tables use
+  absolute encodings. A documented deviation: the static objects' tables
+  differ from `llc`'s by design and are tested by linking and running
+  (`-no-pie`, three linkers) and by decoding the LSDAs.
+- **Tests** (`crates/hod/tests/i386_eh.rs`, programs in
+  `tests/data/i386/eh/`): C++ programs by clang 19 and 22 (throw and
+  catch by value, reference and base class, rethrow, nested `try`,
+  catch-all, destructors in cleanups, dynamic exception specifications,
+  `noexcept` and `std::terminate`), a hand-written module with values
+  live in `ebx`/`esi`/`edi` across throwing calls, an `i64` and a
+  `double` `invoke` result, `llvm.eh.typeid.for`, a filter and a
+  `resume`; static, PIE and `-march=i586` (no `cmov`), each by `llc`,
+  hod and hod under `Stress::ALL`, linked by GNU ld, lld and mold, run
+  under `qemu-i386`: every run equals `llc`'s. A throw across a shared
+  library boundary both ways with a general-dynamic thread-local
+  variable in the catching frame. The tables pass `llvm-dwarfdump
+  --verify` (19, 22) and decode as `llc`'s: the same CIEs, the same FDE
+  count and LSDA count, the same prologue rules per FDE (without
+  `ebx`/`esi`/`edi`, which hod always saves), the same relocation kinds
+  of `.eh_frame`, `.gcc_except_table` and the `DW.ref` slot.
+  `eh/callconv.ll`: `invoke` of an `sret` callee (it pops the pointer),
+  of an `i64` result and of a `fastcc` callee, each throwing and
+  returning, at CPU `generic` and `pentiumpro`, and the x87 shapes above.
+  An `invoke` of `x86_stdcallcc`/`x86_fastcallcc` is refused under
+  `cc:x86_stdcallcc`/`cc:x86_fastcallcc`, as a call is. The LSDAs of
+  `basic.cpp`, `live.ll` and `callconv.ll` (static and PIC) decode as
+  `llc`'s: the encodings (PIC), per function the call sites (with or
+  without a pad, merged where consecutive ones are equal) and their
+  action chains with the catch types, cleanups and filters resolved
+  through the relocations. Which pad is not compared: where several
+  `invoke`s unwind to one IR pad, `llc` has one landing address and hod
+  one per `invoke`.

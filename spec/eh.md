@@ -134,6 +134,25 @@ hod writes the PC-relative forms in every relocation model, as it does
 under the small model (whose `llc` static encoding is `udata4`), and the
 unwinder reads either. The LSDA's type table takes `P`'s encoding (§9.2).
 
+32-bit x86 (`I386`, WP-314, design 0008 §1.6; chosen by `for_machine`,
+since `Machine::I386` has no `Arch`): code and data alignment factors 1
+and -4, return-address register 8 (`eip`), initial instructions
+`DW_CFA_def_cfa esp(4), 4`; `DW_CFA_offset eip(8), -4`; `R` 0x1b, `P`
+0x9b, `L` 0x1b, every pointer relocated by `R_386_PC32`; `SHT_PROGBITS`,
+aligned to 4 (the last FDE padded to 4). These are `llc` 19's and 22's
+encodings under PIC; outside PIC `llc` writes the personality, the LSDA
+and the type-table entries absolute (`DW_EH_PE_absptr`, `R_386_32`,
+directly to the personality and the type-info objects, no `DW.ref` slot
+and no stubs). hod writes the PIC forms in every model, as on x86-64:
+both are correct in a static link, and only the PC-relative ones in a PIE
+(`llc`'s static ones make the linker write `DT_TEXTREL` there). The
+table's `address_size` is 4: the `DW.ref` slot (§2.2) and each type-info
+stub (§9.5) are 4 bytes, aligned to 4, relocated by `R_386_32`, and
+`.debug_frame` (§10) has 4-byte locations and ranges with the address
+size 4 in its CIE, entries padded to 4, the CIE pointer `R_386_32` (its
+`abs32_reloc`), as `llc` writes it. Every other table keeps
+`address_size` 8, so their output is unchanged.
+
 AArch64 under the large code model (`AARCH64_LARGE`, outside PIC: hod
 refuses the model under PIC) is the first column with `R` `pcrel|sdata8`
 (0x1c) and the initial location and range relocated with

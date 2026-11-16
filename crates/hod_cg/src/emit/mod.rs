@@ -1380,7 +1380,7 @@ impl<'m> ModuleEmitter<'m> {
                 sections.insert((structor.priority, key), section);
                 section
             };
-            let offset = self.obj.append_zeros(section, 8);
+            let offset = self.obj.append_zeros(section, u64::from(arch.address_bytes()));
             let (target, addend) = self.data_target(structor.func, 0, arch.data_prefers_local());
             self.obj.add_relocation(section, offset, abs, target, addend);
         }

@@ -110,12 +110,7 @@ impl ModuleEmitter<'_> {
     /// else `.debug_frame` (WP-150, checked with `llc` 19 and 22 on both
     /// targets).
     pub(super) fn unwind_tables(&mut self) -> CgResult<()> {
-        // 32-bit x86 (WP-293): no unwind tables until design 0008's I10;
-        // `hod_x86` refuses what needs one (`x86:eh`), and debug
-        // information is refused before emission (`x86:debug-info`).
-        if self.obj.machine() == hod_obj::Machine::I386 {
-            return Ok(());
-        }
+        // 32-bit x86 has its tables since WP-314 (`hod_eh::I386`).
         let debug = self.debug.is_some();
         let any_eh = self.funcs.iter().any(|f| f.record.needs_unwind_entry());
         if debug && !any_eh {
@@ -318,7 +313,7 @@ impl ModuleEmitter<'_> {
                 lsda,
             });
         }
-        let target = hod_eh::for_model(self.obj.arch(), self.large_code_model());
+        let target = hod_eh::for_machine(self.obj.machine(), self.large_code_model());
         hod_eh::write_eh_frame_for(&mut self.obj, &frames, target).map_err(eh_err)?;
         Ok(())
     }

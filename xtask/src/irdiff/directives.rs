@@ -15,22 +15,29 @@ use std::fmt::Write as _;
 pub enum Arch {
     Aarch64,
     X86_64,
+    /// 32-bit x86 (design 0008): the reference side is linked and run;
+    /// hod does not compile for it yet ([`Arch::compiled_by_hod`]).
+    I686,
 }
 
 impl Arch {
     /// Every architecture, in the order of the documentation.
-    pub const ALL: [Self; 2] = [Self::Aarch64, Self::X86_64];
+    pub const ALL: [Self; 3] = [Self::Aarch64, Self::X86_64, Self::I686];
 
     /// The name used in directives and on the command line.
     pub fn name(self) -> &'static str {
         match self {
             Self::Aarch64 => "aarch64",
             Self::X86_64 => "x86_64",
+            Self::I686 => "i686",
         }
     }
 
-    /// The architecture with this name.
+    /// The architecture with this name; `i386` is `i686`.
     pub fn from_name(name: &str) -> Option<Self> {
+        if name == "i386" {
+            return Some(Self::I686);
+        }
         Self::ALL.into_iter().find(|arch| arch.name() == name)
     }
 
@@ -39,7 +46,25 @@ impl Arch {
         match self {
             Self::Aarch64 => "aarch64-unknown-linux-gnu",
             Self::X86_64 => "x86_64-unknown-linux-gnu",
+            Self::I686 => "i686-unknown-linux-gnu",
         }
+    }
+
+    /// Whether hod compiles for this architecture: what a command runs
+    /// when no `--target` names one. `hod_testutil::Target::COMPILED_BY_HOD`
+    /// decides it, the one place for every harness and test.
+    pub fn compiled_by_hod(self) -> bool {
+        let target = match self {
+            Self::Aarch64 => hod_testutil::Target::Aarch64,
+            Self::X86_64 => hod_testutil::Target::X86_64,
+            Self::I686 => hod_testutil::Target::I686,
+        };
+        target.compiled_by_hod()
+    }
+
+    /// [`Arch::ALL`] that hod compiles for.
+    pub fn compiled() -> Vec<Self> {
+        Self::ALL.into_iter().filter(|arch| arch.compiled_by_hod()).collect()
     }
 
     /// The architecture of this machine, if it is a Linux host of a known

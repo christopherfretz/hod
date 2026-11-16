@@ -43,7 +43,7 @@ them. The default is every test under tests/ir/.
   -j <N>, --jobs <N>   tests run at once (default 4, at most 16)
   --llvm <major|dir>   the oracle: an LLVM major (22, 19) or an installation
                        directory (default: the newest of 22 and 19 found)
-  --target <arch>      aarch64 or x86_64 (default: this host)
+  --target <arch>      aarch64, x86_64 or i686 (also i386) (default: this host)
   --linker <name>      bfd, lld, mold or wild; repeatable (default: every
                        one that is found)
   --tier <quick|all>   the tests to run (default: all)
@@ -323,6 +323,15 @@ fn toolchain(
         if !(asked || config.linkers.is_empty()) {
             continue;
         }
+        if !hod_testutil::linkers::links(name, target) {
+            if asked {
+                return Err(format!("linker '{name}' does not link {} programs", arch.name()));
+            }
+            report
+                .notes
+                .push(format!("linker '{name}' does not link {}; not in this run", arch.name()));
+            continue;
+        }
         match tools::find_linker_for(name, arch, &config.search) {
             Some(path) => linkers.push(Linker { name: name.to_owned(), path }),
             None if asked => return Err(format!("linker '{name}' was asked for and is not found")),
@@ -598,7 +607,7 @@ pub fn parse_args(args: &[String], config: &mut Config) -> Result<bool, String> 
             "--target" => {
                 let text = value()?;
                 config.target = Some(Arch::from_name(&text).ok_or_else(|| {
-                    format!("unknown target '{text}': expected aarch64 or x86_64")
+                    format!("unknown target '{text}': expected aarch64, x86_64 or i686")
                 })?);
             }
             "--linker" => {

@@ -43,6 +43,7 @@ fn triple(target: Target) -> &'static str {
     match target {
         Target::Aarch64 => "aarch64-unknown-linux-gnu",
         Target::X86_64 => "x86_64-unknown-linux-gnu",
+        Target::I686 => "i686-unknown-linux-gnu",
     }
 }
 
@@ -52,6 +53,7 @@ fn header(target: Target, flags: &[&str]) -> String {
     let layout = match target {
         Target::Aarch64 => hod_ir::AARCH64_LINUX_DATA_LAYOUT,
         Target::X86_64 => hod_ir::X86_64_LINUX_DATA_LAYOUT,
+        Target::I686 => unreachable!("not in Target::COMPILED_BY_HOD"),
     };
     let mut out =
         format!("target datalayout = \"{layout}\"\ntarget triple = \"{}\"\n", triple(target));
@@ -365,6 +367,7 @@ fn combos(target: Target) -> Vec<Combo> {
     let probe = [("", ""), ("probe", "\"probe-stack\"=\"inline-asm\"")];
     let protect: &[(&str, &str)] = match target {
         Target::X86_64 => &[("", "")],
+        Target::I686 => unreachable!("not in Target::COMPILED_BY_HOD"),
         Target::Aarch64 => &[
             ("", ""),
             ("bti", "\"branch-target-enforcement\"=\"true\""),
@@ -594,6 +597,7 @@ fn hod_object(text: &str, target: Target, stress: bool) -> Result<Vec<u8>, Strin
         Target::Aarch64 => {
             hod_a64::compile_to_object(&module, &bodies, &options).map_err(|e| e.to_string())
         }
+        Target::I686 => unreachable!("not in Target::COMPILED_BY_HOD"),
     }
 }
 
@@ -700,6 +704,7 @@ fn texts(target: Target) -> (Vec<String>, Vec<String>, Vec<(String, &'static str
             ),
         ],
         Target::Aarch64 => &[("a", &[])],
+        Target::I686 => unreachable!("not in Target::COMPILED_BY_HOD"),
     };
     for &(tag, flags) in sets {
         let (ir, p, c) = module(target, tag, flags, |_| true);
@@ -714,7 +719,7 @@ fn texts(target: Target) -> (Vec<String>, Vec<String>, Vec<(String, &'static str
 /// stressed), `llc` 19 and 22, under bfd, lld and mold, print the same.
 #[test]
 fn every_combination_runs_as_llc_s() {
-    for target in Target::ALL {
+    for target in Target::COMPILED_BY_HOD {
         let dir = Scratch::new(&format!("hardening-{}", target.name()));
         let Some(toolchain) = Toolchain::for_target(&dir, target) else { continue };
         let (texts, plain, checked) = texts(target);
@@ -779,7 +784,7 @@ fn protected_groups(target: Target) -> Vec<(String, String)> {
 #[test]
 fn overflows_are_caught_with_every_flag() {
     use std::os::unix::process::ExitStatusExt as _;
-    for target in Target::ALL {
+    for target in Target::COMPILED_BY_HOD {
         let dir = Scratch::new(&format!("hardening-smash-{}", target.name()));
         let Some(toolchain) = Toolchain::for_target(&dir, target) else { continue };
         let groups = protected_groups(target);
@@ -788,6 +793,7 @@ fn overflows_are_caught_with_every_flag() {
         let sets: &[(&str, &[&str])] = match target {
             Target::X86_64 => &[("n", &[]), ("b", &["i32 8, !\"cf-protection-branch\", i32 1"])],
             Target::Aarch64 => &[("a", &[])],
+            Target::I686 => unreachable!("not in Target::COMPILED_BY_HOD"),
         };
         for &(tag, flags) in sets {
             let mut ir = header(target, flags);
@@ -859,7 +865,7 @@ fn overflows_are_caught_with_every_flag() {
 /// lands below the guard. hod (plain and stressed) and `llc` 19 and 22.
 #[test]
 fn probe_faults_unwind_through_protected_signed_frames() {
-    for target in Target::ALL {
+    for target in Target::COMPILED_BY_HOD {
         let dir = Scratch::new(&format!("hardening-guard-{}", target.name()));
         let Some(toolchain) = Toolchain::for_target(&dir, target) else { continue };
         let (probed, plain, flags): (&str, &str, &[&str]) = match target {
@@ -867,6 +873,7 @@ fn probe_faults_unwind_through_protected_signed_frames() {
                 ("strongprobe", "strong", &["i32 8, !\"cf-protection-branch\", i32 1"])
             }
             Target::Aarch64 => ("strongprobeallabti", "strongallabti", &[]),
+            Target::I686 => unreachable!("not in Target::COMPILED_BY_HOD"),
         };
         let attrs = |name: &str| {
             combos(target).into_iter().find(|c| c.name == name).expect("a combination").attrs

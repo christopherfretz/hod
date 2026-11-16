@@ -71,6 +71,11 @@ exit status: 0 no failure; 1 a FAIL, XPASS or debugger crash on hod's program
 not with hod); 3 an ERROR or a missing required tool; 2 usage
 ";
 
+/// Why `--target i686` is refused: the debug lane's i686 column comes with
+/// hod's i686 debug information (design 0008, package I10).
+const NO_I686_LANE: &str =
+    "target 'i686': the debug lane has no i686 column yet (design 0008, package I10)";
+
 fn value(args: &[String], i: &mut usize, name: &str) -> Result<String, String> {
     *i += 1;
     args.get(*i).cloned().ok_or_else(|| format!("{name} needs a value"))
@@ -140,6 +145,9 @@ pub fn parse_run(args: &[String], options: &mut sessions::Options) -> Result<boo
                     let t = take(&mut i)?;
                     let arch = crate::irdiff::directives::Arch::from_name(&t)
                         .ok_or_else(|| format!("unknown target '{t}'"))?;
+                    if arch == crate::irdiff::directives::Arch::I686 {
+                        return Err(NO_I686_LANE.to_owned());
+                    }
                     options.target = Some(arch);
                 }
                 "--no-lines" => options.lines = false,
@@ -282,6 +290,9 @@ pub fn command(args: &[String]) -> u8 {
                     },
                     "--target" => match take(&mut i) {
                         Ok(t) => match crate::irdiff::directives::Arch::from_name(&t) {
+                            Some(crate::irdiff::directives::Arch::I686) => {
+                                return usage(NO_I686_LANE.to_owned());
+                            }
                             Some(arch) => options.target = Some(arch),
                             None => return usage(format!("unknown target '{t}'")),
                         },

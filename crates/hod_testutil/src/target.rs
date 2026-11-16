@@ -12,7 +12,15 @@
 //! `binutils-x86-64-linux-gnu`, `libc6-dev-amd64-cross`,
 //! `libstdc++-14-dev-amd64-cross` (system root `/usr/x86_64-linux-gnu`) and
 //! `qemu-user` (`qemu-x86_64`); the AArch64 one on an x86-64 host is the
-//! same with `aarch64-linux-gnu` and `arm64`.
+//! same with `aarch64-linux-gnu` and `arm64`. The 32-bit x86 one (from
+//! either host) is `gcc-i686-linux-gnu`, `g++-i686-linux-gnu`,
+//! `binutils-i686-linux-gnu`, `libc6-dev-i386-cross`,
+//! `libstdc++-14-dev-i386-cross` (system root `/usr/i686-linux-gnu`) and
+//! `qemu-user` (`qemu-i386`; design 0008, section 4).
+//!
+//! [`Target::ALL`] is every target the harness links and runs programs
+//! for; [`Target::COMPILED_BY_HOD`] is the ones hod writes objects for,
+//! which every test that compiles with hod iterates.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -38,6 +46,22 @@ pub const X86_64_EMULATED_CPU: &str = "qemu64,-sse3,-cx16,-lahf-lm";
 /// LSE atomics), hod's AArch64 baseline. Not exercised on an AArch64 host.
 pub const AARCH64_EMULATED_CPU: &str = "cortex-a53";
 
+/// The CPU `qemu-i386` models: LLVM's and GCC's default 32-bit CPU,
+/// `i686` (the Pentium Pro: x87, CMOV, CX8, no MMX and no SSE; clang 19 and
+/// 22 write `"target-cpu"="i686"` with `"+cmov,+cx8,+x87"`, design 0008
+/// section 4). QEMU has no Pentium Pro model; `pentium2` is one with MMX
+/// on top, which is removed. A program that uses SSE where its CPU does not
+/// have it dies with `SIGILL` here.
+pub const I686_EMULATED_CPU: &str = "pentium2,-mmx";
+
+/// The guest address space `qemu-i386` reserves (`-R`, 512 MiB): without
+/// it the emulator reserves all 4 GiB of a 32-bit guest's space up front,
+/// which an address-space limit of the harness's runners (1 GiB for a
+/// program, "Child processes") refuses ("Unable to find a `guest_base` to
+/// satisfy all guest address mapping requirements"). The reserve is the
+/// guest's memory bound in place of that limit.
+pub const I686_GUEST_SPACE: &str = "0x20000000";
+
 /// The CPU model `cpu` (`<model>,<+feature|-feature>...`, QEMU's syntax)
 /// with each of `features` (names without the sign) turned on: a
 /// `-<feature>` of the model is dropped and `+<feature>` appended, once.
@@ -60,17 +84,61 @@ pub fn cpu_with_features(cpu: &str, features: &[&str]) -> String {
 pub enum Target {
     Aarch64,
     X86_64,
+    /// 32-bit x86 Linux, `i686-*-linux-gnu` (design 0008). Programs are
+    /// linked and run for it (the oracle's side); hod does not compile for
+    /// it yet, so it is not in [`Target::COMPILED_BY_HOD`].
+    I686,
 }
 
 impl Target {
-    /// Every target.
-    pub const ALL: [Self; 2] = [Self::Aarch64, Self::X86_64];
+    /// Every target the harness links and runs programs for.
+    pub const ALL: [Self; 3] = [Self::Aarch64, Self::X86_64, Self::I686];
 
-    /// `aarch64` or `x86_64`, as in a triple.
+    /// The targets hod compiles for: what a test that builds objects with
+    /// hod iterates. THE one place that decides it: `I686` joins when its
+    /// back end does (design 0008, package I5).
+    pub const COMPILED_BY_HOD: [Self; 2] = [Self::Aarch64, Self::X86_64];
+
+    /// Whether hod compiles for this target ([`Target::COMPILED_BY_HOD`]).
+    pub fn compiled_by_hod(self) -> bool {
+        Self::COMPILED_BY_HOD.contains(&self)
+    }
+
+    /// `aarch64`, `x86_64` or `i686`, as in a triple.
     pub fn name(self) -> &'static str {
         match self {
             Self::Aarch64 => "aarch64",
             Self::X86_64 => "x86_64",
+            Self::I686 => "i686",
+        }
+    }
+
+    /// The triple the harness gives `llc` and clang:
+    /// `<name>-unknown-linux-gnu`.
+    pub fn triple(self) -> &'static str {
+        match self {
+            Self::Aarch64 => "aarch64-unknown-linux-gnu",
+            Self::X86_64 => "x86_64-unknown-linux-gnu",
+            Self::I686 => "i686-unknown-linux-gnu",
+        }
+    }
+
+    /// The target named `name` as [`Target::name`] gives it, or `i386`,
+    /// the other common name of `i686`.
+    pub fn from_name(name: &str) -> Option<Self> {
+        if name == "i386" {
+            return Some(Self::I686);
+        }
+        Self::ALL.into_iter().find(|target| target.name() == name)
+    }
+
+    /// The emulation GNU ld, lld and mold are given for this target's
+    /// programs (`-m`): `aarch64linux`, `elf_x86_64` or `elf_i386`.
+    pub fn ld_emulation(self) -> &'static str {
+        match self {
+            Self::Aarch64 => "aarch64linux",
+            Self::X86_64 => "elf_x86_64",
+            Self::I686 => "elf_i386",
         }
     }
 
@@ -93,6 +161,7 @@ impl Target {
         match self {
             Self::Aarch64 => "aarch64-linux-gnu",
             Self::X86_64 => "x86_64-linux-gnu",
+            Self::I686 => "i686-linux-gnu",
         }
     }
 
@@ -120,9 +189,14 @@ impl Target {
         self.tool_name("ld.bfd")
     }
 
-    /// The name of the user-mode emulator: `qemu-x86_64`.
+    /// The name of the user-mode emulator: `qemu-x86_64`, `qemu-aarch64`,
+    /// `qemu-i386`. An i686 program runs under it on an x86-64 host too:
+    /// one runner for both hosts, whatever the kernel's IA-32 support.
     pub fn emulator(self) -> String {
-        format!("qemu-{}", self.name())
+        match self {
+            Self::I686 => "qemu-i386".to_owned(),
+            other => format!("qemu-{}", other.name()),
+        }
     }
 
     /// The CPU model the emulator is given ([`X86_64_EMULATED_CPU`]).
@@ -130,13 +204,15 @@ impl Target {
         match self {
             Self::Aarch64 => AARCH64_EMULATED_CPU,
             Self::X86_64 => X86_64_EMULATED_CPU,
+            Self::I686 => I686_EMULATED_CPU,
         }
     }
 
     /// The emulator's arguments before the program: the CPU model and the
     /// system root its dynamic loader and libraries are found in (`-L`; the
     /// environment's `QEMU_LD_PREFIX` is the same thing, but an argument
-    /// cannot leak into or out of the program's environment).
+    /// cannot leak into or out of the program's environment); for i686,
+    /// the guest address space after them ([`I686_GUEST_SPACE`]).
     pub fn emulator_args(self, sysroot: &Path) -> Vec<OsString> {
         self.emulator_args_with(sysroot, &[])
     }
@@ -146,7 +222,11 @@ impl Target {
     /// directive.
     pub fn emulator_args_with(self, sysroot: &Path, features: &[&str]) -> Vec<OsString> {
         let cpu = cpu_with_features(self.emulated_cpu(), features);
-        vec!["-cpu".into(), cpu.into(), "-L".into(), sysroot.into()]
+        let mut args = vec!["-cpu".into(), cpu.into(), "-L".into(), sysroot.into()];
+        if self == Self::I686 {
+            args.extend(["-R".into(), I686_GUEST_SPACE.into()]);
+        }
+        args
     }
 
     /// The Debian package that provides `what` for this target as a cross
@@ -156,6 +236,7 @@ impl Target {
         let (dashed, arch) = match self {
             Self::Aarch64 => ("aarch64-linux-gnu", "arm64"),
             Self::X86_64 => ("x86-64-linux-gnu", "amd64"),
+            Self::I686 => ("i686-linux-gnu", "i386"),
         };
         match what {
             "gcc" | "g++" => format!("{what}-{dashed}"),
@@ -236,5 +317,37 @@ mod tests {
         assert_eq!(package("sysroot"), "libc6-dev-amd64-cross");
         assert_eq!(package("libstdc++"), "libstdc++-14-dev-amd64-cross");
         assert_eq!(package("emulator"), "qemu-user");
+    }
+
+    // spec/harness.md "Cross runs": the third target (design 0008).
+    #[test]
+    fn the_i686_target() {
+        let t = Target::I686;
+        assert!(!t.is_host(), "no i686 host runs the harness");
+        assert_eq!(t.c_driver(), "i686-linux-gnu-gcc");
+        assert_eq!(t.cxx_driver(), "i686-linux-gnu-g++");
+        assert_eq!(t.bfd(), "i686-linux-gnu-ld.bfd");
+        assert_eq!(t.sysroot(), Path::new("/usr/i686-linux-gnu"));
+        assert_eq!(t.emulator(), "qemu-i386");
+        assert_eq!(t.triple(), "i686-unknown-linux-gnu");
+        assert_eq!(t.ld_emulation(), "elf_i386");
+        let args = t.emulator_args(Path::new("/r"));
+        assert_eq!(args, ["-cpu", "pentium2,-mmx", "-L", "/r", "-R", "0x20000000"]);
+        let package = |what| t.cross_package(what);
+        assert_eq!(package("gcc"), "gcc-i686-linux-gnu");
+        assert_eq!(package("g++"), "g++-i686-linux-gnu");
+        assert_eq!(package("ld.bfd"), "binutils-i686-linux-gnu");
+        assert_eq!(package("sysroot"), "libc6-dev-i386-cross");
+        assert_eq!(package("libstdc++"), "libstdc++-14-dev-i386-cross");
+        assert_eq!(Target::from_name("i386"), Some(t));
+        assert_eq!(Target::from_name("i686"), Some(t));
+        assert_eq!(Target::from_name("x86"), None);
+        for target in Target::ALL {
+            assert_eq!(Target::from_name(target.name()), Some(target));
+            assert!(target.triple().starts_with(target.name()));
+        }
+        // The one place: hod does not compile for i686 yet.
+        assert!(!t.compiled_by_hod());
+        assert!(Target::COMPILED_BY_HOD.iter().all(|t| Target::ALL.contains(t)));
     }
 }

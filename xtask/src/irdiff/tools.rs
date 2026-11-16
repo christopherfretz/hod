@@ -133,6 +133,7 @@ pub fn target_of(arch: Arch) -> Target {
     match arch {
         Arch::Aarch64 => Target::Aarch64,
         Arch::X86_64 => Target::X86_64,
+        Arch::I686 => Target::I686,
     }
 }
 
@@ -149,7 +150,7 @@ pub fn target_of(arch: Arch) -> Target {
 /// selector that is LLVM's most exercised.
 pub fn reference_selector(arch: Arch) -> &'static [&'static str] {
     match arch {
-        Arch::Aarch64 | Arch::X86_64 => &REFERENCE_SELECTOR,
+        Arch::Aarch64 | Arch::X86_64 | Arch::I686 => &REFERENCE_SELECTOR,
     }
 }
 

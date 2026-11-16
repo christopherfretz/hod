@@ -96,9 +96,21 @@ pub fn find_linker(target: Target, name: &str) -> Option<PathBuf> {
 }
 
 /// The matrix's linkers that are present for `target`, each with its
-/// program, in [`MATRIX`] order.
+/// program, in [`MATRIX`] order. A linker that does not link the target at
+/// all ([`links`]) is left out, with a note, without being looked for.
 pub fn present(target: Target) -> Vec<(&'static str, PathBuf)> {
-    MATRIX.into_iter().filter_map(|name| Some((name, find_linker(target, name)?))).collect()
+    MATRIX
+        .into_iter()
+        .filter(|name| links(name, target))
+        .filter_map(|name| Some((name, find_linker(target, name)?)))
+        .collect()
+}
+
+/// Whether the matrix's linker `name` links programs of `target`: every
+/// one does but wild for i686 ([`EXCEPTIONS`], case `elf-i386`, after a
+/// note naming it).
+pub fn links(name: &str, target: Target) -> bool {
+    !(target == Target::I686 && exception(name, "elf-i386").is_some())
 }
 
 /// The compiler-driver flags that make `gcc` or `g++` link with `program`
@@ -166,7 +178,16 @@ pub struct Exception {
 /// Every exception of the matrix. A test skips or changes ONE assertion for
 /// a case listed here, never the test, so a linker that regresses on
 /// anything else still fails it.
-pub const EXCEPTIONS: [Exception; 7] = [
+pub const EXCEPTIONS: [Exception; 8] = [
+    Exception {
+        linker: "wild",
+        version: WILD_VERSION,
+        case: "elf-i386",
+        class: Class::Unsupported,
+        reason: "32-bit x86 is not linked at all: `-m elf_i386` is refused with \"Emulation \
+                 'elf_i386' is not yet supported\" (design 0008 section 4.1), so the i686 \
+                 matrix is GNU ld, lld and mold",
+    },
     Exception {
         linker: "wild",
         version: WILD_VERSION,

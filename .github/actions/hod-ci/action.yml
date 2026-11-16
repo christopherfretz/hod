@@ -5,7 +5,8 @@ description: >
   kiln-ci action: Debian 13's toolchain packages (LLVM 19 and 22 with clang
   and lld, binutils, mold, gdb and lldb-19), the GNU cross toolchain, system
   root and qemu-user of the OTHER architecture (x86-64 on an AArch64
-  runner, AArch64 on an x86-64 one), the pinned Rust toolchain and the cargo
+  runner, AArch64 on an x86-64 one) and of 32-bit x86 (i686) on both, the
+  pinned Rust toolchain and the cargo
   cache. The job env's HOD_REQUIRE_TOOLS=1 makes any tool missing from this
   list a test failure, never a skip. A local action is only readable after
   checkout, so each job checks out first.
@@ -39,7 +40,13 @@ runs:
           clang-22 llvm-22 lld-22 mold gdb gdb-multiarch lldb-19 qemu-user \
           csmith libcsmith-dev \
           "gcc-$cross" "g++-$cross" "binutils-$cross" \
-          "libc6-dev-$arch-cross" "libstdc++-14-dev-$arch-cross" >/dev/null
+          "libc6-dev-$arch-cross" "libstdc++-14-dev-$arch-cross" \
+          gcc-i686-linux-gnu g++-i686-linux-gnu binutils-i686-linux-gnu \
+          libc6-dev-i386-cross libstdc++-14-dev-i386-cross libatomic1-i386-cross >/dev/null
+        # The third target, 32-bit x86 (design 0008 section 4,
+        # Target::I686): its cross toolchain and system root on both
+        # runners; its programs run under qemu-i386 (from qemu-user) on
+        # both, the x86-64 one included.
         # python3-yaml: the YAML parser of the gate's `workflows` step and
         # of its tests in xtask (WP-265).
         # csmith: the random programs of `cargo xtask fuzz` (WP-154). Its
@@ -50,7 +57,8 @@ runs:
         (cd "$(mktemp -d)" && csmith --version | head -1)
         test -f /usr/include/csmith/csmith.h
         for t in clang++-19 clang++-22 llc-19 llc-22 ld.lld-22 ld.bfd mold gdb lldb-19 \
-                 "$prefix-gcc" "$prefix-ld.bfd" "$emu"; do
+                 "$prefix-gcc" "$prefix-ld.bfd" "$emu" \
+                 i686-linux-gnu-gcc i686-linux-gnu-ld.bfd qemu-i386; do
           printf '%-24s %s\n' "$t" "$("$t" --version 2>&1 | head -1)"
         done
         nproc; free -g | head -2

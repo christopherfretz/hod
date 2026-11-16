@@ -384,7 +384,14 @@ impl Session {
         }
 
         let (build, built_by, reason) = self.compile_all_with_hod(test, &parts);
-        let plan = plan(&build, built_by, reason.as_deref(), expect.unsupported_reason(arch, llvm));
+        // A target hod does not compile for yet (`Arch::compiled_by_hod`):
+        // whatever hod declines with is expected ("Cross targets", the
+        // third target), and what is checked is the reference side; an
+        // object hod does build is compared as on any target.
+        let refused_target = !arch.compiled_by_hod() && matches!(build, HodBuild::Declined);
+        let expected =
+            expect.unsupported_reason(arch, llvm).or_else(|| refused_target.then_some(ANY_REASON));
+        let plan = plan(&build, built_by, reason.as_deref(), expected);
         let case = Case { session: self, test, built_by, reason, plan, oracle_skip };
 
         if let Some(why) = self.cannot_run() {

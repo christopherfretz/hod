@@ -222,6 +222,16 @@ impl Config {
     }
 }
 
+/// The architecture `--target <text>` names, if hod compiles for it.
+fn bench_target(text: &str) -> Result<Arch, String> {
+    let arch = Arch::from_name(text)
+        .ok_or_else(|| format!("'--target {text}': expected aarch64 or x86_64"))?;
+    if !arch.compiled_by_hod() {
+        return Err(format!("'--target {text}': hod does not compile for it yet"));
+    }
+    Ok(arch)
+}
+
 /// Parses the command's arguments into `config` (which holds the
 /// defaults). `Ok(false)` means the help was asked for.
 pub fn parse_args(args: &[String], config: &mut Config) -> Result<bool, String> {
@@ -275,10 +285,7 @@ pub fn parse_args(args: &[String], config: &mut Config) -> Result<bool, String> 
             "--kiln" => config.kiln = Some(PathBuf::from(value()?)),
             "--target" => {
                 let text = value()?;
-                config.target = Some(
-                    Arch::from_name(&text)
-                        .ok_or_else(|| format!("'--target {text}': expected aarch64 or x86_64"))?,
-                );
+                config.target = Some(bench_target(&text)?);
             }
             "--instructions" => {
                 flag(&joined)?;
@@ -1164,7 +1171,7 @@ fn write_report(config: &Config, mut run: Run) -> Result<Run, String> {
     let results = Results::read(&source)?;
     let mut cross = Vec::new();
     if config.results.is_none() && config.target.is_none() {
-        for arch in Arch::ALL.into_iter().filter(|&arch| Some(arch) != Arch::host()) {
+        for arch in Arch::compiled().into_iter().filter(|&arch| Some(arch) != Arch::host()) {
             let other = Config { target: Some(arch), ..config.clone() };
             let path = other.default_results(false, &major);
             if path.is_file() {

@@ -322,6 +322,7 @@ fn report(rows: &[Row], options: &Options) -> String {
             " --target aarch64",
             "`docs/status/corpus-a64-census.md`, captured for AArch64",
         ),
+        Some(Arch::I686) => unreachable!("{}", super::NO_I686_CORPUS),
         None => ("", "", "`docs/status/corpus.md`"),
     };
     let _ = writeln!(

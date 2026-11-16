@@ -349,7 +349,7 @@ pub fn check_loadable(program: &Path, target: Target) {
         }
     }
     let pages: &[u64] = match target {
-        Target::X86_64 => &[0x1000],
+        Target::X86_64 | Target::I686 => &[0x1000],
         Target::Aarch64 => &[0x1000, 0x4000, 0x1_0000],
     };
     let min_align = loads.iter().map(|l| l.align).min().unwrap_or(0x1000);

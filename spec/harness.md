@@ -548,7 +548,7 @@ options.
 |---|---|---|
 | `-j <N>`, `-j<N>`, `--jobs <N>` | tests run at once, at least 1; under a jobserver an upper bound ("Jobserver") | the smaller of 4 and the machine's cores; more than 16 is 16 |
 | `--llvm <major or dir>` | the oracle: an LLVM major, or an installation directory (its `bin/llc`) | the first of 22 and 19 that is installed |
-| `--target <arch>` | `aarch64` or `x86_64` | this host's |
+| `--target <arch>` | `aarch64`, `x86_64` or `i686` (`i386`; "The third target: i686") | this host's |
 | `--linker <name>` | `bfd`, `lld`, `mold` or `wild`; repeatable; the order given does not matter | every one that is found |
 | `--tier <quick or all>` | `quick`: only tests with `tier: quick` | `all` |
 | `--hod <binary>` | the hod to test | build the workspace's (`cargo build --package hod_cli --bin hod`, development profile, into the build directory) |
@@ -588,11 +588,13 @@ The build directory is `$CARGO_TARGET_DIR` when it is set, else
   cross system root `/usr/<prefix>` (the target's C library and dynamic
   loader).
 
-The GNU prefix is `aarch64-linux-gnu` or `x86_64-linux-gnu`. A note for a
+The GNU prefix is `aarch64-linux-gnu`, `x86_64-linux-gnu` or
+`i686-linux-gnu`. A note for a
 missing tool names its Debian package: `gcc-<arch>-linux-gnu` (with `_`
 as `-`) for the driver, `binutils-<arch>-linux-gnu` for `bfd`,
 `qemu-user` for the emulator, `libc6-dev-<debian arch>-cross`
-(`amd64`, `arm64`) for the system root.
+(`amd64`, `arm64`, `i386`) for the system root. The i686 emulator is
+`qemu-i386`.
 
 What is missing:
 
@@ -812,6 +814,7 @@ passing. The CPUs are `hod_testutil::target`'s:
 |---|---|---|
 | x86-64 | `qemu64,-sse3,-cx16,-lahf-lm` | x86-64-v1: SSE2, no SSE3, SSSE3, SSE4, POPCNT, CMPXCHG16B or LAHF in 64-bit mode |
 | AArch64 | `cortex-a53` | Armv8.0-A with the FP and SIMD unit, no LSE atomics |
+| i686 | `pentium2,-mmx` | the Pentium Pro, LLVM's and GCC's default 32-bit CPU `i686`: x87, CMOV, CX8; no MMX, no SSE |
 
 `cx16` is off: LLVM's default x86-64 CPU does not use it either (an
 `i128` `cmpxchg` is a call to `__atomic_compare_exchange_16` with LLVM 19
@@ -831,6 +834,76 @@ what it is.
 This section and its table are the one definition of the emulated
 runner; `spec/object.md` "Toolchains" and the crates' link tests refer to
 it.
+
+#### The third target: i686
+
+32-bit x86 Linux (design 0008, section 4) is `hod_testutil::Target::I686`
+and `irdiff::Arch::I686`: name `i686` (`--target i686`; `i386` is accepted
+for it), triple `i686-unknown-linux-gnu`, GNU prefix and system root
+`i686-linux-gnu` (`/usr/i686-linux-gnu`), emulator `qemu-i386` (not
+`qemu-<name>`), CPU `pentium2,-mmx` (above), `ld -m elf_i386`. The
+runner is `qemu-i386 -cpu pentium2,-mmx -L /usr/i686-linux-gnu -R
+0x20000000 <program>`: without `-R` the emulator reserves the whole 4 GiB
+of a 32-bit guest's address space up front, which the 1 GiB address-space
+limit of a program ("Child processes") refuses ("Unable to find a
+guest_base to satisfy all guest address mapping requirements", measured
+with qemu 10.0); the 512 MiB reserve (`target::I686_GUEST_SPACE`) is the
+guest's memory bound instead. Its
+Debian packages are `gcc-i686-linux-gnu`, `g++-i686-linux-gnu`,
+`binutils-i686-linux-gnu`, `libc6-dev-i386-cross`,
+`libstdc++-14-dev-i386-cross`, `libatomic1-i386-cross` and `qemu-user`.
+No host is an i686 host: its programs are always linked by the cross
+driver `i686-linux-gnu-gcc` (`-g++`) and always run under `qemu-i386`, on
+an x86-64 host too (one runner for both hosts, whatever the kernel's
+IA-32 support). Its linker matrix is GNU ld (`i686-linux-gnu-ld.bfd`),
+lld and mold: wild refuses `elf_i386` (`linkers::EXCEPTIONS`, case
+`elf-i386`; `linkers::links`), so `linkers::present(Target::I686)` leaves
+it out with a note, `irdiff` notes "linker 'wild' does not link i686; not
+in this run", and `--linker wild --target i686` is a usage error.
+
+hod does not compile for i686 yet. `Target::ALL` (and `Arch::ALL`) is
+every target the harness links and runs for; **`Target::COMPILED_BY_HOD`
+is the one place that says which targets hod compiles for**
+(`Target::compiled_by_hod`, and `Arch::compiled_by_hod` /
+`Arch::compiled`, which read it). Every test that builds objects with hod
+iterates `COMPILED_BY_HOD`, and a command that runs on every target when
+none is named (`fuzz`, `bench`'s report of cross runs) runs on
+`Arch::compiled()`. Until i686 is in it:
+
+- `irdiff --target i686`: both sides are built; whatever hod declines with
+  (`unsupported-target` before design 0008's I3, `x86:not-implemented`
+  after) is UNSUPPORTED with that reason, counted in the coverage line
+  like any refusal, without an `unsupported` directive, and the run's
+  note says that hod declined every test. The reference's program is
+  linked and run as for any target, so a broken cross toolchain is an
+  ERROR; an object hod does build is compared as on any target. The exit
+  status is that of a run whose refusals are all expected.
+- `fuzz --target i686`: csmith's program (csmith's headers with the i686
+  system root, as clang `--target=i686-unknown-linux-gnu` finds it) goes
+  through clang and `llc`; a seed hod refuses is counted as refused with
+  the reason, after the reference's program was linked and run under
+  `qemu-i386` (an error if it does not end with status 0 or at the time
+  limit).
+- `bench --target i686` is a usage error (hod does not compile for it);
+  `corpus --target i686` and `debug --target i686` are usage errors too
+  (kiln has no 32-bit target, design 0008 section 4.4; the debug lane's
+  i686 column is package I10).
+
+Adding `Target::I686` to `COMPILED_BY_HOD` turns all of this into the
+ordinary cross run; each `Target::I686 => unreachable!(...)` arm in the
+tests that iterate `COMPILED_BY_HOD` then needs its i686 value.
+
+The oracle side is proven by `crates/hod_testutil/tests/i686_oracle.rs`:
+C, C++ and IR programs (integer-only with libgcc's 64-bit division; a
+`main` calling the C library; a C++ exception through libstdc++; `ret
+i32 42` as IR) built by clang 19 and 22 `--target=i686-linux-gnu -O0`,
+`llc -O0 -global-isel=0 -fast-isel=0`, PIE (`-relocation-model=pic`,
+clang's default, design 0008 section 5.3) and static (`-fno-pic`,
+`-relocation-model=static`, linked `-static -no-pie`; not the C++
+program), linked by each of the three linkers, checked to be ELF32
+`EM_386` of the model's type, and run under `qemu-i386` with their output
+and status checked. Missing tools skip with a note, and fail under
+`HOD_REQUIRE_TOOLS=1`.
 
 The summary's first line says `(emulated: <emulator> -cpu <cpu> -L
 <root>)` after the target. A program under the emulator has six times a
@@ -1298,9 +1371,11 @@ report order; `present(target)` is the ones found for a target;
 
 - **Finding.** `bfd`: `ld.bfd`, or `<prefix>-ld.bfd` for the other
   architecture. `lld`: as `find_tool` finds `ld.lld` (22, then 19).
-  `mold`: `ld.mold`. lld, mold and wild link both targets from either
-  host: they take the target from the driver's `-m <emulation>`
-  (`elf_x86_64`, `aarch64linux`). `wild`, by `find_wild`, first found of:
+  `mold`: `ld.mold`. lld, mold and wild link both 64-bit targets from
+  either host: they take the target from the driver's `-m <emulation>`
+  (`elf_x86_64`, `aarch64linux`; `Target::ld_emulation`). lld and mold
+  link i686 (`elf_i386`) too; wild does not (`links(name, target)`,
+  case `elf-i386`, and `present` leaves it out). `wild`, by `find_wild`, first found of:
   1. `HOD_WILD`, the path of the executable (set to anything but a file,
      it panics: a misconfiguration is not a skip);
   2. `.toolchain/wild/<WILD_VERSION>/wild` in the checkout or any

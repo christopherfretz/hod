@@ -11,18 +11,21 @@ linker of the test matrix).
 
 | | |
 |---|---|
-| written | 2026-11-15 20:05 EST, WP-257c for the candidate `cd6ef6bc` (first written 2026-11-14 against `56a4695f`, WP-243; then WP-256; WP-257 for the candidate `02fe2d02`; WP-257b for the candidate `e98267c0`) |
-| candidate `C` | hod `cd6ef6bc` (frozen 2026-11-15 15:55 EST; `main` is moved to exactly this commit when its full gate is green); no version bump, no tag (version `0.0.0`). It replaces the candidate `e98267c0` of 14:50 EST, which replaced `02fe2d02` of 06:07 EST. Since `02fe2d02`, hod's code changed by WP-261 (the dead arm of an `llvm.is.constant`/`llvm.objectsize` branch is not compiled), WP-262 (a coroutine suspend in an unreachable block), WP-267 (`llvm.x86.tpause`, `umwait`, `umonitor`) and WP-269 (the constant fold never refuses a function: where WP-261 refused one with an `intrinsic:const-fold-*` name, hod keeps the instruction as written; `spec/codegen.md` 5.6.8), the harness by WP-259, WP-260, WP-263, WP-266 and WP-268. `cd6ef6bc` is `e98267c0` plus WP-269 and one commit to `docs/BACKLOG.md` |
+| written | 2026-11-15 20:17 EST, WP-257d for the candidate `cd6ef6bc` (first written 2026-11-14 against `56a4695f`, WP-243; then WP-256; WP-257 for the candidate `02fe2d02`; WP-257b for the candidate `e98267c0`; WP-257c, phase A for `cd6ef6bc`) |
+| candidate `C` | hod `cd6ef6bc` (frozen 2026-11-15 15:55 EST; `main` is moved to exactly this commit when its full gate is green). The tagged commit is `cd6ef6bc` plus status pages, records, harness-side report scripts and, as its last commit, the version number: no change to any crate's code besides the version. It replaces the candidate `e98267c0` of 14:50 EST, which replaced `02fe2d02` of 06:07 EST. Since `02fe2d02`, hod's code changed by WP-261 (the dead arm of an `llvm.is.constant`/`llvm.objectsize` branch is not compiled), WP-262 (a coroutine suspend in an unreachable block), WP-267 (`llvm.x86.tpause`, `umwait`, `umonitor`) and WP-269 (the constant fold never refuses a function: where WP-261 refused one with an `intrinsic:const-fold-*` name, hod keeps the instruction as written; `spec/codegen.md` 5.6.8), the harness by WP-259, WP-260, WP-263, WP-266 and WP-268. `cd6ef6bc` is `e98267c0` plus WP-269 and one commit to `docs/BACKLOG.md` |
 | kiln `K` | `8f93304ee` (kiln 1.2.0) in all three places (the submodule, `.github/kiln-revision`, the corpora's kiln groups); it does not move before the release |
 | frozen binary | `cargo build --release -p hod_cli` of the tree of `cd6ef6bc` (15:54 to 15:55 EST), copied out of the build directory: `hod-cd6ef6bc`, sha256 `80138ec1411506d5b4048f1eac49e8b377f9eeedb21e70ae43e3c81ab094929c`, `hod version 0.0.0` |
 | full gate | `HOD_REQUIRE_TOOLS=1 cargo xtask ci` on exactly `cd6ef6bc`, with the workspace's development hod, 2026-11-15 15:54 to 19:12 EST: `ci: ok`, exit 0, 3:16:30 (fmt 9.2 s, clippy 39.1 s, test 1:03:57, irdiff 4:22, roundtrip 30:11, debug-x86_64 4:52, debug-aarch64 6:34, corpus-aarch64 38:32, corpus-x86_64 47:10). The log is the supervisor's, not a page |
 | quick gate | no separate quick gate on `cd6ef6bc`: the full gate above contains every step of the quick gate |
-| gate on the tag | the tagged commit gets its own full gate: pending |
+| gate on the tag | the tagged commit's own full gate (`HOD_REQUIRE_TOOLS=1 cargo xtask ci` on exactly that commit) is run before the tag is made, and the tag exists only if it was green |
 | tools | Debian 13.7, AArch64 host; LLVM 22.1.8 and 19.1.7; GNU ld 2.44 (`ld.bfd` and `x86_64-linux-gnu-ld.bfd`), lld 22.1.8, mold 2.37.1, wild 0.11.0 (optional); gdb 16.3 (and `gdb-multiarch` 16.3), lldb 19.1.7; qemu-x86_64 10.0.13; rustc 1.95.0 |
 
 States: **met at `<commit>`** (measured at that commit and nothing since
-can change it; re-run at the candidate where the row says so);
-**re-measure** (met at an older commit or kiln: measure again at the
+can change it; re-run at the candidate where the row says so); **carried over from `e98267c0`**
+(a real-project row measured at the previous candidate with zero
+refusals; it stands for `cd6ef6bc`, section "Pages fed by the lanes");
+**met in the tagged commit** (the version bump, the tag and the tag's own
+gate, true of the commit that carries the tag); **re-measure** (met at an older commit or kiln: measure again at the
 candidate); **partly** (part of the condition is measured or met);
 **missing** (no evidence); **not a condition** (listed for the record).
 Every commit named is hod's unless it says kiln. A hod commit in the pages
@@ -32,10 +35,10 @@ is written with 7 or 8 hex digits as the page has it.
 
 | condition | evidence required | evidence on main today | state |
 |---|---|---|---|
-| quick gate, `HOD_REQUIRE_TOOLS=1 cargo xtask ci --quick`, AArch64 host | `ci: ok`, exit 0 at the candidate | the full gate on `cd6ef6bc` (next row), which contains every step of the quick gate: each passed, kiln `8f93304ee`, linkers bfd, lld, mold and wild. The gate of the tagged commit: pending | met at `cd6ef6bc` |
-| full gate, `HOD_REQUIRE_TOOLS=1 cargo xtask ci`, AArch64 host | `ci: ok`, exit 0 at the candidate: the quick gate's steps, `irdiff --witness` with LLVM 22 and 19, `irdiff --hybrid`, `irdiff --target x86_64` with 22 and 19, the whole-corpus `roundtrip`, `debug-x86_64`, `debug-aarch64`, `corpus-aarch64`, `corpus-x86_64` | exactly `cd6ef6bc`, 2026-11-15 15:54 to 19:12 EST, `ci: ok`, exit 0, 3:16:30 (step times in the header); kiln `8f93304ee`; `irdiff` AArch64 strict 364 PASS of 387 with LLVM 22 and 19 (4 UNSUPPORTED, 19 SKIP, 0 FAIL), hybrid 368, x86-64 372 PASS of 393 with 22 and 19 (4 UNSUPPORTED, 17 SKIP, 0 FAIL); `roundtrip` 6468 entries, 6468 as expected, 0 worse, 0 stale. The full gate of the tagged commit: pending | met at `cd6ef6bc` |
-| gate on the x86-64 host | the gate's steps natively on x86-64 | the hosted x86-64 lane (next row): the quick gate's steps without `roundtrip`; no x86-64 development host has a corpus, so no full gate runs there | partly (awaiting: the hosted lanes' run of `cd6ef6bc`) |
-| hosted CI, `.github/workflows/ci.yml`, both lanes | `check` and `check-x86_64` green on one run of the candidate; the AVX-512 block says what executed | run 43688918672 of `9e25d3f1`: every job of both lanes green; `test x64` 17 min on a Xeon 6975P-C, 19 AVX-512 programs natively, `knl`'s machine skipped. With `HOD_CI_SDE=1` (set since) its re-run took 20 min 40 s on an EPYC 9V74: 17 natively, the 2 AVX512-FP16 programs under SDE, `knl` built and compared but not executed. A runner with no AVX-512 is not measured yet. The previous candidate `e98267c0` (`C` without WP-269): run 43754685470 green | met at `9e25d3f1` (awaiting: one run of `cd6ef6bc` with `check` and `check-x86_64` green, its run id and the AVX-512 block) |
+| quick gate, `HOD_REQUIRE_TOOLS=1 cargo xtask ci --quick`, AArch64 host | `ci: ok`, exit 0 at the candidate | the full gate on `cd6ef6bc` (next row), which contains every step of the quick gate: each passed, kiln `8f93304ee`, linkers bfd, lld, mold and wild. The tagged commit's own full gate is run before the tag (header) | met at `cd6ef6bc` |
+| full gate, `HOD_REQUIRE_TOOLS=1 cargo xtask ci`, AArch64 host | `ci: ok`, exit 0 at the candidate: the quick gate's steps, `irdiff --witness` with LLVM 22 and 19, `irdiff --hybrid`, `irdiff --target x86_64` with 22 and 19, the whole-corpus `roundtrip`, `debug-x86_64`, `debug-aarch64`, `corpus-aarch64`, `corpus-x86_64` | exactly `cd6ef6bc`, 2026-11-15 15:54 to 19:12 EST, `ci: ok`, exit 0, 3:16:30 (step times in the header); kiln `8f93304ee`; `irdiff` AArch64 strict 364 PASS of 387 with LLVM 22 and 19 (4 UNSUPPORTED, 19 SKIP, 0 FAIL), hybrid 368, x86-64 372 PASS of 393 with 22 and 19 (4 UNSUPPORTED, 17 SKIP, 0 FAIL); `roundtrip` 6468 entries, 6468 as expected, 0 worse, 0 stale. The tagged commit's own full gate is run before the tag, and the tag exists only if it was green (header) | met at `cd6ef6bc` |
+| gate on the x86-64 host | the gate's steps natively on x86-64 | the hosted x86-64 lane of run 43778976284 of `cd6ef6bc` (next row): its eight `x86_64 /` jobs (lints, kiln, irdiff, test front, test a64, test harness, test rest, test x64) green natively on an x86-64 runner, that is the quick gate's steps without `roundtrip`; no x86-64 development host has a corpus, so no full gate runs there: the corpus and debugger steps for x86-64 run under qemu on the AArch64 host (the L6 and L7 x86-64 rows) | met at `cd6ef6bc` (the quick gate's steps natively; the corpus steps under qemu) |
+| hosted CI, `.github/workflows/ci.yml`, both lanes | `check` and `check-x86_64` green on one run of the candidate; the AVX-512 block says what executed | run 43778976284 of exactly `cd6ef6bc` (2026-11-15 19:12 to 19:35 EST): all 18 jobs green, `check` and `check-x86_64` among them; `x86_64 / test x64` 21 min 21 s on an AMD EPYC 9V74 with `HOD_CI_SDE=1` (Intel SDE 10.13.1, `-spr`): its AVX-512 block says 19 programs executed, 17 natively and the 2 AVX512-FP16 programs under SDE, 0 failed, 1 skipped (`abi zmm_grid 17 knl`: neither the EPYC nor SDE `-spr` has `avx512er`/`avx512pf`). A runner with no AVX-512 is not measured. Earlier: run 43688918672 of `9e25d3f1` and run 43754685470 of the previous candidate `e98267c0`, both green | met at `cd6ef6bc` |
 | linkers bfd, lld, mold | every linking test and `irdiff` program with all three, required | the full gate on `cd6ef6bc` under `HOD_REQUIRE_TOOLS=1`: each of its nine `irdiff`/`corpus verify` runs names `linkers bfd lld mold wild`, and the log has no test skipped for a missing linker (its SKIPs are qemu's gdb stub and the UNDEFINED `strncmp.c`); versions GNU ld 2.44, lld 22.1.8, mold 2.37.1 (header) | met at `cd6ef6bc` |
 | linker wild | none: wild is optional | wild 0.11.0 (WP-239; linked in the full gate's runs above) is in the matrix where installed (`linkers::WILD_REQUIRED` false); its cases are listed on the harness side (`hod_testutil::linkers::EXCEPTIONS`, the debugger layer's XLINK, WP-248); hod's code generators and object writer take no workaround for it | not a condition (decided 2026-11-15: GNU ld, lld and mold are the required linkers) |
 
@@ -58,10 +61,10 @@ with no refused module.
 | baseline, AArch64 (`libcxx-baseline.md`) | kiln + `llc` at the candidate's kiln | 2026-11-11, kiln 1.0.1 `bd60e1829`: 9247 tests, 8609 pass, 4 fail, 47 xfail, 1 xpass, 585 unsupported, 1 timeout, 99.4% | re-measure (kiln is at `8f93304ee` since; awaiting: 4.1 at `K`) |
 | baseline, x86-64 (`libcxx-baseline-x64.md`) | the same under qemu | 2026-11-12/13, kiln `bd60e1829`: 9247, 8608 pass, 5 fail, 46 xfail, 2 xpass, 585 unsupported, 1 timeout, 99.4% | re-measure (awaiting: 4.2 at `K`) |
 | hod strict, AArch64 (`libcxx-hod.md`) | strict equal to the baseline, test by test | native runner, run 43465227200, `a67370e`, kiln `bd60e1829`: hod strict 8,748 pass, `llc` 8,749; one difference, `alg.find/find.pass.cpp` (`abi:vector-element`, built since WP-167). Development host (WP-102) at `6e6bf9c`: 8586 against 8609 | partly (its one cause fixed; awaiting: 4.3 with `hod-cd6ef6bc` at `K`, the libc++ lane) |
-| hod strict, x86-64 (`libcxx-hod-x64.md`) | the same | native runner, run 43465227200, `a67370e`: hod strict 8,749, `llc` 8,750; one difference, `simd_unary.pass.cpp` (`x64:vector-wide-element`, built since WP-161). Under qemu: hybrid only, 8,607 against 8,608 | partly (awaiting: 4.4 with `hod-cd6ef6bc`, executed shards 1 to 4 merged, the libc++ lane) |
+| hod strict, x86-64 (`libcxx-hod-x64.md`) | the same | **4.4 with the frozen binary `hod-cd6ef6bc`**, kiln `8f93304ee`, under qemu, the whole suite executed (20 shards merged): 9247 tests, 8608 pass, 5 fail, 45 xfail, 3 xpass, 585 unsupported, 1 timeout; 7226 of 7226 modules by hod, 0 refusals, 0 fallback. Against the lane's kiln + `llc` control at `K` (8607 pass, 2 timeout, otherwise the same) one changed outcome, `unord.multimap/local_iterators.pass.cpp`, TIMEOUT in the control and PASS with hod; no test passes with `llc` and not with hod. Natively: the sweep row below (8750 = 8750). The page follows with the lane's branch | met at `cd6ef6bc` (page follows with the lane's branch) |
 | hod strict with `-g`, AArch64 (`libcxx-hod-debug.md`) | strict equal to the `-g` control | 2026-11-14: control 8606 pass; strict hod `3b14f8f`, kiln `21b9110a4`: 8605, 7224 of 7226 modules; the one difference `PR28469_undefined_behavior_segfault.sh.cpp` (`debug:dbg-value-expr`, built since WP-225); the other refusal is kiln's (fails in the control too) | partly (awaiting: 4.6 with `hod-cd6ef6bc` at `K`) |
 | hod strict with `-g`, x86-64 (`libcxx-hod-debug-x64.md`) | the same over the whole suite under qemu | hod `3b14f8f`, kiln `21b9110a4`: compile-only census 7224 of 7226 modules; executed: shard 1 of 20, 0 differences | partly (one shard of 20 executed; awaiting: 4.7 with `hod-cd6ef6bc`, the whole suite) |
-| native runs of both targets (`sweep.yml`) | the sweep's `summary` green at the candidate | run 43465227200 at `a67370e`: one difference per runner (both causes fixed since), so `summary` failed | re-measure (awaiting: a `sweep.yml` run of `cd6ef6bc` with kiln `8f93304ee`, strict) |
+| native runs of both targets (`sweep.yml`) | the sweep's `summary` green at the candidate | run 43778998227 of exactly `cd6ef6bc` (2026-11-15 19:12 to 19:26 EST), kiln `8f93304ee`, strict, every job green and `summary` green. x86-64 runner: hod 9247 tests, 8750 pass, 4 fail, 45 xfail, 2 xpass, 446 unsupported, `llc` the same; AArch64 runner: hod 8749 pass, 4 fail, 46 xfail, 2 xpass, 446 unsupported, `llc` the same; 7365 of 7365 modules by hod on each; no test whose outcome differs on either runner. Earlier: run 43465227200 at `a67370e` had one difference per runner (both causes fixed since) | met at `cd6ef6bc` |
 
 ## Real projects (L9)
 
@@ -94,15 +97,36 @@ rest, and reuses a control when kiln and the revision are unchanged).
 | corpus pages (`corpus.md`, `corpus-x64-census.md`) | generated from the candidate's corpus | generated for kiln 1.2.0 `8f93304ee` (they change only with the corpus, that is, with the pin) | met at kiln `8f93304ee` |
 | reasons pages (`reasons.md`, `reasons-x64.md`) | the candidate's hod over the candidate's corpus | regenerated at `cd6ef6bc` (WP-257c, `corpus reasons --llc -j 3 --hod hod-cd6ef6bc` over the corpora of kiln `K` = `8f93304ee`, 2026-11-15: `reasons.md` 17:22 to 17:46 EST, `reasons-x64.md` 17:46 to 18:06 EST, after the hybrid `corpus verify --target x86_64` with the same binary, 16:13 to 17:22 EST). The generated pages carry no commit line of their own; this row is their provenance. AArch64: every module compiled (3,487 and 3,445, LLVM 22 and 19); x86-64: every module but `cc-run.cpp`'s (`cc:x86_regcallcc`; 3,516 and 3,474 compiled), "What the built modules do" 13,000 PASS of 13,004 and 12,848 of 12,852, the 4 FAIL of each being `builtins/strncmp.c`, UNDEFINED. Every count is the one of the earlier candidate `02fe2d02` (WP-257); only the pages' timing tables changed | met at `cd6ef6bc` |
 | the other status pages | each at the candidate | at `cd6ef6bc` (WP-257c): `debug.md`, `debug-x64.md` ("At the candidate"); `reasons.md`, `reasons-x64.md` (the row above). Independent of hod: `corpus.md`, `corpus-x64-census.md` (generated, kiln `8f93304ee` per group), `corpus-x64.md` (the capture's record; says which recapture the candidate used), `linkers.md` (the linkers' versions, as in the header), `libcxx-baseline.md`, `libcxx-baseline-x64.md` (kiln + `llc` only; still kiln `bd60e1829`, awaiting 4.1, 4.2 at `K`). Not a condition: `perf.md` (generated 2026-11-13, left as measured). Fed by the lanes, still of earlier commits (section "Pages fed by the lanes" below): `oss.md`, `oss-x64.md`, `oss-llvm.md`, `libcxx-hod.md`, `libcxx-hod-x64.md`, `libcxx-hod-debug.md`, `libcxx-hod-debug-x64.md`, `fuzz.md` | partly (awaiting: the lanes' pages) |
-| version bump | the workspace version moved, on the owner's word | `Cargo.toml` `[workspace.package]` `version = "0.0.0"`; no tag | missing (owner's word) |
-| tag | made on the owner's word | none | missing (owner's word) |
+| version bump | the workspace version moved, on the owner's word | the owner's word was given on 2026-11-15: the release is made when every condition row is met at the final candidate. The bump (`Cargo.toml` `[workspace.package]` `version`, and `Cargo.lock`, `docs/RELEASE.md` section 8) is the last commit of the tagged commit's history, on top of these pages, and changes no crate's code besides the version | met in the tagged commit (the owner's word of 2026-11-15) |
+| tag | made on the owner's word | the owner's word of 2026-11-15; the tag `v<version>` is made on the bump commit after that commit's own full gate is green, and only then | met in the tagged commit (it exists only after its gate was green) |
 
 ## Pages fed by the lanes
 
 Each is rewritten from its lane's results with `hod-cd6ef6bc` at kiln
 `8f93304ee` (`docs/RELEASE.md` sections 4 to 7); until then it names the
-commits it was measured at. Results of the earlier candidates
-`02fe2d02` and `e98267c0` are not carried over as the candidate's.
+commits it was measured at.
+
+**Rows carried over from `e98267c0`** (the owner's decision of
+2026-11-15): a real-project result measured at the previous candidate
+`e98267c0` with zero refusals stands for the candidate; its row names
+`e98267c0` and says it is carried over because `cd6ef6bc` emits
+byte-identical objects. The evidence: the two frozen binaries
+`hod-e98267c0` and `hod-cd6ef6bc` over the whole corpus, both targets,
+plain and with `-relocation-model=pic`, 25,864 comparisons: 24,404
+objects identical, 0 different, 0 with a changed outcome, 1,460 identical
+failures (the 730 modules neither compiles: concatenated
+`module.interface` entries and the gcc-torture `builtins` refusals); and
+a real project's own objects: LLVM for x86-64 rebuilt strict at
+`cd6ef6bc` in the same tree, all 2,798 objects byte-identical to the
+`e98267c0` build. The limit: the corpus is not the projects' own
+translation units. The difference between the two commits is WP-269 (four
+refusal exits of the constant fold removed, `spec/landed/codegen/WP-269.md`),
+and everything it touches was measured again at `cd6ef6bc`: the full gate,
+the fuzz budget, libc++ on both targets, daw_json_link, the hosted
+`ci.yml`, `sweep.yml` and `oss.yml` runs, the debug and corpus
+measurements, and every lane step that had not started. Nothing measured
+at the earlier candidate `02fe2d02` is carried over: a row whose only
+measurement is at `02fe2d02` says so and is not counted as met.
 
 | page | regenerated by | waits for |
 |---|---|---|

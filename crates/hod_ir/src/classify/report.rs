@@ -157,6 +157,51 @@ fn names_table(out: &mut String, head: &str, list: &[ConstructInfo]) {
     }
 }
 
+/// The i386 column (WP-297): its counts per group, then the rows whose
+/// i386 cell is not their x86_64 cell; every other row is as x86_64.
+fn i386_section(out: &mut String) {
+    out.push_str(
+        "\n## i386\n\n\
+         The 32-bit x86 target (`i686-unknown-linux-gnu`, `spec/abi-x86.md`) is\n\
+         classified as x86_64 except for the rows below.\n\n\
+         | group | constructs | i386 supported | not-implemented | rejected |\n\
+         |---|---|---|---|---|\n",
+    );
+    let mut total = [0; 4];
+    for (group, _) in SUPPORT_GROUPS {
+        let rows: Vec<&SupportRow> =
+            SUPPORT_ROWS.iter().filter(|row| row.group() == group).collect();
+        let c = count(&rows, |row| row.i386);
+        let line = [rows.len(), c[0], c[1], c[2]];
+        let _ = write!(out, "| `{group}` |");
+        for (sum, value) in total.iter_mut().zip(line) {
+            *sum += value;
+            let _ = write!(out, " {value} |");
+        }
+        out.push('\n');
+    }
+    out.push_str("| total |");
+    for value in total {
+        let _ = write!(out, " {value} |");
+    }
+    out.push_str(
+        "\n\n| construct | x86_64 | i386 | why on i386 |\n\
+         |---|---|---|---|\n",
+    );
+    // The name is written `` `row` (i386) ``: the row's own cell,
+    // `` | `row` | ``, stays the one in its group's table.
+    for row in SUPPORT_ROWS.iter().filter(|row| row.i386 != row.x86_64) {
+        let _ = writeln!(
+            out,
+            "| `{}` (i386) | {} | {} | {} |",
+            row.name,
+            cell_text(row.x86_64),
+            cell_text(row.i386),
+            cell_why(row.i386)
+        );
+    }
+}
+
 /// The text of `docs/status/support.md`: the support matrix, one table
 /// per group, then the names that are not rows (§8.10). The file is
 /// checked in; `tests/classify_support_doc.rs` fails when it differs
@@ -233,6 +278,8 @@ pub fn support_markdown() -> String {
             );
         }
     }
+
+    i386_section(&mut out);
 
     out.push_str(
         "\n## Structural rules\n\n\

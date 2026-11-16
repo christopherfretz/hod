@@ -24,7 +24,7 @@ refusal table of `spec/codegen-x86.md` §7) belong to WP-293's owner of
 | `bytes.rs` | WP-293 | `memcpy`, `memmove`, `memset` | — | — | — |
 | `control.rs` | WP-293 | terminators | — | — | — |
 | `call.rs` | WP-293 | call checks, intrinsic dispatch | I10 (`check`), I11 (varargs), I13 (inline asm) | `check`, `lower` | `x86:eh`, `x86:varargs`, `x86:inline-asm` |
-| `abi.rs` | **I6** | `assign` | I7, I9, I11 (their types' parts) | `assign`, `odd` | `x86:abi:cc`, `x86:abi:attr` |
+| `abi.rs` | **I6** (WP-297) | `assign` (`spec/abi-x86.md`), `check_call`, `callee_pop`, the `st0` result glue; I6 also wrote `frame.rs`'s tail exits and callee pop | I7, I9, I11 (their types' parts) | `assign`, `odd` | `x86:abi:cc`, `x86:abi:attr` and `x86:abi:musttail` but the shapes `spec/codegen-x86.md` §7 lists |
 | `int.rs` | **I7** | wide integers (`i64` in two registers or memory) | — | new; `target.rs` arms for `Mem`-class integers | `x86:i64` |
 | `pic.rs` | **I8** | GOT, `R_386_GOTPC`/`GOTOFF`/`GOT32X`, PLT calls from PIC | — | `check_static` (becomes the access choice) | `x86:pic` |
 | `tls.rs` | **I8** | `%gs` TLS models | — | `address` | `x86:tls` |

@@ -367,6 +367,9 @@ const A64_ONLY: &str = "an AArch64 property";
 const X86_CC: &str = "an x86 convention";
 /// WP-141: `llc` treats it as `ccc` on x86-64; no x86-64 front end emits it.
 const X86_32: &str = "a 32-bit x86 convention";
+/// WP-297: a convention the i386 back end refuses as `x86:abi:cc`
+/// (`spec/abi-x86.md` §1.2).
+const I386_CC: &str = "i386 `x86:abi:cc`";
 /// The value classes of the NEON intrinsics' signatures (WP-083): the
 /// lowering refuses a signature it does not take as `a64:intrinsic-target`.
 const NEON: &[TypeClass] = &[
@@ -672,14 +675,16 @@ const CC: [SupportRow; 26] = [
         ON,
         ON,
         "assigned as `ccc`; the callee also saves `x9`..`x15` (WP-095); x86-64: `rax`, `rcx`, `rdx`, `rsi`, `rdi`, `r8`..`r10` but its result's (WP-181)",
-    ),
+    )
+    .on_i386(todo(I386_CC)),
     // WP-101.
     row(
         "cc:preserve_allcc",
         ON,
         ON,
         "assigned as `ccc`; the callee also saves `x9`..`x15` and `q8`..`q31` whole; x86-64: `preserve_mostcc`'s and `xmm0`..`xmm15` but its result's (WP-181)",
-    ),
+    )
+    .on_i386(todo(I386_CC)),
     row("cc:swiftcc", ON, todo(X64), "assigned as `ccc` (`spec/abi-a64.md` §1.2)"),
     row("cc:cxx_fast_tlscc", ON, todo(X64), "assigned as `ccc` (`spec/abi-a64.md` §1.2)"),
     both("cc:tailcc", todo(LATER), ""),
@@ -687,23 +692,26 @@ const CC: [SupportRow; 26] = [
     both("cc:swifttailcc", todo(LATER), ""),
     both("cc:preserve_nonecc", todo(LATER), ""),
     // WP-141: the x86 conventions LLVM has keywords for.
-    row("cc:x86_stdcallcc", never(X86_CC), never(X86_32), ""),
-    row("cc:x86_fastcallcc", never(X86_CC), never(X86_32), ""),
-    row("cc:x86_thiscallcc", never(X86_CC), never(X86_32), ""),
+    // WP-297: on i386 they are real conventions, refused by the back end.
+    row("cc:x86_stdcallcc", never(X86_CC), never(X86_32), "").on_i386(todo(I386_CC)),
+    row("cc:x86_fastcallcc", never(X86_CC), never(X86_32), "").on_i386(todo(I386_CC)),
+    row("cc:x86_thiscallcc", never(X86_CC), never(X86_32), "").on_i386(todo(I386_CC)),
     row("cc:intel_ocl_bicc", never(X86_CC), todo(LATER), "OpenCL built-ins"),
     row(
         "cc:x86_64_sysvcc",
         never(X86_CC),
         ON,
         "assigned as `ccc`: the System V convention is x86-64 Linux's C convention (`llc` 19 and 22 emit the same code)",
-    ),
+    )
+    .on_i386(todo(I386_CC)),
     // WP-246: `ms_abi` on Linux.
     row(
         "cc:win64cc",
         ON,
         ON,
         "AArch64: assigned as `ccc` but a variadic call's `float`s and `double`s in general registers; the callee also keeps `x18` (`spec/abi-a64.md` §13, WP-247); x86-64: four positions in `rcx`/`xmm0`..`r9`/`xmm3`, a 32-byte shadow area; the callee also keeps `rsi`, `rdi`, `xmm6`..`xmm15` (`spec/abi-x64.md` §13)",
-    ),
+    )
+    .on_i386(todo(I386_CC)),
     row("cc:x86_vectorcallcc", never(X86_CC), never(WINDOWS), "`__vectorcall`"),
     row("cc:hhvmcc", never(X86_CC), todo(LATER), ""),
     row("cc:hhvm_ccc", never(X86_CC), todo(LATER), ""),

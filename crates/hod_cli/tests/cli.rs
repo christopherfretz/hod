@@ -481,13 +481,14 @@ fn reasons_reach_the_log() {
             "text",
             "x86_64-unknown-linux-gnu",
         ),
-        // WP-286, WP-293: 32-bit x86 is compiled by `hod_x86`, which
-        // refuses an `i64` (design 0008's I7); x32 stays another target.
+        // WP-286, WP-293, WP-297: 32-bit x86 is compiled by `hod_x86`,
+        // which refuses an `i128` argument (`spec/abi-x86.md` §3.2); x32
+        // stays another target.
         (
             &["-filetype=obj"],
             b"target triple = \"i686-unknown-linux-gnu\"\n\
-              define i64 @f(i64 %a) \"target-cpu\"=\"i686\" {\n  ret i64 %a\n}\n",
-            "x86:i64",
+              define void @f(i128 %a) \"target-cpu\"=\"i686\" {\n  ret void\n}\n",
+            "x86:abi:wide-arg",
             "text",
             "i686-unknown-linux-gnu",
         ),

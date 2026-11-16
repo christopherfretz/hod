@@ -160,7 +160,12 @@ separate argument (a `{ i8, i32 }` takes two 4-byte slots); under
 
 `st0` is `hod_x86::abi::ST0`, a register of no allocatable class: the
 target's glue moves it from and to the frame slot of the result with
-`fld`/`fstp` (I9 keeps floating values in slots of their size).
+`fld`/`fstp` (I9 keeps floating values in slots of their size). With
+I9's 80-bit rule (`spec/codegen-x86.md` §11): `st0` carries 80 bits
+both ways. A `float`/`double` result the caller uses in its run is also
+stored at 80 bits (`fld st0; fstp tbyte`) before the `fstp` to its slot,
+and a function returns a computed result of its last run from its
+80-bit copy (`fld tbyte`), as `llc` does.
 
 ### 5.2 In memory
 
@@ -272,7 +277,15 @@ stages them in the local area first and copies them in place), register
 arguments are placed as for a call, then the exit tears the frame down
 (`lea esp, [ebp - 12]`, `pop edi`, `pop esi`, `pop ebx`, `pop ebp`) and
 jumps: `jmp callee` with `R_386_PLT32` (`R_386_PC32` for a callee in this
-output), or `jmp edx`. The callee has the caller's signature, so it pops
+output), or `jmp edx`. Under PIC (with I8's `pic`), `ebx` is the
+caller's again at the jump, so a callee reached through the PLT is not
+jumped to there: as `llc` (19 and 22, measured), the GOT pointer is
+computed into the first of `eax`, `ecx`, `edx` that holds no argument
+(`call; pop; lea` with `R_386_GOTPC`), the callee's address loaded from
+its GOT entry (`R_386_GOT32X`) and jumped to (`jmp reg`); with all three
+holding arguments it is refused `x86:abi:musttail` (`llc` fails, "ran
+out of registers"). A `dso_local` callee stays `jmp` with
+`R_386_PC32`. The callee has the caller's signature, so it pops
 what the caller would have popped (`sret` included). Refused: a result
 in memory (`call:musttail-ret-memory`, the call sequence), and stack
 arguments together with an argument in `ecx`, which the copy into the

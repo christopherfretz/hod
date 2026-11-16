@@ -110,11 +110,11 @@ their values).
 |---|---|---|
 | `x86:i64` | an integer of 33 to 64 bits where §8 does not take it: an argument or result passed by value, a `switch` condition (also wider), a `ptradd` index | I6 (`abi.rs`: arguments, results); — |
 | `x86:i64:wide` | an integer wider than 64 bits (§8) | — |
-| `x86:float` | a floating-point argument or result of a call or a function (§11) | I6 (`abi.rs`) |
+| `x86:float` | a floating-point value in a register where §11 takes none (arguments and results are I6's since the join) | — |
 | `x86:float:half`, `x86:float:bfloat`, `x86:float:fp128` | a value of those types | — |
 | `x86:float:sse` | a `float` operation with SSE, a `double` one with SSE2 (`llc` uses `xmm`) | I12 |
-| `x86:float:i64-cast` | a conversion between a floating type and an integer wider than 32 bits | I7 with I9 |
-| `x86:float:intrinsic` | a floating-point intrinsic of §11 not lowered (`double` `minnum`/`maxnum`, any other) | — |
+| `x86:float:i64-cast` | `fptoui` to `i64`; a conversion between a floating type and an integer wider than 64 bits (§11) | — |
+| `x86:float:intrinsic` | a floating-point intrinsic §11 does not lower | — |
 | `x86:float:cast` | a `bitcast` of a floating value, another cast not in §11 | — |
 | `x86:vector` | a vector value, a vector `ptradd`, the element operations | I12 |
 | `x86:aggregate` | an aggregate value, `extractvalue`, `insertvalue`, a result in memory | I11 |
@@ -128,7 +128,7 @@ their values).
 | `x86:abi:wide-arg` | an `i128` or `fp128` argument (`llc` 19 and 22 place it differently, `spec/abi-x86.md` §12) | — |
 | `x86:abi:x87-pair` | a result with two floating-point leaves (`st0`, `st1`) | I9 |
 | `x86:abi:indirect-edx` | an indirect call with an argument in `edx`, which holds the callee's address (`spec/abi-x86.md` §8.1) | — |
-| `x86:abi:musttail` | a `musttail` call with stack arguments and an argument in `ecx` (`spec/abi-x86.md` §8.5) | — |
+| `x86:abi:musttail` | a `musttail` call with stack arguments and an argument in `ecx`; under PIC, one to another module's function with `eax`, `ecx` and `edx` all holding arguments (`spec/abi-x86.md` §8.5) | — |
 | `x86:varargs` | `va_start`, `va_copy`, `va_end`, `va_arg` | I11 |
 | `x86:dynamic-alloca` | a dynamic `alloca`, an over-aligned slot, `llvm.stacksave`/`stackrestore` | I11 |
 | `x86:intrinsic` | any other intrinsic | per family |
@@ -356,7 +356,9 @@ symbol directives only is written as on the other targets.
 a home in the frame of 4, 8 or 12 bytes (`x86_fp80`'s image is the low
 10). A function whose CPU has SSE (`float`) or SSE2 (`double`) is
 refused `x86:float:sse` (`llc` computes in `xmm`); the CPU is the
-function's `target-cpu`/`target-features` (`generic` without them).
+function's `target-cpu`/`target-features`, else the tool's `-mcpu`/
+`-mattr` (`generic` without them; `X86::with_cpu`, as `llc` takes its
+options for a function without the attributes).
 Loads, stores, `phi`s and a `select` without `fcmov` copy the encoding
 with integer moves (bit exact). A constant is written by `mov`
 immediates of its encoding (no constant pool, no relocation). An
@@ -385,7 +387,14 @@ constants (`llc` branches: the block splits). `llc` branches without
 `cmov` also for integer `smin`/`smax`/`umin`/`umax`, `ctlz`/`cttz` and
 the saturating additions and subtractions (measured); `hod_x86` refuses
 those intrinsics today, and the package that lowers them adds them to
-the barriers (`x87::barrier`). `freeze`, `fpext`,
+the barriers (`x87::barrier`). With the other packages (measured, the
+shapes of `crates/hod/tests/data/i386/join_b/join_b.ll`): a
+thread-local of a dynamic model under PIC is a barrier where `llc` calls
+`___tls_get_addr` (the first use of its symbol in the block, of any
+local-dynamic symbol for the module's block); a GOT access (`call; pop`)
+is none. Inline assembly is none unless it clobbers `st(0)` (`~{st}`)
+or has an x87 operand (`{st}`, `{st(1)}`, ...); a clobber of a deeper
+register alone spills nothing. A `musttail` call is a call. `freeze`, `fpext`,
 `fptrunc (fpext x)` back to `x`'s type in one block, a `select` of a
 constant condition and, with `cmov`, a `select` (`fcmov`) pass the 80
 bits on; `fptrunc` otherwise rounds. A result that `llc`'s DAG folds to
@@ -406,7 +415,13 @@ an instruction of its run after it is stored twice: `fld st0`, `fstp
 tbyte` into a 12-byte frame slot (its *80-bit copy*), then `fstp` to its
 home. Every use in the run loads the copy (`fld tbyte`), every other
 use the home. Copy slots are reused from one run to the next.
-`x86_fp80` has no copy (its home is 80 bits).
+`x86_fp80` has no copy (its home is 80 bits). Across calls (with I6's
+`abi`): a `float`/`double` call result arrives in `st0` as the callee
+left it, at 80 bits, and `llc` keeps it for its run, so it is a
+computed result (its copy stored by the glue store of `st0`,
+`x87::store_call_result`); a `ret` belongs to the run it ends, and a
+result of the run returns its 80-bit copy in `st0` (`fdivrp; retl` in
+`llc`), every other value its home.
 
 **The divergence.** With six or more products live at once in one
 block without a barrier, `llc` rounds some uses (which ones follows its
@@ -415,12 +430,23 @@ FIFO order or the middle ones in LIFO order), so its result is not a
 function of the IR; hod keeps all of them at 80 bits. The shapes
 `many6_lifo`, `many7_*`, `many8_*`, `many9_*`, `many12_*` compare with a
 model of hod's rule (the same arithmetic at `x86_fp80`, rounded at the
-store) instead of `llc`; `many6_fifo` equals `llc`. A folded result is
-computed by hod at run time and rounded from 80 bits to its type, where
-`llc`'s DAG rounds once: equal for `float` (64 bits of significand are
-at least 2 x 24 + 2), possibly one unit in the last place apart for a
-folded `double` `fadd`, `fsub`, `fmul`, `fdiv`, `fma` (not measured
-apart; no shape has such operands).
+store) instead of `llc`; `many6_fifo` equals `llc`.
+
+**Folding.** `fadd`, `fsub`, `fmul`, `fdiv` of a `float` or `double`
+whose operands are constants or such results of its block (through
+`fneg` and `fpext`/`fptrunc` between `float` and `double`, eight levels)
+are computed by hod with Rust's `f32`/`f64` arithmetic (one rounding, as
+`llc`'s `APFloat`) and written as a constant: at run time the x87 would
+round twice (to 64 bits, then to the type), one unit in the last place
+apart for some `double` operands (measured: `1.0 + 0x3CA0000008000000`
+is `0x3FF0000000000001` in `llc`, `1.0` at run time; the four
+operations' shapes in `join_b.ll`). A NaN result stays on the run-time
+path: `llc` folds an invalid operation to `+qNaN` (`0x7FF8000000000000`,
+`float` `0x7FC00000`), quiets an sNaN operand (`0x7FFC...`) and passes a
+NaN operand's payload, where the x87 gives `-qNaN` (`0xFFF8...`) for an
+invalid operation: no shape compares a NaN. `frem`, the intrinsics and
+the other folded operations are computed at run time (equal for
+`float`; not measured apart for `double`).
 
 **Compares.** `fcmp` puts the operands as the predicate needs (`olt`,
 `ole`, `ugt`, `uge` swapped) and compares `st0` with `st1`: with `cmov`
@@ -439,14 +465,20 @@ encoding.
 extended in `ecx`, stored below `esp`, `fild` of 32 bits (of 64 with a
 zero high half for an unsigned `i32`). `fptosi`/`fptoui` to at most 32
 bits: `fnstcw`, the word `or 0xC00` (truncate), `fldcw`, `fistp` of 32
-bits (64 for an unsigned `i32`), `fldcw` of the saved word. An integer
-wider than 32 bits is `x86:float:i64-cast`.
+bits (64 for an unsigned `i32`), `fldcw` of the saved word. With §8's
+64-bit integers: `sitofp` from `i64` is `fild qword` of its home;
+`uitofp` adds `2^64` as a `float` (`0x5F800000`, chosen by the sign of
+the high word: `sar 31`, `and`) with `faddp` (`llc`'s sequence);
+`fptosi` to `i64` is `fistp qword` under the truncating control word.
+`fptoui` to `i64` and an integer wider than 64 bits are
+`x86:float:i64-cast`.
 
 **libm.** `frem` is `fmodf`/`fmod`/`fmodl`; `sin`, `cos`, `tan`, `asin`,
 `acos`, `atan`, `atan2`, `sinh`, `cosh`, `tanh`, `exp`, `exp2`, `exp10`,
 `log`, `log2`, `log10`, `pow`, `floor`, `ceil`, `trunc`, `round`,
 `roundeven`, `nearbyint`, `rint`, `fma` call `llc`'s symbols (`sinf`,
-`sin`, `sinl`, ...); `minnum`/`maxnum` call `fminf`/`fmaxf` and
-`fminl`/`fmaxl` (`double` is refused `x86:float:intrinsic`: `hod_cg` has
-no `fmin`/`fmax` routine yet). Arguments are copied to the outgoing area
-at their width (12 bytes for `x86_fp80`), the result is `st0`.
+`sin`, `sinl`, ...); `minnum`/`maxnum` call `fminf`/`fmin`/`fminl` and
+`fmaxf`/`fmax`/`fmaxl`. Arguments are copied to the outgoing area at
+their width (12 bytes for `x86_fp80`), the result is `st0`. Under PIC
+the call goes through `pic::emit_call` (`ebx` holds the GOT pointer at
+the PLT call, §9.2), as every call does.

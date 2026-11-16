@@ -155,8 +155,8 @@ int main(void) {
   CONV(double, dv, nd) section("conv-double");
   CONV(long double, lv, nl) section("conv-ldouble");
   FROMINT(float, 4) FROMINT(double, 8) FROMINT(long double, 10) section("fromint");
-  /* `fmin`/`fmax` of float and long double only: hod refuses the double
-     ones (x86:float:intrinsic). */
+  /* `fmin`/`fmax` of float and long double (the double ones are in
+     join_b/calls.c). */
 #define MINMAX(SFX, B)                                                        \
   r = fmin##SFX(x, y); mix((const void *)&r, B);                              \
   r = fmax##SFX(x, y); mix((const void *)&r, B);

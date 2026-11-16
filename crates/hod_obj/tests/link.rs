@@ -475,3 +475,27 @@ fn mergeable_sections_are_merged() {
         }
     }
 }
+
+/// The output kinds a linker of the matrix refuses by name
+/// (`linkers::REFUSALS`: mortar's `-shared` and `-r`): the link of an
+/// object the writer produced fails with the refusal's name and the cell
+/// is REFUSED; a linker that now links the kind fails this test. GNU ld
+/// links the same object into both kinds, so the object is not the cause.
+#[test]
+fn refused_kinds_are_refused_by_name() {
+    let scratch = Scratch::new("obj-link-refused");
+    let Some(tools) = Toolchain::for_target(&scratch, Target::Aarch64) else { return };
+    let object = write(&scratch, "ret42.o", &common::return_42());
+    let kinds: [&[&str]; 2] = [&["-shared"], &["-nostdlib", "-r"]];
+    for linker in &tools.linkers {
+        for flags in kinds {
+            let output = scratch.join(format!("out-{}-{}", linker.name, flags[flags.len() - 1]));
+            if tools.refuses(linker, flags, &[&object], &output) {
+                continue;
+            }
+            if linker.name == "bfd" {
+                tools.link_ok(linker, flags, &[&object], &output);
+            }
+        }
+    }
+}

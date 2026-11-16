@@ -32,14 +32,22 @@ impl Search {
     /// This process's `PATH` and `/usr/lib`. The directory of the wild
     /// `hod_testutil` finds (`HOD_WILD`, else the pinned release in
     /// `.toolchain/wild`: [`hod_testutil::linkers::find_wild`]) is searched
-    /// first, so the matrix's wild is the one the tests link with.
+    /// first, so the matrix's wild is the one the tests link with; so is
+    /// mortar's (`HOD_MORTAR`, else `.toolchain/mortar/<commit>`:
+    /// [`hod_testutil::linkers::find_mortar`]).
     pub fn from_env() -> Self {
         let mut dirs: Vec<PathBuf> = Vec::new();
-        if let Some(wild) = hod_testutil::linkers::find_wild()
-            && wild.file_name().is_some_and(|name| name == "wild")
-            && let Some(dir) = wild.parent()
-        {
-            dirs.push(dir.to_path_buf());
+        let pinned = [
+            (hod_testutil::linkers::find_wild(), "wild"),
+            (hod_testutil::linkers::find_mortar(), "mortar"),
+        ];
+        for (found, name) in pinned {
+            if let Some(found) = found
+                && found.file_name().is_some_and(|file| file == name)
+                && let Some(dir) = found.parent()
+            {
+                dirs.push(dir.to_path_buf());
+            }
         }
         let path = std::env::var_os("PATH").unwrap_or_default();
         dirs.extend(std::env::split_paths(&path));
@@ -262,6 +270,7 @@ pub fn opt_beside(llc: &Path) -> PathBuf {
 ///   then 19, then `ld.lld`.
 /// - `mold`: `mold`, then `ld.mold`.
 /// - `wild`: `wild`, then `ld.wild`.
+/// - `mortar`: `mortar`, then `ld.mortar`.
 pub fn find_linker(name: &str, search: &Search) -> Option<PathBuf> {
     match name {
         "bfd" => search.on_path("ld.bfd"),
@@ -271,6 +280,7 @@ pub fn find_linker(name: &str, search: &Search) -> Option<PathBuf> {
             .or_else(|| search.on_path("ld.lld")),
         "mold" => search.on_path("mold").or_else(|| search.on_path("ld.mold")),
         "wild" => search.on_path("wild").or_else(|| search.on_path("ld.wild")),
+        "mortar" => search.on_path("mortar").or_else(|| search.on_path("ld.mortar")),
         _ => None,
     }
 }
@@ -284,10 +294,11 @@ pub fn find_driver(search: &Search) -> Option<PathBuf> {
 /// thread, because the harness is what runs things in parallel; and for
 /// wild, which discards unused sections by default, `--no-gc-sections`
 /// (`hod_testutil::linkers::WILD_FLAGS`), so that the four linkers link
-/// the same sections.
+/// the same sections. mortar keeps them by default and takes lld's
+/// `--threads`.
 pub fn linker_flags(name: &str) -> &'static [&'static str] {
     match name {
-        "lld" => &["-Wl,--threads=1"],
+        "lld" | "mortar" => &["-Wl,--threads=1"],
         "mold" => &["-Wl,--thread-count=1"],
         "wild" => &["-Wl,--thread-count=1", "-Wl,--no-gc-sections"],
         _ => &[],
@@ -296,7 +307,7 @@ pub fn linker_flags(name: &str) -> &'static [&'static str] {
 
 /// Which linker's signature a linked program carries in its `.comment`
 /// section: `LLD <digit>` is lld's, `mold <digit>` is mold's, `Linker: Wild
-/// <digit>` is wild's. GNU ld leaves none.
+/// <digit>` is wild's, `mortar <digit>` is mortar's. GNU ld leaves none.
 pub fn signature(program: &[u8]) -> Option<&'static str> {
     let has = |marker: &[u8]| {
         program
@@ -305,6 +316,8 @@ pub fn signature(program: &[u8]) -> Option<&'static str> {
     };
     if has(b"Linker: Wild ") {
         Some("wild")
+    } else if has(b"mortar ") {
+        Some("mortar")
     } else if has(b"mold ") {
         Some("mold")
     } else if has(b"LLD ") {
@@ -321,6 +334,7 @@ pub fn check_signature(name: &str, program: &[u8]) -> Result<(), String> {
         "lld" => Some("lld"),
         "mold" => Some("mold"),
         "wild" => Some("wild"),
+        "mortar" => Some("mortar"),
         _ => return Ok(()),
     };
     let found = signature(program);
@@ -431,7 +445,7 @@ mod tests {
     fn linkers_and_driver() {
         let scratch = Scratch::new("irdiff-linkers");
         let found = search(&scratch, &["bin"]);
-        for name in ["bfd", "lld", "mold", "wild", "gold"] {
+        for name in ["bfd", "lld", "mold", "wild", "mortar", "gold"] {
             assert_eq!(find_linker(name, &found), None, "{name}");
         }
         assert_eq!(find_driver(&found), None);
@@ -461,6 +475,10 @@ mod tests {
         assert_eq!(find_linker("mold", &found), Some(mold));
         let wild = touch("bin/wild");
         assert_eq!(find_linker("wild", &found), Some(wild));
+        let ld_mortar = touch("bin/ld.mortar");
+        assert_eq!(find_linker("mortar", &found), Some(ld_mortar));
+        let mortar = touch("bin/mortar");
+        assert_eq!(find_linker("mortar", &found), Some(mortar));
     }
 
     // "Tools": which linker linked a program.
@@ -483,6 +501,10 @@ mod tests {
                      (compatible with GNU linkers)\0";
         assert_eq!(signature(wild), Some("wild"));
         assert_eq!(check_signature("wild", wild), Ok(()));
+        let mortar = b"\0GCC: (Debian 14.2.0-19) 14.2.0\0mortar 0.0.0\0";
+        assert_eq!(signature(mortar), Some("mortar"));
+        assert_eq!(check_signature("mortar", mortar), Ok(()));
+        assert!(check_signature("mortar", gnu).is_err());
         assert!(check_signature("wild", gnu).is_err());
         let wrong = check_signature("lld", gnu).unwrap_err();
         assert!(wrong.contains("did not link with lld") && wrong.contains("no linker's"));
@@ -545,5 +567,6 @@ mod tests {
         assert_eq!(linker_flags("lld"), &["-Wl,--threads=1"]);
         assert_eq!(linker_flags("mold"), &["-Wl,--thread-count=1"]);
         assert_eq!(linker_flags("wild"), &["-Wl,--thread-count=1", "-Wl,--no-gc-sections"]);
+        assert_eq!(linker_flags("mortar"), &["-Wl,--threads=1"]);
     }
 }

@@ -143,7 +143,7 @@ options:
   --filter <text>      only entries whose path contains <text>; repeatable
   --limit <N>          only the first N selected entries of each major
   --tier <quick|all>   quick: the fixed spread selection of the gate (default: all)
-  --linker <name>      bfd, lld, mold or wild; repeatable (default: all found)
+  --linker <name>      bfd, lld, mold, wild or mortar; repeatable (default: all found)
   -j <N>, --jobs <N>   entries at once (default: min(4, cores); at most 16)
   --expected <file>    the expectation file (default: tests/roundtrip/expected-<arch>.tsv)
   --update-expected    write what this run found into the expectation file
@@ -289,7 +289,7 @@ pub fn parse_args(args: &[String], options: &mut Options) -> Result<bool, String
                 let linker = value()?;
                 if !LINKER_NAMES.contains(&linker.as_str()) {
                     return Err(format!(
-                        "unknown linker '{linker}': expected bfd, lld, mold or wild"
+                        "unknown linker '{linker}': expected bfd, lld, mold, wild or mortar"
                     ));
                 }
                 options.linkers.push(linker);

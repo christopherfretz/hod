@@ -186,9 +186,10 @@ struct Linker {
 }
 
 /// The linker matrix for x86-64 ([`hod_testutil::linkers::present`]): GNU
-/// ld (the host's on an x86-64 host, else the cross linker), lld, mold and
-/// wild. A missing one is skipped with a note, or a failure under
-/// `HOD_REQUIRE_TOOLS=1` (wild: `hod_testutil::linkers::WILD_REQUIRED`).
+/// ld (the host's on an x86-64 host, else the cross linker), lld, mold,
+/// wild and mortar. A missing one is skipped with a note, or a failure
+/// under `HOD_REQUIRE_TOOLS=1` (wild and mortar:
+/// `hod_testutil::linkers::WILD_REQUIRED`, `MORTAR_REQUIRED`).
 fn linkers() -> Vec<Linker> {
     hod_testutil::linkers::present(hod_testutil::Target::X86_64)
         .into_iter()
@@ -335,6 +336,18 @@ fn tls_sequences_link_as_llvms() {
                     let theirs = objects(&built.llvm);
                     let ours: Vec<&Path> = ours.iter().map(PathBuf::as_path).collect();
                     let theirs: Vec<&Path> = theirs.iter().map(PathBuf::as_path).collect();
+                    // A kind the linker refuses by name (mortar's
+                    // `-shared`): REFUSED, checked on both objects.
+                    if let Some(refusal) = hod_testutil::linkers::refusal(linker.name, flags) {
+                        for (side, objects) in [("hod", &ours), ("llvm", &theirs)] {
+                            let linked = link(linker, flags, objects, &out(side));
+                            let stderr = linked.as_ref().err().map_or("", String::as_str);
+                            let cell = format!("{what} {side}");
+                            let ok = linked.is_ok();
+                            hod_testutil::linkers::check_refused(refusal, ok, stderr, &cell);
+                        }
+                        continue;
+                    }
                     let hod = link(linker, flags, &ours, &out("hod"))
                         .unwrap_or_else(|e| panic!("{what}: hod's object does not link:\n{e}"));
                     let llvm = link(linker, flags, &theirs, &out("llvm"))

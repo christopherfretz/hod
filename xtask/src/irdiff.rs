@@ -44,7 +44,7 @@ them. The default is every test under tests/ir/.
   --llvm <major|dir>   the oracle: an LLVM major (22, 19) or an installation
                        directory (default: the newest of 22 and 19 found)
   --target <arch>      aarch64 or x86_64 (default: this host)
-  --linker <name>      bfd, lld, mold or wild; repeatable (default: every
+  --linker <name>      bfd, lld, mold, wild or mortar; repeatable (default: every
                        one that is found)
   --tier <quick|all>   the tests to run (default: all)
   --hod <binary>       the hod to test (default: build this workspace's)
@@ -400,7 +400,9 @@ pub fn run(config: &Config) -> Result<Report, String> {
     )?;
     for name in &config.linkers {
         if !LINKER_NAMES.contains(&name.as_str()) {
-            return Err(format!("unknown linker '{name}': expected bfd, lld, mold or wild"));
+            return Err(format!(
+                "unknown linker '{name}': expected bfd, lld, mold, wild or mortar"
+            ));
         }
     }
     let planned = plan(config)?;
@@ -605,7 +607,7 @@ pub fn parse_args(args: &[String], config: &mut Config) -> Result<bool, String> 
                 let text = value()?;
                 if !LINKER_NAMES.contains(&text.as_str()) {
                     return Err(format!(
-                        "unknown linker '{text}': expected bfd, lld, mold or wild"
+                        "unknown linker '{text}': expected bfd, lld, mold, wild or mortar"
                     ));
                 }
                 if !config.linkers.contains(&text) {

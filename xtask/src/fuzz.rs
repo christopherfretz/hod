@@ -69,7 +69,7 @@ PROFILES
   --target <arch>     aarch64 or x86_64 (default: this host)
   --llvm <major>      22 or 19: clang and llc of that LLVM (default 22)
   -j <J>, --jobs <J>  seeds at once (default 4, at most 16)
-  --linker <name>     bfd, lld, mold or wild (default: the driver's ld)
+  --linker <name>     bfd, lld, mold, wild or mortar (default: the driver's ld)
   --timeout <secs>    each program's time limit, emulated or not (default 5)
   --reduce-budget <n> probes a reduction may run (default 300; 0: none)
   --hod <binary>      the hod to test (default: build this workspace's)
@@ -209,7 +209,7 @@ pub fn parse_args(args: &[String], options: &mut Options) -> Result<bool, String
                 let text = value()?;
                 if !LINKER_NAMES.contains(&text.as_str()) {
                     return Err(format!(
-                        "unknown linker '{text}': expected bfd, lld, mold or wild"
+                        "unknown linker '{text}': expected bfd, lld, mold, wild or mortar"
                     ));
                 }
                 options.linker = Some(text);

@@ -152,6 +152,9 @@ fn run_cases(label: &str, seed: u64, count: usize, builds: &[Build]) {
             let exe = dir.join(format!("p-{tag}-{}", linker.name));
             let ran = if build.shared {
                 let lib = dir.join(format!("libb-{tag}-{}.so", linker.name));
+                if toolchain.refuses(linker, &["-shared"], &[&obj_b], &lib) {
+                    continue;
+                }
                 toolchain.link_ok(linker, &["-shared"], &[&obj_b], &lib);
                 let rpath = format!("-Wl,-rpath,{}", dir.path().display());
                 toolchain.link_and_run(
@@ -372,6 +375,9 @@ fn exceptions_unwind_through_hod_frames() {
         }
         for linker in &toolchain.linkers {
             let lib = dir.join(format!("libeh-{tag}-{}.so", linker.name));
+            if toolchain.refuses(linker, &["-shared"], &[&obj, &comdat], &lib) {
+                continue;
+            }
             toolchain.link_ok(linker, &["-shared"], &[&obj, &comdat], &lib);
             let rpath = format!("-Wl,-rpath,{}", dir.path().display());
             let exe = dir.join(format!("eh-{tag}-{}", linker.name));

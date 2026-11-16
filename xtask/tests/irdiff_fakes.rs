@@ -1213,7 +1213,7 @@ fn the_linker_matrix() {
     assert_eq!(error, "linker 'wild' was asked for and is not found");
     chosen.linkers = vec!["gold".to_owned()];
     let error = irdiff::run(&chosen).unwrap_err();
-    assert_eq!(error, "unknown linker 'gold': expected bfd, lld, mold or wild");
+    assert_eq!(error, "unknown linker 'gold': expected bfd, lld, mold, wild or mortar");
 
     // No driver: nothing can be linked; hod's verdict is still recorded.
     world.without("gcc");
@@ -1898,8 +1898,9 @@ fn command(world: &World, args: &[&str], env: &[(&str, &str)]) -> hod_testutil::
     command.arg("irdiff").args(["--hod".as_ref(), world.hod().as_os_str()]);
     command.args(args).arg(world.scratch.join("tests"));
     command.env("PATH", world.scratch.join("bin")).env("CARGO_TARGET_DIR", world.build());
-    // The fake `PATH` alone: not the provisioned wild (`HOD_WILD` empty).
-    command.env("HOD_WILD", "");
+    // The fake `PATH` alone: not the provisioned wild or mortar
+    // (`HOD_WILD`, `HOD_MORTAR` empty).
+    command.env("HOD_WILD", "").env("HOD_MORTAR", "");
     for name in ["HOD_REQUIRE_TOOLS", "HOD_STRICT", "HOD_FALLBACK_LLC", "HOD_COVERAGE_LOG"] {
         command.env_remove(name);
     }

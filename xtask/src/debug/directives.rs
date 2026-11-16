@@ -45,7 +45,7 @@ pub const FRONTENDS: [&str; 5] = ["clang-19", "clang-22", "kiln", "ir-19", "ir-2
 pub const DEBUGGER_WORDS: [&str; 4] = ["gdb", "lldb", "lldb-19", "lldb-22"];
 
 /// The linkers' names in scopes.
-pub const LINKER_WORDS: [&str; 4] = ["bfd", "lld", "mold", "wild"];
+pub const LINKER_WORDS: [&str; 5] = ["bfd", "lld", "mold", "wild", "mortar"];
 
 /// The targets' names in scopes and in `target:` (WP-136): the
 /// architecture the programs are built for (`--target`).

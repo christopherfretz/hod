@@ -377,7 +377,7 @@ fn find_tools(options: &Options, report: &mut Report) -> Result<(Tools, Vec<Debu
         missing("the linker driver `gcc`".to_owned(), true, report);
     }
     let mut linkers = Vec::new();
-    for name in ["bfd", "lld", "mold", "wild"] {
+    for name in crate::irdiff::LINKER_NAMES {
         let wanted = options.linkers.is_empty() || options.linkers.iter().any(|l| l == name);
         if !wanted {
             continue;

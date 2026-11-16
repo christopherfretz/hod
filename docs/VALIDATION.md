@@ -385,6 +385,14 @@ sections by default where the other three do not. A missing wild is a
 note under `HOD_REQUIRE_TOOLS=1`, never a failure
 (`linkers::WILD_REQUIRED` is false and stays so).
 
+mortar is the second optional linker (WP-281), built from one pinned
+commit (`linkers::MORTAR_COMMIT`) into `.toolchain/mortar/<commit>/`
+or named by `HOD_MORTAR`, selected as `ld` like wild, and optional in
+the same way (`linkers::MORTAR_REQUIRED`). The output kinds it refuses by
+name (`-shared`, `-r`) are cells recorded as REFUSED after the refusal's
+text is checked (`linkers::REFUSALS`), not failures; a refused kind that
+starts to link fails the test so that the cell is enabled.
+
 A case one linker cannot pass is excepted in ONE table,
 `hod_testutil::linkers::EXCEPTIONS` (linker, version, case, class,
 reason), never by skipping a test: the test changes that one assertion

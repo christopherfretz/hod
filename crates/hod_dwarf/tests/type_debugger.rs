@@ -142,6 +142,12 @@ fn debugger(major: u32) {
             args.extend(["-shared".into(), object.into(), "-o".into()]);
             args.push(library.clone().into());
             let linked = run(&driver, &args);
+            if let Some(refusal) = hod_testutil::linkers::refusal(linker, &["-shared"]) {
+                let (ok, stderr) = (linked.success(), linked.stderr_text());
+                let cell = library.display().to_string();
+                hod_testutil::linkers::check_refused(refusal, ok, &stderr, &cell);
+                continue;
+            }
             assert!(linked.success(), "link {}: {}", library.display(), linked.stderr_text());
             gdb_out.push(gdb_session(&gdb, &library));
             if let Some(lldb) = &lldb {

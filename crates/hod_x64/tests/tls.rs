@@ -371,7 +371,8 @@ const BUILDS: [Build; 6] = [
 ];
 
 /// Links and runs one build with one linker; returns the linked file
-/// that holds the library's code.
+/// that holds the library's code; `None` for a cell the linker refuses
+/// (`Toolchain::refuses`: a shared object with mortar).
 fn link_run(
     toolchain: &Toolchain,
     dir: &Scratch,
@@ -381,13 +382,18 @@ fn link_run(
     objects: (&Path, Option<&Path>),
     driver: &Path,
     dso: (&Path, &Path),
-) -> PathBuf {
+) -> Option<PathBuf> {
     let tag = format!("{}-{who}-{}", build.tag, linker.name);
     let rpath = format!("-Wl,-rpath,{}", dir.path().display());
     let (lib_obj, main_obj) = objects;
     let mut inputs: Vec<PathBuf> = vec![driver.to_path_buf()];
     inputs.extend(main_obj.map(Path::to_path_buf));
     let dso_so = dir.join(format!("libdso-{}.so", linker.name));
+    if (build.dso_shared || build.lib_shared)
+        && toolchain.refuses(linker, &["-shared"], &[dso.1], &dso_so)
+    {
+        return None;
+    }
     if build.dso_shared && !dso_so.exists() {
         toolchain.link_ok(linker, &["-shared"], &[dso.1], &dso_so);
     }
@@ -422,7 +428,7 @@ fn link_run(
         exit_code(&ran),
         ran.stderr_text()
     );
-    lib_file
+    Some(lib_file)
 }
 
 /// The objects of one build: `(name, library object's builder, main's)`.
@@ -470,7 +476,7 @@ fn every_model_links_runs_and_relaxes() {
                 None => None,
             };
             for linker in &toolchain.linkers {
-                let file = link_run(
+                let Some(file) = link_run(
                     &toolchain,
                     &dir,
                     linker,
@@ -479,7 +485,9 @@ fn every_model_links_runs_and_relaxes() {
                     (&lib_obj, main_obj.as_deref()),
                     &driver,
                     (dso.0.as_path(), dso.1.as_path()),
-                );
+                ) else {
+                    continue;
+                };
                 let Some(code) = disassembly(&file, "lib_", false) else { continue };
                 let seq = sequences(&code);
                 let _ = writeln!(report, "{} {who} {}: {seq:?}", build.tag, linker.name);
@@ -843,7 +851,7 @@ fn descriptors_link_run_and_relax() {
                 assert!(same, "{name}: -enable-tlsdesc changed an object without a dynamic model");
             }
             for linker in &toolchain.linkers {
-                let file = link_run(
+                let Some(file) = link_run(
                     &toolchain,
                     &dir,
                     linker,
@@ -852,7 +860,9 @@ fn descriptors_link_run_and_relax() {
                     (&lib_obj, main_obj.as_deref()),
                     &driver,
                     (dso.0.as_path(), dso.1.as_path()),
-                );
+                ) else {
+                    continue;
+                };
                 runs += 1;
                 let Some(code) = disassembly(&file, "lib_", false) else { continue };
                 let seq = sequences(&code);
@@ -949,6 +959,9 @@ fn descriptors_through_dlopen() {
                 for linker in &toolchain.linkers {
                     let tag = format!("{size}-{who}-{peer_name}-{}", linker.name);
                     let so = dir.join(format!("libdl-{tag}.so"));
+                    if toolchain.refuses(linker, &["-shared"], &[&dl, &peer], &so) {
+                        continue;
+                    }
                     toolchain.link_ok(linker, &["-shared"], &[&dl, &peer], &so);
                     let define = format!("-DLIB=\"{}\"", so.display());
                     let driver_src = data("dl_driver.c");

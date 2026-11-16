@@ -250,6 +250,9 @@ fn exceptions_unwind_through_hod_frames() {
         }
         for linker in &toolchain.linkers {
             let lib = dir.join(format!("libeh-{tag}-{}.so", linker.name));
+            if toolchain.refuses(linker, &["-shared"], &[&obj, &comdat], &lib) {
+                continue;
+            }
             toolchain.link_ok(linker, &["-shared"], &[&obj, &comdat], &lib);
             let exe = dir.join(format!("{name}-{}", linker.name));
             let flags = ["-rdynamic", &rpath];

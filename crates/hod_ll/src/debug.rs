@@ -403,13 +403,16 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
     fn define_tuples_in(&mut self, scratch: &mut DebugScratch, fed: bool) -> PResult<()> {
         while let Some((id, span)) = scratch.tuples.pop() {
             let mark = scratch.lists.len();
-            if fed {
-                self.lx.seek(span.start as usize);
+            let pos = self.quick_elements(span, scratch)?;
+            if pos >= span.end {
+                // Read from the bytes: the lexer is not used.
+            } else if fed {
+                self.lx.seek(pos as usize);
                 self.bump();
             } else {
-                self.goto(span.start);
+                self.goto(pos);
             }
-            while self.tok.start < span.end {
+            while pos < span.end && self.tok.start < span.end {
                 let element = self.list_element(scratch)?.unwrap_or(DiId::NONE);
                 scratch.lists.push(element);
                 if self.tok.start < span.end {
@@ -565,7 +568,11 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
 
     /// Pushes the elements of the tuple whose inside is `span`.
     fn list_span(&mut self, span: Span, scratch: &mut DebugScratch) -> PResult<()> {
-        self.goto(span.start);
+        let pos = self.quick_elements(span, scratch)?;
+        if pos >= span.end {
+            return Ok(());
+        }
+        self.goto(pos);
         while self.tok.start < span.end {
             let element = self.list_element(scratch)?.unwrap_or(DiId::NONE);
             scratch.lists.push(element);
@@ -574,6 +581,44 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
             }
         }
         Ok(())
+    }
+
+    /// The elements of the tuple whose inside is `span` that are `!N` or
+    /// `null` as LLVM's writer prints them (joined by `, `), read from
+    /// the bytes (WP-328) and pushed; where the first other spelling
+    /// starts (`span.end` if none), from which the tokens read them. An
+    /// element is read only once the separator after it is known.
+    fn quick_elements(&mut self, span: Span, scratch: &mut DebugScratch) -> PResult<u32> {
+        let src = self.src;
+        let end = span.end as usize;
+        let mut pos = span.start as usize;
+        while pos < end {
+            let (element, after) = match src[pos] {
+                b'!' => {
+                    let digits = digits_end(src, pos + 1, end);
+                    let Some(id) = crate::index::parse_u32(&src[pos + 1..digits]) else {
+                        break;
+                    };
+                    (Some((pos, id)), digits)
+                }
+                b'n' if src.get(pos..pos + 4) == Some(b"null") => (None, pos + 4),
+                _ => break,
+            };
+            let next = if after == end {
+                end
+            } else if src.get(after..after + 2) == Some(b", ") && after + 2 < end {
+                after + 2
+            } else {
+                break;
+            };
+            let element = match element {
+                Some((at, id)) => self.numbered_node(at as u32, id, scratch)?,
+                None => DiId::NONE,
+            };
+            scratch.lists.push(element);
+            pos = next;
+        }
+        Ok(pos.min(end) as u32)
     }
 
     /// An expression a field names: in place, or a numbered one.

@@ -213,8 +213,9 @@ fn debug_fields_read_from_the_bytes_are_the_tokens_reading() {
 
 /// WP-328: nodes in spellings the byte path must leave to the token path
 /// (or read as it does), each judged alike when the token path reads the
-/// whole node (a blank after the `(`): the same print and refusals, or
-/// the same error on the same line (its column moves by the blank).
+/// whole node (a blank after the `(` and after each `!{`): the same
+/// print and refusals, or the same error on the same line (its column
+/// moves by the blanks).
 const BYTE_PATH_SPELLINGS: &[&str] = &[
     // DILocation.
     "!5 = !DILocation(line: 4294967296, column: 1, scope: !1)",
@@ -313,6 +314,25 @@ const BYTE_PATH_SPELLINGS: &[&str] = &[
     "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !{!3})",
     "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: \"x\")",
     "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: 5)",
+    // Tuple elements (the respelling also puts a blank after each `!{`).
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !10)\n!10 = !{!3, null, !3}",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !10)\n!10 = !{!3,  null}",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !10)\n!10 = !{!3,null}",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !10)\n!10 = !{!3 , null}",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !10)\n!10 = !{!3,}",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !10)\n!10 = !{!3, }",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !10)\n!10 = !{!3, ; c\n null}",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !10)\n!10 = !{!3, !99}",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !10)\n!10 = !{!3, !4294967296}",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !10)\n!10 = !{!3, !3x}",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !10)\n!10 = !{!3, nullx}",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !10)\n!10 = !{!3, ! 3}",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !10)\n!10 = !{!3, i32 7}",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !10)\n!10 = !{!3, !\"s\", !{!3}}",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !10)\n!10 = !{!0, !11}\n!11 = !{!3, null}",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !{!3,  null, !3})",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !{!3, !99})",
+    "!5 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !10, size: 64)\n!10 = !{!3, !3, null}",
 ];
 
 #[test]
@@ -341,7 +361,7 @@ fn byte_path_spellings_are_judged_as_the_tokens_judge_them() {
             "{}define void @f() !dbg !1 {{\n  ret void, !dbg {used}\n}}\n{prelude}!6 = {retained}\n{case}\n",
             header(Arch::Aarch64, 22)
         );
-        let other = respelled(text.as_bytes(), true);
+        let other = respelled(text.replace("!{", "!{ ").as_bytes(), true);
         assert_ne!(other, text.as_bytes(), "{case}");
         match (read(text.as_bytes()), read(&other)) {
             (Ok((module, bodies, unsupported)), Ok((other, other_bodies, refused))) => {
@@ -355,7 +375,7 @@ fn byte_path_spellings_are_judged_as_the_tokens_judge_them() {
                 failed_both += 1;
                 let what = (error.kind, error.message.as_str(), error.line);
                 assert_eq!(what, (again.kind, again.message.as_str(), again.line), "{case}");
-                assert!(again.column.abs_diff(error.column) <= 1, "{case}: {error} / {again}");
+                assert!(again.column.abs_diff(error.column) <= 3, "{case}: {error} / {again}");
             }
             (one, other) => panic!("{case}: {:?} against {:?}", one.err(), other.err()),
         }

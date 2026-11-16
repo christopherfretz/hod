@@ -28,7 +28,7 @@ refusal table of `spec/codegen-x86.md` §7) belong to WP-293's owner of
 | `int.rs` | **I7** | wide integers (`i64` in two registers or memory) | — | new; `target.rs` arms for `Mem`-class integers | `x86:i64` |
 | `pic.rs` | **I8** | GOT, `R_386_GOTPC`/`GOTOFF`/`GOT32X`, PLT calls from PIC | — | `check_static` (becomes the access choice) | `x86:pic` |
 | `tls.rs` | **I8** | `%gs` TLS models | — | `address` | `x86:tls` |
-| `x87.rs` | **I9** | floating point on the x87 stack | — | new; `target.rs` arms | `x86:float` |
+| `x87.rs` | **I9** (WP-300) | `float`/`double`/`x86_fp80` on the x87 stack, compares, casts, libm calls, the 80-bit copies of a run (`spec/codegen-x86.md` §8); `FnState::x87` | I6 (float arguments and results), I7 (`x86:float:i64-cast`), I12 (SSE), any package lowering a call-like or branching instruction (`barrier`) | `target.rs` arms, `materialize_mem`, `barrier` | `x86:float` but for arguments and results |
 | `hod_asm` (32-bit) | **I13** | inline assembly in 32-bit mode | — | `call::lower`'s asm arm | `x86:inline-asm` |
 
 Outside the crate, `hod_cg` refuses `x86:debug-info` (`emit/mod.rs`,

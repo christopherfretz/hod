@@ -1,5 +1,5 @@
 //! Floating point on the x87 stack: design 0008's I9 (WP-300,
-//! `spec/codegen-x86.md` §9).
+//! `spec/codegen-x86.md` "Floating point on the x87").
 //!
 //! `float`, `double` and `x86_fp80` are class `Mem`: a frame slot of the
 //! type's size (4, 8, 12 bytes; 10 of them the `x86_fp80` image). Loads,
@@ -28,7 +28,7 @@
 //! the run loads the 80-bit copy, every other use the home. The x87
 //! stack is empty between instructions. Where `llc`'s allocator rounds
 //! a use of a run (more live values than registers) hod keeps the 80
-//! bits (`spec/codegen-x86.md` §9).
+//! bits (the spec's "The divergence").
 
 use hod_cg::sym::{FpOp, FpType, fp_routine};
 use hod_cg::{CallTarget, CgError, CgResult, FnCx, FrameRef, RuntimeFn, SymRef};

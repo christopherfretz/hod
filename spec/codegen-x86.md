@@ -109,7 +109,12 @@ their values).
 | name | what | removed by |
 |---|---|---|
 | `x86:i64` | an integer wider than 32 bits anywhere (value, argument, result, index, `switch`) | I7 (`int.rs`) |
-| `x86:float` | a floating-point value, `fcmp`, `fneg` | I9 (`x87.rs`) |
+| `x86:float` | a floating-point argument or result of a call or a function (§8) | I6 (`abi.rs`) |
+| `x86:float:half`, `x86:float:bfloat`, `x86:float:fp128` | a value of those types | — |
+| `x86:float:sse` | a `float` operation with SSE, a `double` one with SSE2 (`llc` uses `xmm`) | I12 |
+| `x86:float:i64-cast` | a conversion between a floating type and an integer wider than 32 bits | I7 with I9 |
+| `x86:float:intrinsic` | a floating-point intrinsic of §8 not lowered (`double` `minnum`/`maxnum`, any other) | — |
+| `x86:float:cast` | a `bitcast` of a floating value, another cast not in §8 | — |
 | `x86:vector` | a vector value, a vector `ptradd`, the element operations | I12 |
 | `x86:aggregate` | an aggregate value, `extractvalue`, `insertvalue`, a result in memory | I11 |
 | `x86:pic` | a relocation model other than static | I8 (`pic.rs`) |
@@ -135,3 +140,104 @@ their values).
 A nonzero `NumRegisterParameters` module flag stays refused by the front
 half. A test does not name the first refusal of a program with several
 constructs.
+
+## 8. Floating point on the x87 (`x87`, WP-300, design 0008 I9)
+
+**Types and homes.** `float`, `double` and `x86_fp80` are class `Mem`:
+a home in the frame of 4, 8 or 12 bytes (`x86_fp80`'s image is the low
+10). A function whose CPU has SSE (`float`) or SSE2 (`double`) is
+refused `x86:float:sse` (`llc` computes in `xmm`); the CPU is the
+function's `target-cpu`/`target-features` (`generic` without them).
+Loads, stores, `phi`s and a `select` without `fcmov` copy the encoding
+with integer moves (bit exact). A constant is written by `mov`
+immediates of its encoding (no constant pool, no relocation). An
+operation pushes its operands (`fld` at their width), operates
+(`faddp`/`fsubp`/`fmulp`/`fdivp st1`, `fchs`, `fabs`, `fsqrt`) and pops
+the result to its home at its type's width (`fstp`), where it rounds.
+The x87 stack is empty between instructions. `fneg`/`fabs` of a value
+without an 80-bit copy flip/clear the sign byte in memory; `copysign`
+copies the sign byte; `fmuladd` is `fmul` then `fadd` without rounding
+between (no FMA).
+
+**Excess precision: `llc`'s rule.** Measured with `llc` 19 and 22 at
+`-O0 -global-isel=0 -fast-isel=0`, `float` and `double`, `generic` and
+`pentiumpro` (the shapes of `crates/hod/tests/i386_x87.rs`): a computed
+result stays in an x87 register at 80 bits for every use in its block
+before the next instruction that ends the registers' life, in any
+number, order and distance; a use after one, or in another block, reads
+it rounded to its type (`llc`'s fast allocator spills it).
+The instructions that end it (*barriers*): the terminator; a call; an
+`llvm.memcpy`/`memmove` of more than 32 or a variable number of bytes
+and an `llvm.memset` of more than 64 (shorter ones are written inline);
+`frem` and the libm intrinsics (calls); an integer division wider than
+32 bits (`__divdi3` and kin); without `cmov`, a `select` on a variable
+condition unless its type is `i1` or it chooses between two integer
+constants (`llc` branches: the block splits). `llc` branches without
+`cmov` also for integer `smin`/`smax`/`umin`/`umax`, `ctlz`/`cttz` and
+the saturating additions and subtractions (measured); `hod_x86` refuses
+those intrinsics today, and the package that lowers them adds them to
+the barriers (`x87::barrier`). `freeze`, `fpext`,
+`fptrunc (fpext x)` back to `x`'s type in one block, a `select` of a
+constant condition and, with `cmov`, a `select` (`fcmov`) pass the 80
+bits on; `fptrunc` otherwise rounds. A result that `llc`'s DAG folds to
+a constant (an operation of `fadd`..`frem`, `fneg`, casts, integer
+arithmetic, `select`, `fabs`, `copysign`, `floor`, `ceil`, `trunc`,
+`minnum`, `maxnum`, `fma`, `fmuladd` whose operands are constants or
+such results of its block, eight levels deep) has its type's precision,
+and a folded `frem` or intrinsic is no barrier. `sqrt`, `rint`,
+`round`, `nearbyint`, `roundeven` and the other libm routines are not
+folded.
+
+**hod's rule.** A *run* is the instructions after a computed `float` or
+`double` result up to the next barrier. A computed result (arithmetic,
+casts to a floating type, `sqrt`, `fmuladd`, a libm call's `st0`, an
+`fcmov`, and `freeze`/`fneg`/`fabs`/`select` of a constant condition
+of an operand read through its 80-bit copy) that is not folded and has
+an instruction of its run after it is stored twice: `fld st0`, `fstp
+tbyte` into a 12-byte frame slot (its *80-bit copy*), then `fstp` to its
+home. Every use in the run loads the copy (`fld tbyte`), every other
+use the home. Copy slots are reused from one run to the next.
+`x86_fp80` has no copy (its home is 80 bits).
+
+**The divergence.** With six or more products live at once in one
+block without a barrier, `llc` rounds some uses (which ones follows its
+fast allocator: the first product, and the first and last ones in
+FIFO order or the middle ones in LIFO order), so its result is not a
+function of the IR; hod keeps all of them at 80 bits. The shapes
+`many6_lifo`, `many7_*`, `many8_*`, `many9_*`, `many12_*` compare with a
+model of hod's rule (the same arithmetic at `x86_fp80`, rounded at the
+store) instead of `llc`; `many6_fifo` equals `llc`. A folded result is
+computed by hod at run time and rounded from 80 bits to its type, where
+`llc`'s DAG rounds once: equal for `float` (64 bits of significand are
+at least 2 x 24 + 2), possibly one unit in the last place apart for a
+folded `double` `fadd`, `fsub`, `fmul`, `fdiv`, `fma` (not measured
+apart; no shape has such operands).
+
+**Compares.** `fcmp` puts the operands as the predicate needs (`olt`,
+`ole`, `ugt`, `uge` swapped) and compares `st0` with `st1`: with `cmov`
+`fucomip st1` and `fstp st0`; without, `fucompp`, `fnstsw ax`, `sahf`.
+Unordered sets `ZF`, `PF`, `CF`: `oeq` is `sete` and `setnp`, `une`
+`setne` or `setp`, `one` `setne`, `ord`/`uno` `setnp`/`setp`, the others
+one `setcc` of the unsigned family. `true`/`false` are `cmp eax, eax`
+and `sete`/`setne`. A compare of a value with itself is `fld st0`.
+
+**Select.** A constant condition picks its operand. With `cmov` (a
+scalar `i1` condition): false value in `st1`, true in `st0`, `test al,
+1`, `fcmove st1`, `fstp st1`. Without: a branch and a copy of the
+encoding.
+
+**Conversions.** `sitofp`/`uitofp` from at most 32 bits: the integer
+extended in `ecx`, stored below `esp`, `fild` of 32 bits (of 64 with a
+zero high half for an unsigned `i32`). `fptosi`/`fptoui` to at most 32
+bits: `fnstcw`, the word `or 0xC00` (truncate), `fldcw`, `fistp` of 32
+bits (64 for an unsigned `i32`), `fldcw` of the saved word. An integer
+wider than 32 bits is `x86:float:i64-cast`.
+
+**libm.** `frem` is `fmodf`/`fmod`/`fmodl`; `sin`, `cos`, `tan`, `asin`,
+`acos`, `atan`, `atan2`, `sinh`, `cosh`, `tanh`, `exp`, `exp2`, `exp10`,
+`log`, `log2`, `log10`, `pow`, `floor`, `ceil`, `trunc`, `round`,
+`roundeven`, `nearbyint`, `rint`, `fma` call `llc`'s symbols (`sinf`,
+`sin`, `sinl`, ...); `minnum`/`maxnum` call `fminf`/`fmaxf` and
+`fminl`/`fmaxl` (`double` is refused `x86:float:intrinsic`: `hod_cg` has
+no `fmin`/`fmax` routine yet). Arguments are copied to the outgoing area
+at their width (12 bytes for `x86_fp80`), the result is `st0`.

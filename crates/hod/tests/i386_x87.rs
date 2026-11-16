@@ -1,5 +1,5 @@
 //! WP-300, design 0008 I9: x87 floating point on `i686-unknown-linux-gnu`
-//! (`spec/codegen-x86.md` §9). Programs are compiled by `llc` 19 and 22
+//! (`spec/codegen-x86.md` "Floating point on the x87"). Programs are compiled by `llc` 19 and 22
 //! (`-O0 -global-isel=0 -fast-isel=0`), by hod, and by `hod_x86` under
 //! `hod_cg::Stress::ALL`, linked by GNU ld with the cross C library and
 //! `-lm`, and run under `qemu-i386`: the outputs are equal bit for bit,
@@ -15,9 +15,9 @@
 //! - the sixteen `fcmp` predicates (a module written here: C cannot
 //!   spell most) over signed zeros, infinities, NaNs with payloads,
 //!   subnormals, used by `zext`, an integer `select`, `br` and a floating
-//!   `select`, also of an `fneg` result left on the stack.
-//! - `shapes-{float,double}.ll`: where a result stays at 80 bits (§9's
-//!   run rule: calls, inline and called `memcpy`/`memset`, `select`s
+//!   `select`, also of an `fneg` result read through its 80-bit copy.
+//! - `shapes-{float,double}.ll`: where a result stays at 80 bits (the
+//!   spec's run rule: calls, inline and called `memcpy`/`memset`, `select`s
 //!   that `llc` branches for, blocks, non-LIFO and far uses, the operations
 //!   that pass 80 bits on). Every shape runs as `llc`'s but the `many*`
 //!   ones, where `llc`'s allocator decides ([`divergent`]): those are
@@ -268,7 +268,7 @@ const SHAPES: [&str; 45] = [
 ];
 
 /// The shapes where `llc`'s own result depends on its register
-/// allocator, not on the IR (§9): six to twelve products live at once in
+/// allocator, not on the IR (the spec's "The divergence"): six to twelve products live at once in
 /// one block without a call. `llc` 19 and 22 keep some of them in x87
 /// registers (80 bits) and spill others rounded to their type (which
 /// ones follows its fast allocator's choices: measured, the first

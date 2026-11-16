@@ -29,6 +29,7 @@ pub mod int;
 pub mod mem;
 pub mod pic;
 pub mod reg;
+pub mod ssp;
 pub mod target;
 pub mod tls;
 pub mod va;

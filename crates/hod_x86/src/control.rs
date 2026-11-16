@@ -117,7 +117,7 @@ pub fn ret(cx: &mut FnCx<'_, X86>, inst: Inst<'_>, value: Option<Value>) -> CgRe
             return if cx.ret_falls_through() { Ok(()) } else { branch(cx, cx.epilogue()) };
         }
         // A result of the run returns at 80 bits (`x87::ret_copy`).
-        crate::x87::ret_copy(cx, inst, value, true);
+        crate::x87::ret_copy(cx, inst, value, !crate::ssp::checks_at_return(cx));
         let placed = cx.place_return(value);
         crate::x87::ret_copy(cx, inst, value, false);
         placed?;

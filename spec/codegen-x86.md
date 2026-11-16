@@ -197,7 +197,6 @@ their values).
 | `x86:intrinsic` | any other intrinsic (the integer intrinsics of §4.1 and §8 are lowered; the overflow and small intrinsics of §13 and `eh.typeid.for` (§14) are lowered; still refused: every intrinsic none of them names) | per family |
 | `x86:call` | a call with operand bundles, `callbr` | — |
 | `x86:blockaddress` | a `blockaddress` of another function's block in code (§15; `x86:indirect-branch` removed by WP-324) | — |
-| `x86:stack-protector` | a function with a stack guard | — |
 | `x86:addrspacecast`, `x86:int-cast` | those casts | — |
 | `x86:constant` | a constant expression or other constant reaching a register | — |
 | `x86:funclet` | a funclet pad | — |
@@ -958,3 +957,67 @@ interpreter with a static table of label addresses, one built at run
 time, a label address selected and compared; `-march=i586` and the
 default CPU, static and PIE, GNU ld, lld and mold, `llc` 19 and 22, also
 under `Stress::ALL`).
+
+## 16. Stack protectors (`ssp`, WP-324)
+
+`ssp`, `sspstrong` and `sspreq` follow `spec/codegen.md` §5.6.24 rules 1
+to 4 and 7 unchanged (which functions, which slots move into the guarded
+block and in which order, the block at the top of the local area, the low
+guard at `Local(0)` with a dynamic area, the check at every exit
+sequence: the epilogue and every `musttail` exit; none at `unreachable`,
+a `noreturn` call or `resume`). The i386 parts:
+
+- **The guard value** is `gs:[0x14]` (glibc's TCB `stack_guard`), what
+  `llc` 19 and 22 read for `i686-*-linux-gnu` in the static, PIC and PIE
+  models alike. The guard word is the block's 8 bytes
+  (`hod_cg::GUARD_BYTES`); the value is in its first 4, right after the
+  top slot. The module flags `stack-protector-guard*` are refused by the
+  front half (`module-flag:<name>`, as on the other targets); `safestack`
+  stays refused (`attr:safestack`).
+- **Entry code** (scratch `ecx`, `edx`): `mov ecx, gs:[0x14]` · `lea edx,
+  [ebp + block]` (a local access whose displacement `end_function`
+  writes before the bias) · `mov [edx + guard], ecx` · (`mov [low],
+  ecx`) · per slot of the block `lea ecx, [edx + k]` · `mov [pointer],
+  ecx`.
+- **The check**: `mov ecx, [guard]` · `cmp ecx, gs:[0x14]` · `jne fail`
+  (and the same for the low guard). At a `musttail` exit `ecx` may hold
+  an argument (`fastcc`, `inreg`): there the load and compare are
+  bracketed by `push ecx` · `pop ecx` (`pop` keeps the flags). The result
+  registers (`eax`, `edx`, `st0`) are not touched.
+- **The failure call** follows the last exit, under the body's CFA rule:
+  `call __stack_chk_fail` through `pic::emit_call` (`R_386_PLT32`; under
+  PIC with the GOT pointer in `ebx` first). `llc` 19 and 22 call
+  `__stack_chk_fail@PLT` in the static, PIC and PIE models; they never
+  call `__stack_chk_fail_local`.
+- **x87**: `llc` checks the guard in a block of its own (`SP_return`)
+  before the `ret`, so a `float`/`double` result live into the return
+  is stored at its type before the check and reloaded: a function `llc`
+  protects returns its result rounded to its type, never the 80-bit copy
+  of §11 (`control::ret` passes `!ssp::checks_at_return` to
+  `x87::ret_copy`). Measured with `llc` 19 and 22 at `-O0`, CPU
+  `generic` and `i686`, on a `float` product computed after a call and
+  one computed before it (both are `fstps` · check · `flds` · `ret`).
+  hod protects a superset of `llc`'s functions and its own check does not
+  touch the x87 stack, so the rounding follows `llc`'s choice as far as
+  hod sees it without slot types: `sspreq`; a dynamic area; under
+  `sspstrong` an escaping slot; under `ssp` an escaping slot of at least
+  8 bytes (clang's default `"stack-protector-buffer-size"`). Where that
+  guess differs from `llc` (a struct local reached only through constant
+  field offsets under `sspstrong`, an escaping non-character array of 8
+  bytes or more under `ssp`) a `float`/`double` result live into the
+  return is rounded by hod and not by `llc`. The check is no barrier
+  elsewhere: nothing else is live across it.
+- A struct result's hidden pointer is an incoming stack argument, above
+  the guard, and hod reads it there at the return (`spec/abi-x86.md`
+  §5.2) where `llc` keeps a copy below the guard: an overflow that
+  reaches it makes hod's store of the result fault before the check, as
+  any use of an overwritten incoming argument does (both are undefined
+  behaviour; the stack is not returned through).
+
+Evidence: `tests/i386_ssp.rs`: `ssp/smash.c` with `-fstack-protector`,
+`-strong` and `-all` and `ssp/tail.ll` run as `llc`'s (output and status;
+`-march=i586` and the default CPU, static and PIE, GNU ld, lld and mold,
+`llc` 19 and 22, also under `Stress::ALL`); with `-DOVERFLOW=1..5` (one
+buffer, several slots, the low guard, an `i64` result, a `float` result)
+every build aborts with `*** stack smashing detected ***` and SIGABRT,
+as `llc`'s.

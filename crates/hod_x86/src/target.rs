@@ -32,8 +32,6 @@ pub const VECTOR: &str = "x86:vector";
 pub const AGGREGATE: &str = "x86:aggregate";
 /// A funclet pad (Windows exception handling).
 pub const FUNCLET: &str = "x86:funclet";
-/// A function with a stack protector: hod has no i386 guard.
-pub const STACK_PROTECTOR: &str = "x86:stack-protector";
 
 /// The i686 Linux target (i386 System V psABI, every relocation model).
 /// `cpu` is the command line's `-mcpu`, the CPU of a function without a
@@ -74,6 +72,8 @@ pub struct FnState {
     pub frame: frame::FrameState,
     /// The 80-bit copies of `float`/`double` results (I9).
     pub x87: crate::x87::Copies,
+    /// The stack guard (WP-324).
+    pub ssp: crate::ssp::GuardState,
 }
 
 /// The registers: pool and holdable `ebx`, `esi`, `edi` (and `xmm0`..
@@ -399,8 +399,8 @@ impl Target for X86 {
         crate::dynstack::dynamic_slot(cx, ptr, size, align)
     }
 
-    fn enter_guard(&self, _cx: &mut FnCx<'_, Self>) -> CgResult<()> {
-        unsupported(STACK_PROTECTOR)
+    fn enter_guard(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()> {
+        crate::ssp::enter(cx)
     }
 
     fn patch_branch(code: &mut [u8], at: u32, kind: FixupKind, displacement: i64) -> bool {

@@ -150,6 +150,7 @@ impl Target for X86 {
 
     fn begin_function(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()> {
         crate::pic::check(cx)?;
+        crate::dynstack::check(cx)?;
         frame::begin(cx)
     }
 
@@ -174,6 +175,15 @@ impl Target for X86 {
         }
         let gpr = abi::is_gpr(cx.types(), inst.ty());
         match inst.kind() {
+            InstKind::Load { ptr, mem } if mem.ordering().is_some() => {
+                crate::atomic::load(cx, inst, ptr, mem)
+            }
+            InstKind::Store { value, ptr, mem } if mem.ordering().is_some() => {
+                crate::atomic::store(cx, inst, value, ptr, mem)
+            }
+            InstKind::ExtractValue { agg, offset } if crate::atomic::is_cmpxchg_result(cx, agg) => {
+                crate::atomic::extract(cx, inst, agg, offset)
+            }
             _ if crate::x87::owns(cx, inst) => crate::x87::lower(cx, inst),
             InstKind::Binary { lhs, rhs } if gpr => alu::binary(cx, inst, lhs, rhs),
             InstKind::Binary { lhs, rhs } if int::is_wide(cx, inst.result()) => {
@@ -222,7 +232,9 @@ impl Target for X86 {
                     refuse(cx, ty)
                 }
             }
-            InstKind::Alloca { .. } => unsupported(frame::DYNAMIC_ALLOCA),
+            InstKind::Alloca { count, elem_size, align } => {
+                crate::dynstack::alloca(cx, inst, count, elem_size, align)
+            }
             InstKind::PtrAdd(add) => mem::ptr_add(cx, inst, &add),
             InstKind::ExtractValue { .. } | InstKind::InsertValue { .. } => unsupported(AGGREGATE),
             InstKind::Select { cond, if_true, if_false } if gpr => {
@@ -234,7 +246,7 @@ impl Target for X86 {
             | InstKind::Load { .. }
             | InstKind::Select { .. } => refuse(cx, inst.ty()),
             InstKind::Call(site) => call::lower(cx, inst, &site),
-            InstKind::VaArg { .. } => unsupported(call::VARARGS),
+            InstKind::VaArg { list } => crate::va::va_arg(cx, inst, list),
             InstKind::LandingPad(_) | InstKind::Resume { .. } => unsupported(call::EH),
             InstKind::Br { target } => control::br(cx, target),
             InstKind::CondBr { cond, if_true, if_false } => {
@@ -245,7 +257,7 @@ impl Target for X86 {
             InstKind::Ret { value } => control::ret(cx, inst, value),
             InstKind::Unreachable => control::unreachable(cx),
             InstKind::Fence { .. } | InstKind::CmpXchg { .. } | InstKind::AtomicRmw { .. } => {
-                unsupported(mem::ATOMIC)
+                crate::atomic::lower(cx, inst)
             }
             InstKind::ExtractElement { .. }
             | InstKind::InsertElement { .. }
@@ -349,7 +361,7 @@ impl Target for X86 {
         size: u64,
         align: u64,
     ) -> CgResult<()> {
-        frame::dynamic_slot(cx, ptr, size, align)
+        crate::dynstack::dynamic_slot(cx, ptr, size, align)
     }
 
     fn enter_guard(&self, _cx: &mut FnCx<'_, Self>) -> CgResult<()> {

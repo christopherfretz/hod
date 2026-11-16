@@ -85,9 +85,11 @@ pub fn lower<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, site: &CallSite<'a>) ->
             | Intrinsic::Memset
             | Intrinsic::MemsetInline),
         ) => crate::bytes::intrinsic(cx, inst, which, site.args()),
-        Some(Intrinsic::VaStart | Intrinsic::VaEnd | Intrinsic::VaCopy) => unsupported(VARARGS),
-        Some(Intrinsic::StackSave | Intrinsic::StackRestore) => {
-            unsupported(crate::frame::DYNAMIC_ALLOCA)
+        Some(which @ (Intrinsic::VaStart | Intrinsic::VaEnd | Intrinsic::VaCopy)) => {
+            crate::va::intrinsic(cx, inst, which, site.args())
+        }
+        Some(which @ (Intrinsic::StackSave | Intrinsic::StackRestore)) => {
+            crate::dynstack::intrinsic(cx, inst, which, site.args())
         }
         Some(which @ (Intrinsic::ThreadLocalAddress | Intrinsic::ThreadPointer)) => {
             crate::tls::intrinsic(cx, inst, which, site.args())

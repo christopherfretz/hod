@@ -329,6 +329,7 @@ fn barrier(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
                 && !constants
                 && !features(cx).has(X86Features::CMOV)
         }
+        InstKind::AtomicRmw { op, .. } => crate::atomic::barrier(cx, inst, op),
         _ => false,
     }
 }

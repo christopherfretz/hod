@@ -179,7 +179,11 @@ their values).
 | `x86:eh` | `invoke`, `landingpad`, `resume`; a call that may unwind in a function that may unwind (no unwind tables) | I10 |
 | `x86:debug-info` | a module with debug information (`hod_cg`'s emitter) | I10 |
 | `x86:cf-protection` | `cf-protection-*` module flags (`hod_cg`'s `.note.gnu.property`) | — |
-| `x86:atomic` | an ordered load or store, `fence`, `cmpxchg`, `atomicrmw` | I11 |
+| `x86:atomic:no-cx8` | an 8-byte atomic operation on a CPU without `cmpxchg8b` (§12.2) | — |
+| `x86:atomic:libatomic` | an atomic access of another size than 1, 2, 4, 8 bytes or below its natural alignment (§12.2) | — |
+| `x86:atomic:float-op` | `atomicrmw` `fadd`, `fsub`, `fmax`, `fmin` and the other floating operations (§12.2) | — |
+| `x86:atomic:op` | `atomicrmw` `uinc_wrap`, `udec_wrap`, `usub_cond`, `usub_sat` | — |
+| `x86:atomic:type` | an atomic value of another type (`x86_fp80`, vectors) | — |
 | `x86:inline-asm:<detail>` | what inline assembly does not take (§10, `spec/asm.md` §22.5) | I13 (`asm.rs`) |
 | `x86:abi:cc` | a calling convention other than C, `coldcc` and `fastcc`; `fastcc` with a floating-point argument or result, an `sret` or a result in memory (`spec/abi-x86.md` §1.2) | — (`fastcc` floating point: I12) |
 | `x86:abi:attr` | the Swift attributes, `inalloca`, `preallocated`, `alignstack`; `sret` other than on the first parameter or on a non-pointer; `inreg` on a floating-point or aggregate argument or in a variadic signature; `byval` above alignment 16 or with `inreg`; `nest` twice or on a taken register (`spec/abi-x86.md` §6.6) | — |
@@ -187,8 +191,9 @@ their values).
 | `x86:abi:x87-pair` | a result with two floating-point leaves (`st0`, `st1`) | I9 |
 | `x86:abi:indirect-edx` | an indirect call with an argument in `edx`, which holds the callee's address (`spec/abi-x86.md` §8.1) | — |
 | `x86:abi:musttail` | a `musttail` call with stack arguments and an argument in `ecx`; under PIC, one to another module's function with `eax`, `ecx` and `edx` all holding arguments (`spec/abi-x86.md` §8.5) | — |
-| `x86:varargs` | `va_start`, `va_copy`, `va_end`, `va_arg` | I11 |
-| `x86:dynamic-alloca` | a dynamic `alloca`, an over-aligned slot, `llvm.stacksave`/`stackrestore` | I11 |
+| `x86:varargs` | `va_start` outside a variadic function (§12.1) | — |
+| `x86:varargs:va-arg-type` | `va_arg` of an aggregate, a vector, an integer wider than 64 bits (§12.1) | — |
+| `x86:probe-stack` | a function with `"probe-stack"="inline-asm"` (§12.3) | — |
 | `x86:intrinsic` | any other intrinsic (the integer intrinsics of §4.1 and §8 are lowered; still refused: the `*.with.overflow` family, `eh.typeid.for`, `frameaddress`, `returnaddress`, `ubsantrap`, `ptrmask`, `is.constant`, `objectsize`, `clear_cache`, `readcyclecounter`, ...) | per family |
 | `x86:call` | a call with operand bundles, `callbr` | — |
 | `x86:blockaddress`, `x86:indirect-branch` | `blockaddress`, `indirectbr` | — |
@@ -636,3 +641,98 @@ of range). A conversion between a floating type and an integer of 33 to
 their width (12 bytes for `x86_fp80`), the result is `st0`. Under PIC
 the call goes through `pic::emit_call` (`ebx` holds the GOT pointer at
 the PLT call, §9.2), as every call does.
+
+## 12. Varargs, atomics, dynamic stack (`va`, `atomic`, `dynstack`; WP-316, design 0008 I11b)
+
+The oracle is `llc` 19 and 22 at `-O0 -global-isel=0 -fast-isel=0`;
+behaviour is compared by running (`crates/hod/tests/i386_va.rs`,
+`i386_atomic.rs`, `i386_dynstack.rs`).
+
+### 12.1 Variadic function bodies (`va`)
+
+A `va_list` is one pointer into the caller's stack arguments
+(`spec/abi-x86.md` §9.2). `llvm.va_start` stores the address of the
+first variable argument (`Incoming(VaInfo::stack_offset)`);
+`llvm.va_copy` copies the pointer; `llvm.va_end` emits nothing. The IR
+`va_arg` instruction is lowered as `llc` expands it
+(`TargetLowering::expandVAArg`): the pointer rounded up to the type's
+i386 ABI alignment, the value read there, the pointer advanced by the
+allocation size (`i8` 1 at 1, `i16` 2 at 2, `i32`/`ptr`/`float` 4 at
+4, `i33` to `i64` and `double` 8 at 4, `x86_fp80` 12 at 4). The IR
+`va_arg` instruction stays refused on every target by the shared
+classifier (`inst:va_arg`: the front ends expand `va_arg` themselves),
+so the facade never reaches this lowering; it is tested through
+`hod_x86` directly. Refused: `x86:varargs` (`va_start` outside a
+variadic function), `x86:varargs:va-arg-type` (an aggregate, a vector,
+an integer wider than 64 bits).
+
+### 12.2 Atomics (`atomic`)
+
+The orderings are TSO's, as `hod_x64`.
+
+- 1, 2, 4 bytes (`i8`, `i16`, `i32`, `ptr`, `float`): a load is `mov`
+  (`movzx` below 4 bytes) at every ordering; a store is `mov`, `xchg`
+  for `seq_cst`. `atomicrmw`: `xchg`; `lock xadd` for `add` and `sub`
+  (the operand negated); every other operation a `lock cmpxchg` loop
+  (old value in `eax`, new one in `ecx`). `cmpxchg`: `lock cmpxchg`, the
+  flag by `sete`; `weak` is the same.
+- 8 bytes (`i64`, `double`, values in two-word slots, §8): a load is
+  `fild qword [p]` · `fistp qword [slot]`, a store `fild qword [slot]` ·
+  `fistp qword [p]` and the fence of `seq_cst` (an aligned 8-byte x87
+  access is single-copy atomic and an `i64` survives the round trip
+  exactly). **Deviation:** with SSE2 `llc` uses `movq`; hod keeps the
+  x87 pair on every CPU (same behaviour). `atomicrmw` and `cmpxchg`: a
+  `lock cmpxchg8b` loop (old in `edx:eax`, new in `ecx:ebx`; `ebx` is
+  taken for the sequence, under PIC `pic::emit_call` computes the GOT
+  pointer again before the next PLT call, §9.2).
+- `fence seq_cst`: `mfence` with SSE2, `lock or dword [esp], 0`
+  without (as `llc`); other orderings and `syncscope("singlethread")`:
+  nothing.
+- The result of `cmpxchg` (`{ <ty>, i1 }`) lives in a slot: the value
+  at offset 0 and the flag at `field_offset(ty, 1)`; `extractvalue` of
+  it reads that slot (`atomic::extract`, its own arm in `target.rs`).
+  The general aggregate `extractvalue` must use the same layout.
+
+Refused: `x86:atomic:no-cx8` (an 8-byte operation on `i386`/`i486`,
+which have no `cmpxchg8b`: `llc` calls libatomic's `__atomic_*_8`);
+`x86:atomic:libatomic` (a size other than 1, 2, 4, 8 bytes, or an access
+below its natural alignment: `llc` calls libatomic's generic routines,
+which `hod_cg`'s runtime table does not have with 32-bit `size_t`);
+`x86:atomic:float-op` (`atomicrmw` `fadd`, `fsub`, `fmax`, `fmin` and the
+other floating operations; `llc` writes a `cmpxchg` loop around the x87
+operation, or a call of `fmaxf`/`fmax`/`fminf`/`fmin`, and stores the
+value rounded to the type); `x86:atomic:op` (`uinc_wrap`, `udec_wrap`,
+`usub_cond`, `usub_sat`); `x86:atomic:type` (another type: `x86_fp80`,
+vectors).
+
+### 12.3 Dynamic stack (`dynstack`)
+
+A dynamic `alloca` (a variable count, or outside the entry block) moves
+`esp` down by its size rounded up to 16, then, for an alignment above
+16, rounds `esp` down with `and`; the new `esp` is the address. The
+frame is `ebp`-based (§3), so nothing reads `esp` but the call sequence,
+which reserves its outgoing area below every dynamic area.
+`llvm.stacksave` reads `esp`, `llvm.stackrestore` writes it. **Deviation:**
+an over-aligned static slot (`hod_cg`'s `Target::dynamic_slot`) gets its
+own aligned dynamic area in the entry code where `llc` realigns the
+whole frame (`and esp, -align` in the prologue); it runs the same. No
+call is made (`llc` calls nothing either). Refused: `x86:probe-stack` (a
+function with `"probe-stack"="inline-asm"`: `llc` probes the frame page
+by page; other values are the classifier's refusal).
+
+### 12.4 Barriers (§11)
+
+Measured in the `-O0` assembly of `llc` 19 and 22 at CPU `generic` and
+`i686` (a label inside the function of one construct): an `atomicrmw`
+that `llc` writes as a loop is a barrier (`atomic::barrier`, from
+`x87::barrier`): every 8-byte one; at 1, 2, 4 bytes every operation but
+`xchg`, `add`, `sub`, and but `and`, `or`, `xor` whose result is unused
+(`llc` writes `lock and`/`or`/`xor`, no loop; hod's own loop for them
+does not end the run); the floating operations. No barrier, no branch
+and no call: `cmpxchg` (strong and weak, 8 bytes included), fences,
+ordered loads and stores (8 bytes included), `va_start`, `va_copy`,
+`va_end`, `va_arg`, a dynamic `alloca` (any alignment),
+`llvm.stacksave`, `llvm.stackrestore`. The shapes (one construct between
+an x87 result and its use, `float` and `double`, `generic` and
+`pentiumpro`, plain and under `Stress::ALL`) are in
+`crates/hod/tests/i386_atomic.rs`.

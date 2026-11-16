@@ -22,7 +22,7 @@ pub use conventions::{
 use crate::error::{Error, Limit, SymbolProblem, WriteError};
 use crate::model::{
     Binding, GroupKind, Machine, NONE, Object, RelocEntry, SectionData, SectionId, SectionKind,
-    StackNote, Symbol, SymbolId, SymbolKind, SymbolPlace, Visibility,
+    StackNote, StrId, Symbol, SymbolId, SymbolKind, SymbolPlace, Visibility,
 };
 use crate::reloc::I386Reloc;
 
@@ -135,11 +135,11 @@ const fn form_of(machine: Machine) -> Form {
     if machine.is_elf32() { ELF32 } else { ELF64 }
 }
 
-/// Offsets of the writer's own names at the start of `.shstrtab`.
-const SHSTRTAB_HEAD: &[u8] = b"\0.symtab\0.strtab\0.shstrtab\0";
+/// Offsets of the writer's own names at the start of `.strtab`, which
+/// holds the section names as well as the symbol names.
+const STRTAB_HEAD: &[u8] = b"\0.symtab\0.strtab\0";
 const NAME_SYMTAB: u32 = 1;
 const NAME_STRTAB: u32 = 9;
-const NAME_SHSTRTAB: u32 = 17;
 
 /// Rejects a section kind the writer cannot honor.
 pub(crate) fn check_kind(kind: SectionKind) -> Result<(), Error> {
@@ -238,7 +238,7 @@ struct SymbolPlan {
     uses_gnu_abi: bool,
 }
 
-/// The section name string table.
+/// The string table's first part: the section names.
 #[derive(Debug)]
 struct NamePlan {
     /// The names the writer adds, before the sections' own.
@@ -246,8 +246,22 @@ struct NamePlan {
     shndx: u32,
     group: u32,
     stack: u32,
-    /// Offset in `.shstrtab` of each distinct section name.
+    /// Offset in `.strtab` of each distinct section name.
     offsets: Vec<u32>,
+    /// Bytes of the section names, with the head: where the symbol names
+    /// start.
+    size: u64,
+}
+
+/// The string table's second part: the symbol names that are not the tail
+/// of their section's name.
+#[derive(Debug)]
+struct StringPlan {
+    /// `st_name` of each symbol, by id (zero for an omitted symbol).
+    st_name: Vec<u32>,
+    /// The pieces of the name arena copied into `.strtab`, in order.
+    runs: Vec<Run>,
+    /// Bytes of the whole `.strtab`.
     size: u64,
 }
 
@@ -265,17 +279,16 @@ struct Layout {
     /// ELF index of `.symtab_shndx`, when it is emitted.
     shndx_index: Option<u32>,
     strtab_index: u32,
-    shstrtab_index: u32,
     shnum: u32,
     sections: SectionPlan,
     symbols: SymbolPlan,
     names: NamePlan,
+    strings: StringPlan,
     groups_off: u64,
     relas_off: u64,
     symtab_off: u64,
     shndx_off: u64,
     strtab_off: u64,
-    shstrtab_off: u64,
     shdr_off: u64,
     file_size: u64,
 }
@@ -368,8 +381,9 @@ fn plan_symbols(obj: &Object, first_section: u64) -> Result<SymbolPlan, Error> {
     })
 }
 
-/// Lays out `.shstrtab`: the writer's names, then each distinct section
-/// name once, behind `.rela` when a section of that name has relocations.
+/// Lays out the first part of `.strtab`: the writer's names, then each
+/// distinct section name once, behind `.rela` when a section of that name
+/// has relocations.
 fn plan_names(
     obj: &Object,
     prefix: &[u8],
@@ -377,7 +391,7 @@ fn plan_names(
     need_shndx: bool,
     has_stack: bool,
 ) -> Result<NamePlan, Error> {
-    let mut head = SHSTRTAB_HEAD.to_vec();
+    let mut head = STRTAB_HEAD.to_vec();
     let mut own_name = |wanted: bool, name: &[u8]| {
         if !wanted {
             return 0;
@@ -405,14 +419,70 @@ fn plan_names(
     Ok(NamePlan { head, shndx, group, stack, offsets, size })
 }
 
+/// One piece of the name arena copied into `.strtab`: arena offsets of
+/// the first name and past the last name's NUL.
+#[derive(Clone, Copy, Debug)]
+struct Run {
+    start: u32,
+    end: u32,
+}
+
+/// Lays out the second part of `.strtab`, the symbol names. A written
+/// symbol defined in a caller's section whose name ends with the symbol's
+/// name points into that section name (the tail merging that makes `foo`
+/// share `.text.foo`). Every other name a written symbol uses is copied
+/// once, in the order of the first written symbol (by id) that uses it;
+/// names only omitted symbols use are not. One pass over the symbols, no
+/// search: a name's place is recorded by its `StrId`.
+fn plan_strings(obj: &Object, symbols: &SymbolPlan, names: &NamePlan) -> Result<StringPlan, Error> {
+    let mut st_name = vec![0u32; obj.symbols.len()];
+    // Per `StrId`: its offset in `.strtab` once copied, else 0.
+    let mut placed = vec![0u32; obj.string_count()];
+    let mut runs: Vec<Run> = Vec::new();
+    let mut size = names.size;
+    for ((symbol, &index), slot) in obj.symbols.iter().zip(&symbols.index).zip(&mut st_name) {
+        let id = symbol.name;
+        // The empty name, and the names of omitted symbols (whose ids
+        // were not checked), take no room.
+        if index == 0 || id == StrId::EMPTY {
+            continue;
+        }
+        if let SymbolPlace::Section(section) = symbol.place {
+            let name_id = obj.sections[section.0 as usize].name;
+            let whole = obj.section_names.get(name_id);
+            let name = obj.string(id);
+            if whole.ends_with(name) {
+                // Below `names.size`, which fits 32 bits.
+                *slot = names.offsets[name_id as usize] + (whole.len() - name.len()) as u32;
+                continue;
+            }
+        }
+        let place = &mut placed[id.0 as usize];
+        if *place == 0 {
+            let (start, end) = obj.string_span(id);
+            match runs.last_mut() {
+                Some(run) if run.end == start => run.end = end,
+                _ => runs.push(Run { start, end }),
+            }
+            *place = size as u32;
+            size += u64::from(end - start);
+            if size > u64::from(u32::MAX) {
+                return Err(Error::TooLarge(Limit::StringBytes));
+            }
+        }
+        *slot = *place;
+    }
+    Ok(StringPlan { st_name, runs, size })
+}
+
 impl Layout {
     fn new(obj: &Object) -> Result<Self, Error> {
         if let Some(error) = obj.deferred {
             return Err(error);
         }
         // Section header order: null, groups, sections, the stack note,
-        // relocation sections, `.symtab`, `.symtab_shndx`, `.strtab`,
-        // `.shstrtab`.
+        // relocation sections, `.symtab`, `.symtab_shndx`, `.strtab` (which
+        // is also the section name table).
         let form = form_of(obj.machine);
         let first_section = 1 + obj.groups.len() as u64;
         let has_stack = obj.stack_note != StackNote::Omit;
@@ -421,27 +491,27 @@ impl Layout {
         let sections = plan_sections(obj, form, first_rela)?;
         let symtab_index = first_rela + sections.rela_count;
         let symbols = plan_symbols(obj, first_section)?;
-        let shnum = symtab_index + 3 + u64::from(symbols.need_shndx);
+        let shnum = symtab_index + 2 + u64::from(symbols.need_shndx);
         let Ok(shnum) = u32::try_from(shnum) else {
             return Err(Error::TooLarge(Limit::Sections));
         };
         let names =
             plan_names(obj, form.prefix, &sections.name_has_rela, symbols.need_shndx, has_stack)?;
+        let strings = plan_strings(obj, &symbols, &names)?;
 
         // One word of flags per group, then each member and its relocations.
         let group_words: u64 =
             (0..obj.groups.len()).map(|group| group_len(obj, &sections.rela_index, group)).sum();
 
         // File order after the sections' contents: groups, relocations,
-        // `.symtab`, `.symtab_shndx`, `.strtab`, `.shstrtab`, headers.
+        // `.symtab`, `.symtab_shndx`, `.strtab`, headers.
         let symbol_count = u64::from(symbols.count);
         let groups_off = align_up(sections.end, 4)?;
         let relas_off = align_up(groups_off + 4 * group_words, form.align)?;
         let symtab_off = relas_off + form.reloc * sections.reloc_total;
         let shndx_off = symtab_off + form.sym * symbol_count;
         let strtab_off = shndx_off + if symbols.need_shndx { 4 * symbol_count } else { 0 };
-        let shstrtab_off = strtab_off + obj.strings.len() as u64;
-        let shdr_off = align_up(shstrtab_off + names.size, form.align)?;
+        let shdr_off = align_up(strtab_off + strings.size, form.align)?;
         let file_size = shdr_off + form.shdr * u64::from(shnum);
         if form.elf32 {
             // Every offset and size is below the file's size; `Elf32_Rel`
@@ -459,18 +529,17 @@ impl Layout {
             stack_index: has_stack.then_some(stack_index as u32),
             symtab_index: symtab_index as u32,
             shndx_index: symbols.need_shndx.then_some(symtab_index as u32 + 1),
-            strtab_index: shnum - 2,
-            shstrtab_index: shnum - 1,
+            strtab_index: shnum - 1,
             shnum,
             sections,
             symbols,
             names,
+            strings,
             groups_off,
             relas_off,
             symtab_off,
             shndx_off,
             strtab_off,
-            shstrtab_off,
             shdr_off,
             file_size,
         })
@@ -638,9 +707,8 @@ fn check_section(section: SectionId, sec: &SectionData, form: Form) -> Result<()
 }
 
 fn check_symbol(obj: &Object, symbol: &Symbol) -> Result<(), SymbolProblem> {
-    // A name is the start of a string: offset zero, or just after a NUL.
-    let name = symbol.name.0 as usize;
-    if name != 0 && obj.strings.get(name - 1..=name).is_none_or(|pair| pair[0] != 0) {
+    // A name is one `add_string` issued.
+    if symbol.name.0 as usize >= obj.string_count() {
         return Err(SymbolProblem::UnknownName);
     }
     let in_section = match symbol.place {
@@ -873,7 +941,7 @@ fn file_header32(obj: &Object, layout: &Layout) -> [u8; 52] {
         .u16(0) // e_phnum
         .u16(ELF32.shdr as u16)
         .u16(escaped(layout.shnum, 0))
-        .u16(escaped(layout.shstrtab_index, SHN_XINDEX))
+        .u16(escaped(layout.strtab_index, SHN_XINDEX))
         .done()
 }
 
@@ -907,20 +975,26 @@ fn file_header(obj: &Object, layout: &Layout) -> [u8; 64] {
         .u16(0) // e_phnum
         .u16(ELF64.shdr as u16)
         .u16(escaped(layout.shnum, 0))
-        .u16(escaped(layout.shstrtab_index, SHN_XINDEX))
+        .u16(escaped(layout.strtab_index, SHN_XINDEX))
         .done()
 }
 
 /// Writes one symbol in the object's class.
-fn put_symbol<S: Sink>(layout: &Layout, symbol: &Symbol, out: &mut S) -> Result<(), S::Error> {
+/// Writes one symbol in the object's class; `at` is its id.
+fn put_symbol<S: Sink>(
+    layout: &Layout,
+    at: usize,
+    symbol: &Symbol,
+    out: &mut S,
+) -> Result<(), S::Error> {
     if !layout.form.elf32 {
-        return out.put(&symbol_record(layout, symbol));
+        return out.put(&symbol_record(layout, at, symbol));
     }
     let (info, other) = symbol_info(symbol);
     // `Elf32_Sym`: the value and size come before the other fields;
     // both were checked to fit (`check_elf32_symbols`).
     let record: [u8; 16] = Record::new()
-        .u32(symbol.name.0)
+        .u32(layout.strings.st_name[at])
         .u32(symbol.value as u32)
         .u32(symbol.size as u32)
         .u8(info)
@@ -967,10 +1041,10 @@ fn symbol_info(symbol: &Symbol) -> (u8, u8) {
     (binding << 4 | kind, symbol.other | visibility)
 }
 
-fn symbol_record(layout: &Layout, symbol: &Symbol) -> [u8; 24] {
+fn symbol_record(layout: &Layout, at: usize, symbol: &Symbol) -> [u8; 24] {
     let (info, other) = symbol_info(symbol);
     Record::new()
-        .u32(symbol.name.0)
+        .u32(layout.strings.st_name[at])
         .u8(info)
         .u8(other)
         .u16(layout.shndx(symbol.place).0)
@@ -990,16 +1064,16 @@ fn rela_record(layout: &Layout, entry: &RelocEntry) -> [u8; 24] {
 }
 
 /// Calls `each` for every emitted symbol in `.symtab` order: file symbols,
-/// the other locals, then the rest, each in id order.
+/// the other locals, then the rest, each in id order, with its id.
 fn symbols_in_order<E>(
     obj: &Object,
     layout: &Layout,
-    mut each: impl FnMut(&Symbol) -> Result<(), E>,
+    mut each: impl FnMut(usize, &Symbol) -> Result<(), E>,
 ) -> Result<(), E> {
     for class in CLASSES {
-        for (symbol, &index) in obj.symbols.iter().zip(&layout.symbols.index) {
+        for (at, (symbol, &index)) in obj.symbols.iter().zip(&layout.symbols.index).enumerate() {
             if index != 0 && class_of(symbol) == class {
-                each(symbol)?;
+                each(at, symbol)?;
             }
         }
     }
@@ -1075,20 +1149,19 @@ fn emit<S: Sink>(obj: &Object, layout: &Layout, out: &mut S) -> Result<(), S::Er
         debug_assert!(next == NONE, "model: relocation chain and count disagree");
     }
 
-    // `.symtab`, `.symtab_shndx`, `.strtab`, `.shstrtab`.
+    // `.symtab`, `.symtab_shndx`, `.strtab`: the section names, then the
+    // symbol names.
     debug_assert!(out.position() == layout.symtab_off, "layout: relocation sizes");
     out.put(&[0; 24][..layout.form.sym as usize])?;
-    symbols_in_order(obj, layout, |symbol| put_symbol(layout, symbol, out))?;
+    symbols_in_order(obj, layout, |at, symbol| put_symbol(layout, at, symbol, out))?;
     if layout.shndx_index.is_some() {
         debug_assert!(out.position() == layout.shndx_off, "layout: symbol table size");
         out.put(&[0; 4])?;
-        symbols_in_order(obj, layout, |symbol| {
+        symbols_in_order(obj, layout, |_, symbol| {
             out.put(&layout.shndx(symbol.place).1.to_le_bytes())
         })?;
     }
     debug_assert!(out.position() == layout.strtab_off, "layout: symbol table size");
-    out.put(&obj.strings)?;
-    debug_assert!(out.position() == layout.shstrtab_off, "layout: string table size");
     out.put(&layout.names.head)?;
     for (name, &has_rela) in obj.section_names.iter().zip(&layout.sections.name_has_rela) {
         if has_rela {
@@ -1098,8 +1171,15 @@ fn emit<S: Sink>(obj: &Object, layout: &Layout, out: &mut S) -> Result<(), S::Er
         out.put(&[0])?;
     }
     debug_assert!(
-        out.position() == layout.shstrtab_off + layout.names.size,
-        "layout: section name table size"
+        out.position() == layout.strtab_off + layout.names.size,
+        "layout: section name size"
+    );
+    for run in &layout.strings.runs {
+        out.put(&obj.strings[run.start as usize..run.end as usize])?;
+    }
+    debug_assert!(
+        out.position() == layout.strtab_off + layout.strings.size,
+        "layout: string table size"
     );
 
     out.pad_to(layout.shdr_off)?;
@@ -1118,7 +1198,7 @@ fn emit_section_headers<S: Sink>(
     let escaped = |value: u32| if value >= SHN_LORESERVE { value } else { 0 };
     let null = Shdr {
         size: u64::from(escaped(layout.shnum)),
-        link: escaped(layout.shstrtab_index),
+        link: escaped(layout.strtab_index),
         ..Shdr::default()
     };
     let form = layout.form;
@@ -1199,11 +1279,11 @@ fn emit_section_headers<S: Sink>(
         offset += size;
     }
 
-    emit_table_headers(obj, layout, out)
+    emit_table_headers(layout, out)
 }
 
-/// The headers of `.symtab`, `.symtab_shndx`, `.strtab` and `.shstrtab`.
-fn emit_table_headers<S: Sink>(obj: &Object, layout: &Layout, out: &mut S) -> Result<(), S::Error> {
+/// The headers of `.symtab`, `.symtab_shndx` and `.strtab`.
+fn emit_table_headers<S: Sink>(layout: &Layout, out: &mut S) -> Result<(), S::Error> {
     let form = layout.form;
     let symbol_count = u64::from(layout.symbols.count);
     let symtab = Shdr {
@@ -1235,20 +1315,11 @@ fn emit_table_headers<S: Sink>(obj: &Object, layout: &Layout, out: &mut S) -> Re
         name: NAME_STRTAB,
         kind: SHT_STRTAB,
         offset: layout.strtab_off,
-        size: obj.strings.len() as u64,
+        size: layout.strings.size,
         align: 1,
         ..Shdr::default()
     };
-    strtab.put(form, out)?;
-    let shstrtab = Shdr {
-        name: NAME_SHSTRTAB,
-        kind: SHT_STRTAB,
-        offset: layout.shstrtab_off,
-        size: layout.names.size,
-        align: 1,
-        ..Shdr::default()
-    };
-    shstrtab.put(form, out)
+    strtab.put(form, out)
 }
 
 /// The size in bytes of the file [`write`] and [`to_vec`] produce.

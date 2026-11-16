@@ -96,8 +96,8 @@ pub use symbol::{
 };
 pub use target::{
     AARCH64_LINUX_DATA_LAYOUT, AARCH64_LINUX_DATA_LAYOUT_LLVM19, AlignPair, Arch, DataLayout,
-    FunctionPtrAlignKind, MAX_ADDR_SPACE, Mangling, Os, PointerSpec, PrimSpec, TargetSpec,
-    X86_64_LINUX_DATA_LAYOUT,
+    FunctionPtrAlignKind, I386_LINUX_DATA_LAYOUT, MAX_ADDR_SPACE, Mangling, Os, PointerSpec,
+    PrimSpec, TargetSpec, X86_64_LINUX_DATA_LAYOUT,
 };
 pub use types::{MAX_INT_BITS, MAX_TYPE_SIZE, TypeKind, TypeTable};
 

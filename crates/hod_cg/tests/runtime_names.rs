@@ -48,6 +48,7 @@ fn calls(llc: &Path, arch: Arch, file: &str) -> BTreeMap<String, BTreeSet<String
     let (triple, extra) = match arch {
         Arch::X86_64 => ("x86_64-unknown-linux-gnu", None),
         Arch::Aarch64 => ("aarch64-unknown-linux-gnu", Some("-global-isel=0")),
+        Arch::I386 => ("i686-unknown-linux-gnu", None),
     };
     let mut command = Command::new(llc);
     command.args(["-O0", "-fast-isel=0", "-relocation-model=pic", "-o", "-"]);

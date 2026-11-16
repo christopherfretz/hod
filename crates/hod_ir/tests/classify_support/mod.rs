@@ -66,6 +66,7 @@ pub fn target(arch: Arch) -> TargetSpec {
     match arch {
         Arch::Aarch64 => TargetSpec::aarch64_linux_gnu(),
         Arch::X86_64 => TargetSpec::x86_64_linux_gnu(),
+        Arch::I386 => TargetSpec::i386_linux_gnu(),
     }
 }
 

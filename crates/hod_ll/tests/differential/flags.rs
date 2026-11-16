@@ -19,7 +19,7 @@ fn defaults(arch: Arch, major: u32) -> ModuleProps {
         frame_pointer: match arch {
             Arch::Aarch64 if major < 22 => FramePointer::NonLeaf,
             Arch::Aarch64 => FramePointer::NonLeafNoReserve,
-            Arch::X86_64 => FramePointer::All,
+            Arch::X86_64 | Arch::I386 => FramePointer::All,
         },
         ..ModuleProps::default()
     }

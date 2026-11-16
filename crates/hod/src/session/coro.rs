@@ -43,6 +43,8 @@ fn bodies_compiled(arch: Arch) -> bool {
     match arch {
         Arch::Aarch64 => hod_a64::A64::CORO_BODIES,
         Arch::X86_64 => hod_x64::X64::CORO_BODIES,
+        // No 32-bit code generator yet (WP-286).
+        Arch::I386 => false,
     }
 }
 
@@ -51,6 +53,8 @@ fn stack_align(arch: Arch) -> u64 {
     u64::from(match arch {
         Arch::Aarch64 => hod_a64::A64::STACK_ALIGN,
         Arch::X86_64 => hod_x64::X64::STACK_ALIGN,
+        // The i386 System V ABI's (`S128` in its data layout).
+        Arch::I386 => 16,
     })
 }
 

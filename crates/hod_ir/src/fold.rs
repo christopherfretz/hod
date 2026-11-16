@@ -36,9 +36,11 @@ impl<L: Layering> ConstPool<L> {
     /// Folds `getelementptr (source_ty, base, indices...)`.
     ///
     /// With constant integer indices the offset is computed from the type
-    /// table, wrapping modulo `2^64` like the instruction, and applied to
-    /// the base: `Addr` gains the offset, `null` and absolute addresses
-    /// become the absolute address, and any base is returned unchanged for
+    /// table, wrapping modulo two to the index width of the base's address
+    /// space like the instruction (`2^64`, `2^32` on 32-bit x86), and
+    /// applied to the base: `Addr` gains the offset (sign-extended from the
+    /// index width), `null` and absolute addresses become the absolute
+    /// address (modulo the pointer width), and any base is returned unchanged for
     /// offset zero. A fixed vector `getelementptr` is folded lane by lane
     /// into a vector of the lanes' results when every lane folds (WP-234).
     /// Everything else (a non-constant-integer index, a scalable vector or
@@ -116,13 +118,27 @@ impl<L: Layering> ConstPool<L> {
         let Some(offset) = offset else {
             return unfolded(self);
         };
+        // The offset wraps at the index width of the base's address space
+        // (32 bits on 32-bit x86, WP-286), and so does the address.
+        let space = match types.kind(base_scalar) {
+            TypeKind::Ptr { addr_space } => addr_space,
+            _ => 0,
+        };
+        let index_bits = types.data_layout().pointer(space).index_bits;
+        let offset = wide::sext64(offset as u64 & wide::mask(index_bits), index_bits);
         if offset == 0 {
             return Ok(base);
         }
+        let address_mask = wide::mask(types.data_layout().pointer(0).bits);
         match self.get(base) {
-            Const::Addr { sym, addend } => self.addr(sym, addend.wrapping_add(offset)),
-            Const::Null(TypeId::PTR) => self.addr_of_int(offset as u64),
-            Const::AddrOfInt { value } => self.addr_of_int(value.wrapping_add(offset as u64)),
+            Const::Addr { sym, addend } => {
+                let addend = addend.wrapping_add(offset) as u64 & wide::mask(index_bits);
+                self.addr(sym, wide::sext64(addend, index_bits))
+            }
+            Const::Null(TypeId::PTR) => self.addr_of_int(offset as u64 & address_mask),
+            Const::AddrOfInt { value } => {
+                self.addr_of_int(value.wrapping_add(offset as u64) & address_mask)
+            }
             Const::Poison(_) => self.poison(types, result_ty),
             Const::Undef(_) => self.undef(types, result_ty),
             _ => unfolded(self),
@@ -273,8 +289,9 @@ impl<L: Layering> ConstPool<L> {
     ///   that holds the whole address.
     /// - `ptrtoint` and `ptrtoaddr` give zero for `null`, the number for an
     ///   absolute address, and `IntOfAddr` for an address constant.
-    /// - `inttoptr` gives the absolute address of an integer (`null` for
-    ///   zero) and undoes a `ptrtoint` that kept all 64 bits.
+    /// - `inttoptr` gives the absolute address of an integer, truncated to
+    ///   the pointer width (`null` for zero), and undoes a `ptrtoint` that
+    ///   kept the whole address.
     /// - `bitcast` is the identity on equal types and reinterprets the bits
     ///   between integers and floats of one width, and from a vector of
     ///   numbers of at most 128 bits to an integer or float (its image).
@@ -346,10 +363,13 @@ impl<L: Layering> ConstPool<L> {
             }
             (ConstOp::IntToPtr, _) if self.is_zero(value) => self.null(types, to),
             (ConstOp::IntToPtr, _) if to != TypeId::PTR => self.expr(op, to, None, &[value]),
-            (ConstOp::IntToPtr, Const::Int { value, .. }) => self.addr_of_int(value),
+            // An address keeps the pointer's width (32 bits on 32-bit x86).
+            (ConstOp::IntToPtr, Const::Int { value, .. }) => {
+                self.addr_of_int(value & wide::mask(pointer_bits))
+            }
             (ConstOp::IntToPtr, Const::WideInt { words, .. }) => {
                 let low = words[0];
-                self.addr_of_int(low)
+                self.addr_of_int(low & wide::mask(pointer_bits))
             }
             (ConstOp::IntToPtr, Const::IntOfAddr { addr, .. }) if from_bits >= pointer_bits => {
                 Ok(addr)
@@ -684,6 +704,72 @@ mod tests {
         assert_eq!(c.fold_gep(t, TypeId::I64, poison, &[one]).unwrap(), poison);
         let undef = c.undef(t, TypeId::PTR).unwrap();
         assert_eq!(c.fold_gep(t, TypeId::I64, undef, &[one]).unwrap(), undef);
+    }
+
+    /// §4.2, WP-286: on 32-bit x86 offsets wrap at the 32-bit index width
+    /// and addresses at the 32-bit pointer width. Each expected value is
+    /// what `llc` 19 and 22 `-mtriple=i686-linux-gnu` write for the
+    /// initializer (`.long g+4`, `.long g-1474836480`, ...); on x86-64 the
+    /// same expressions keep 64 bits.
+    #[test]
+    fn gep_and_casts_wrap_at_32_bits_on_i386() {
+        let mut m = Module::new(TargetSpec::i386_linux_gnu());
+        let (t, c) = (&mut m.types, &mut m.consts);
+        let g = SymId::new(1);
+        let base = c.addr(g, 0).unwrap();
+        let null = c.null(t, TypeId::PTR).unwrap();
+        let i = |c: &mut ConstPool, t: &TypeTable, v: i64| c.int_signed(t, TypeId::I64, v).unwrap();
+        // getelementptr (i8, ptr @g, i64 4294967300): g+4.
+        let index = i(c, t, 4_294_967_300);
+        let folded = c.fold_gep(t, TypeId::I8, base, &[index]).unwrap();
+        assert_eq!(c.get(folded), Const::Addr { sym: g, addend: 4 });
+        // getelementptr (i8, ptr @g, i64 4294967296): @g itself.
+        let index = i(c, t, 1 << 32);
+        assert_eq!(c.fold_gep(t, TypeId::I8, base, &[index]).unwrap(), base);
+        // getelementptr ([1000000 x [1000000 x i32]], ptr @g, i64 0, i64 5000):
+        // 2e10 modulo 2^32, signed.
+        let row = t.array(TypeId::I32, 1_000_000).unwrap();
+        let rows = t.array(row, 1_000_000).unwrap();
+        let (zero, at) = (i(c, t, 0), i(c, t, 5000));
+        let folded = c.fold_gep(t, rows, base, &[zero, at]).unwrap();
+        assert_eq!(c.get(folded), Const::Addr { sym: g, addend: -1_474_836_480 });
+        // getelementptr (i8, ptr @g, i64 2147483648): g-2147483648.
+        let index = i(c, t, 1 << 31);
+        let folded = c.fold_gep(t, TypeId::I8, base, &[index]).unwrap();
+        assert_eq!(c.get(folded), Const::Addr { sym: g, addend: -(1 << 31) });
+        // getelementptr (i8, ptr null, i64 4294967297) is the address 1.
+        let index = i(c, t, 4_294_967_297);
+        let one = c.fold_gep(t, TypeId::I8, null, &[index]).unwrap();
+        assert_eq!(c.get(one), Const::AddrOfInt { value: 1 });
+        // ptrtoint (ptr getelementptr (i8, ptr null, i64 -1) to i64):
+        // 4294967295, the address zero-extended.
+        let minus_one = i(c, t, -1);
+        let top = c.fold_gep(t, TypeId::I8, null, &[minus_one]).unwrap();
+        assert_eq!(c.get(top), Const::AddrOfInt { value: 0xffff_ffff });
+        let as_int = c.fold_cast(t, ConstOp::PtrToInt, top, TypeId::I64).unwrap();
+        assert_eq!(c.get(as_int), Const::Int { ty: TypeId::I64, value: 0xffff_ffff });
+        // inttoptr (i64 4294967298 to ptr): the address 2.
+        let wide = i(c, t, 4_294_967_298);
+        let two = c.fold_cast(t, ConstOp::IntToPtr, wide, TypeId::PTR).unwrap();
+        assert_eq!(c.get(two), Const::AddrOfInt { value: 2 });
+        // ptrtoint (ptr inttoptr (i64 -1 to ptr) to i64): 4294967295.
+        let all = c.fold_cast(t, ConstOp::IntToPtr, minus_one, TypeId::PTR).unwrap();
+        let back = c.fold_cast(t, ConstOp::PtrToInt, all, TypeId::I64).unwrap();
+        assert_eq!(c.get(back), Const::Int { ty: TypeId::I64, value: 0xffff_ffff });
+        // inttoptr (i64 4294967296 to ptr) is null.
+        let low_zero = i(c, t, 1 << 32);
+        assert_eq!(c.fold_cast(t, ConstOp::IntToPtr, low_zero, TypeId::PTR).unwrap(), null);
+
+        // x86-64 keeps the 64 bits.
+        let mut m = module();
+        let (t, c) = (&mut m.types, &mut m.consts);
+        let base = c.addr(g, 0).unwrap();
+        let index = c.int_signed(t, TypeId::I64, 4_294_967_300).unwrap();
+        let folded = c.fold_gep(t, TypeId::I8, base, &[index]).unwrap();
+        assert_eq!(c.get(folded), Const::Addr { sym: g, addend: 4_294_967_300 });
+        let wide = c.int_signed(t, TypeId::I64, 4_294_967_298).unwrap();
+        let ptr = c.fold_cast(t, ConstOp::IntToPtr, wide, TypeId::PTR).unwrap();
+        assert_eq!(c.get(ptr), Const::AddrOfInt { value: 4_294_967_298 });
     }
 
     /// §4.2: a GEP with no normal form is an `Expr`, not an error.

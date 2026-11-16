@@ -320,11 +320,15 @@ impl SupportRow {
         self.name.split_once(':').map_or(self.name, |(group, _)| group)
     }
 
-    /// The entry for `arch`.
+    /// The entry for `arch`. 32-bit x86 has no column of its own yet: its
+    /// modules are classified with x86-64's, so that the front half judges
+    /// them as it judges x86-64's, and code generation refuses the module
+    /// as a whole (`x86:not-implemented`, WP-286) until the 32-bit back end
+    /// gives it its column.
     pub const fn cell(&self, arch: Arch) -> SupportCell {
         match arch {
             Arch::Aarch64 => self.aarch64,
-            Arch::X86_64 => self.x86_64,
+            Arch::X86_64 | Arch::I386 => self.x86_64,
         }
     }
 }

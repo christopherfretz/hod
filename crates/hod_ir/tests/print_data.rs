@@ -126,6 +126,7 @@ fn resolve(
                 match config.arch {
                     Arch::X86_64 => "R_X86_64_PLT32".to_string(),
                     Arch::Aarch64 => "R_AARCH64_PLT32".to_string(),
+                    Arch::I386 => panic!("print_data runs the 64-bit configurations only"),
                 }
             } else {
                 reloc_kind(config.arch, fixup.size, true)
@@ -241,6 +242,7 @@ fn module(config: &Config, ctx: Ctx, globals: &[Global]) -> (Module, hod_ir::Bod
     let target = match config.arch {
         Arch::Aarch64 => TargetSpec::aarch64_linux_gnu(),
         Arch::X86_64 => TargetSpec::x86_64_linux_gnu(),
+        Arch::I386 => TargetSpec::i386_linux_gnu(),
     };
     let mut m = Module::new(target);
     m.types = ctx.types;
@@ -284,6 +286,7 @@ fn check(config: &Config) {
     let layout = match config.arch {
         Arch::Aarch64 => TargetSpec::aarch64_linux_gnu(),
         Arch::X86_64 => TargetSpec::x86_64_linux_gnu(),
+        Arch::I386 => TargetSpec::i386_linux_gnu(),
     };
     ctx.types = TypeTable::new(layout.data_layout());
     for name in ["a", "b", "x", "h", "f"] {

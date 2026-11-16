@@ -31,6 +31,7 @@ fn header(arch: Arch) -> String {
     let (layout, triple) = match arch {
         Arch::Aarch64 => (AARCH64_LINUX_DATA_LAYOUT, "aarch64-unknown-linux-gnu"),
         Arch::X86_64 => (X86_64_LINUX_DATA_LAYOUT, "x86_64-unknown-linux-gnu"),
+        Arch::I386 => (hod_ir::I386_LINUX_DATA_LAYOUT, "i686-unknown-linux-gnu"),
     };
     format!("target datalayout = \"{layout}\"\ntarget triple = \"{triple}\"\n")
 }

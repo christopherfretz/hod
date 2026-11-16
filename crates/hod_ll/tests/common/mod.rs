@@ -12,7 +12,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use hod_ir::{AARCH64_LINUX_DATA_LAYOUT, AARCH64_LINUX_DATA_LAYOUT_LLVM19, Arch};
-use hod_ir::{TargetSpec, X86_64_LINUX_DATA_LAYOUT};
+use hod_ir::{I386_LINUX_DATA_LAYOUT, TargetSpec, X86_64_LINUX_DATA_LAYOUT};
 use hod_ll::{ParseOptions, ParsedModule, parse_module};
 use hod_testutil::{DEFAULT_TIMEOUT, LLVM_MAJORS, Scratch, run_with, tools_required};
 
@@ -52,6 +52,7 @@ pub fn header(arch: Arch, major: u32) -> String {
         (Arch::Aarch64, 19) => ("aarch64-unknown-linux-gnu", AARCH64_LINUX_DATA_LAYOUT_LLVM19),
         (Arch::Aarch64, _) => ("aarch64-unknown-linux-gnu", AARCH64_LINUX_DATA_LAYOUT),
         (Arch::X86_64, _) => ("x86_64-unknown-linux-gnu", X86_64_LINUX_DATA_LAYOUT),
+        (Arch::I386, _) => ("i686-unknown-linux-gnu", I386_LINUX_DATA_LAYOUT),
     };
     format!("target datalayout = \"{layout}\"\ntarget triple = \"{triple}\"\n")
 }
@@ -61,6 +62,7 @@ pub fn clang_target(arch: Arch) -> &'static str {
     match arch {
         Arch::Aarch64 => "aarch64-linux-gnu",
         Arch::X86_64 => "x86_64-linux-gnu",
+        Arch::I386 => "i686-linux-gnu",
     }
 }
 
@@ -68,6 +70,7 @@ pub fn arch_name(arch: Arch) -> &'static str {
     match arch {
         Arch::Aarch64 => "aarch64",
         Arch::X86_64 => "x86_64",
+        Arch::I386 => "i686",
     }
 }
 
@@ -250,7 +253,7 @@ fn jobs() -> Vec<Job> {
                 "attrs.c",
                 match arch {
                     Arch::Aarch64 => &["-mbranch-protection=standard"],
-                    Arch::X86_64 => &["-fcf-protection=full"],
+                    Arch::X86_64 | Arch::I386 => &["-fcf-protection=full"],
                 },
             );
             // The large one once per LLVM version, on alternating
@@ -354,6 +357,7 @@ pub fn parse(text: &[u8], arch: Arch) -> Result<ParsedModule<'_>, hod_ll::LlErro
     let target = match arch {
         Arch::Aarch64 => TargetSpec::aarch64_linux_gnu(),
         Arch::X86_64 => TargetSpec::x86_64_linux_gnu(),
+        Arch::I386 => TargetSpec::i386_linux_gnu(),
     };
     parse_module(text, &ParseOptions { default_target: Some(target) })
 }

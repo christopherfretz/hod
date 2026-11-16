@@ -21,6 +21,7 @@ fn target(config: &Config) -> TargetSpec {
     match config.arch {
         Arch::Aarch64 => TargetSpec::aarch64_linux_gnu(),
         Arch::X86_64 => TargetSpec::x86_64_linux_gnu(),
+        Arch::I386 => TargetSpec::i386_linux_gnu(),
     }
 }
 
@@ -183,6 +184,7 @@ fn implied_dso_local_is_what_llc_implies() {
             let through_got = match config.arch {
                 Arch::X86_64 => asm.contains(&format!("{name}@GOTPCREL")),
                 Arch::Aarch64 => asm.contains(&format!(":got:{name}")),
+                Arch::I386 => asm.contains(&format!("{name}@GOT")),
             };
             // AArch64 reaches an `extern_weak` symbol through the GOT even
             // when it is stated to be `dso_local`: its address may be zero,

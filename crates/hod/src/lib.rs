@@ -45,7 +45,7 @@ pub use env::{EnvError, Environment};
 
 pub use back::{
     LIMIT_OBJECT, OBJECT_NUL_IN_NAME, OPTION_RELOCATION_MODEL, OPTION_SPLIT_DWARF,
-    PARALLEL_MIN_INSTS, ThreadTokens, Threads, generate_with,
+    PARALLEL_MIN_INSTS, ThreadTokens, Threads, X86_NOT_IMPLEMENTED, generate_with,
 };
 pub use front::{
     BitcodeReading, INTERNAL_ERROR, INTERNAL_PANIC, LIMIT_READER, READ_BYTES_PER_THREAD,
@@ -371,16 +371,20 @@ pub fn module_triple(input: &[u8]) -> Option<&str> {
     None
 }
 
-/// Whether hod generates code for `triple`: AArch64 or x86-64, Linux, ELF
-/// (`docs/ARCHITECTURE.md` "Object file"). The architecture is the first
-/// component (`aarch64` or `x86_64`), a later component must be `linux`, and
+/// Whether hod generates code for `triple`: AArch64, x86-64 or 32-bit x86,
+/// Linux, ELF (`docs/ARCHITECTURE.md` "Object file"). The architecture is
+/// the first component (`aarch64`, `x86_64`, or `i386` to `i686`, whose
+/// modules the back half refuses as [`X86_NOT_IMPLEMENTED`] until it has a
+/// code generator), a later component must be `linux`, and
 /// what follows it, if anything, must be a GNU or musl environment
 /// (`gnu`, `gnueabi...`, `musl`): Android and the other Linux environments
 /// have their own ABI details and are not claimed.
 pub fn target_supported(triple: &str) -> bool {
     let mut parts = triple.split('-');
     let arch = parts.next().unwrap_or_default();
-    if !matches!(arch, "aarch64" | "x86_64") || !parts.any(|part| part == "linux") {
+    if !matches!(arch, "aarch64" | "x86_64" | "i386" | "i486" | "i586" | "i686")
+        || !parts.any(|part| part == "linux")
+    {
         return false;
     }
     match parts.next() {
@@ -583,6 +587,13 @@ mod tests {
             "x86_64-pc-linux-gnu",
             "aarch64-linux-gnu",
             "x86_64-unknown-linux-musl",
+            // WP-286: 32-bit x86 is read and classified; the back half
+            // refuses it (`x86:not-implemented`).
+            "i686-unknown-linux-gnu",
+            "i686-pc-linux-gnu",
+            "i586-linux-gnu",
+            "i486-linux-gnu",
+            "i386-unknown-linux-gnu",
         ] {
             assert!(target_supported(triple), "{triple}");
         }
@@ -593,7 +604,9 @@ mod tests {
             "x86_64-pc-windows-msvc",
             "riscv64-unknown-linux-gnu",
             "aarch64_be-unknown-linux-gnu",
-            "i386-unknown-linux-gnu",
+            "i686-pc-windows-msvc",
+            "i786-linux-gnu",
+            "armv7-unknown-linux-gnueabihf",
             "aarch64-unknown-linux-android",
             "x86_64-unknown-linux-gnu-extra",
             "x86_64-linux-unknown-gnu",

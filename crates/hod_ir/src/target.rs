@@ -26,6 +26,13 @@ pub const AARCH64_LINUX_DATA_LAYOUT_LLVM19: &str =
 pub const X86_64_LINUX_DATA_LAYOUT: &str =
     "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128";
 
+/// clang's data-layout string for `i686-unknown-linux-gnu` (and `i386-`,
+/// `i486-`, `i586-`), the same at clang 19 and 22 (WP-286): 32-bit
+/// pointers, `i64` and `double` aligned to 4, `x86_fp80` 12 bytes aligned
+/// to 4, `i128` aligned to 16.
+pub const I386_LINUX_DATA_LAYOUT: &str =
+    "e-m:e-p:32:32-p270:32:32-p271:32:32-p272:64:64-i128:128-f64:32:64-f80:32-n8:16:32-S128";
+
 /// The largest address space number (24 bits).
 pub const MAX_ADDR_SPACE: u32 = (1 << 24) - 1;
 
@@ -581,6 +588,20 @@ pub enum Arch {
     Aarch64,
     /// x86-64 (LP64).
     X86_64,
+    /// 32-bit x86 (ILP32, `i386` to `i686`; design 0008). The front half
+    /// reads, verifies and classifies its modules; code generation is not
+    /// implemented yet (`x86:not-implemented`).
+    I386,
+}
+
+impl Arch {
+    /// The width in bits of a pointer in address space 0.
+    pub const fn pointer_bits(self) -> u32 {
+        match self {
+            Arch::Aarch64 | Arch::X86_64 => 64,
+            Arch::I386 => 32,
+        }
+    }
 }
 
 /// A supported OS and ABI.
@@ -593,8 +614,10 @@ pub enum Os {
 /// What a module is compiled for: an architecture, an OS/ABI, and the data
 /// layout that follows from them (§2.1).
 ///
-/// Both supported targets are little-endian with 64-bit pointers in address
-/// space 0; code in this crate that writes bytes relies on that.
+/// Every supported target is little-endian; AArch64 and x86-64 have 64-bit
+/// pointers in address space 0, 32-bit x86 has 32-bit ones
+/// ([`Arch::pointer_bits`]). Code in this crate that writes bytes takes
+/// the width from the data layout.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct TargetSpec {
     arch: Arch,
@@ -609,6 +632,7 @@ impl TargetSpec {
         let text = match arch {
             Arch::Aarch64 => AARCH64_LINUX_DATA_LAYOUT,
             Arch::X86_64 => X86_64_LINUX_DATA_LAYOUT,
+            Arch::I386 => I386_LINUX_DATA_LAYOUT,
         };
         let layout = DataLayout::parse(text).expect("the built-in data layouts parse");
         TargetSpec { arch, os, layout }
@@ -624,9 +648,16 @@ impl TargetSpec {
         TargetSpec::new(Arch::X86_64, Os::LinuxGnu)
     }
 
-    /// The description for an LLVM target triple: `aarch64` (or `arm64`) or
-    /// `x86_64` (or `amd64`), any vendor, `linux`, and the `gnu` environment
-    /// (or none). Anything else is `UnsupportedTarget`.
+    /// `i686-unknown-linux-gnu`.
+    pub fn i386_linux_gnu() -> TargetSpec {
+        TargetSpec::new(Arch::I386, Os::LinuxGnu)
+    }
+
+    /// The description for an LLVM target triple: `aarch64` (or `arm64`),
+    /// `x86_64` (or `amd64`) or `i386`, `i486`, `i586`, `i686`, any vendor,
+    /// `linux`, and the `gnu` environment (or none). Anything else is
+    /// `UnsupportedTarget` (`gnux32`, `gnueabi`, `musl`, `android`, other
+    /// systems and architectures).
     pub fn from_triple(triple: &str) -> IrResult<TargetSpec> {
         let unsupported =
             || err(IrErrorKind::UnsupportedTarget, format!("unsupported target triple `{triple}`"));
@@ -634,6 +665,7 @@ impl TargetSpec {
         let arch = match parts[0] {
             "aarch64" | "arm64" => Arch::Aarch64,
             "x86_64" | "amd64" => Arch::X86_64,
+            "i386" | "i486" | "i586" | "i686" => Arch::I386,
             _ => return unsupported(),
         };
         // `arch-linux[-gnu]` or `arch-vendor-linux[-gnu]`.
@@ -663,6 +695,7 @@ impl TargetSpec {
         match (self.arch, self.os) {
             (Arch::Aarch64, Os::LinuxGnu) => "aarch64-unknown-linux-gnu",
             (Arch::X86_64, Os::LinuxGnu) => "x86_64-unknown-linux-gnu",
+            (Arch::I386, Os::LinuxGnu) => "i686-unknown-linux-gnu",
         }
     }
 
@@ -671,6 +704,7 @@ impl TargetSpec {
         match (self.arch, self.os) {
             (Arch::Aarch64, Os::LinuxGnu) => AARCH64_LINUX_DATA_LAYOUT,
             (Arch::X86_64, Os::LinuxGnu) => X86_64_LINUX_DATA_LAYOUT,
+            (Arch::I386, Os::LinuxGnu) => I386_LINUX_DATA_LAYOUT,
         }
     }
 
@@ -748,6 +782,48 @@ mod tests {
         assert_eq!(dl.float_align(80), pair(16, 16));
         assert_eq!(dl.float_specs().len(), 5);
         assert_eq!(dl.vector_specs(), [prim(64, 8, 8), prim(128, 16, 16)]);
+    }
+
+    /// §2.1, WP-286: clang 19's and 22's i686 string, field by field, and
+    /// the sizes clang gives the C types of design 0008's `a.c`
+    /// (`struct { long long; double; char; }` is 20 bytes aligned to 4
+    /// with the `double` at 8; `long double` is 12 bytes aligned to 4).
+    #[test]
+    fn i386_layout_fields() {
+        use crate::ids::TypeId;
+        use crate::types::TypeTable;
+        let dl = parse(I386_LINUX_DATA_LAYOUT);
+        assert!(!dl.big_endian);
+        assert_eq!(dl.mangling, Mangling::Elf);
+        assert_eq!(dl.stack_align, Some(16));
+        assert_eq!(dl.native_int_widths, [8, 16, 32]);
+        assert_eq!(
+            dl.pointer(0),
+            PointerSpec { addr_space: 0, bits: 32, align: pair(4, 4), index_bits: 32 }
+        );
+        assert_eq!(dl.pointer(270).bits, 32);
+        assert_eq!(dl.pointer(271).bits, 32);
+        assert_eq!(dl.pointer(272).bits, 64);
+        assert_eq!(dl.pointer(272).align, pair(8, 8));
+        assert_eq!(dl.pointer(1).bits, 32);
+        assert_eq!(dl.int_align(64), pair(4, 8));
+        assert_eq!(dl.int_align(128), pair(16, 16));
+        assert_eq!(dl.float_align(64), pair(4, 8));
+        assert_eq!(dl.float_align(80), pair(4, 4));
+        let mut t = TypeTable::new(&dl);
+        assert_eq!((t.alloc_size_of(TypeId::PTR), t.align_of(TypeId::PTR)), (4, 4));
+        assert_eq!((t.alloc_size_of(TypeId::I64), t.align_of(TypeId::I64)), (8, 4));
+        assert_eq!((t.alloc_size_of(TypeId::DOUBLE), t.align_of(TypeId::DOUBLE)), (8, 4));
+        assert_eq!((t.alloc_size_of(TypeId::X86_FP80), t.align_of(TypeId::X86_FP80)), (12, 4));
+        assert_eq!((t.alloc_size_of(TypeId::I128), t.align_of(TypeId::I128)), (16, 16));
+        let l = t.struct_type(&[TypeId::I64, TypeId::DOUBLE, TypeId::I8], false).unwrap();
+        assert_eq!((t.alloc_size_of(l), t.align_of(l), t.field_offset(l, 1)), (20, 4, 8));
+        // The same string at both versions: no LLVM 19 variant.
+        assert_eq!(TargetSpec::i386_linux_gnu().check_data_layout(I386_LINUX_DATA_LAYOUT), Ok(()));
+        // The x86-64 string is another layout.
+        let error =
+            TargetSpec::i386_linux_gnu().check_data_layout(X86_64_LINUX_DATA_LAYOUT).unwrap_err();
+        assert_eq!(error.kind, IrErrorKind::DataLayoutMismatch);
     }
 
     /// §2.1: the clang 19 aarch64 string parses and differs from the
@@ -995,9 +1071,45 @@ mod tests {
             assert_eq!(target.triple(), "x86_64-unknown-linux-gnu");
             assert_eq!(target.data_layout(), &parse(X86_64_LINUX_DATA_LAYOUT));
         }
+        // WP-286: the four 32-bit x86 names clang writes (`i686-unknown-`,
+        // Debian's `i386-linux-gnu`), with the vendor forms of x86-64.
+        for triple in [
+            "i686-unknown-linux-gnu",
+            "i686-pc-linux-gnu",
+            "i686-linux-gnu",
+            "i686-linux",
+            "i586-pc-linux-gnu",
+            "i486-linux-gnu",
+            "i386-linux-gnu",
+            "i386-unknown-linux",
+        ] {
+            let target = TargetSpec::from_triple(triple).unwrap();
+            assert_eq!(target, TargetSpec::i386_linux_gnu(), "{triple}");
+            assert_eq!(target.arch(), Arch::I386);
+            assert_eq!(target.arch().pointer_bits(), 32);
+            assert_eq!(target.triple(), "i686-unknown-linux-gnu");
+            assert_eq!(target.data_layout_str(), I386_LINUX_DATA_LAYOUT);
+            assert_eq!(target.data_layout().pointer(0).bits, 32);
+        }
         for triple in [
             "",
             "aarch64",
+            "i686",
+            "i786-linux-gnu",
+            "i86-linux-gnu",
+            "x86-linux-gnu",
+            "i686-pc-windows-msvc",
+            "i686-w64-windows-gnu",
+            "i686-linux-android",
+            "i686-unknown-linux-musl",
+            "i686-unknown-linux-gnueabi",
+            "i686-apple-darwin",
+            "i686-unknown-freebsd",
+            "x86_64-linux-gnux32",
+            "x86_64-unknown-linux-gnux32",
+            "armv7-unknown-linux-gnueabihf",
+            "arm-linux-gnueabi",
+            "riscv32-unknown-linux-gnu",
             "riscv64-unknown-linux-gnu",
             "x86_64-unknown-linux-musl",
             "aarch64-apple-darwin",

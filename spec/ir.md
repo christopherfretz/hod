@@ -89,12 +89,47 @@ that is not this module's.
 ### 2.1 Target
 
 `Module::new(TargetSpec)`. A `TargetSpec` is an architecture and OS/ABI
-(`aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-gnu`) plus the parsed
+(`aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-gnu`,
+`i686-unknown-linux-gnu`) plus the parsed
 data layout: pointer size and alignment, integer and float alignments,
 aggregate alignment, stack alignment, endianness. A producer reading LLVM
 text checks the module's `target datalayout` string against the spec's and
 reports `IrErrorKind::DataLayoutMismatch` on a difference that changes
 layout.
+
+**32-bit x86** (WP-286, design 0008). `Arch::I386` is 32-bit x86 Linux
+with the GNU environment; `Arch::pointer_bits()` is 32 for it and 64 for
+the others. `TargetSpec::from_triple` takes `i386`, `i486`, `i586` and
+`i686` as the first component, with or without a vendor, followed by
+`linux-gnu`; `triple()` is `i686-unknown-linux-gnu`. Every other 32-bit
+triple (`i786`, `armv7`, `i686-*-windows-*`, `*-linux-musl`,
+`*-linux-android`, `x86_64-*-linux-gnux32`) is `UnsupportedTarget`. The
+built-in layout, `I386_LINUX_DATA_LAYOUT`, is what clang 19 and clang 22
+both write for all four names:
+`e-m:e-p:32:32-p270:32:32-p271:32:32-p272:64:64-i128:128-f64:32:64-f80:32-n8:16:32-S128`
+(`i64` and `double` aligned to 4 with preferred alignment 8, `x86_fp80`
+12 bytes aligned to 4, `i128` aligned to 16, a 16-byte stack).
+`tests/layout_diff.rs` and `tests/fold_diff.rs` check layout and folding
+against `llc` 19 and 22 for `i686`.
+
+The **32-bit CPU table** (`I386_CPUS`, `X86Features`) gives, for each of
+the 131 CPU names `llc` 22 takes for `i686` (`llc` 19 takes 128 of them),
+the instruction-set features `llc` generates code with: `x87`, `cmov`,
+`cx8`, `sse` to `sse4.2`, `popcnt`, `avx`, `avx2`, `fma`, `avx512f`.
+`X86Features::of_function(target-cpu, target-features, -mcpu, -mattr)`
+is a function's set: the CPU is the function's `target-cpu`, else
+`-mcpu`, else `generic` (`llc`'s default whatever the arch component,
+`x87` and `cx8` without `cmov`, not `i686`); the function's
+`target-features` items apply in order, then the `-mattr` items. `+f`
+adds a feature with those it implies (each SSE level the one below,
+`avx` `sse4.2`, `avx2` and `fma` `avx`, `avx512f` `avx2` and `fma`);
+`-f` removes it with every feature that implies it; any SSE adds `cmov`
+(LLVM's `canUseCMOV`); an item naming none of these changes nothing. An
+unknown CPU is `UnknownCpu`. The table follows `llc`'s CPU definitions,
+not clang's front-end feature lists, which differ (clang's `pentium4`
+list has `+sse` and no `+sse2`; `llc` uses SSE2 for it).
+`tests/x86_cpus.rs` checks every CPU against `llc` 19 and 22 by the
+instructions it selects.
 
 **Module properties** are the public field `module.props: ModuleProps`
 (40 bytes). A producer that has no LLVM module flags (the bridge) assigns
@@ -140,6 +175,9 @@ of `!llvm.module.flags`: LLVM's behavior number, the name, and
   `min_enum_size` (they go into ARM EABI build attributes only),
   `probe-stack` and `stack-probe-size` (defaults for functions LLVM itself
   synthesizes; every function a producer delivers has the attribute).
+  `NumRegisterParameters` (`NUM_REGISTER_PARAMETERS`) is ignorable with
+  the value 0: clang writes it in every 32-bit x86 module, and 0 is the
+  default (`-mregparm=0`); another value is not ignorable.
   `classify` refuses a module with a kept flag that is not ignorable, as
   `module-flag:<name>`. `module_flag_class(name)` gives the class of a
   name.
@@ -489,6 +527,16 @@ the difference) and identical for code generation: any value, here zero.
   denotes an address: a symbol, `getelementptr` constant expressions over
   it (folded with §3 layout), and the pointer casts LLVM still has as
   expressions, in any nesting.
+  A `getelementptr` offset wraps to the index width of its base
+  pointer's address space and is sign-extended, so on 32-bit x86
+  `getelementptr (i8, ptr @g, i64 4294967300)` is `@g + 4` and an offset
+  of 2^31 is `@g - 2147483648`, as `llc` folds them. `inttoptr` of an
+  integer, and a `getelementptr` over `null` or over such an address,
+  keep the low pointer-width bits (`inttoptr (i64 4294967298 to ptr)` is
+  address 2 on 32-bit x86). `ptrtoint` of a symbol's address to an
+  integer wider than a pointer has no `llc` answer to match (`llc`
+  refuses it in an initializer: "unsupported expression in static
+  initializer"); `tests/fold_diff.rs` leaves it out on 32-bit x86.
 - `BlockAddr { function, block }`. The pool keeps a list of them as
   they are interned, which is the address-taken mark on blocks (WP-064):
   `ConstPool::block_addresses()` in id order, `is_address_taken(func,

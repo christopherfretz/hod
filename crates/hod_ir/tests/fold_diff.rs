@@ -29,7 +29,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 
 use common::consts::{Ctx, Form, PRELUDE, address_cases};
-use common::{CONFIGS, Config, Ty};
+use common::{CONFIGS, Config, I386_CONFIGS, Ty};
 use hod_ir::{ConstId, ConstOp, FixupTarget, IrErrorKind};
 use hod_testutil::Scratch;
 
@@ -274,7 +274,11 @@ fn module(config: &Config, ctx: &mut Ctx) -> (String, Vec<Global>, [usize; 7]) {
         let name = format!("e{index}");
         ctx.this = ctx.sym(&name);
         let kind = index % 6;
-        let width = *ctx.rng.pick(&[8, 16, 32, 64, 64]);
+        let mut width = *ctx.rng.pick(&[8, 16, 32, 64, 64]);
+        // On 32-bit x86 a symbol fits in 32 bits at most.
+        if (2..=3).contains(&kind) {
+            width = width.min(ctx.pointer_bits);
+        }
         let (ty, text, value) = match kind {
             0 => {
                 let (bits, text, value) = ctx.wide_literal_expr();
@@ -297,6 +301,12 @@ fn module(config: &Config, ctx: &mut Ctx) -> (String, Vec<Global>, [usize; 7]) {
         globals.push(Global { name, definition, value });
     }
     for (index, case) in address_cases().iter().enumerate() {
+        // An address in an integer wider than a pointer is no field an
+        // object can hold (`llc`: "unsupported expression in static
+        // initializer").
+        if ctx.pointer_bits < 64 && case.text.contains(" to i64") {
+            continue;
+        }
         let name = format!("k{index}");
         ctx.this = ctx.sym(&name);
         let text = case.text.replace("{self}", &format!("@{name}"));
@@ -530,4 +540,17 @@ fn what_llc_accepts_and_hod_does_not() {
             assert_eq!(error.kind, IrErrorKind::UnsupportedInitializer, "{definition}");
         }
     }
+}
+
+/// §4.2 folds on 32-bit x86 against LLVM 22 (WP-286): offsets and
+/// addresses wrap at 32 bits.
+#[test]
+fn folds_match_llvm22_on_i686() {
+    check(&I386_CONFIGS[0]);
+}
+
+/// §4.2 folds on 32-bit x86 against LLVM 19 (WP-286).
+#[test]
+fn folds_match_llvm19_on_i686() {
+    check(&I386_CONFIGS[1]);
 }

@@ -28,6 +28,9 @@ pub struct Ctx {
     pub rng: Rng,
     /// LLVM's major version, for syntax only some versions accept.
     pub llvm: u32,
+    /// The width of a pointer: 64, or 32 on 32-bit x86 (WP-286), where an
+    /// integer wider than a pointer cannot hold a symbol in an object.
+    pub pointer_bits: u32,
     names: Vec<String>,
     /// The global being defined: `{self}` in a case's text.
     pub this: SymId,
@@ -40,6 +43,7 @@ impl Ctx {
             consts: ConstPool::new(),
             rng: Rng::new(seed),
             llvm: config.llvm,
+            pointer_bits: config.arch.pointer_bits(),
             names: Vec::new(),
             this: SymId::new(0),
         }
@@ -377,9 +381,18 @@ impl Ctx {
             let (base_text, base) = self.pointer_expr(symbolic, depth - 1);
             self.random_gep(&base_text, base)
         } else {
-            let form = if symbolic { Form::Symbol } else { Form::Number };
-            let (text, value) = self.int_expr(64, form, depth - 1);
-            (format!("inttoptr (i64 {text} to ptr)"), self.int_to_ptr(value))
+            // LLVM 19 folds `ptrtoint (inttoptr (i64 X to ptr) to i64)` to
+            // `X` with 32-bit pointers, dropping the truncation the
+            // address makes (LLVM 22 keeps it, and so does hod; WP-286):
+            // with LLVM 19 the number is no wider than a pointer.
+            let number_bits = if self.llvm < 20 { self.pointer_bits } else { 64 };
+            let (form, bits) = if symbolic {
+                (Form::Symbol, self.pointer_bits)
+            } else {
+                (Form::Number, number_bits)
+            };
+            let (text, value) = self.int_expr(bits, form, depth - 1);
+            (format!("inttoptr (i{bits} {text} to ptr)"), self.int_to_ptr(value))
         }
     }
 
@@ -387,7 +400,10 @@ impl Ctx {
     /// folds to the given form.
     pub fn int_expr(&mut self, bits: u32, form: Form, depth: u32) -> (String, ConstId) {
         let ty = format!("i{bits}");
-        let wider: Vec<u32> = [16, 32, 64].into_iter().filter(|&w| w > bits).collect();
+        // A symbol travels in integers no wider than a pointer.
+        let widest = if matches!(form, Form::Number) { 64 } else { self.pointer_bits.max(bits) };
+        let wider: Vec<u32> =
+            [16, 32, 64].into_iter().filter(|&w| w > bits && w <= widest).collect();
         if depth > 0 && !wider.is_empty() && self.rng.chance(20) {
             let from = *self.rng.pick(&wider);
             let (text, value) = self.int_expr(from, form, depth - 1);
@@ -457,7 +473,7 @@ impl Ctx {
     /// `ptrtoint`, or sometimes `ptrtoaddr` where LLVM has it and the two
     /// agree (the full pointer width).
     fn ptrtoint_keyword(&mut self, bits: u32) -> (&'static str, ConstOp) {
-        if self.llvm >= 22 && bits == 64 && self.rng.chance(20) {
+        if self.llvm >= 22 && bits == self.pointer_bits && self.rng.chance(20) {
             ("ptrtoaddr", ConstOp::PtrToAddr)
         } else {
             ("ptrtoint", ConstOp::PtrToInt)

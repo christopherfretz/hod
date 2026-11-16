@@ -63,6 +63,7 @@ mod types;
 mod value;
 mod verify;
 mod wide;
+mod x86_cpu;
 
 mod debug;
 
@@ -96,8 +97,8 @@ pub use symbol::{
 };
 pub use target::{
     AARCH64_LINUX_DATA_LAYOUT, AARCH64_LINUX_DATA_LAYOUT_LLVM19, AlignPair, Arch, DataLayout,
-    FunctionPtrAlignKind, MAX_ADDR_SPACE, Mangling, Os, PointerSpec, PrimSpec, TargetSpec,
-    X86_64_LINUX_DATA_LAYOUT,
+    FunctionPtrAlignKind, I386_LINUX_DATA_LAYOUT, MAX_ADDR_SPACE, Mangling, Os, PointerSpec,
+    PrimSpec, TargetSpec, X86_64_LINUX_DATA_LAYOUT,
 };
 pub use types::{MAX_INT_BITS, MAX_TYPE_SIZE, TypeKind, TypeTable};
 
@@ -118,6 +119,7 @@ pub use intrinsic::{
 pub use value::{InstId, MetaId, SlotId, Value, ValueKind};
 pub use verify::cast_is_valid;
 pub use wide::sext64;
+pub use x86_cpu::{I386_CPUS, UnknownCpu, X86Features};
 
 pub use debug::expr::{DI_OPS, DiOp, DiOps, ExprId, di_op_named};
 pub use debug::map::{

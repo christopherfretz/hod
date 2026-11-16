@@ -67,7 +67,9 @@ impl<'a> Statements<'a> {
             let rest = &t[at..];
             match arch {
                 Arch::Aarch64 => rest.starts_with(b"//") || (first && rest.starts_with(b"#")),
-                Arch::X86_64 => rest.starts_with(b"//") || rest.starts_with(b"#"),
+                // 32-bit x86 has x86-64's assembler syntax (one
+                // `X86ELFMCAsmInfo` in LLVM for both).
+                Arch::X86_64 | Arch::I386 => rest.starts_with(b"//") || rest.starts_with(b"#"),
             }
         };
         let mut end = start;

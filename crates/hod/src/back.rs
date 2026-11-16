@@ -21,6 +21,11 @@ use hod_ir::{Arch, Body, FnStr, Module, SymbolKind};
 use crate::front::{Report, symbol_name};
 use crate::{CodeModel, CompileError, Construct, Options, RelocModel, Unsupported};
 
+/// The back half's refusal of every 32-bit x86 module (`spec/cli.md`
+/// "Reasons"): the target is read, verified and classified, and has no
+/// code generator yet (design 0008).
+pub const X86_NOT_IMPLEMENTED: &str = "x86:not-implemented";
+
 /// Where extra worker threads come from: a GNU make jobserver in the
 /// command-line tool (`spec/cli.md` "Threads").
 pub trait ThreadTokens: Send + Sync + fmt::Debug {
@@ -160,7 +165,9 @@ fn groups(module: &Module, bodies: &[Body], options: &Options) -> Vec<Option<Gro
             Arch::X86_64 => {
                 hod_x64::X64::of_attrs_with(attrs, options.cpu.as_deref(), &options.features)
             }
-            Arch::Aarch64 => hod_x64::X64,
+            // 32-bit x86 never reaches the groups: `generate_with` refuses
+            // it first (`X86_NOT_IMPLEMENTED`).
+            Arch::Aarch64 | Arch::I386 => hod_x64::X64,
         };
         groups[index] = Some(Group { refused, x64 });
     }
@@ -189,6 +196,7 @@ fn compile_one(
             let target = group.map_or(&hod_x64::X64, |group| &group.x64);
             compile_function(target, module, body, &options, scratch, chunk)
         }
+        Arch::I386 => Err(CgError::unsupported(X86_NOT_IMPLEMENTED)),
     }
     .map_err(Failure::Cg)
 }
@@ -199,6 +207,8 @@ fn check_features(arch: Arch, string: &str) -> Result<(), (&'static str, &str)> 
     match arch {
         Arch::Aarch64 => hod_a64::features::check(string).map_err(|r| (r.reason, r.feature)),
         Arch::X86_64 => hod_x64::features::check(string).map_err(|r| (r.reason, r.feature)),
+        // No 32-bit code generation judges features yet.
+        Arch::I386 => Err((X86_NOT_IMPLEMENTED, string)),
     }
 }
 
@@ -207,7 +217,7 @@ fn check_features(arch: Arch, string: &str) -> Result<(), (&'static str, &str)> 
 /// function with an `x86_fp80` value (`spec/codegen.md` §5.6.9).
 fn check_function_features(arch: Arch, string: &str) -> Result<(), (&'static str, &str)> {
     match arch {
-        Arch::Aarch64 => check_features(arch, string),
+        Arch::Aarch64 | Arch::I386 => check_features(arch, string),
         Arch::X86_64 => {
             hod_x64::features::check_function(string).map_err(|r| (r.reason, r.feature))
         }
@@ -521,6 +531,11 @@ pub fn generate_with(
     report: &mut Report,
 ) -> Result<Vec<u8>, CompileError> {
     let cg = cg_options(options)?;
+    // 32-bit x86: the front half has read, verified and classified the
+    // module; there is no code generator yet (design 0008, WP-286).
+    if module.target().arch() == Arch::I386 {
+        return Err(Unsupported::module(Construct::Named(X86_NOT_IMPLEMENTED.into())).into());
+    }
     check_split_dwarf(module, options)?;
     // `-mattr` applies to every function.
     for item in &options.features {

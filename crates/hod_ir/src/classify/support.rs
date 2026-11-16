@@ -49,6 +49,8 @@ pub struct Support {
 
 static SHIPPED_AARCH64: Support = Support::build(Arch::Aarch64, false);
 static SHIPPED_X86_64: Support = Support::build(Arch::X86_64, false);
+/// x86-64's column under 32-bit x86's name (`SupportRow::cell`).
+static SHIPPED_I386: Support = Support::build(Arch::I386, false);
 
 impl Support {
     const fn build(arch: Arch, everything: bool) -> Support {
@@ -120,6 +122,7 @@ impl Support {
         match arch {
             Arch::Aarch64 => &SHIPPED_AARCH64,
             Arch::X86_64 => &SHIPPED_X86_64,
+            Arch::I386 => &SHIPPED_I386,
         }
     }
 

@@ -16,7 +16,7 @@ mod common;
 
 use std::fmt::Write as _;
 
-use common::{CONFIGS, Config, Place, Ty, type_corpus};
+use common::{CONFIGS, Config, I386_CONFIGS, Place, Ty, type_corpus};
 use hod_ir::TypeTable;
 use hod_testutil::Scratch;
 
@@ -207,4 +207,17 @@ fn layout_matches_llvm19_on_aarch64() {
 #[test]
 fn layout_matches_llvm19_on_x86_64() {
     check(&CONFIGS[3]);
+}
+
+/// §3 layout on 32-bit x86 against LLVM 22 (WP-286): `i64` and `double`
+/// aligned to 4, `x86_fp80` of 12 bytes, 32-bit pointers.
+#[test]
+fn layout_matches_llvm22_on_i686() {
+    check(&I386_CONFIGS[0]);
+}
+
+/// §3 layout on 32-bit x86 against LLVM 19 (WP-286).
+#[test]
+fn layout_matches_llvm19_on_i686() {
+    check(&I386_CONFIGS[1]);
 }

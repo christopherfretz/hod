@@ -117,6 +117,9 @@ fn classifier_for(arch: Arch, support: &Support) -> Classifier<'_> {
     match arch {
         Arch::Aarch64 => classifier.with_stack_args(&A64_STACK_ARGS),
         Arch::X86_64 => classifier.with_stack_args(&X64_STACK_ARGS),
+        // No 32-bit stack-argument rule before its code generator: a
+        // `musttail` call is `musttail:stack-args-unknown`.
+        Arch::I386 => classifier,
     }
 }
 

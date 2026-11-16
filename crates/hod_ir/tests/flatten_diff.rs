@@ -124,6 +124,7 @@ fn resolve(
                 match config.arch {
                     Arch::X86_64 => "R_X86_64_PLT32".to_string(),
                     Arch::Aarch64 => "R_AARCH64_PLT32".to_string(),
+                    Arch::I386 => panic!("flatten_diff runs the 64-bit configurations only"),
                 }
             } else {
                 reloc_kind(config.arch, fixup.size, true)

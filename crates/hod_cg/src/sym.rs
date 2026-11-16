@@ -1014,7 +1014,9 @@ pub fn fp_routine(op: FpOp, ty: FpType, arch: Arch) -> Option<RuntimeFn> {
             O::Div => RuntimeFn::DivTf3,
             _ => return long_row(op).map(|row| row[usize::from(arch == Arch::X86_64)]),
         }),
-        (Arch::Aarch64, FpType::X86Fp80) => None,
+        // No 32-bit code generation yet (design 0008, WP-286): nothing
+        // asks for I386, `ModuleEmitter::new` refuses the target first.
+        (Arch::Aarch64, FpType::X86Fp80) | (Arch::I386, _) => None,
         (Arch::X86_64, FpType::X86Fp80) => match op {
             O::Sqrt | O::Lrint | O::Llrint => None,
             O::Powi => Some(RuntimeFn::PowiXf2),

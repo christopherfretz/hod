@@ -360,6 +360,8 @@ impl<'m> ModuleEmitter<'m> {
         let arch = match module.target().arch() {
             hod_ir::Arch::Aarch64 => Arch::AArch64,
             hod_ir::Arch::X86_64 => Arch::X86_64,
+            // No 32-bit code generation yet (design 0008, WP-286).
+            hod_ir::Arch::I386 => return Err(CgError::unsupported("x86:not-implemented")),
         };
         let mut obj = Object::new(arch);
         let count = module.symbol_count();

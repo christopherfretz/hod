@@ -12,8 +12,8 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use hod_ir::{
-    AARCH64_LINUX_DATA_LAYOUT, AARCH64_LINUX_DATA_LAYOUT_LLVM19, Arch, DataLayout, TypeId,
-    TypeTable, X86_64_LINUX_DATA_LAYOUT,
+    AARCH64_LINUX_DATA_LAYOUT, AARCH64_LINUX_DATA_LAYOUT_LLVM19, Arch, DataLayout,
+    I386_LINUX_DATA_LAYOUT as I386_LAYOUT, TypeId, TypeTable, X86_64_LINUX_DATA_LAYOUT,
 };
 use hod_testutil::Scratch;
 
@@ -33,6 +33,7 @@ impl Config {
         let arch = match self.arch {
             Arch::Aarch64 => "aarch64",
             Arch::X86_64 => "x86_64",
+            Arch::I386 => "i686",
         };
         format!("{arch}-llvm{}", self.llvm)
     }
@@ -87,6 +88,13 @@ pub const CONFIGS: [Config; 4] = [
         triple: "x86_64-unknown-linux-gnu",
         layout: X86_64_LINUX_DATA_LAYOUT,
     },
+];
+
+/// 32-bit x86 (WP-286) with LLVM 22 and LLVM 19: clang writes the same
+/// layout string at both.
+pub const I386_CONFIGS: [Config; 2] = [
+    Config { arch: Arch::I386, llvm: 22, triple: "i686-unknown-linux-gnu", layout: I386_LAYOUT },
+    Config { arch: Arch::I386, llvm: 19, triple: "i686-unknown-linux-gnu", layout: I386_LAYOUT },
 ];
 
 /// The LLVM tools of one major version.

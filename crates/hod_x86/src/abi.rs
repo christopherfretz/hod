@@ -158,9 +158,10 @@ pub fn callee_pop(asg: &Assignment) -> u32 {
 }
 
 /// The refusal of a value of type `ty` that is no `Gpr` value: by the
-/// family that owns it.
+/// family that owns it (an integer wider than 64 bits: `x86:i64:wide`).
 pub fn type_refusal(types: &TypeTable, ty: TypeId) -> &'static str {
     match types.kind(ty) {
+        TypeKind::Int(bits) if bits > 64 => crate::int::WIDE,
         TypeKind::Int(_) => crate::int::I64,
         TypeKind::Half
         | TypeKind::BFloat
@@ -536,6 +537,16 @@ mod tests {
 
     fn places(asg: &Assignment) -> Vec<(u32, u32, u32, Place)> {
         asg.args.iter().map(|p| (p.arg, p.offset, p.size, p.place)).collect()
+    }
+
+    /// i386 join C: an integer wider than 64 bits is `x86:i64:wide`, one of
+    /// 33 to 63 bits (no `Gpr` value, no ABI leaf) `x86:i64`.
+    #[test]
+    fn integer_refusals_by_width() {
+        let mut types = table();
+        assert_eq!(type_refusal(&types, TypeId::I128), "x86:i64:wide");
+        let i40 = types.int(40).unwrap();
+        assert_eq!(type_refusal(&types, i40), "x86:i64");
     }
 
     #[test]

@@ -15,9 +15,18 @@
 //!   such a frame. Every build prints the same.
 //! - The unwind rows of a function with `eh.unwind.init` save the
 //!   registers `llc` saves.
-//! - `llvm.eh.dwarf.cfa` and `llvm.eh.return.i64` are refused by their
-//!   rows (`llc` 19 and 22 miscompile both), `eh.unwind.init` where the
-//!   frame has no room for its area by name.
+//! - `llvm.eh.dwarf.cfa` (WP-294): in one program `__builtin_dwarf_cfa()`
+//!   (plain, with an over-aligned local, after a VLA, in a variadic
+//!   function, with outgoing and with incoming stack arguments, with
+//!   constant and variable offsets) is the caller's stack pointer before
+//!   the call plus the offset (where the call has no stack arguments),
+//!   and the CFA libgcc's unwinder computes
+//!   from the frame's own rows (`_Unwind_GetCFA`). Built by `llc` 19 and
+//!   22 the same program prints every value 16 lower (their `x29 + k`):
+//!   hod follows the unwind rows and GCC, not `llc`.
+//! - `llvm.eh.return.i64` is refused by its row (`llc` 19 and 22 emit
+//!   nothing for it), `eh.unwind.init` where the frame has no room for
+//!   its area by name.
 
 mod common;
 
@@ -511,22 +520,254 @@ fn what_llc_miscompiles_is_refused_by_its_row() {
         let body_pass = bodies.iter().find_map(|b| hod_ir::classify_body(&module, b).err());
         module_pass.or(body_pass).map(|r| r.construct.into_owned())
     };
-    let cases = [
-        (
-            "declare ptr @llvm.eh.dwarf.cfa(i32)\ndefine ptr @f() {\n  %r = call ptr @llvm.eh.dwarf.cfa(i32 0)\n  ret ptr %r\n}\n",
-            "intrinsic:llvm.eh.dwarf.cfa",
-        ),
-        (
-            "declare void @llvm.eh.return.i64(i64, ptr)\ndefine void @f(i64 %o, ptr %h) {\n  call void @llvm.eh.return.i64(i64 %o, ptr %h)\n  unreachable\n}\n",
-            "intrinsic:llvm.eh.return.i64",
-        ),
-    ];
+    let cases = [(
+        "declare void @llvm.eh.return.i64(i64, ptr)\ndefine void @f(i64 %o, ptr %h) {\n  call void @llvm.eh.return.i64(i64 %o, ptr %h)\n  unreachable\n}\n",
+        "intrinsic:llvm.eh.return.i64",
+    )];
     for (functions, want) in cases {
         assert_eq!(classify(functions).as_deref(), Some(want), "{functions}");
     }
-    for ok in [FUNCTIONS, SAVING_ALONE] {
+    for ok in [FUNCTIONS, SAVING_ALONE, CFA_FUNCTIONS] {
         assert_eq!(classify(ok), None);
     }
+}
+
+/// The shapes of `llvm.eh.dwarf.cfa` (WP-294). Each takes the CFA, asks
+/// the unwinder for its own (`check`: the value less `_Unwind_GetCFA` of
+/// the caller of `check`, stored at `%u`) and returns the value.
+const CFA_FUNCTIONS: &str = r#"
+declare ptr @llvm.eh.dwarf.cfa(i32)
+declare ptr @llvm.stacksave.p0()
+declare void @llvm.va_start.p0(ptr)
+declare void @llvm.va_end.p0(ptr)
+declare void @sink(ptr)
+declare i64 @check(ptr)
+declare void @ten(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64)
+
+define ptr @cfa_plain(ptr %u) #0 {
+  %c = call ptr @llvm.eh.dwarf.cfa(i32 0)
+  %d = call i64 @check(ptr %c)
+  store i64 %d, ptr %u
+  ret ptr %c
+}
+
+define ptr @cfa_aligned(ptr %u) #0 {
+  %a = alloca [64 x i8], align 64
+  call void @sink(ptr %a)
+  %c = call ptr @llvm.eh.dwarf.cfa(i32 0)
+  %d = call i64 @check(ptr %c)
+  store i64 %d, ptr %u
+  ret ptr %c
+}
+
+define ptr @cfa_vla(ptr %u, i64 %n) #0 {
+  %a = alloca i8, i64 %n, align 16
+  call void @sink(ptr %a)
+  %c = call ptr @llvm.eh.dwarf.cfa(i32 0)
+  %d = call i64 @check(ptr %c)
+  store i64 %d, ptr %u
+  ret ptr %c
+}
+
+define ptr @cfa_va(ptr %u, ...) #0 {
+  %ap = alloca [32 x i8], align 8
+  call void @llvm.va_start.p0(ptr %ap)
+  %c = call ptr @llvm.eh.dwarf.cfa(i32 0)
+  %d = call i64 @check(ptr %c)
+  store i64 %d, ptr %u
+  call void @llvm.va_end.p0(ptr %ap)
+  ret ptr %c
+}
+
+define ptr @cfa_outgoing(ptr %u) #0 {
+  call void @ten(i64 1, i64 2, i64 3, i64 4, i64 5, i64 6, i64 7, i64 8, i64 9, i64 10)
+  %c = call ptr @llvm.eh.dwarf.cfa(i32 0)
+  %d = call i64 @check(ptr %c)
+  store i64 %d, ptr %u
+  ret ptr %c
+}
+
+define ptr @cfa_incoming(ptr %u, i64 %a1, i64 %a2, i64 %a3, i64 %a4, i64 %a5, i64 %a6, i64 %a7, i64 %a8, i64 %a9) #0 {
+  %c = call ptr @llvm.eh.dwarf.cfa(i32 0)
+  %d = call i64 @check(ptr %c)
+  store i64 %d, ptr %u
+  ret ptr %c
+}
+
+define ptr @cfa_at(ptr %u, i32 %k) #0 {
+  %c = call ptr @llvm.eh.dwarf.cfa(i32 %k)
+  %d = call i64 @check(ptr %c)
+  store i64 %d, ptr %u
+  ret ptr %c
+}
+
+define ptr @cfa_minus8(ptr %u) #0 {
+  %c = call ptr @llvm.eh.dwarf.cfa(i32 -8)
+  %d = call i64 @check(ptr %c)
+  store i64 %d, ptr %u
+  ret ptr %c
+}
+
+define ptr @cfa_plus40(ptr %u) #0 {
+  %c = call ptr @llvm.eh.dwarf.cfa(i32 40)
+  %d = call i64 @check(ptr %c)
+  store i64 %d, ptr %u
+  ret ptr %c
+}
+
+define void @distance(ptr %out, i64 %i, ptr %sp, ptr %at) #0 {
+  %s = ptrtoint ptr %sp to i64
+  %c = ptrtoint ptr %at to i64
+  %d = sub i64 %c, %s
+  %o = getelementptr i64, ptr %out, i64 %i
+  store i64 %d, ptr %o
+  ret void
+}
+
+; Each value less the stack pointer before the call; the unwinder's
+; differences at `%u`. No dynamic slot here: hod's calls with stack
+; arguments then use the outgoing area, the stack pointer does not move.
+define void @cfa_distances(ptr %out, ptr %u) #0 {
+  %u1 = getelementptr i64, ptr %u, i64 1
+  %u2 = getelementptr i64, ptr %u, i64 2
+  %u3 = getelementptr i64, ptr %u, i64 3
+  %u4 = getelementptr i64, ptr %u, i64 4
+  %u5 = getelementptr i64, ptr %u, i64 5
+  %u6 = getelementptr i64, ptr %u, i64 6
+  %u7 = getelementptr i64, ptr %u, i64 7
+  %u8 = getelementptr i64, ptr %u, i64 8
+  %u9 = getelementptr i64, ptr %u, i64 9
+  %s0 = call ptr @llvm.stacksave.p0()
+  %c0 = call ptr @cfa_plain(ptr %u)
+  call void @distance(ptr %out, i64 0, ptr %s0, ptr %c0)
+  %s1 = call ptr @llvm.stacksave.p0()
+  %c1 = call ptr @cfa_aligned(ptr %u1)
+  call void @distance(ptr %out, i64 1, ptr %s1, ptr %c1)
+  %s2 = call ptr @llvm.stacksave.p0()
+  %c2 = call ptr @cfa_vla(ptr %u2, i64 100)
+  call void @distance(ptr %out, i64 2, ptr %s2, ptr %c2)
+  %s3 = call ptr @llvm.stacksave.p0()
+  %c3 = call ptr (ptr, ...) @cfa_va(ptr %u3, i64 7, double 1.5, i64 1, i64 2, i64 3, i64 4, i64 5, i64 6, i64 7, i64 8)
+  call void @distance(ptr %out, i64 3, ptr %s3, ptr %c3)
+  %s4 = call ptr @llvm.stacksave.p0()
+  %c4 = call ptr @cfa_outgoing(ptr %u4)
+  call void @distance(ptr %out, i64 4, ptr %s4, ptr %c4)
+  %s5 = call ptr @llvm.stacksave.p0()
+  %c5 = call ptr @cfa_incoming(ptr %u5, i64 1, i64 2, i64 3, i64 4, i64 5, i64 6, i64 7, i64 8, i64 9)
+  call void @distance(ptr %out, i64 5, ptr %s5, ptr %c5)
+  %s6 = call ptr @llvm.stacksave.p0()
+  %c6 = call ptr @cfa_at(ptr %u6, i32 24)
+  call void @distance(ptr %out, i64 6, ptr %s6, ptr %c6)
+  %s7 = call ptr @llvm.stacksave.p0()
+  %c7 = call ptr @cfa_at(ptr %u7, i32 -16)
+  call void @distance(ptr %out, i64 7, ptr %s7, ptr %c7)
+  %s8 = call ptr @llvm.stacksave.p0()
+  %c8 = call ptr @cfa_minus8(ptr %u8)
+  call void @distance(ptr %out, i64 8, ptr %s8, ptr %c8)
+  %s9 = call ptr @llvm.stacksave.p0()
+  %c9 = call ptr @cfa_plus40(ptr %u9)
+  call void @distance(ptr %out, i64 9, ptr %s9, ptr %c9)
+  ret void
+}
+
+attributes #0 = { noinline "frame-pointer"="all" }
+"#;
+
+const CFA_DRIVER: &str = r#"
+#include <stdio.h>
+#include <stdint.h>
+#include <unwind.h>
+extern "C" {
+void cfa_distances(long *, long *);
+__attribute__((noinline)) void sink(void *p) { asm volatile("" :: "r"(p) : "memory"); }
+__attribute__((noinline)) void ten(long, long, long, long, long, long, long, long, long, long) {
+  asm volatile("");
+}
+struct Walk { int n; uintptr_t cfa; };
+static _Unwind_Reason_Code step(struct _Unwind_Context *c, void *arg) {
+  Walk *w = (Walk *)arg;
+  // libgcc's context `n` has the return address into frame `n` (0 is
+  // `check`) and the CFA of frame `n - 1`: the CFA of `check`'s caller
+  // is in the context whose address is in that caller's caller.
+  if (w->n++ == 2) {
+    w->cfa = _Unwind_GetCFA(c);
+    return _URC_END_OF_STACK;
+  }
+  return _URC_NO_REASON;
+}
+__attribute__((noinline)) long check(void *c) {
+  Walk w = {0, 0};
+  _Unwind_Backtrace(step, &w);
+  return w.cfa == 0 ? 999999 : (long)((uintptr_t)c - w.cfa);
+}
+}
+int main() {
+  long d[10], u[10];
+  cfa_distances(d, u);
+  // The calls with stack arguments (3, 5) are left out of the first
+  // line: hod's caller moves its stack pointer for them, `llc`'s does
+  // not, so the stack pointer before the call is not the callee's CFA.
+  printf("cfa:");
+  for (int i = 0; i < 10; i++)
+    if (i != 3 && i != 5) printf(" %ld", d[i]);
+  printf("\nunwinder:");
+  for (long v : u) printf(" %ld", v);
+  printf("\n");
+  return 0;
+}
+"#;
+
+/// The offsets the shapes add: plain, aligned, VLA, variadic, outgoing,
+/// incoming, `24`, `-16` (both variable), `-8`, `40`.
+const CFA_OFFSETS: [i64; 10] = [0, 0, 0, 0, 0, 0, 24, -16, -8, 40];
+
+/// What the program prints when every value is the CFA less `bias` plus
+/// its offset.
+fn cfa_expected(bias: i64) -> String {
+    let line = |name: &str, skip: &[usize]| {
+        let values: Vec<String> = (0..CFA_OFFSETS.len())
+            .filter(|i| !skip.contains(i))
+            .map(|i| (CFA_OFFSETS[i] - bias).to_string())
+            .collect();
+        format!("{name}: {}\n", values.join(" "))
+    };
+    format!("{}{}", line("cfa", &[3, 5]), line("unwinder", &[]))
+}
+
+/// WP-294: `llvm.eh.dwarf.cfa(k)` is the CFA the unwinder computes from
+/// the frame's rows, plus `k`, in every frame shape; `llc` 19 and 22 give
+/// 16 less (`x29 + k`) in every one, so they are compared with that
+/// bias.
+#[test]
+fn dwarf_cfa_is_the_unwinders_cfa() {
+    let dir = Scratch::new("a64-dwarf-cfa");
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
+    let Some(driver) =
+        toolchain.compile_cxx(&dir, "driver", CFA_DRIVER, &["-fPIC", "-fno-omit-frame-pointer"])
+    else {
+        return;
+    };
+    let mut runs = 0;
+    for (who, object) in objects(&dir, CFA_FUNCTIONS) {
+        let want = cfa_expected(if who.starts_with("llc") { 16 } else { 0 });
+        for linker in &toolchain.linkers {
+            for (how, flags) in [("dynamic", &[][..]), ("static", &["-static"][..])] {
+                let program = dir.join(format!("cfa-{who}-{how}-{}", linker.name));
+                toolchain.link_ok(linker, flags, &[&driver, &object], &program);
+                let mut command = toolchain.runner_command(&program);
+                let ran = run_with(&mut command, &[], Duration::from_mins(5));
+                assert_eq!(
+                    (exit_code(&ran), ran.stdout_text()),
+                    (Some(0), want.clone()),
+                    "{who} {how} {}: {}",
+                    linker.name,
+                    ran.stderr_text()
+                );
+                runs += 1;
+            }
+        }
+    }
+    eprintln!("AArch64 dwarf.cfa programs that printed the expected text: {runs}");
 }
 
 /// §5.6.38: `eh.unwind.init` where the bytes after the frame record or

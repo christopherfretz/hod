@@ -165,7 +165,7 @@ development host's and are needed while 4.5 has no `-g` mode.
 
 | | command | target | time | page | pass means |
 |---|---|---|---|---|---|
-| 5.1 the lane | `source scripts/env.sh && scripts/oss/oss-run.sh <project>...` (each project of the 1.0 set below, both flavours `O0` and `O0g`, the three modes), then the page's command in section 7 | AArch64, native | per project, in the lanes' notes (three builds of each flavour, one at a time); build trees are pruned after each | `docs/status/oss.md` | every row: `fell back` 0, `not offered` 0, strict build `ok`, every object `hod` in "Strict builds", `against the control` `same` (or better), its `hod` and `kiln` cells naming the commits it was measured at |
+| 5.1 the lane | `source scripts/env.sh && scripts/oss/oss-run.sh <project>...` (each project of the 1.0 set below, both flavours `O0` and `O0g`, the three modes), then the page's command in section 7 | AArch64, native | per project, in the lanes' notes (three builds of each flavour, one at a time); build trees are pruned after each | `docs/status/oss.md` | every row: `fell back` 0, `not offered` 0, strict build `ok`, every object `hod` in "Strict builds", `against the control` `same` (or better), its `hod` and `kiln` cells naming the commits it was measured at. The one stated exception (the owner's decision of 2026-11-15): kiln never offers hod a translation unit compiled with `--coverage` (skip reason `coverage`; the gcov instrumentation runs in kiln's LLVM pipeline), so zlib's `infcover.c` is `not offered` and zlib has 36 of 37 objects by hod on both targets; not hod's fault, it does not block 1.0 (BACKLOG WP-279) |
 | 5.2 the lane, x86-64 | `scripts/oss/oss-run.sh <project>... --target x86_64` (a new hod: `--modes strict --strict`, the control kept), then the page's command in section 7 | x86-64, cross-built, tests under qemu | as 5.1 and more | `docs/status/oss-x64.md` | as 5.1; a test that runs an x86-64 program outside ctest fails in the control too and is compared, not counted |
 | 5.3 hosted | `.github/workflows/oss.yml` by hand (inputs: kiln's commit, the rows) or on an `oss/**` branch | both runners natively | per row | the run's artifacts | as 5.1, on both runners natively |
 | 5.4 LLVM and Clang | `scripts/oss/llvm/` (native: `configure.sh`, `build.sh`, `strict.sh`, `unittests.sh`, `lit.sh`, `census-file.sh`) and `scripts/oss/llvm-x64/` (cross) | AArch64 native; x86-64 cross under qemu | hours per tree; about 21 GB of disk for a pair | `docs/status/oss-llvm.md` | every TU offered to hod and built by it in the strict build, and the tests identical per test with the kiln + `llc` control |
@@ -174,26 +174,29 @@ development host's and are needed while 4.5 has no `-g` mode.
 up to the candidate, not every row of kiln's `projects.toml`: a project
 is in the set for a target and flavour when it has a row on
 `docs/status/oss.md`, `docs/status/oss-x64.md` or `docs/status/oss-llvm.md`
-at the freeze. Measured by 2026-11-15 (on the pages of `5e2abc5e`):
+at the freeze. At the freeze (the pages of the candidate `cd6ef6bc`,
+2026-11-15): 24 projects on AArch64, 34 on x86-64, LLVM and Clang on
+both:
 
 | project | AArch64, native | x86-64, cross under qemu |
 |---|---|---|
-| fmt, googletest, abseil, protobuf, spdlog, yaml_cpp, glog, leveldb, cli11, doctest | `O0`, `O0g` | `O0`, `O0g` |
-| re2 | `O0`, `O0g` | `O0` (`O0g` running) |
-| benchmark, catch2, nlohmann_json, simdjson, magic_enum, tl_expected, zlib, zstd | `O0`, `O0g` | - |
-| mold | `O0`, `O0g` | - |
-| gRPC | `O0` (`O0g` running) | - |
-| DuckDB | `O0`, `O0g` | - |
-| highway, Eigen | - | `O0` |
-| range_v3, cereal, ctre, entt | - | `O0`, `O0g` |
-| Boost (`boost_tmpl`) | - | `O0` (`O0g` running) |
-| LLVM 19.1.7 and Clang (`oss-llvm.md`) | native | cross |
+| fmt, googletest, abseil, benchmark, protobuf, spdlog, catch2, nlohmann_json, yaml_cpp, glog, leveldb, cli11, doctest, simdjson, zlib, zstd, mold | `O0`, `O0g` | `O0`, `O0g` |
+| re2 | `O0`, `O0g` | `O0`, `O0g` (native, the hosted run's x86_64 runner) |
+| magic_enum, tl_expected, CMake, OpenCV, DuckDB | `O0`, `O0g` | - |
+| gRPC | `O0`, `O0g` (in a note: no control trees kept) | - |
+| range_v3, Eigen, Boost (`boost_tmpl`), FlatBuffers, ctre, entt, cereal, scnlib, glaze, daw_json_link, mp_units, reflect_cpp, libunifex, stdexec | - | `O0`, `O0g` |
+| highway, taskflow | - | `O0` (`O0g` not measured: WP-275 for taskflow) |
+| LLVM 19.1.7 and Clang (`oss-llvm.md`) | native | cross (LLVM) |
+
+On the AArch64 page, the rows of benchmark, re2, abseil, googletest,
+fmt, protobuf, yaml_cpp, glog, nlohmann_json, doctest, spdlog, catch2,
+cli11, simdjson and leveldb are the reports of the hosted real-projects
+run 43779000922 of exactly `cd6ef6bc` (GitHub's aarch64 runner; the hod
+cell says so).
 
 After 1.0: every other row of `scripts/oss/projects.toml` (highway_avx2,
-simdjson_haswell, capnproto, and the rows measured once whose reports the
-lane did not keep, so that no page has their row: flatbuffers, rocksdb,
-cmake, opencv; each enters the set if it is measured again before the
-freeze), and every row of kiln's `projects.toml` that hod's has not
+simdjson_haswell, capnproto, rocksdb), the flavours not measured above,
+and every row of kiln's `projects.toml` that hod's has not
 (`docs/status/release.md` lists them).
 
 **The rule for a row at the candidate.** The candidate's re-measurement
@@ -256,8 +259,8 @@ does not depend on them) and its numbers are of runs at `C`.
 | `debug.md`, `debug-x64.md` | section 3 |
 | `libcxx-baseline.md`, `libcxx-baseline-x64.md` | 4.1, 4.2 (only when `K` or the suite moved) |
 | `libcxx-hod.md`, `libcxx-hod-x64.md`, `libcxx-hod-debug.md`, `libcxx-hod-debug-x64.md` | 4.3 to 4.7 |
-| `oss.md` | after section 5.1, from the hod checkout (`B` is the build root): `source scripts/env.sh && B=$(dirname "$CARGO_TARGET_DIR") && python3 -I scripts/oss/oss-report.py status --root $B/oss --root $B/oss3 --root $B/oss4 --provenance scripts/oss/provenance-aarch64.tsv --candidate C [--carried-from P] --out docs/status/oss.md` (one `--root` per native lane root; the newest report of a build wins) |
-| `oss-x64.md` | after section 5.2: `source scripts/env.sh && B=$(dirname "$CARGO_TARGET_DIR") && python3 -I scripts/oss/oss-report.py --target x86_64 status --root $B/oss --root $B/oss2 --root $B/oss3 --root $B/oss5 --provenance scripts/oss/provenance-x86_64.tsv --candidate C [--carried-from P] --out docs/status/oss-x64.md` |
+| `oss.md` | after section 5.1, from the hod checkout (`B` is the build root): `source scripts/env.sh && B=$(dirname "$CARGO_TARGET_DIR") && python3 -I scripts/oss/oss-report.py status --root $B/oss --root $B/oss3 --root $B/oss4 --root $B/oss6 --root $H/aarch64 --provenance scripts/oss/provenance-aarch64.tsv --candidate C [--carried-from P] --out docs/status/oss.md` (one `--root` per native lane root; the newest report of a build wins). `$H` holds symlinks to a hosted `oss.yml` run's downloaded artifacts in the generator's layout, the artifacts unchanged: `$H/aarch64/build/<project>` to `oss-aarch64-<project>/build/<project>`, `$H/x86_64/x64-build/<project>` to `oss-x86_64-<project>/build/<project>`; at `cd6ef6bc`: run 43779000922 (`.build/findings/hosted-oss-43779000922/`), the 15 projects on aarch64, re2 on x86_64, `H=$CARGO_TARGET_DIR/hosted-roots`; the provenance file maps the job's binary `hod` to its commit |
+| `oss-x64.md` | after section 5.2: `source scripts/env.sh && B=$(dirname "$CARGO_TARGET_DIR") && python3 -I scripts/oss/oss-report.py --target x86_64 status --root $B/oss --root $B/oss2 --root $B/oss3 --root $B/oss5 --root $B/oss6 --root $H/x86_64 --provenance scripts/oss/provenance-x86_64.tsv --candidate C [--carried-from P] --out docs/status/oss-x64.md` |
 | `oss-llvm.md` | section 5.4, by hand from the LLVM lane's records |
 | `fuzz.md` | section 6 |
 | `perf.md` | not a 1.0 condition: stays as last measured (`docs/VALIDATION.md` "Release candidate") |

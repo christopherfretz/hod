@@ -257,7 +257,7 @@ does not depend on them) and its numbers are of runs at `C`.
 | `libcxx-baseline.md`, `libcxx-baseline-x64.md` | 4.1, 4.2 (only when `K` or the suite moved) |
 | `libcxx-hod.md`, `libcxx-hod-x64.md`, `libcxx-hod-debug.md`, `libcxx-hod-debug-x64.md` | 4.3 to 4.7 |
 | `oss.md` | after section 5.1, from the hod checkout (`B` is the build root): `source scripts/env.sh && B=$(dirname "$CARGO_TARGET_DIR") && python3 -I scripts/oss/oss-report.py status --root $B/oss --root $B/oss3 --root $B/oss4 --provenance scripts/oss/provenance-aarch64.tsv --candidate C [--carried-from P] --out docs/status/oss.md` (one `--root` per native lane root; the newest report of a build wins) |
-| `oss-x64.md` | after section 5.2: `source scripts/env.sh && B=$(dirname "$CARGO_TARGET_DIR") && python3 -I scripts/oss/oss-report.py --target x86_64 status --root $B/oss --root $B/oss2 --root $B/oss5 --provenance scripts/oss/provenance-x86_64.tsv --candidate C [--carried-from P] --out docs/status/oss-x64.md` |
+| `oss-x64.md` | after section 5.2: `source scripts/env.sh && B=$(dirname "$CARGO_TARGET_DIR") && python3 -I scripts/oss/oss-report.py --target x86_64 status --root $B/oss --root $B/oss2 --root $B/oss3 --root $B/oss5 --provenance scripts/oss/provenance-x86_64.tsv --candidate C [--carried-from P] --out docs/status/oss-x64.md` |
 | `oss-llvm.md` | section 5.4, by hand from the LLVM lane's records |
 | `fuzz.md` | section 6 |
 | `perf.md` | not a 1.0 condition: stays as last measured (`docs/VALIDATION.md` "Release candidate") |

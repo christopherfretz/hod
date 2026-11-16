@@ -393,7 +393,10 @@ def kiln_cell(*rs):
 
 
 # `status --candidate <commit>`: the release candidate's hod commit; a row
-# whose hod or strict build used another hod is marked as measured before it.
+# whose strict build (or, without one, whose hod build) used another hod is
+# marked as measured before it. The candidate re-runs only the strict build
+# (docs/RELEASE.md section 5, rule 3); the `hod` cell still names the hod
+# build's commit too.
 CANDIDATE = None
 # `status --carried-from <commit>`: the previous candidate whose rows stand
 # for this one (docs/RELEASE.md section 5, rule 5): a row measured there is
@@ -479,7 +482,7 @@ def status_rows(reps, notes=None):
                 f"| {p} | {ref.get('tag') or '-'} | {fl} | {ref['tus']['total']} | {objects_cell(c)} | {be.get('hod', '-') if c else '-'} | "
                 f"{fell if c else '-'} | {no if c else '-'} | {build_cell(h)} | {build_cell(s)} | "
                 f"{test_cell(l)} | {test_cell(h)} | {test_cell(s)} | {'; '.join(diffs) or '-'} | {hod_cell(h, s)} | {kiln_cell(l, h, s)} |"
-                + (f" {candidate_cell(h, s)} |" if CANDIDATE else "")
+                + (f" {candidate_cell(s or h)} |" if CANDIDATE else "")
             )
     return out
 
@@ -855,7 +858,7 @@ def main():
         "kiln took the LLVM route itself (an `opt` trigger). Tests: passed/total (ctest). "
         "`revision`: the project's tag or commit; `hod`: the hod commit of the hod and strict builds; "
         "`kiln`: the kiln commit of the row's builds (the control's included)"
-        + (f"; `at the candidate`: whether the hod and strict builds used the candidate's hod, "
+        + (f"; `at the candidate`: whether the strict build (without one, the hod build) used the candidate's hod, "
            + ("which is not chosen yet" if CANDIDATE == "-" else f"`{CANDIDATE}`")
            + " (a control does not depend on hod)"
            + (f"; `carried over from {CARRIED_FROM}`: measured at the previous candidate and standing"

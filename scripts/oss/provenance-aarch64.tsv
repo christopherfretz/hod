@@ -12,7 +12,20 @@ kiln	grpc	O0	llc	21b9110a4
 kiln	grpc	O0	hod	21b9110a4 then 8f93304ee
 kiln	grpc	*	*	8f93304ee
 #
+# The third set (WP-211): OpenCV and CMake on kiln 1.2.0 in every tree (the
+# rows at 02fe2d02 and the strict re-runs at cd6ef6bc); mold at hod 77873543
+# on kiln 21caaf874 (the lane's census, CENSUS-3.md)
+kiln	opencv	*	*	8f93304ee
+kiln	cmake	*	*	8f93304ee
+kiln	mold	*	*	21caaf874
+#
+# frozen copies of the release candidates under other names (WP-211)
+hod	hod-rc3-cd6ef6bc	cd6ef6bc
+hod	hod-rc-02fe2d02	02fe2d02
+#
 note	zlib: one of 37 objects is not offered to hod by kiln (`coverage`); the strict build is marked `failed (0 TUs)`, its tests equal the control's.
 note	duckdb -O0 at hod 3b14f8ff: the strict build stopped at two jemalloc translation units refused as `alwaysinline:stacksave-escapes` (built since WP-237); the row is to be measured again.
 note	duckdb -O0 -g: `test/sql/index/art/scan/test_random_uuid.test` failed in the hybrid build's test run with an allocation failure under the 16 GB address-space cap, twice (in the -O0 hybrid run as well); run alone under the same cap it passes (reruns in the -O0 tree), and the strict build's tests equal the control's. Under investigation; not counted as same.
-note	mold: the kiln commit of these builds is not in their reports (kiln 21caaf874 or 21b9110a4).
+note	gRPC (WP-211) has no row in the table: its control trees and reports were deleted for disk, so the generator has no control to compare with. The lane compared the strict re-runs program by program with the control's recorded results (CENSUS-3.md; reports `.build/findings/oss3/rc-e98267c0/` and `rc-cd6ef6bc/`), kiln 8f93304ee: `-O0` strict at e98267c0, 2002 of 2002 objects by hod, 26 links, 19 of 24 test programs pass, the control's 19 (carried over from e98267c0, see release.md); `-O0 -g` strict at cd6ef6bc, 2002 of 2002 objects by hod, 26 links, 19 of 24, the control's.
+note	CMake: every failing test of every tree, the control's included, fails in a sub-case with "Current working directory cannot be established." from the built cmake, a flake of the build volume, in a different RunCMake suite per tree (the lane's census, CENSUS-3.md "cmake"). `-O0` strict at cd6ef6bc: 97/97 (control 96/97). `-O0 -g` strict at cd6ef6bc: 96/97 against the control's 96/97, each with one such failure in a different suite (strict: RunCMake.try_compile); the failing test could not be rerun alone, the tree was pruned for disk.
+note	mold: the kiln commit of these builds is not in their reports; the lane's census names kiln 21caaf874 (hod 77873543).

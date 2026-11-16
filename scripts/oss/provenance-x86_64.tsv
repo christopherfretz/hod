@@ -9,17 +9,39 @@
 hod	hod-715150d4	e7b8796d
 hod	hod-8ec6b21e	9e25d3f1
 hod	hod-f59b4cc6	56a4695f
+# frozen copies of the release candidates under other names: the third set's
+# copy of cd6ef6bc (WP-211) and the fifth set's copy of e98267c0 (WP-253)
+hod	hod-rc3-cd6ef6bc	cd6ef6bc
+hod	hod-rc-02fe2d02	02fe2d02
+hod	hod-e98267c0-x	e98267c0
 #
 # kiln, first lane set (WP-191): runs 10 to 12 on kiln 1.1.0; abseil's
 # -O0 -g strict tree and re2's -O0 trees on kiln 1.2.0 (kiln++ rebuilt in
 # place at 01:19Z on 2026-11-15) and re2's on kiln 1.2.0 (run 15)
 kiln	abseil	O0g	strict	8f93304ee
 kiln	re2	*	*	8f93304ee
+kiln	eigen	O0	strict	8f93304ee
 kiln	eigen	O0	*	21b9110a4
 kiln	eigen	O0g	*	8f93304ee
 kiln	highway	*	*	8f93304ee
 kiln	range_v3	*	*	8f93304ee
 kiln	boost_tmpl	*	*	8f93304ee
+# kiln 1.2.0 for every tree of the projects first built after the pin move
+# (runs 17 and 18; the third set's FlatBuffers), and for every control and
+# strict tree of the first set since: the controls rebuilt on kiln 1.2.0
+# (ctl-1), the strict re-runs at 02fe2d02, e98267c0 and cd6ef6bc (strict-1,
+# strict-2, strict-B/A/C); the hod (hybrid) trees of runs 10 to 12 stay on
+# kiln 1.1.0
+kiln	zlib	*	*	8f93304ee
+kiln	zstd	*	*	8f93304ee
+kiln	mold	*	*	8f93304ee
+kiln	nlohmann_json	*	*	8f93304ee
+kiln	catch2	*	*	8f93304ee
+kiln	benchmark	*	*	8f93304ee
+kiln	simdjson	*	*	8f93304ee
+kiln	flatbuffers	*	*	8f93304ee
+kiln	*	*	llc	8f93304ee
+kiln	*	*	strict	8f93304ee
 kiln	*	*	*	21b9110a4
 #
 note	Boost (`boost_tmpl`, -O0): the strict build stopped at the refusal `asm:section` (module assembly that switches to `.debug_gdb_scripts`) at hod 56a4695f; WP-255 builds it since. The strict tests are of a partial build (programs not built count as failed), not a miscompile; the row is to be measured again at the candidate. Every build, the control's included, ends with one of its 528 links failing, hence `failed (0 TUs)`; the hybrid build's tests equal the control's.

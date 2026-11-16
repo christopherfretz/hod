@@ -175,6 +175,17 @@ def carried(tmp, ok):
     row = next((ln for ln in log.splitlines() if ln.startswith("| abseil")), "")
     check("carried over: only with --carried-from", row.rstrip().endswith("| no: measured before the candidate |"),
           row or log[-2000:])
+    # The candidate re-runs only the strict build (section 5, rule 3): the
+    # strict build decides the cell; an older hod build beside it does not.
+    for at, want in (("abcd0000", "yes"), ("cafe1234", "carried over from cafe1234 (see release.md)")):
+        root = os.path.join(tmp, f"strict-{at}")
+        build(root, "llc", ok)
+        build(root, "hod", ok, hod_path="/frozen/hod-beef5678")
+        build(root, "strict", ok, hod_path=f"/frozen/hod-{at}")
+        got, log = run(root, [], "status", "--candidate", "abcd0000", "--carried-from", "cafe1234")
+        row = next((ln for ln in log.splitlines() if ln.startswith("| abseil")), "")
+        check(f"at the candidate: the strict build at {at} decides", got == 0
+              and row.rstrip().endswith(f"| {want} |"), row or log[-2000:])
 
 
 def main():

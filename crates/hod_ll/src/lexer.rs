@@ -183,10 +183,17 @@ fn is(byte: u8, class: u8) -> bool {
 /// The lexer: a position in a source.
 #[derive(Clone, Debug)]
 pub struct Lexer<'a> {
-    /// The bytes tokens are read from: the source, or nothing for a
-    /// source larger than [`MAX_SOURCE_BYTES`], so that the size is
-    /// looked at once and not per token.
+    /// The bytes white space is skipped over and a token's first byte
+    /// looked for in: [`Lexer::bytes`] up to the offset of the next token
+    /// to replay, so that the replay costs no test per token: it is
+    /// looked at where the end of these bytes is met, as are the end of
+    /// the source and a source too large. The rules of a token read
+    /// `bytes`.
     src: &'a [u8],
+    /// The source, or nothing for a source larger than
+    /// [`MAX_SOURCE_BYTES`], so that the size is looked at once and not
+    /// per token.
+    bytes: &'a [u8],
     /// The source as given.
     full: &'a [u8],
     pos: usize,
@@ -206,7 +213,7 @@ pub struct Lexer<'a> {
     /// The next entry of `replay` that may still be wanted.
     replay_at: usize,
     /// The offset that entry was looked for at; `usize::MAX` when there
-    /// is none, so the test per token is one compare.
+    /// is none, and then `src` is `bytes`.
     replay_from: usize,
 }
 
@@ -244,6 +251,7 @@ impl<'a> Lexer<'a> {
         let src = if src.len() > MAX_SOURCE_BYTES { &src[..0] } else { src };
         Lexer {
             src,
+            bytes: src,
             full,
             pos: 0,
             error: "",
@@ -261,7 +269,7 @@ impl<'a> Lexer<'a> {
         let mut tokens = std::mem::take(&mut self.replay);
         tokens.clear();
         self.replay_at = 0;
-        self.replay_from = usize::MAX;
+        self.set_replay_from(usize::MAX);
         Recording(tokens)
     }
 
@@ -272,7 +280,7 @@ impl<'a> Lexer<'a> {
         tokens.clear();
         self.replay = tokens;
         self.replay_at = 0;
-        self.replay_from = usize::MAX;
+        self.set_replay_from(usize::MAX);
     }
 
     /// From now on a token looked for at an offset `recording` has one
@@ -283,7 +291,15 @@ impl<'a> Lexer<'a> {
         debug_assert!(recording.0.windows(2).all(|pair| pair[0].from < pair[1].from));
         self.replay = recording.0;
         self.replay_at = 0;
-        self.replay_from = self.replay.first().map_or(usize::MAX, |entry| entry.from as usize);
+        self.set_replay_from(self.replay.first().map_or(usize::MAX, |entry| entry.from as usize));
+    }
+
+    /// Sets where the next token to replay was looked for, and with it
+    /// the bytes white space is skipped over: up to that offset.
+    #[inline]
+    fn set_replay_from(&mut self, from: usize) {
+        self.replay_from = from;
+        self.src = self.bytes.get(..from).unwrap_or(self.bytes);
     }
 
     /// The recorded token looked for at `pos`, if there is one; skips the
@@ -293,19 +309,20 @@ impl<'a> Lexer<'a> {
         while let Some(entry) = self.replay.get(self.replay_at) {
             let from = entry.from as usize;
             if from > self.pos {
-                self.replay_from = from;
+                self.set_replay_from(from);
                 return None;
             }
             self.replay_at += 1;
             if from == self.pos {
                 let token = entry.token;
-                self.replay_from =
+                let next =
                     self.replay.get(self.replay_at).map_or(usize::MAX, |next| next.from as usize);
+                self.set_replay_from(next);
                 self.pos = token.end as usize;
                 return Some(token);
             }
         }
-        self.replay_from = usize::MAX;
+        self.set_replay_from(usize::MAX);
         None
     }
 
@@ -321,7 +338,7 @@ impl<'a> Lexer<'a> {
 
     /// Moves to `pos`, which must be a token boundary.
     pub fn set_pos(&mut self, pos: usize) {
-        self.pos = pos.min(self.src.len());
+        self.pos = pos.min(self.bytes.len());
     }
 
     /// Why the last [`Tok::Error`] token was not a token.
@@ -331,13 +348,13 @@ impl<'a> Lexer<'a> {
 
     /// The bytes of `token`.
     pub fn text(&self, token: Token) -> &'a [u8] {
-        &self.src[token.start as usize..token.end as usize]
+        &self.bytes[token.start as usize..token.end as usize]
     }
 
     /// The byte at `at`, or zero past the end (as LLVM's buffers end).
     #[inline]
     fn at(&self, at: usize) -> u8 {
-        self.src.get(at).copied().unwrap_or(0)
+        self.bytes.get(at).copied().unwrap_or(0)
     }
 
     /// The first byte at or after `from` that is not a label character.
@@ -364,21 +381,10 @@ impl<'a> Lexer<'a> {
         (self.at(end) == b':').then_some(end + 1)
     }
 
-    /// The first offset at or after `at` whose byte is not of `class`
-    /// (the end of the source has none).
-    ///
-    /// Eight bytes at a time while eight are left, so that a byte costs
-    /// its class test and not also an end test, then byte by byte.
+    /// [`skip_while`] over the source.
     #[inline]
-    fn skip_while(&self, mut at: usize, class: u8) -> usize {
-        while let Some(chunk) = self.src.get(at..).and_then(<[u8]>::first_chunk::<8>) {
-            if let Some(n) = chunk.iter().position(|&b| !is(b, class)) {
-                return at + n;
-            }
-            at += 8;
-        }
-        let rest = self.src.get(at..).unwrap_or_default();
-        at + rest.iter().position(|&b| !is(b, class)).unwrap_or(rest.len())
+    fn skip_while(&self, at: usize, class: u8) -> usize {
+        skip_while(self.bytes, at, class)
     }
 
     fn token(&mut self, kind: Tok, start: usize, end: usize) -> Token {
@@ -390,13 +396,13 @@ impl<'a> Lexer<'a> {
     #[inline]
     fn keyword_token(&mut self, kind: Tok, start: usize, end: usize) -> Token {
         self.pos = end;
-        let kw = keyword_at(self.src, start, end);
+        let kw = keyword_at(self.bytes, start, end);
         Token { kind, kw, start: start as u32, end: end as u32 }
     }
 
     fn fail(&mut self, why: &'static str, start: usize, end: usize) -> Token {
         self.error = why;
-        self.token(Tok::Error, start, end.min(self.src.len()).max(start))
+        self.token(Tok::Error, start, end.min(self.bytes.len()).max(start))
     }
 
     /// Skips white space and comments; `Err` is an error token.
@@ -411,15 +417,23 @@ impl<'a> Lexer<'a> {
             match src.get(pos) {
                 Some(&b) if !is(b, SKIP) => return Ok(pos),
                 Some(b' ') => pos += 1,
+                // The end of `src`, where the next token to replay is
+                // looked at, too.
+                None => return Ok(pos),
                 _ => break,
             }
         }
         loop {
-            pos = self.skip_while(pos, BLANK);
+            pos = skip_while(src, pos, BLANK);
             match src.get(pos) {
                 Some(b';') => pos = find_byte(src, pos, b'\n').unwrap_or(src.len()),
                 Some(b'/') if src.get(pos + 1) == Some(&b'*') => {
                     let Some(end) = comment_end(src, pos + 2) else {
+                        if src.len() < self.bytes.len() {
+                            // It may end past the next token to replay:
+                            // the end of `src`, where that is looked at.
+                            return Ok(src.len());
+                        }
                         return Err(self.fail("unterminated /* comment", pos, pos + 2));
                     };
                     pos = end;
@@ -433,20 +447,52 @@ impl<'a> Lexer<'a> {
     /// [`Tok::Error`] token is at least one byte, so a caller that goes on
     /// makes progress.
     pub fn next_token(&mut self) -> Token {
-        // A tail call either way, so that lexing needs no frame here.
-        if self.pos >= self.replay_from {
-            return self.replay_or_lex();
-        }
         self.lex()
     }
 
-    /// The recorded token at `pos`, or the one lexed there.
+    /// The token at `pos` when the blank skip or the first byte met the
+    /// end of `src`: the end of the source, a source larger than
+    /// [`MAX_SOURCE_BYTES`], or the next token to replay (§2.8). In the
+    /// last case the token is the recorded one if there is one at `pos`,
+    /// and otherwise the one lexed there over the whole source.
     #[inline(never)]
-    fn replay_or_lex(&mut self) -> Token {
-        match self.replayed() {
-            Some(token) => token,
-            None => self.lex_out_of_line(),
+    fn at_end(&mut self) -> Token {
+        // Most often the next recorded token is the one wanted.
+        if let Some(&entry) = self.replay.get(self.replay_at)
+            && entry.from as usize == self.pos
+        {
+            self.replay_at += 1;
+            let next =
+                self.replay.get(self.replay_at).map_or(usize::MAX, |next| next.from as usize);
+            self.set_replay_from(next);
+            self.pos = entry.token.end as usize;
+            return entry.token;
         }
+        self.at_end_rest()
+    }
+
+    /// [`Lexer::at_end`] when the next recorded token is not at `pos`.
+    #[inline(never)]
+    fn at_end_rest(&mut self) -> Token {
+        if self.replay_from != usize::MAX {
+            return match self.replayed() {
+                Some(token) => token,
+                None => {
+                    let src = self.src;
+                    self.src = self.bytes;
+                    let token = self.lex_out_of_line();
+                    // `replayed` set `src` for what is left to replay;
+                    // the lexing must not have moved it.
+                    self.src = src;
+                    token
+                }
+            };
+        }
+        if self.full.len() > MAX_SOURCE_BYTES {
+            return self.fail("source is larger than 4 GiB", 0, 0);
+        }
+        let end = self.bytes.len();
+        self.token(Tok::Eof, end, end)
     }
 
     #[inline(never)]
@@ -463,10 +509,7 @@ impl<'a> Lexer<'a> {
             Err(token) => return token,
         };
         let Some(&c) = self.src.get(start) else {
-            if self.full.len() > MAX_SOURCE_BYTES {
-                return self.fail("source is larger than 4 GiB", 0, 0);
-            }
-            return self.token(Tok::Eof, start, start);
+            return self.at_end();
         };
         let one = |kind| Token { kind, kw: Kw::Other, start: start as u32, end: start as u32 + 1 };
         // One dispatch on the first byte: the tokens that are most of a
@@ -567,7 +610,7 @@ impl<'a> Lexer<'a> {
     /// The offset after the closing quote of a string whose contents start
     /// at `from`.
     fn string_end(&self, from: usize) -> Option<usize> {
-        find_byte(self.src, from, b'"').map(|at| at + 1)
+        find_byte(self.bytes, from, b'"').map(|at| at + 1)
     }
 
     /// `@`, `%` or `$` and what follows.
@@ -694,7 +737,7 @@ impl<'a> Lexer<'a> {
     /// from those sixteen bytes. Everything else goes through the rules.
     #[inline(never)]
     fn word(&mut self, c: u8, start: usize) -> Token {
-        let Some(bytes) = self.src.get(start..).and_then(<[u8]>::first_chunk::<16>) else {
+        let Some(bytes) = self.bytes.get(start..).and_then(<[u8]>::first_chunk::<16>) else {
             return self.word_rule(c, start);
         };
         let second = bytes[1];
@@ -741,7 +784,7 @@ impl<'a> Lexer<'a> {
         if let Some(label) = self.label_tail(end) {
             return self.token(Tok::Label, start, label);
         }
-        let text = &self.src[start..end];
+        let text = &self.bytes[start..end];
         if text.len() > 3
             && matches!(c, b'u' | b's')
             && text[1] == b'0'
@@ -756,6 +799,23 @@ impl<'a> Lexer<'a> {
         }
         self.keyword_token(Tok::Word, start, end)
     }
+}
+
+/// The first offset at or after `at` whose byte is not of `class` (the
+/// end of `src` has none).
+///
+/// Eight bytes at a time while eight are left, so that a byte costs its
+/// class test and not also an end test, then byte by byte.
+#[inline]
+fn skip_while(src: &[u8], mut at: usize, class: u8) -> usize {
+    while let Some(chunk) = src.get(at..).and_then(<[u8]>::first_chunk::<8>) {
+        if let Some(n) = chunk.iter().position(|&b| !is(b, class)) {
+            return at + n;
+        }
+        at += 8;
+    }
+    let rest = src.get(at..).unwrap_or_default();
+    at + rest.iter().position(|&b| !is(b, class)).unwrap_or(rest.len())
 }
 
 /// Appends to `out` the bytes that the contents of a string or quoted
@@ -1114,6 +1174,54 @@ mod tests {
                 lexer.set_pos(from);
                 assert_eq!(lexer.next_token(), token);
             }
+        }
+    }
+
+    /// §2.8: the recorded tokens bound the bytes the blank skip looks at
+    /// (`Lexer::src`); white space and comments that run past the next
+    /// recorded offset, a token recorded at its start rather than where
+    /// the lexer before it stopped, and an unterminated comment before a
+    /// recorded token all give what lexing gives, for many choices of
+    /// what is recorded.
+    #[test]
+    fn replay_bounds_are_invisible() {
+        let text = b"a  b /* c ; */ d ; e /*\n f\n  g,h \"i;\" /* j */\n\n  k:  %l /* open";
+        let plain: Vec<(usize, Token)> = {
+            let mut lexer = Lexer::new(text);
+            std::iter::from_fn(|| {
+                let from = lexer.pos();
+                let token = lexer.next_token();
+                (token.kind != Tok::Eof).then_some((from, token))
+            })
+            .collect()
+        };
+        let open = text.len() - b"/* open".len();
+        let error = plain.iter().find(|entry| entry.1.kind == Tok::Error).map(|entry| entry.1);
+        assert_eq!(error.map(|token| token.start as usize), Some(open));
+        assert_eq!(plain.last().map(|entry| entry.1.kind), Some(Tok::Word));
+        let mut seed = 0x2545_f491_u32;
+        for _ in 0..400 {
+            let mut recording = Recording::default();
+            for &(from, token) in &plain {
+                seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                if token.kind == Tok::Error || seed >> 30 == 0 {
+                    continue;
+                }
+                // At the offset the lexer stopped at, or at the token's
+                // own start: the token is the same.
+                let at = if seed & 0x100 == 0 { from } else { token.start as usize };
+                recording.push(at, token);
+            }
+            let mut lexer = Lexer::new(text);
+            lexer.replay(recording);
+            for &(from, token) in &plain {
+                assert_eq!(lexer.pos(), from);
+                assert_eq!(lexer.next_token(), token);
+                if token.kind == Tok::Error {
+                    assert_eq!(lexer.error(), "unterminated /* comment");
+                }
+            }
+            assert_eq!(lexer.next_token().kind, Tok::Eof);
         }
     }
 

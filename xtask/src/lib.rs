@@ -9,6 +9,8 @@
 pub mod bench;
 pub mod ci;
 #[cfg(unix)]
+pub mod compare_binaries;
+#[cfg(unix)]
 pub mod corpus;
 #[cfg(unix)]
 pub mod debug;

@@ -21,9 +21,21 @@ the lane needs and hod does not give:
   (default 1) per reason, the first runs winning;
 - `HOD_OSS_STRICT=1`: a decline (status 2) becomes status 1, so kiln's
   `KILN_HOD_STRICT=1` makes it a compile error (kiln falls back silently
-  from status 2 even then).
+  from status 2 even then);
+- `HOD_OSS_MODULES_DIR` (set by oss-build.sh from the opt-in
+  `HOD_OSS_KEEP_MODULES`; WP-272): every module, whatever hod answered,
+  kept as `<dir>/<h>.ll` (the bytes hod received), `<h>` the sha256 of the
+  module and of the arguments with the object's path left out, so an
+  identical compile keeps nothing new; a new module adds a row to
+  `<dir>/MODULES.tsv`: `hash`, `bytes`, `output`, then hod's arguments,
+  one per field (`\\`, `\t`, `\n`, `\r` escaped). `cargo xtask
+  compare-binaries --modules` replays them. The module is kept after hod
+  has run; a module that cannot be kept fails the compile (status 1,
+  `hod-shim: cannot keep the module`): a lane that silently kept nothing
+  would make the comparison meaningless.
 
-The shim never changes the input, the arguments or a successful answer.
+The shim never changes the input, the arguments or a successful answer
+(but for a module it could not keep).
 """
 
 import hashlib
@@ -102,6 +114,64 @@ def save(rec, data):
     return path
 
 
+def tsv(field):
+    return field.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n").replace("\r", "\\r")
+
+
+def keep_module(args, data):
+    """The module and its arguments under $HOD_OSS_MODULES_DIR (see the
+    header). Raises OSError when it cannot."""
+    d = os.environ.get("HOD_OSS_MODULES_DIR")
+    if not d:
+        return
+    if "-" not in args:
+        raise OSError("the module is not on standard input ('-' is not an argument)")
+    key, skip = [], False
+    for a in args:
+        if skip:
+            key.append("<object>")
+            skip = False
+        elif a == "-o":
+            key.append(a)
+            skip = True
+        elif a.startswith("-o") and len(a) > 2:
+            key.append("-o<object>")
+        else:
+            key.append(a)
+    h = hashlib.sha256()
+    h.update(data)
+    h.update(b"\0" + "\0".join(key).encode("utf-8", "surrogateescape"))
+    name = h.hexdigest()[:40]
+    os.makedirs(d, exist_ok=True)
+    manifest = os.path.join(d, "MODULES.tsv")
+    if not os.path.exists(manifest):
+        try:
+            fd = os.open(manifest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            pass
+        else:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write("hash\tbytes\toutput\targs\n")
+    path = os.path.join(d, name + ".ll")
+    if os.path.exists(path):
+        return
+    tmp = os.path.join(d, f".{name}.{os.getpid()}.tmp")
+    with open(tmp, "wb") as f:
+        f.write(data)
+    try:
+        os.link(tmp, path)
+    except FileExistsError:
+        return
+    finally:
+        os.unlink(tmp)
+    row = "\t".join([name, str(len(data)), tsv(output_of(args) or "-")] + [tsv(a) for a in args]) + "\n"
+    fd = os.open(manifest, os.O_WRONLY | os.O_APPEND)
+    try:
+        os.write(fd, row.encode("utf-8", "surrogateescape"))
+    finally:
+        os.close(fd)
+
+
 def main():
     real = os.environ.get("HOD_OSS_REAL_HOD")
     if not real:
@@ -147,6 +217,11 @@ def main():
             os.write(fd, line)
         finally:
             os.close(fd)
+    try:
+        keep_module(args, data)
+    except OSError as e:
+        sys.stderr.write(f"hod-shim: cannot keep the module in {os.environ.get('HOD_OSS_MODULES_DIR')}: {e}\n")
+        return 1
     if rc == 2 and os.environ.get("HOD_OSS_STRICT") == "1":
         return 1
     if rc < 0:

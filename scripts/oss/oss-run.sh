@@ -17,6 +17,11 @@
 # `--modes` runs only the modes named (a rerun with a new hod keeps the
 # control's reports: `--modes "hod strict"`, or `--modes strict --strict`).
 #
+# `HOD_OSS_KEEP_MODULES=<absolute dir>` (opt-in, WP-272) keeps every
+# module the hod and strict builds hand hod, with its arguments, under
+# <dir>/<target>/<project>/<flavour>/ (oss-build.sh's header), for `cargo
+# xtask compare-binaries --modules <dir>`.
+#
 # It runs from a copy of scripts/oss taken when it starts
 # (<root>/lane-<pid>/, removed at exit), and bash parses this file whole
 # before running it (the braces): editing the lane while a run is going

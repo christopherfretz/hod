@@ -309,6 +309,20 @@ under `findings/oss/<project>/<reason>/` in the build root, with their
 command lines. The hosted form is `.github/workflows/oss.yml` (x86-64 and
 AArch64 runners; by hand or on an `oss/**` branch).
 
+With `HOD_OSS_KEEP_MODULES=<absolute dir>` (off by default; WP-272) the
+lane also keeps every module the hod and strict builds hand hod, with
+hod's arguments, under `<dir>/<target>/<project>/<flavour>/`
+(`<hash>.ll` and `MODULES.tsv`; an identical module is kept once), and a
+module that cannot be kept fails its compile. Two hod binaries are then
+compared on the projects' own translation units, as on the corpus
+(`spec/harness.md` "compare-binaries"; `docs/RELEASE.md` section 5,
+rule 5):
+
+```
+HOD_OSS_KEEP_MODULES=$PWD/../.build/kept scripts/oss/oss-run.sh fmt --modes "hod strict"
+cargo xtask compare-binaries --base <old hod> --head <new hod> --modules ../.build/kept --out <abs dir>
+```
+
 The same lane runs for x86-64 on the AArch64 host (`--target x86_64`,
 `spec/landed/harness/WP-191.md`): kiln is given
 `--target=x86_64-unknown-linux-gnu` and finds the cross GCC and its

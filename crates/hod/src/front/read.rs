@@ -12,7 +12,7 @@ use hod_ll::{LlError, LlErrorKind};
 use super::{
     BitcodeReading, LIMIT_READER, Report, Settings, ir_reason, named, read_threads, reason_name,
 };
-use crate::back::{ThreadTokens, Threads};
+use crate::back::{ObjectFile, ThreadTokens, Threads};
 use crate::contain::contained;
 use crate::session::Session;
 use crate::{
@@ -85,6 +85,33 @@ pub fn compile_releasing(
     // poisoning); the reader, the session and their threads are dropped
     // and joined inside; `report` is left as the front half last wrote
     // it, which the caller reads as such.
+    let result = contained(|| front(input, options, settings, report).and_then(|o| o.to_vec()))
+        .and_then(|result| result);
+    if settings.census
+        && report.reasons.is_empty()
+        && let Err(error) = &result
+    {
+        report.reason(reason_name(error));
+    }
+    result
+}
+
+/// [`compile_releasing`] that answers the object unwritten
+/// (`spec/cli.md` "The facade"): checked and laid out, the module and
+/// its bodies already freed, for the caller to write with
+/// [`ObjectFile::write_to`] straight from the sections' buffers, never
+/// holding the whole file a second time. Its bytes are those
+/// [`compile_releasing`] returns.
+///
+/// # Errors
+/// As [`crate::compile`].
+pub fn compile_object(
+    input: &mut Cow<'_, [u8]>,
+    options: &Options,
+    settings: &Settings,
+    report: &mut Report,
+) -> Result<ObjectFile, CompileError> {
+    // Contained as `compile_releasing` is.
     let result = contained(|| front(input, options, settings, report)).and_then(|result| result);
     if settings.census
         && report.reasons.is_empty()
@@ -100,7 +127,7 @@ fn front(
     options: &Options,
     settings: &Settings,
     report: &mut Report,
-) -> Result<Vec<u8>, CompileError> {
+) -> Result<ObjectFile, CompileError> {
     let input: &[u8] = source;
     if options.output_kind != OutputKind::Object {
         return Err(decline(Construct::AssemblyOutput));
@@ -212,8 +239,7 @@ fn front(
         bytes.shrink_to(1);
         *source = Cow::Borrowed(&[]);
     }
-    let mut object = Vec::new();
-    answer(session.finish(&mut object).map(|done| (object, done)), report)
+    answer(session.finish_object(), report)
 }
 
 /// The threads that read the bodies: [`read_threads`] of what `threads`
@@ -327,9 +353,9 @@ fn feed(session: &mut Session, sym: SymId, read: Result<Body, &[Box<str>]>) -> b
 
 /// A session's answer, its report into the caller's.
 fn answer(
-    result: Result<(Vec<u8>, Report), (CompileError, Report)>,
+    result: Result<(ObjectFile, Report), (CompileError, Report)>,
     report: &mut Report,
-) -> Result<Vec<u8>, CompileError> {
+) -> Result<ObjectFile, CompileError> {
     match result {
         Ok((object, done)) => {
             *report = done;

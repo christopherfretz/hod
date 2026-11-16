@@ -601,11 +601,12 @@ fn check_split_dwarf(module: &Module, options: &Options) -> Result<(), CompileEr
 /// for a module without split unit, compressed as the object's debug
 /// sections are.
 fn write_dwo(
-    object: &mut hod_obj::Object,
+    dwo: Option<hod_obj::Object>,
+    arch: hod_obj::Arch,
     path: &std::path::Path,
     compression: hod_obj::Compression,
 ) -> Result<(), CompileError> {
-    let mut dwo = object.take_dwo().unwrap_or_else(|| hod_obj::Object::new(object.arch()));
+    let mut dwo = dwo.unwrap_or_else(|| hod_obj::Object::new(arch));
     dwo.compress_debug_sections(compression).map_err(from_obj)?;
     let bytes = hod_obj::elf::to_vec(&dwo).map_err(from_obj)?;
     std::fs::write(path, bytes).map_err(|e| {
@@ -625,6 +626,62 @@ pub fn generate_with(
     threads: &Threads,
     report: &mut Report,
 ) -> Result<Vec<u8>, CompileError> {
+    let object = generate_object(module, bodies, options, threads, report)?;
+    let bytes = object.0.to_vec().map_err(from_obj)?;
+    report.phase("object");
+    Ok(bytes)
+}
+
+/// The object of a compile, checked and laid out, not yet written
+/// (`spec/cli.md` "The facade"): what [`crate::compile_object`] answers,
+/// so that the caller writes the file from the sections' own buffers,
+/// never holding a second copy of the whole object.
+#[derive(Debug)]
+pub struct ObjectFile(hod_obj::elf::Prepared);
+
+impl ObjectFile {
+    /// The size of the file in bytes.
+    #[must_use]
+    pub fn size(&self) -> u64 {
+        self.0.file_size()
+    }
+
+    /// Writes the file into `out`, front to back, in pieces of at most
+    /// 64 KiB or as the sections hold them; `out` is not flushed. The
+    /// bytes are those [`crate::compile_releasing`] returns for the same
+    /// compile.
+    ///
+    /// # Errors
+    /// The outer error is a panic of hod's while writing, contained as
+    /// [`CompileError::Panic`]; the inner one, `out`'s failure. Either
+    /// way `out` may have received part of the file.
+    pub fn write_to(
+        &self,
+        out: &mut dyn std::io::Write,
+    ) -> Result<std::io::Result<u64>, CompileError> {
+        crate::contain::contained(|| self.0.write(&mut &mut *out))
+    }
+
+    /// The file as one vector.
+    ///
+    /// # Errors
+    /// [`crate::LIMIT_OBJECT`] when the vector cannot be allocated; a
+    /// contained panic.
+    pub fn to_vec(&self) -> Result<Vec<u8>, CompileError> {
+        crate::contain::contained(|| self.0.to_vec().map_err(from_obj)).and_then(|bytes| bytes)
+    }
+}
+
+/// [`generate_with`] up to the object's layout: the object checked and
+/// ready to write, the `.dwo` file written. The phase `object` is the
+/// caller's to report.
+pub(crate) fn generate_object(
+    module: &Module,
+    bodies: &[Body],
+    options: &Options,
+    threads: &Threads,
+    report: &mut Report,
+) -> Result<ObjectFile, CompileError> {
     let cg = cg_options(options)?;
     check_split_dwarf(module, options)?;
     // `-mattr` applies to every function.
@@ -679,14 +736,19 @@ pub fn generate_with(
     crate::contain::fault::hit(crate::contain::fault::Site::Finish);
     let mut emitted =
         emitted.and_then(|()| module_emitter.finish()).map_err(|error| from_cg(error, None))?;
-    let object = hod_obj::elf::to_vec(&emitted.object).map_err(from_obj)?;
-    if let Some(path) = &options.split_dwarf_output
-        && cg.split_dwarf == hod_dwarf::SplitDwarf::Separate
-    {
-        write_dwo(&mut emitted.object, path, cg.debug_compression)?;
+    // The `.dwo` companion is never part of the object's bytes; taken
+    // first, it is written after the object passed the writer's checks.
+    let dwo = options
+        .split_dwarf_output
+        .as_ref()
+        .filter(|_| cg.split_dwarf == hod_dwarf::SplitDwarf::Separate)
+        .map(|path| (path, emitted.object.take_dwo()));
+    let arch = emitted.object.arch();
+    let object = hod_obj::elf::prepare(emitted.object).map_err(from_obj)?;
+    if let Some((path, dwo)) = dwo {
+        write_dwo(dwo, arch, path, cg.debug_compression)?;
     }
-    report.phase("object");
-    Ok(object)
+    Ok(ObjectFile(object))
 }
 
 #[cfg(test)]

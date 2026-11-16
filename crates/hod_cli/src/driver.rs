@@ -29,15 +29,39 @@ pub const EXIT_ERROR: u8 = 1;
 /// Exit status: the module is unsupported and no fallback ran.
 pub const EXIT_UNSUPPORTED: u8 = 2;
 
-/// The code generator: `hod::compile_releasing` in the binary. The input
-/// is owned where nothing after the compile needs it, so that the
-/// compile may free it once read (`spec/cli.md` "The facade").
+/// The code generator: [`compile_hod`] in the binary. The input is owned
+/// where nothing after the compile needs it, so that the compile may free
+/// it once read (`spec/cli.md` "The facade").
 pub type Compile<'a> = &'a dyn Fn(
     &mut Cow<'_, [u8]>,
     &Options,
     &hod::Settings,
     &mut Report,
-) -> Result<Vec<u8>, CompileError>;
+) -> Result<Output, CompileError>;
+
+/// What a compile answers: the object to write.
+#[derive(Debug)]
+pub enum Output {
+    /// The file's bytes: a stand-in's answer, in tests.
+    #[cfg(test)]
+    Bytes(Vec<u8>),
+    /// hod's object, written from its sections' own buffers.
+    Object(Box<hod::ObjectFile>),
+}
+
+/// `hod::compile_object`, the binary's code generator.
+///
+/// # Errors
+/// As `hod::compile_object`.
+pub fn compile_hod(
+    input: &mut Cow<'_, [u8]>,
+    options: &Options,
+    settings: &hod::Settings,
+    report: &mut Report,
+) -> Result<Output, CompileError> {
+    hod::compile_object(input, options, settings, report)
+        .map(|object| Output::Object(object.into()))
+}
 
 /// The process's standard streams.
 pub struct Io<'a> {
@@ -271,19 +295,17 @@ impl Job<'_, '_> {
             self.record.reasons = Some(report.reasons);
         }
 
-        let error = match compiled {
-            Ok(object) => {
-                return match write_output(&output, &object, self.io.stdout) {
-                    Ok(()) => {
-                        self.phases.end("write");
-                        self.record.outcome = Outcome::Hod;
-                        self.record.hod_time = self.start.elapsed();
-                        Finished { exit: EXIT_OK, record: self.record }
-                    }
-                    Err(message) => self.fail(EXIT_ERROR, "output-unwritable", &message),
-                };
+        let error = match compiled.map(|object| write_output(&output, &object, self.io.stdout)) {
+            Ok(Ok(())) => {
+                self.phases.end("write");
+                self.record.outcome = Outcome::Hod;
+                self.record.hod_time = self.start.elapsed();
+                return Finished { exit: EXIT_OK, record: self.record };
             }
-            Err(error) => error,
+            Ok(Err(Unwritten::Io(message))) => {
+                return self.fail(EXIT_ERROR, "output-unwritable", &message);
+            }
+            Ok(Err(Unwritten::Panic(error))) | Err(error) => error,
         };
         let (reason, exit): (Cow<'static, str>, u8) = match &error {
             CompileError::Unsupported(unsupported) => {
@@ -498,15 +520,38 @@ fn output_name(line: &CommandLine) -> OsString {
     name
 }
 
-fn write_output(name: &OsStr, bytes: &[u8], stdout: &mut dyn Write) -> Result<(), String> {
-    if name == "-" {
-        stdout
-            .write_all(bytes)
-            .and_then(|()| stdout.flush())
-            .map_err(|e| format!("cannot write standard output: {e}"))
+/// Why the object was not written whole.
+enum Unwritten {
+    /// The output failed: the diagnostic.
+    Io(String),
+    /// hod panicked while writing it: answered as a panic while compiling
+    /// is.
+    Panic(CompileError),
+}
+
+/// Writes the object to standard output (`-`) or to the file `name`,
+/// created or truncated once the object is known to be writable; a
+/// failure part way leaves what was written (`spec/cli.md` "Driver").
+fn write_output(name: &OsStr, object: &Output, stdout: &mut dyn Write) -> Result<(), Unwritten> {
+    let write = |out: &mut dyn Write| match object {
+        #[cfg(test)]
+        Output::Bytes(bytes) => Ok(out.write_all(bytes)),
+        Output::Object(object) => object.write_to(out).map(|written| written.map(drop)),
+    };
+    let (written, what) = if name == "-" {
+        let written = write(stdout).map(|done| done.and_then(|()| stdout.flush()));
+        (written, "standard output".to_owned())
     } else {
-        std::fs::write(name, bytes)
-            .map_err(|e| format!("cannot write '{}': {e}", Path::new(name).display()))
+        let what = format!("'{}'", Path::new(name).display());
+        match std::fs::File::create(name) {
+            Ok(mut file) => (write(&mut file), what),
+            Err(e) => return Err(Unwritten::Io(format!("cannot write {what}: {e}"))),
+        }
+    };
+    match written {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(Unwritten::Io(format!("cannot write {what}: {e}"))),
+        Err(panic) => Err(Unwritten::Panic(panic)),
     }
 }
 
@@ -585,8 +630,8 @@ mod tests {
         _: &Options,
         _: &hod::Settings,
         _: &mut Report,
-    ) -> Result<Vec<u8>, CompileError> {
-        Ok(OBJECT.to_vec())
+    ) -> Result<Output, CompileError> {
+        Ok(Output::Bytes(OBJECT.to_vec()))
     }
 
     struct Ran {
@@ -617,7 +662,7 @@ mod tests {
         let probe =
             |_: &mut Cow<'_, [u8]>, _: &Options, settings: &hod::Settings, _: &mut Report| {
                 seen.set(Some((settings.threads.max, settings.threads.tokens.is_some())));
-                Ok(OBJECT.to_vec())
+                Ok(Output::Bytes(OBJECT.to_vec()))
             };
         let make = Some("-j8 --jobserver-auth=fifo:/nonexistent/fifo".to_owned());
         let threads = |args: &[&str], explicit: Option<usize>, makeflags: &Option<String>| {
@@ -670,12 +715,12 @@ mod tests {
             e.census = true;
         });
         for env in [&env, &census] {
-            let ran = run_with(&["-filetype=obj"], env, &hod::compile_releasing, MODULE);
+            let ran = run_with(&["-filetype=obj"], env, &compile_hod, MODULE);
             assert_eq!(ran.exit, EXIT_UNSUPPORTED);
-            let ran = run_with(&["-filetype=obj"], env, &hod::compile_releasing, DECLARATIONS);
+            let ran = run_with(&["-filetype=obj"], env, &compile_hod, DECLARATIONS);
             assert_eq!(ran.exit, EXIT_OK);
             assert!(ran.stdout.starts_with(b"\x7FELF"));
-            let ran = run_with(&["-filetype=asm"], env, &hod::compile_releasing, MODULE);
+            let ran = run_with(&["-filetype=asm"], env, &compile_hod, MODULE);
             assert_eq!(ran.exit, EXIT_UNSUPPORTED);
         }
         let lines = fields(&log);
@@ -728,21 +773,19 @@ mod tests {
         assert_eq!((ran.exit, ran.stderr.as_str()), (EXIT_OK, ""));
         assert_eq!(phases(), "read compile write total");
         // A decline is the phases up to it.
-        let ran = run_with(&["-filetype=obj", "--strict"], &env, &hod::compile_releasing, MODULE);
+        let ran = run_with(&["-filetype=obj", "--strict"], &env, &compile_hod, MODULE);
         assert_eq!(ran.exit, EXIT_UNSUPPORTED);
         assert_eq!(phases(), "read parse classify compile total");
         // A module hod builds reads its bodies and generates code.
-        let ran =
-            run_with(&["-filetype=obj", "--strict"], &env, &hod::compile_releasing, DECLARATIONS);
+        let ran = run_with(&["-filetype=obj", "--strict"], &env, &compile_hod, DECLARATIONS);
         assert_eq!(ran.exit, EXIT_OK);
         assert_eq!(phases(), "read parse classify bodies emission object compile write total");
         // One declined by the code generator reads its bodies too.
-        let ran =
-            run_with(&["-filetype=obj", "--strict"], &env, &hod::compile_releasing, CG_DECLINED);
+        let ran = run_with(&["-filetype=obj", "--strict"], &env, &compile_hod, CG_DECLINED);
         assert_eq!(ran.exit, EXIT_UNSUPPORTED);
         assert_eq!(phases(), "read parse classify bodies compile total");
         // A module declined before it is read has none of them.
-        let ran = run_with(&["-filetype=asm", "--strict"], &env, &hod::compile_releasing, MODULE);
+        let ran = run_with(&["-filetype=asm", "--strict"], &env, &compile_hod, MODULE);
         assert_eq!(ran.exit, EXIT_UNSUPPORTED);
         assert_eq!(phases(), "read compile total");
         // Reports are appended; an invocation that compiles nothing has none.
@@ -766,7 +809,7 @@ mod tests {
             "{}",
             ran.stderr
         );
-        let ran = run_with(&["-filetype=obj", "--strict"], &env, &hod::compile_releasing, MODULE);
+        let ran = run_with(&["-filetype=obj", "--strict"], &env, &compile_hod, MODULE);
         assert_eq!(ran.exit, EXIT_UNSUPPORTED, "the first failure's status stands");
     }
 
@@ -824,7 +867,7 @@ mod tests {
         let seen = std::cell::RefCell::new(Vec::new());
         let record = |input: &mut Cow<'_, [u8]>, _: &Options, _: &hod::Settings, _: &mut Report| {
             seen.borrow_mut().extend_from_slice(input);
-            Ok(OBJECT.to_vec())
+            Ok(Output::Bytes(OBJECT.to_vec()))
         };
         let ran = run_with(&["-filetype=obj", input.to_str().unwrap()], &env, &record, b"unused");
         assert_eq!((ran.exit, ran.stderr.as_str()), (EXIT_OK, ""));
@@ -844,7 +887,7 @@ mod tests {
         let record = |input: &mut Cow<'_, [u8]>, _: &Options, _: &hod::Settings, _: &mut Report| {
             owned.borrow_mut().push(matches!(input, Cow::Owned(_)));
             assert_eq!(&**input, MODULE);
-            Ok(OBJECT.to_vec())
+            Ok(Output::Bytes(OBJECT.to_vec()))
         };
         let fallback = with(&Environment::default(), |e| {
             e.fallback = Some(PathBuf::from("/nonexistent/llc"));
@@ -888,7 +931,7 @@ mod tests {
         let record =
             |_: &mut Cow<'_, [u8]>, options: &Options, _: &hod::Settings, _: &mut Report| {
                 *seen.borrow_mut() = Some(options.clone());
-                Ok(Vec::new())
+                Ok(Output::Bytes(Vec::new()))
             };
         let ran = run_with(
             &["-O0", "-relocation-model=pic", "-filetype=obj", "-function-sections", "-o", "-"],
@@ -913,13 +956,13 @@ mod tests {
         &Options,
         &hod::Settings,
         &mut Report,
-    ) -> Result<Vec<u8>, CompileError>
+    ) -> Result<Output, CompileError>
     + '_ {
         |input: &mut Cow<'_, [u8]>, _: &Options, _: &hod::Settings, _: &mut Report| {
             seen.borrow_mut().push(input.to_vec());
             match InputKind::detect(input) {
                 InputKind::Bitcode => Err(Unsupported::module(Construct::BitcodeInput).into()),
-                InputKind::Text | InputKind::Module => Ok(OBJECT.to_vec()),
+                InputKind::Text | InputKind::Module => Ok(Output::Bytes(OBJECT.to_vec())),
             }
         }
     }
@@ -1052,11 +1095,11 @@ mod tests {
             e.bitcode_via = Some(scratch.join("no-llvm-dis"));
         });
         // Text; assembly output of bitcode; a rejected command line.
-        let ran = run_with(&["-filetype=obj"], &env, &hod::compile_releasing, MODULE);
+        let ran = run_with(&["-filetype=obj"], &env, &compile_hod, MODULE);
         assert_eq!(ran.exit, EXIT_UNSUPPORTED);
-        let ran = run_with(&["-filetype=asm"], &env, &hod::compile_releasing, BITCODE);
+        let ran = run_with(&["-filetype=asm"], &env, &compile_hod, BITCODE);
         assert_eq!(ran.exit, EXIT_UNSUPPORTED);
-        let ran = run_with(&["-filetype=obj", "-bogus"], &env, &hod::compile_releasing, BITCODE);
+        let ran = run_with(&["-filetype=obj", "-bogus"], &env, &compile_hod, BITCODE);
         assert_eq!(ran.exit, EXIT_ERROR);
         // A generator that reads bitcode itself never asks for a conversion.
         let ran = run_with(&["-filetype=obj", "-o", "-"], &env, &object, BITCODE);
@@ -1078,7 +1121,7 @@ mod tests {
 
         // Bitcode is the reason: the converter is tried, and its absence is
         // the error (status 1: hod failed, not "unsupported").
-        let ran = run_with(&["-filetype=obj", "--strict"], &env, &hod::compile_releasing, BITCODE);
+        let ran = run_with(&["-filetype=obj", "--strict"], &env, &compile_hod, BITCODE);
         assert_eq!(ran.exit, EXIT_ERROR);
         assert!(
             ran.stderr.starts_with("hod: error: cannot run bitcode converter '")
@@ -1095,7 +1138,7 @@ mod tests {
             let plain = with(&env, |e| {
                 e.bitcode_via = via;
             });
-            let ran = run_with(&["-filetype=obj"], &plain, &hod::compile_releasing, BITCODE);
+            let ran = run_with(&["-filetype=obj"], &plain, &compile_hod, BITCODE);
             assert_eq!(ran.exit, EXIT_ERROR, "{}", ran.stderr);
             assert!(ran.stderr.starts_with("hod: error: malformed input: bit "), "{}", ran.stderr);
         }
@@ -1114,8 +1157,7 @@ mod tests {
         let env = with(&Environment::default(), |e| {
             e.coverage_log = Some(log.clone());
         });
-        let ran =
-            run_with(&["-filetype=obj", "-o", "-"], &env, &hod::compile_releasing, CG_DECLINED);
+        let ran = run_with(&["-filetype=obj", "-o", "-"], &env, &compile_hod, CG_DECLINED);
         assert_eq!(ran.exit, EXIT_UNSUPPORTED);
         assert!(ran.stdout.is_empty());
         assert_eq!(
@@ -1229,7 +1271,7 @@ mod tests {
                      _: &Options,
                      _: &hod::Settings,
                      _: &mut Report|
-         -> Result<Vec<u8>, CompileError> {
+         -> Result<Output, CompileError> {
             panic!("the code generator must not run")
         };
         let ran = run_with(&["-filetype=obj", "-bogus", "-o", "a.o"], &env, &never, MODULE);
@@ -1301,10 +1343,60 @@ mod tests {
             e.fallback = Some("/nonexistent/llc".into());
             e.in_fallback = true;
         });
-        let ran = run_with(&["-filetype=obj"], &env, &hod::compile_releasing, MODULE);
+        let ran = run_with(&["-filetype=obj"], &env, &compile_hod, MODULE);
         assert_eq!(ran.exit, EXIT_ERROR);
         assert!(ran.stderr.contains("HOD_IN_FALLBACK"), "{}", ran.stderr);
         assert!(ran.stderr.contains("fallback or its bitcode converter"), "{}", ran.stderr);
+    }
+
+    // spec/cli.md "Driver" step 8, WP-312: hod's object, written from its
+    // sections, is the bytes `hod::compile` returns, to a file as to
+    // standard output; an output that fails part way is
+    // `output-unwritable` and keeps what it took.
+    #[test]
+    fn the_object_is_written_from_its_sections() {
+        const ADD: &[u8] = b"target triple = \"aarch64-unknown-linux-gnu\"\n\
+            define i32 @f(i32 %x) {\n  %y = add i32 %x, 1\n  ret i32 %y\n}\n";
+        struct Full(Vec<u8>);
+        impl Write for Full {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                if self.0.len() >= 100 {
+                    return Err(std::io::Error::other("full"));
+                }
+                let take = buf.len().min(100 - self.0.len());
+                self.0.extend_from_slice(&buf[..take]);
+                Ok(take)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let scratch = Scratch::new("driver-object-written");
+        let log = scratch.join("cov.tsv");
+        let env = with(&Environment::default(), |e| {
+            e.coverage_log = Some(log.clone());
+        });
+        let options = Options { output_kind: OutputKind::Object, ..Options::default() };
+        let expected = hod::compile(ADD, &options).unwrap();
+        assert!(expected.len() > 100);
+        let ran = run_with(&["-filetype=obj", "-o", "-"], &env, &compile_hod, ADD);
+        assert_eq!((ran.exit, ran.stderr.as_str()), (EXIT_OK, ""));
+        assert!(ran.stdout == expected);
+        let out = scratch.join("m.o");
+        let ran =
+            run_with(&["-filetype=obj", "-o", out.to_str().unwrap()], &env, &compile_hod, ADD);
+        assert_eq!((ran.exit, ran.stderr.as_str()), (EXIT_OK, ""));
+        assert!(std::fs::read(&out).unwrap() == expected);
+
+        let args: Vec<OsString> = ["-filetype=obj", "-o", "-"].map(OsString::from).to_vec();
+        let (mut input, mut stdout, mut stderr) = (ADD, Full(Vec::new()), Vec::new());
+        let mut io = Io { stdin: &mut input, stdout: &mut stdout, stderr: &mut stderr };
+        assert_eq!(run(&args, &env, &compile_hod, &mut io), EXIT_ERROR);
+        let stderr = String::from_utf8(stderr).unwrap();
+        assert_eq!(stderr, "hod: error: cannot write standard output: full\n");
+        assert_eq!(stdout.0, expected[..100]);
+        let reasons: Vec<String> = fields(&log).into_iter().map(|l| l[1].clone()).collect();
+        assert_eq!(reasons, ["-", "-", "output-unwritable"]);
     }
 
     // spec/cli.md "Exit status": I/O failures are errors with one line.
@@ -1327,7 +1419,7 @@ mod tests {
         let unrunnable = with(&env, |e| {
             e.fallback = Some(scratch.join("no-llc"));
         });
-        let ran = run_with(&["-filetype=obj"], &unrunnable, &hod::compile_releasing, MODULE);
+        let ran = run_with(&["-filetype=obj"], &unrunnable, &compile_hod, MODULE);
         assert_eq!(ran.exit, EXIT_ERROR);
         assert!(ran.stderr.starts_with("hod: error: cannot run fallback '"), "{}", ran.stderr);
         let reasons: Vec<String> = fields(&log).into_iter().map(|l| l[1].clone()).collect();

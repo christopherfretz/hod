@@ -59,10 +59,12 @@ PASS / 0 FAIL / 111 UNSUPPORTED / 0 ERROR (31 of 68 objects built); LLVM
 
 ## Next, in order
 
-1. Wait for / read compare-binaries (`.build/target-wp-314/cmp-p2`,
-   log `cmp-p2.log`, head binary = commit 06430652's code): AArch64 and
-   x86-64 must be 0 different; i686 changes only "x86:debug-info ->
-   compiles" or a narrower name.
+1. DONE: compare-binaries base 1742ae7e vs head 06430652's code over
+   `tests/ir`, `.build/corpus/kiln`, `.build/corpus-x64/kiln`, `-j 4`
+   (`.build/target-wp-314/cmp-p2/summary.md`): AArch64 3487 + 3487,
+   x86-64 3456 + 3456, i686 111 + 111 comparisons: 0 different, 0
+   changed outcome (no i686 module of those corpora has debug info), 159
+   identical failures, PASS. Re-run only if hod_dwarf / hod_cg change.
 2. `cargo test -q -p hod --test i386_debug -- --nocapture`; then clippy
    workspace, unit tests of hod_dwarf hod_cg, all `i386*`, and
    `debug_frame debug_e2e inlining debug_unit_ranges`; irdiff i686 22/19.

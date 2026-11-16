@@ -264,6 +264,77 @@ fn trees_and_rows_equal_llc() {
     );
 }
 
+/// The `DW_AT_call_return_pc` values of `--debug-info` text.
+fn return_pcs(text: &str) -> Vec<u64> {
+    text.lines()
+        .filter_map(|l| l.trim_start().strip_prefix("DW_AT_call_return_pc"))
+        .map(|v| {
+            let hex = v.trim().trim_start_matches("(0x").trim_end_matches(')');
+            u64::from_str_radix(hex, 16).expect("an address")
+        })
+        .collect()
+}
+
+/// `opt.c` at `-O1` (`#dbg_value` records, `DIFlagAllCallsDescribed`):
+/// hod compiles it (an i386 call reports where it returns,
+/// `spec/dwarf.md` §6.19), the object verifies, it has location lists,
+/// and its call sites are `llc`'s in number, each returning right after
+/// a `call` instruction. The values a debugger prints from them are
+/// checked by hand under gdb (`spec/landed/codegen/WP-314.md`).
+#[test]
+fn optimized_ir_has_locations_and_call_sites() {
+    let mut objects = 0;
+    for major in LLVM_MAJORS {
+        let (Some(clang), Some(llc), Some(dwarfdump), Some(objdump)) = (
+            llvm_tool(major, "clang"),
+            llvm_tool(major, "llc"),
+            llvm_tool(major, "llvm-dwarfdump"),
+            llvm_tool(major, "llvm-objdump"),
+        ) else {
+            continue;
+        };
+        let scratch = Scratch::new(&format!("i386-debug-opt-{major}"));
+        // Assignment tracking is refused by name; the records are not.
+        let flags =
+            ["-O1", "-g", "-fno-pic", "-Xclang", "-fexperimental-assignment-tracking=disabled"];
+        let label = format!("opt-{major}");
+        let ll = clang_module(&scratch, &clang, &data("opt.c"), &flags, &label);
+        let llc_o = llc_object(&scratch, &llc, &ll, &["-relocation-model=static"], "opt-llc");
+        let text = std::fs::read(&ll).unwrap();
+        let hod = hod_object(&text, TRIPLE, false).unwrap_or_else(|e| panic!("hod {label}: {e}"));
+        let hod_o = scratch.write(&format!("{label}-hod.o"), &hod);
+        verifies(&dwarfdump, &hod_o);
+        let lists = dump(&dwarfdump, &["--debug-loclists"], &hod_o);
+        assert!(lists.matches("DW_LLE_offset_pair").count() > 10, "{label}: {lists}");
+        let h = return_pcs(&dump(&dwarfdump, &["--debug-info"], &hod_o));
+        let l = return_pcs(&dump(&dwarfdump, &["--debug-info"], &llc_o));
+        assert!(!h.is_empty() && h.len() == l.len(), "{label}: call sites {h:x?}, llc {l:x?}");
+        // `  94: e8 00 00 00 00   calll ...`: the instruction that ends at
+        // each return address is a call.
+        let mut command = Command::new(&objdump);
+        command.args(["-d", "--no-show-raw-insn"]).arg(&hod_o);
+        let asm =
+            String::from_utf8_lossy(&checked("llvm-objdump", &mut command).stdout).into_owned();
+        let insts: Vec<(u64, &str)> = asm
+            .lines()
+            .filter_map(|l| {
+                let (at, rest) = l.trim_start().split_once(':')?;
+                Some((u64::from_str_radix(at, 16).ok()?, rest.trim()))
+            })
+            .collect();
+        for pc in h {
+            let next = insts.iter().position(|i| i.0 == pc).expect("an instruction at the pc");
+            assert!(
+                insts[next - 1].1.starts_with("call"),
+                "{label}: {pc:#x} after {:?}",
+                insts[next - 1]
+            );
+        }
+        objects += 1;
+    }
+    eprintln!("i386 debug: {objects} objects of -O1 IR verified");
+}
+
 /// A DWARF 4 unit and split DWARF are refused by their names.
 #[test]
 fn dwarf_4_and_split_dwarf_are_refused_by_name() {

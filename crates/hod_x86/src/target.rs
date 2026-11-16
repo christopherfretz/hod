@@ -344,7 +344,15 @@ impl Target for X86 {
     }
 
     fn emit_call(&self, cx: &mut FnCx<'_, Self>, call: &CallEmit) -> CgResult<()> {
-        crate::pic::emit_call(cx, call.target, call.callee_pop)
+        // WP-314: the call returns right after its instruction, before
+        // `esp` is moved back over a popped hidden pointer
+        // (`spec/dwarf.md` §6.19, as on the other targets).
+        crate::pic::emit_call(cx, call.target, 0)?;
+        cx.call_returns_here(call.target, crate::reg::dwarf);
+        if call.callee_pop != 0 {
+            frame::adjust_sp(cx, -i64::from(call.callee_pop));
+        }
+        Ok(())
     }
 
     fn dynamic_slot(

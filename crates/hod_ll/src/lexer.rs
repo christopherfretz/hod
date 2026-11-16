@@ -175,6 +175,71 @@ const CLASS: [u8; 256] = {
     table
 };
 
+/// What [`Lexer::dispatch`] does with a token's first byte.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Disp {
+    /// `[a-zA-Z_]`: [`Lexer::word`].
+    Word,
+    /// A token of that byte alone ([`SIMPLE`]).
+    Simple,
+    /// `%`: [`Lexer::local`].
+    Local,
+    /// `@`: [`Lexer::global`].
+    Global,
+    /// `[-0-9]`: [`Lexer::number`].
+    Number,
+    /// What may start white space or a comment (`SKIP`).
+    Blank,
+    /// [`Lexer::compound`].
+    Other,
+}
+
+/// The kind of the token a byte is alone; [`Tok::Eof`] for a byte that is
+/// none.
+const SIMPLE: [Tok; 256] = {
+    let mut table = [Tok::Eof; 256];
+    table[b'=' as usize] = Tok::Equal;
+    table[b',' as usize] = Tok::Comma;
+    table[b'*' as usize] = Tok::Star;
+    table[b'[' as usize] = Tok::LBracket;
+    table[b']' as usize] = Tok::RBracket;
+    table[b'{' as usize] = Tok::LBrace;
+    table[b'}' as usize] = Tok::RBrace;
+    table[b'<' as usize] = Tok::Less;
+    table[b'>' as usize] = Tok::Greater;
+    table[b'(' as usize] = Tok::LParen;
+    table[b')' as usize] = Tok::RParen;
+    table[b'|' as usize] = Tok::Bar;
+    table[b':' as usize] = Tok::Colon;
+    table
+};
+
+/// The dispatch of each first byte.
+const DISPATCH: [Disp; 256] = {
+    let mut table = [Disp::Other; 256];
+    let mut c = 0usize;
+    while c < 256 {
+        let b = c as u8;
+        table[c] = if b.is_ascii_alphabetic() || b == b'_' {
+            Disp::Word
+        } else if b.is_ascii_digit() || b == b'-' {
+            Disp::Number
+        } else if b == b'%' {
+            Disp::Local
+        } else if b == b'@' {
+            Disp::Global
+        } else if CLASS[c] & SKIP != 0 {
+            Disp::Blank
+        } else if !matches!(SIMPLE[c], Tok::Eof) {
+            Disp::Simple
+        } else {
+            Disp::Other
+        };
+        c += 1;
+    }
+    table
+};
+
 #[inline]
 fn is(byte: u8, class: u8) -> bool {
     CLASS[byte as usize] & class != 0
@@ -405,24 +470,11 @@ impl<'a> Lexer<'a> {
         self.token(Tok::Error, start, end.min(self.bytes.len()).max(start))
     }
 
-    /// Skips white space and comments; `Err` is an error token.
-    #[allow(clippy::inline_always)] // Measured: a call per token otherwise (WP-168).
-    #[inline(always)]
-    fn skip_blank(&mut self) -> Result<usize, Token> {
+    /// Skips white space and comments from `pos` on; `Err` is an error
+    /// token.
+    #[inline]
+    fn skip_blank(&mut self, mut pos: usize) -> Result<usize, Token> {
         let src = self.src;
-        let mut pos = self.pos;
-        // Tokens most often follow one another directly or after one
-        // space.
-        for _ in 0..2 {
-            match src.get(pos) {
-                Some(&b) if !is(b, SKIP) => return Ok(pos),
-                Some(b' ') => pos += 1,
-                // The end of `src`, where the next token to replay is
-                // looked at, too.
-                None => return Ok(pos),
-                _ => break,
-            }
-        }
         loop {
             pos = skip_while(src, pos, BLANK);
             match src.get(pos) {
@@ -504,38 +556,64 @@ impl<'a> Lexer<'a> {
     #[allow(clippy::inline_always)] // Measured: `next_token` is this (WP-168).
     #[inline(always)]
     fn lex(&mut self) -> Token {
-        let start = match self.skip_blank() {
+        // Tokens most often follow one another directly or after one
+        // space; any other white space or comment is `after_blank`'s.
+        let src = self.src;
+        let mut start = self.pos;
+        // The end of `src`, where the next token to replay is looked at,
+        // too.
+        let Some(&first) = src.get(start) else {
+            return self.at_end();
+        };
+        let mut c = first;
+        if c == b' ' {
+            start += 1;
+            let Some(&next) = src.get(start) else {
+                return self.at_end();
+            };
+            c = next;
+        }
+        self.dispatch::<true>(c, start)
+    }
+
+    /// The token at `from`, a byte that starts white space or a comment.
+    #[inline(never)]
+    fn after_blank(&mut self, from: usize) -> Token {
+        let start = match self.skip_blank(from) {
             Ok(start) => start,
             Err(token) => return token,
         };
         let Some(&c) = self.src.get(start) else {
             return self.at_end();
         };
-        let one = |kind| Token { kind, kw: Kw::Other, start: start as u32, end: start as u32 + 1 };
-        // One dispatch on the first byte: the tokens that are most of a
-        // text go straight to their rule, the rest to `compound`.
-        let simple = match c {
-            b'=' => Tok::Equal,
-            b',' => Tok::Comma,
-            b'*' => Tok::Star,
-            b'[' => Tok::LBracket,
-            b']' => Tok::RBracket,
-            b'{' => Tok::LBrace,
-            b'}' => Tok::RBrace,
-            b'<' => Tok::Less,
-            b'>' => Tok::Greater,
-            b'(' => Tok::LParen,
-            b')' => Tok::RParen,
-            b'|' => Tok::Bar,
-            b':' => Tok::Colon,
-            b'a'..=b'z' | b'A'..=b'Z' | b'_' => return self.word(c, start),
-            b'%' => return self.local(start),
-            b'@' => return self.global(start),
-            b'-' | b'0'..=b'9' => return self.number(c, start),
-            _ => return self.compound(c, start),
-        };
-        self.pos = start + 1;
-        one(simple)
+        self.dispatch::<false>(c, start)
+    }
+
+    /// One dispatch on `c`, the first byte of the token at `start`: the
+    /// tokens that are most of a text go straight to their rule, the rest
+    /// to `compound`. With `FIRST` white space and comments go to
+    /// `after_blank`; without it, they have been skipped (a `/` that
+    /// starts no comment is left).
+    #[allow(clippy::inline_always)] // A tail call from `next_token` to each rule.
+    #[inline(always)]
+    fn dispatch<const FIRST: bool>(&mut self, c: u8, start: usize) -> Token {
+        match DISPATCH[c as usize] {
+            Disp::Word => self.word(c, start),
+            Disp::Simple => {
+                self.pos = start + 1;
+                Token {
+                    kind: SIMPLE[c as usize],
+                    kw: Kw::Other,
+                    start: start as u32,
+                    end: start as u32 + 1,
+                }
+            }
+            Disp::Local => self.local(start),
+            Disp::Global => self.global(start),
+            Disp::Number => self.number(c, start),
+            Disp::Blank if FIRST => self.after_blank(start),
+            Disp::Blank | Disp::Other => self.compound(c, start),
+        }
     }
 
     #[inline(never)]
@@ -1078,6 +1156,26 @@ mod tests {
             assert_eq!(is(b, META), label || b == b'\\', "META {b:#04x}");
             assert_eq!(is(b, LABEL), label, "LABEL {b:#04x}");
             assert_eq!(is(b, SKIP), b" \t\n\r\0;/".contains(&b), "SKIP {b:#04x}");
+            // The first-byte dispatch: every byte goes to the rule §2
+            // gives a token that starts with it.
+            let want = match b {
+                b'a'..=b'z' | b'A'..=b'Z' | b'_' => Disp::Word,
+                b'-' | b'0'..=b'9' => Disp::Number,
+                b'%' => Disp::Local,
+                b'@' => Disp::Global,
+                b' ' | b'\t' | b'\n' | b'\r' | 0 | b';' | b'/' => Disp::Blank,
+                b'=' | b',' | b'*' | b'[' | b']' | b'{' | b'}' | b'<' | b'>' | b'(' | b')'
+                | b'|' | b':' => Disp::Simple,
+                _ => Disp::Other,
+            };
+            assert_eq!(DISPATCH[b as usize], want, "dispatch {b:#04x}");
+            if want == Disp::Simple {
+                let text = [b];
+                let mut lexer = Lexer::new(&text);
+                assert_eq!(lexer.next_token().kind, SIMPLE[b as usize], "{b:#04x}");
+            } else {
+                assert_eq!(SIMPLE[b as usize], Tok::Eof, "{b:#04x}");
+            }
         }
         assert_eq!(
             lex("!a\\b-c.d$e_9 \0\r\t\n!x"),

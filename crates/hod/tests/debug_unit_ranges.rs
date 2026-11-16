@@ -9,6 +9,7 @@
 //! the comparison does not depend on code sizes; every object verifies
 //! with `llvm-dwarfdump` 19 and 22.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -88,29 +89,31 @@ fn module(arch: Arch, shape: &[F]) -> String {
         let (sp, loc) = if debug {
             let sp = next;
             next += 2;
-            meta.push_str(&format!(
+            let _ = write!(
+                meta,
                 "!{sp} = distinct !DISubprogram(name: \"{name}\", scope: !1, file: !1, line: {line}, type: !5, scopeLine: {line}, flags: DIFlagPrototyped, spFlags: DISPFlagDefinition, unit: !0, retainedNodes: !7)\n\
                  !{} = !DILocation(line: {line}, column: 3, scope: !{sp})\n",
                 sp + 1
-            ));
+            );
             (format!(" !dbg !{sp}"), format!(", !dbg !{}", sp + 1))
         } else {
             (String::new(), String::new())
         };
-        text.push_str(&format!(
+        let _ = write!(
+            text,
             "define dso_local i32 @{name}(i32 noundef %0) #0{section}{sp} {{\n  %2 = alloca i32, align 4\n  store i32 %0, ptr %2, align 4\n  %v0 = load i32, ptr %2, align 4{loc}\n"
-        ));
+        );
         for i in 0..adds {
-            text.push_str(&format!(
-                "  %v{} = add nsw i32 %v{i}, {}{loc}\n  store volatile i32 %v{}, ptr %2, align 4{loc}\n",
-                i + 1,
-                i + 1,
-                i + 1
-            ));
+            let n = i + 1;
+            let _ = write!(
+                text,
+                "  %v{n} = add nsw i32 %v{i}, {n}{loc}\n  store volatile i32 %v{n}, ptr %2, align 4{loc}\n"
+            );
         }
-        text.push_str(&format!("  ret i32 %v{adds}{loc}\n}}\n\n"));
+        let _ = write!(text, "  ret i32 %v{adds}{loc}\n}}\n\n");
     }
-    text.push_str(&format!(
+    let _ = write!(
+        text,
         "attributes #0 = {{ noinline nounwind optnone \"frame-pointer\"=\"{fp}\" }}\n\n\
          !llvm.dbg.cu = !{{!0}}\n!llvm.module.flags = !{{!2, !3}}\n\n\
          !0 = distinct !DICompileUnit(language: DW_LANG_C11, file: !1, producer: \"clang version 22\", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug, splitDebugInlining: false, nameTableKind: None)\n\
@@ -119,7 +122,7 @@ fn module(arch: Arch, shape: &[F]) -> String {
          !3 = !{{i32 2, !\"Debug Info Version\", i32 3}}\n\
          !5 = !DISubroutineType(types: !6)\n!6 = !{{!8, !8}}\n!7 = !{{}}\n\
          !8 = !DIBasicType(name: \"int\", size: 32, encoding: DW_ATE_signed)\n{meta}"
-    ));
+    );
     text
 }
 

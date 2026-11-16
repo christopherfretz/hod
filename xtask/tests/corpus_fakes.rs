@@ -470,8 +470,8 @@ fn capture_then_verify() {
     let report = world.capture();
     assert_eq!(report.exit_status(), 0, "{}", report.summary(&world.out()));
     assert_eq!(report.missing_tools, [""; 0]);
-    // `wild` is optional and not there.
-    assert_eq!(report.notes.len(), 1, "{:?}", report.notes);
+    // `wild` and `mortar` are optional and not there.
+    assert_eq!(report.notes.len(), 2, "{:?}", report.notes);
 
     assert_eq!(
         entries(&world),

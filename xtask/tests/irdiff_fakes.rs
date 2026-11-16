@@ -138,6 +138,7 @@ fn fake_linker(name: &str) -> String {
         "lld" => "echo '# Linker: LLD 22.0.0'",
         "mold" => "echo '# mold 2.0.0 (compatible with GNU ld)'",
         "wild" => "echo '# Linker: Wild 0.11.0 (compatible with GNU linkers)'",
+        "mortar" => "echo '# mortar 0.0.0'",
         _ => ":",
     };
     format!(
@@ -378,8 +379,11 @@ fn pass_with_every_linker() {
     assert_eq!(report.records[3].covers.as_deref(), Some("spec/harness.md irdiff"));
     assert_eq!(report.exit_status(), 0);
     assert_eq!((report.tests(), report.count(Outcome::Pass)), (2, 6));
-    // wild is not installed here: a note, not a failure.
-    assert_eq!(report.notes, ["linker 'wild' not found; not in this run"]);
+    // wild and mortar are not installed here: notes, not failures.
+    assert_eq!(
+        report.notes,
+        ["linker 'wild' not found; not in this run", "linker 'mortar' not found; not in this run"]
+    );
     assert!(report.missing_tools.is_empty());
     let summary = report.summary(false);
     assert!(summary.contains("; linkers bfd lld mold; strict; -j "), "{summary}");
@@ -1111,7 +1115,8 @@ fn cross_runs_need_the_emulator_and_the_system_root() {
         "emulator 'qemu-{0}' not found (Debian package qemu-user); {0} programs are not run",
         other_arch().name()
     );
-    assert_eq!(report.notes[1], note, "{}", report.summary(true));
+    // After the notes of the optional linkers (wild, mortar).
+    assert_eq!(report.notes[2], note, "{}", report.summary(true));
     config.require_tools = true;
     let report = irdiff::run(&config).unwrap();
     assert_eq!(report.missing_tools, [note]);
@@ -1179,7 +1184,11 @@ fn the_linker_matrix() {
     assert_eq!(rows(&report), ["PASS a.ll bfd", "PASS a.ll lld"]);
     assert_eq!(
         report.notes,
-        ["linker 'mold' not found; not in this run", "linker 'wild' not found; not in this run"]
+        [
+            "linker 'mold' not found; not in this run",
+            "linker 'wild' not found; not in this run",
+            "linker 'mortar' not found; not in this run"
+        ]
     );
     assert_eq!(report.exit_status(), 0);
 
@@ -1188,16 +1197,20 @@ fn the_linker_matrix() {
     let report = irdiff::run(&required).unwrap();
     assert_eq!(rows(&report), ["PASS a.ll bfd", "PASS a.ll lld"]);
     assert_eq!(report.missing_tools, ["linker 'mold' not found; not in this run"]);
-    assert_eq!(report.notes, ["linker 'wild' not found; not in this run"]);
+    assert_eq!(
+        report.notes,
+        ["linker 'wild' not found; not in this run", "linker 'mortar' not found; not in this run"]
+    );
     assert_eq!(report.exit_status(), 3);
 
-    // wild joins the matrix when it is there.
+    // wild and mortar join the matrix when they are there.
     world.tool("mold", &fake_linker("mold"));
     world.tool("wild", &fake_linker("wild"));
+    world.tool("mortar", &fake_linker("mortar"));
     let report = irdiff::run(&required).unwrap();
     assert_eq!(
         rows(&report),
-        ["PASS a.ll bfd", "PASS a.ll lld", "PASS a.ll mold", "PASS a.ll wild"]
+        ["PASS a.ll bfd", "PASS a.ll lld", "PASS a.ll mold", "PASS a.ll wild", "PASS a.ll mortar"]
     );
     assert!(report.notes.is_empty() && report.missing_tools.is_empty());
     assert_eq!(report.exit_status(), 0);

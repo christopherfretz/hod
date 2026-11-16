@@ -77,8 +77,8 @@ rest, and reuses a control when kiln and the revision are unchanged).
 
 | condition | evidence required | evidence on main today | state |
 |---|---|---|---|
-| the lane, AArch64 native (`oss.md`) | every row of the 1.0 set: no fallback, nothing not offered, strict build ok with every object by hod, tests the control's | 44 rows (22 projects; gRPC `-O0 -g` running), every one measured before the candidate (hod `77f1f69`, `7b127f48`, `3b14f8ff`, `77873543`, `46076a33`, `56a4695f`; kiln `21caaf874`, `21b9110a4`, `8f93304ee`). Open: zlib (1 object not offered by kiln, `coverage`); DuckDB `-O0` strict stopped at `alwaysinline:stacksave-escapes` at `3b14f8ff` (built since WP-237); DuckDB `-O0 -g` hybrid failed `test_random_uuid.test` with an allocation failure twice while strict equals the control (under investigation); mold's kiln is not in its reports | partly (awaiting: the native lanes' strict re-runs at `cd6ef6bc` in section 5's order, then `oss.md` regenerated with `--candidate cd6ef6bc`) |
-| the lane, x86-64 (`oss-x64.md`) | the same for x86-64 | new page: 34 rows (18 projects; re2 and Boost `-O0 -g` running), cross-built, tests under qemu, every one measured before the candidate (hod `3b14f8ff`, `686ff25b`, `ee8e0e7b`, `56a4695f`, `9e25d3f1`). Open: Boost's strict build stopped at `asm:section` at `56a4695f` (built since WP-255; to re-measure) | partly (awaiting: the x86-64 lanes' strict re-runs at `cd6ef6bc`, then `oss-x64.md` regenerated with `--candidate cd6ef6bc`) |
+| the lane, AArch64 native (`oss.md`) | every row of the 1.0 set: no fallback, nothing not offered, strict build ok with every object by hod, tests the control's | 44 rows (22 projects; gRPC `-O0 -g` running), every one measured before the candidate (hod `77f1f69`, `7b127f48`, `3b14f8ff`, `77873543`, `46076a33`, `56a4695f`; kiln `21caaf874`, `21b9110a4`, `8f93304ee`). Open: zlib (1 object not offered by kiln, `coverage`); mold's kiln is not in its reports. Final lane (WP-223, DuckDB, kiln `8f93304ee`): `-O0` strict at `cd6ef6bc`, 1901 of 1901 objects by hod, tests 4615 of 4629 against the control's 4614 of 4629; `-O0 -g` strict at `e98267c0`, the same counts (carried over from `e98267c0`) | partly (awaiting: the native lanes' strict re-runs at `cd6ef6bc` in section 5's order, then `oss.md` regenerated with `--candidate cd6ef6bc`) |
+| the lane, x86-64 (`oss-x64.md`) | the same for x86-64 | new page: 34 rows (18 projects; re2 and Boost `-O0 -g` running), cross-built, tests under qemu, every one measured before the candidate (hod `3b14f8ff`, `686ff25b`, `ee8e0e7b`, `56a4695f`, `9e25d3f1`). Open: Boost's strict build stopped at `asm:section` at `56a4695f` (built since WP-255; to re-measure). Final lane (WP-253, the fifth set, kiln `8f93304ee`, `spec/landed/harness/WP-253.md`): strict at `cd6ef6bc` against the recorded controls, every object by hod, none declined or not offered, links and tests as the control: scnlib, mp_units, reflect_cpp, ctre, entt, cereal, taskflow `-O0`, glaze, stdexec, and daw_json_link (159 of 159 objects, 158 of 158 links, 147 of 147 tests); libunifex strict at `e98267c0` (114 of 114 objects, tests 91 of 94 as the control; carried over from `e98267c0`); taskflow `-O0 -g` not run (WP-275) | partly (awaiting: the x86-64 lanes' strict re-runs at `cd6ef6bc`, then `oss-x64.md` regenerated with `--candidate cd6ef6bc`) |
 | hosted (`oss.yml`) | both runners natively | no result recorded | missing (awaiting: an `oss.yml` run of `cd6ef6bc`) |
 | LLVM and Clang (`oss-llvm.md`) | strict, every TU by hod, tests per test as the control | kiln `21caaf874` (native) and `21b9110a4` (x86-64, hod `3b14f8ff`, WP-222): LLVM 19.1.7 native 2778 of 2779 TUs (1 not offered), check-llvm at parity; Clang 3621 of 3623, 12460 lit tests at parity; LLVM for x86-64 2795 of 2795 C/C++ TUs, 0 declined | partly (awaiting: the LLVM lane's strict build and tests with `hod-cd6ef6bc` at kiln `8f93304ee`, both trees; first in the candidate's order) |
 | the 1.0 set (ROADMAP M6) | a row on a page for each project of the set, both flavours where measured | the set is named (`docs/RELEASE.md` section 5): 22 projects on AArch64, 18 on x86-64, LLVM and Clang on both; the other rows of `scripts/oss/projects.toml` and of kiln's `projects.toml` (59 rows at `8f93304ee`) come after 1.0 | partly (awaiting: the lanes' rows above; Boost and DuckDB to re-measure) |
@@ -141,23 +141,24 @@ measurement is at `02fe2d02` says so and is not counted as met.
 
 ## Summary
 
-As of 2026-11-15 20:05 EST (WP-257c), for the candidate `cd6ef6bc` at
+As of 2026-11-15 20:20 EST (WP-257d), for the candidate `cd6ef6bc` at
 kiln `8f93304ee`: 29 rows, 28 of them conditions (wild is listed and is
-not one). 9 met at the candidate: the full gate on exactly `cd6ef6bc`
+not one). 13 met at the candidate: the full gate on exactly `cd6ef6bc`
 (green, 3:16:30) and with it the quick gate's steps, linkers bfd/lld/mold
-and the support matrix; with the frozen binary `hod-cd6ef6bc`, L6 strict
-on both targets, L7 on both targets (sessions, `--verify`, line tables,
-kiln's debugger tests, `debug trees`) and the reasons pages; the corpus
-pages are met at kiln `8f93304ee`. 2 met before the candidate and awaiting
-its run (hosted CI at `9e25d3f1`, the previous candidate `e98267c0` green
-too; the fuzz budget at `df415453`, its run with `hod-cd6ef6bc` in
-progress since 15:56 EST). 3 re-measure (the two libc++ baselines at `K`,
-the native sweep), 10 partly, 3 missing (the hosted `oss.yml` run;
-version and tag, the owner's). Every count measured at `cd6ef6bc` equals
-the one measured at the earlier candidates `e98267c0` and `02fe2d02`
-(beyond the harness changes those rows name). In the order they block
-1.0: libc++ strict on both targets awaits the lane at `K`; real projects:
-every row predates the candidate and awaits the lanes' strict re-runs
-with `hod-cd6ef6bc`, LLVM and Clang first; the fuzz budget's run on the
-frozen binary is in progress; then the hosted runs of `cd6ef6bc`, the
-lanes' pages, and the owner's word on the version and the tag.
+and the support matrix; the hosted `ci.yml` run 43778976284 (both lanes
+green, the x86-64 lane natively) and the `sweep.yml` run 43778998227 (hod
+equal to `llc` on both runners); with the frozen binary `hod-cd6ef6bc`,
+L6 strict on both targets, L7 on both targets, the reasons pages and
+libc++ strict on x86-64 under qemu (its page follows with the lane's
+branch); the corpus pages are met at kiln `8f93304ee`. 2 met in the
+tagged commit (the version bump and the tag, on the owner's word of
+2026-11-15). 1 met before the candidate and awaiting its run (the fuzz
+budget at `df415453`, its run with `hod-cd6ef6bc` in progress since 15:56
+EST). 2 re-measure (the two libc++ baselines at `K`), 8 partly, 1 missing
+(the hosted `oss.yml` run of `cd6ef6bc`, in progress). The corpus and
+debug counts measured at `cd6ef6bc` equal those of the earlier candidates
+`e98267c0` and `02fe2d02`. Still open, in the order they block 1.0:
+libc++ strict on AArch64 and both `-g` runs (the libc++ lanes at `K`);
+real projects: the lanes' strict re-runs (LLVM and Clang, the first,
+second, third and x86-64 sets) and their pages, with the rows at
+`e98267c0` carried over; the fuzz budget's run; the `oss.yml` run.

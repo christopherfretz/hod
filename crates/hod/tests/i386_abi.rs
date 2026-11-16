@@ -995,7 +995,8 @@ fn the_fixed_rows_run_as_llc_s() {
     let (Some(gcc), Some(qemu)) = (tool(&target.c_driver()), tool(&target.emulator())) else {
         return;
     };
-    // Every hod function is `nounwind` (exceptions are `x86:eh`).
+    // Every hod function is `nounwind` (written before WP-314 lowered
+    // exceptions; the rows need no unwind tables).
     let hod_ll = format!("{PRELUDE}{}", FIXED_HOD.replace(") {\n", ") nounwind {\n"));
     let llc_ll = format!("{PRELUDE}{FIXED_LLC}");
     let scratch = Scratch::new("i386-abi-fixed");

@@ -88,8 +88,8 @@ fn stack_clash_protection_from_kiln_runs() {
     let Some(llc) = tool("llc") else { return };
     let source = scratch.write("clash.cpp", PROGRAM);
     let mut runs = 0;
-    // Not i686, whose back end refuses stack probing
-    // (`x86:dynamic-alloca`, design 0008's later packages) and PIC.
+    // Not i686, whose back end refuses inline stack probing
+    // (`x86:probe-stack`, which `-fstack-clash-protection` asks for).
     for target in [Target::Aarch64, Target::X86_64] {
         // A directory per target: each toolchain makes its linkers' own.
         let linkers = Scratch::new(&format!("hod-wp214-clash-{}", target.name()));

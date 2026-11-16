@@ -35,7 +35,7 @@ use hod_testutil::{LLVM_MAJORS, Scratch, Target, run_with, tool};
 const P: u64 = 4096;
 
 /// The targets of this file: not i686, whose back end has no stack
-/// probes yet (its frames refuse what needs one: `x86:dynamic-alloca`).
+/// probes yet (a function that asks for them is `x86:probe-stack`).
 const TARGETS: [Target; 2] = [Target::Aarch64, Target::X86_64];
 
 fn triple(target: Target) -> &'static str {

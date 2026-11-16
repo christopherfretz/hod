@@ -40,8 +40,8 @@ use linking::{Toolchain, exit_code};
 
 const DRIVER: &str = include_str!("data/alwaysinline_vla/driver.c");
 
-/// The targets of this file: not i686, whose back end refuses a VLA
-/// (`x86:dynamic-alloca`, design 0008's I11).
+/// The targets of this file: not i686, for which no module is written
+/// here yet (its back end takes VLAs since WP-316, `i386_dynstack.rs`).
 const TARGETS: [Target; 2] = [Target::Aarch64, Target::X86_64];
 
 fn module(target: Target) -> &'static str {

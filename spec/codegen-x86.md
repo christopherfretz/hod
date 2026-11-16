@@ -506,7 +506,8 @@ number, order and distance; a use after one, or in another block, reads
 it rounded to its type (`llc`'s fast allocator spills it).
 The instructions that end it (*barriers*): the terminator; a call; an
 `llvm.memcpy`/`memmove`/`memset` that `llc` makes a libc call (§13.1;
-the others are written inline);
+the others are written inline); an `atomicrmw` that `llc` writes as a
+loop (§12.4); an `invoke` (a terminator, §14);
 `frem` and the libm intrinsics (calls); an integer division wider than
 32 bits (`__divdi3` and kin); without `cmov`, a `select` on a variable
 condition unless its type is `i1` or it chooses between two integer

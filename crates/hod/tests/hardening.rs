@@ -39,8 +39,9 @@ use std::time::Duration;
 use common::linking::Toolchain;
 use hod_testutil::{LLVM_MAJORS, Scratch, Target, run_with, tool};
 
-/// The targets of this file: not i686, whose back end refuses every
-/// shape here (`x86:stack-protector`, `x86:dynamic-alloca`, `x86:eh`, PIC).
+/// The targets of this file: not i686, whose back end refuses the stack
+/// protector (`x86:stack-protector`) and inline stack probes
+/// (`x86:probe-stack`), which the combinations here turn on.
 const TARGETS: [Target; 2] = [Target::Aarch64, Target::X86_64];
 
 fn triple(target: Target) -> &'static str {

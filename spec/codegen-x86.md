@@ -108,7 +108,8 @@ their values).
 
 | name | what | removed by |
 |---|---|---|
-| `x86:i64` | an integer wider than 32 bits anywhere (value, argument, result, index, `switch`) | I7 (`int.rs`) |
+| `x86:i64` | an integer of 33 to 64 bits where §8 does not take it: an argument or result passed by value, a `switch` condition (also wider), a `ptradd` index | I6 (`abi.rs`: arguments, results); — |
+| `x86:i64:wide` | an integer wider than 64 bits (§8) | — |
 | `x86:float` | a floating-point value, `fcmp`, `fneg` | I9 (`x87.rs`) |
 | `x86:vector` | a vector value, a vector `ptradd`, the element operations | I12 |
 | `x86:aggregate` | an aggregate value, `extractvalue`, `insertvalue`, a result in memory | I11 |
@@ -135,3 +136,47 @@ their values).
 A nonzero `NumRegisterParameters` module flag stays refused by the front
 half. A test does not name the first refusal of a program with several
 constructs.
+
+## 8. Integers of 33 to 64 bits (`int`, WP-298)
+
+An integer `iN`, `33 <= N <= 64`, is of class `Mem` (design 0008 §1.4):
+its home is an 8-byte frame slot, low word at offset 0, high word at 4.
+The bits above `N` in the high word are unspecified; an operation that
+reads them extends the high word first from its `N - 32` bits (by zero
+for `lshr`, `udiv`, `urem`, an unsigned or equality compare, `zext`, a
+`store`; by sign for `ashr`, `sdiv`, `srem`, a signed compare, `sext`).
+Lowerings work in `eax`, `ecx`, `edx` only and read every operand word
+before writing the result's slot; the glue copies a slot through `ecx`
+and writes a constant with immediate stores (a `ptrtoint` constant
+through `ecx`). Wider than 64 bits is refused as `x86:i64:wide`.
+
+- `add`/`sub`: `add`/`adc` (`sub`/`sbb`) of the halves; `and`, `or`,
+  `xor` half by half; `freeze`, `bitcast` between integers, `trunc` to
+  another wide width: a copy.
+- `mul`: `lo:hi = a0·b0` (`mul`), `hi += a0·b1 + a1·b0` (`imul`).
+- Shifts by a constant `k`: `shld`/`shrd` and a shift for `k < 32`, a
+  word move and a shift (the vacated word 0, or the sign for `ashr`) for
+  `k >= 32`; `k >= N` is poison and writes nothing. By a variable: the
+  amount's low word in `ecx`, `shld`/`shrd` and a shift by `cl`, then
+  `test cl, 32` and the word move.
+- `udiv`, `sdiv`, `urem`, `srem`: calls of libgcc's `__udivdi3`,
+  `__divdi3`, `__umoddi3`, `__moddi3` (`R_386_PLT32`), made by `int`
+  itself: divisor then dividend pushed high word first (extended), the
+  result in `edx:eax`, `add esp, 16`. These four symbols are undefined
+  in an object that divides 64-bit integers.
+- `icmp`: equality as `xor` of each half and `or` of the two; order as
+  `cmp` of the low halves and `sbb` of the high halves, operands swapped
+  for `>` and `<=` so that only carry, sign and overflow are read; then
+  `setcc` and `movzx` into the `i1` result.
+- `select`: `test al, 1` and a copy of the chosen arm on each side of a
+  branch, on every CPU.
+- Casts: `zext`, `sext`, `ptrtoint` from a `Gpr` value store its
+  register (extended) and a high word of 0 or the sign; `trunc` and
+  `inttoptr` to a `Gpr` value load the low word. `load`/`store` move
+  exactly the store size (5 to 8 bytes).
+
+Still refused as `x86:i64`: such an integer passed or returned by value
+(I6, `abi.rs`), a `switch` on one (or wider), a `ptradd` index of one.
+Intrinsics of these widths stay `x86:intrinsic`, as for every width: the
+`*.with.overflow` ones return the aggregate `{iN, i1}` (I11's
+`extractvalue`), and the bit counts and min/max are not lowered yet.

@@ -1,0 +1,1 @@
+2026-11-16T14:45:47Z	WP-292: the first counts baseline (instruction counts under callgrind and peak memory of hod with one thread bind; wall time is reported)	20 inputs, hod built 20; hod version 1.0.0; 3 runs; mode counts

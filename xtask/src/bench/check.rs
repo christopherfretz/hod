@@ -28,6 +28,15 @@ pub struct Thresholds {
     /// before the measurement cannot show a time regression: 5%, the time
     /// threshold itself.
     pub max_spread_bp: u64,
+    /// `--counts`: allowed growth of one input's instruction count: 1%.
+    pub inst_bp: u64,
+    /// `--counts`: allowed growth of the sum of the counts over the
+    /// inputs judged: 0.5%.
+    pub inst_sum_bp: u64,
+    /// `--counts`: a memory difference below this many KiB is not judged:
+    /// on the loaded host the peak of one input moved by up to 2.2 MiB
+    /// between runs (WP-292), so 3 MiB.
+    pub count_mem_slack_kib: u64,
 }
 
 impl Default for Thresholds {
@@ -39,6 +48,9 @@ impl Default for Thresholds {
             mem_slack_kib: 512,
             max_drift_bp: 2500,
             max_spread_bp: 500,
+            inst_bp: 100,
+            inst_sum_bp: 50,
+            count_mem_slack_kib: 3072,
         }
     }
 }
@@ -53,6 +65,10 @@ pub enum Verdict {
     Improved,
     /// Over a threshold.
     Regressed { time: bool, mem: bool },
+    /// `--counts`: over a threshold of instructions or of memory.
+    RegressedCounts { inst: bool, mem: bool },
+    /// `--counts`: hod ran but its run under callgrind gave no count.
+    Uncounted,
     /// The baseline says hod built this input, and now it does not.
     Lost,
     /// The times cannot be judged: the reference tool is far slower than
@@ -70,12 +86,17 @@ pub enum Verdict {
 impl Verdict {
     /// Whether the gate fails on this verdict (exit status 1).
     pub fn fails(&self) -> bool {
-        matches!(self, Self::Regressed { .. } | Self::Lost)
+        matches!(self, Self::Regressed { .. } | Self::RegressedCounts { .. } | Self::Lost)
     }
 
-    /// Whether the input is measured again before the verdict stands.
+    /// Whether the input is measured again before the verdict stands. An
+    /// instruction count repeats itself: measuring it again would say the
+    /// same.
     pub fn remeasure(&self) -> bool {
-        matches!(self, Self::Regressed { .. } | Self::Noisy)
+        matches!(
+            self,
+            Self::Regressed { .. } | Self::RegressedCounts { inst: false, .. } | Self::Noisy
+        )
     }
 
     pub fn label(&self) -> String {
@@ -84,7 +105,16 @@ impl Verdict {
             Self::Improved => "improved".to_owned(),
             Self::Regressed { time: true, mem: true } => "REGRESSED (time, memory)".to_owned(),
             Self::Regressed { time: true, mem: false } => "REGRESSED (time)".to_owned(),
-            Self::Regressed { .. } => "REGRESSED (memory)".to_owned(),
+            Self::RegressedCounts { inst: true, mem: true } => {
+                "REGRESSED (instructions, memory)".to_owned()
+            }
+            Self::RegressedCounts { inst: true, mem: false } => {
+                "REGRESSED (instructions)".to_owned()
+            }
+            Self::Regressed { .. } | Self::RegressedCounts { .. } => {
+                "REGRESSED (memory)".to_owned()
+            }
+            Self::Uncounted => "not judged: no instruction count".to_owned(),
             Self::Lost => "LOST".to_owned(),
             Self::Noisy => "NOISY".to_owned(),
             Self::New(why) => format!("new: {why}"),
@@ -106,6 +136,8 @@ pub struct Judged {
     /// machine, the ratios to `llc` (in 1/10000) elsewhere.
     pub time: Option<(u64, u64)>,
     pub mem: Option<(u64, u64)>,
+    /// `--counts`: baseline and current instruction counts.
+    pub instructions: Option<(u64, u64)>,
     /// Whether `time` and `mem` are ratios to `llc`.
     pub ratios: bool,
     /// How much slower the reference tool is than in the baseline, in
@@ -149,6 +181,7 @@ pub fn judge(
         status: now.status,
         time: None,
         mem: None,
+        instructions: None,
         ratios: false,
         drift: None,
         remeasured: 0,
@@ -248,6 +281,123 @@ pub fn judge(
     judged
 }
 
+/// `--counts`: judges strict hod's record of one input against the
+/// baseline's by its instruction count and its peak memory
+/// (`spec/harness.md` "bench", "The counts gate"). Wall time is carried
+/// for the table and never judged.
+pub fn judge_counts(
+    base: Option<&Record>,
+    now: &Record,
+    comparable: Result<(), &str>,
+    thresholds: &Thresholds,
+) -> Judged {
+    let mut judged = Judged {
+        input: now.input.clone(),
+        verdict: Verdict::Ok,
+        status: now.status,
+        time: None,
+        mem: None,
+        instructions: None,
+        ratios: false,
+        drift: None,
+        remeasured: 0,
+    };
+    if now.status == Status::Error {
+        judged.verdict = Verdict::Unjudged("the run has an error for this input".to_owned());
+        return judged;
+    }
+    let Some(base) = base.filter(|base| base.status != Status::Error) else {
+        judged.verdict = Verdict::New("the baseline does not have this input".to_owned());
+        return judged;
+    };
+    if base.ir_hash != now.ir_hash {
+        judged.verdict = Verdict::Advisory("the input changed since the baseline".to_owned());
+        return judged;
+    }
+    judged.time = base.wall_us_min.zip(now.wall_us_min);
+    judged.mem = base.rss_kib.zip(now.rss_kib);
+    judged.instructions = base.instructions.zip(now.instructions);
+    if base.status == Status::Declined && now.status == Status::Declined {
+        judged.verdict = Verdict::Unjudged("declined, as in the baseline".to_owned());
+        return judged;
+    }
+    if let Err(why) = comparable {
+        judged.verdict = Verdict::Advisory(why.to_owned());
+        return judged;
+    }
+    match (base.status == Status::Ok, now.status == Status::Ok) {
+        (true, false) => {
+            judged.verdict = Verdict::Lost;
+            return judged;
+        }
+        (false, true) => {
+            judged.verdict = Verdict::New(
+                "hod builds this input now; the baseline has no count for that".to_owned(),
+            );
+            return judged;
+        }
+        _ => {}
+    }
+    let Some(now_count) = now.instructions else {
+        judged.verdict = Verdict::Uncounted;
+        return judged;
+    };
+    let Some(base_count) = base.instructions else {
+        judged.verdict = Verdict::New("the baseline has no instruction count".to_owned());
+        return judged;
+    };
+    let inst_worse = over(base_count, now_count, thresholds.inst_bp, 0);
+    let inst_better = over(now_count, base_count, thresholds.inst_bp, 0);
+    let slack = thresholds.count_mem_slack_kib;
+    let (mem_worse, mem_better) = judged.mem.map_or((false, false), |(base, now)| {
+        (over(base, now, thresholds.mem_bp, slack), over(now, base, thresholds.mem_bp, slack))
+    });
+    judged.verdict = if inst_worse || mem_worse {
+        Verdict::RegressedCounts { inst: inst_worse, mem: mem_worse }
+    } else if inst_better || mem_better {
+        Verdict::Improved
+    } else {
+        Verdict::Ok
+    };
+    judged
+}
+
+/// `--counts`: the instructions summed over the inputs whose counts were
+/// compared (verdict ok, improved or regressed), and how many those are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sum {
+    pub base: u64,
+    pub now: u64,
+    pub inputs: usize,
+}
+
+impl Sum {
+    /// The sum over `judged`, if any input's counts were compared.
+    pub fn of(judged: &[Judged]) -> Option<Self> {
+        let compared = judged.iter().filter(|one| {
+            matches!(one.verdict, Verdict::Ok | Verdict::Improved | Verdict::RegressedCounts { .. })
+        });
+        let mut sum: Option<Self> = None;
+        for (base, now) in compared.filter_map(|one| one.instructions) {
+            let so_far = sum.unwrap_or(Self { base: 0, now: 0, inputs: 0 });
+            sum = Some(Self {
+                base: so_far.base + base,
+                now: so_far.now + now,
+                inputs: so_far.inputs + 1,
+            });
+        }
+        sum
+    }
+
+    pub fn regressed(&self, thresholds: &Thresholds) -> bool {
+        over(self.base, self.now, thresholds.inst_sum_bp, 0)
+    }
+
+    pub fn improved(&self, thresholds: &Thresholds) -> bool {
+        over(self.now, self.base, thresholds.inst_sum_bp, 0)
+    }
+}
+
 /// How many inputs of `results` have a time, of any tool, whose runs
 /// disagree by more than the gate allows: against such a baseline a
 /// slower time is NOISY, not REGRESSED.
@@ -267,11 +417,18 @@ pub fn unsteady(results: &Results, thresholds: &Thresholds) -> usize {
 /// Whether a baseline's absolute numbers bind a run: the same machine and
 /// the same reference tool. The error says what differs.
 pub fn comparable(baseline: &Results, run: &Results) -> Result<(), String> {
-    for (key, what) in [
+    comparable_by(baseline, run, false)
+}
+
+/// [`comparable`], or for `--counts` (`counts`) the same machine and
+/// target: `llc` is not judged there, so its version does not matter.
+pub fn comparable_by(baseline: &Results, run: &Results, counts: bool) -> Result<(), String> {
+    let keys = [
         ("machine", "another machine"),
         ("target", "another target"),
         ("llc_version", "another llc"),
-    ] {
+    ];
+    for (key, what) in keys.into_iter().take(if counts { 2 } else { 3 }) {
         let (base, now) = (baseline.get(key).unwrap_or("?"), run.get(key).unwrap_or("?"));
         if base != now {
             return Err(format!("{what} ({base})"));
@@ -303,6 +460,24 @@ pub fn judge_all(
     all
 }
 
+/// `--counts`: judges every record of strict hod in `run` by
+/// [`judge_counts`], in the run's order.
+pub fn judge_all_counts(baseline: &Results, run: &Results, thresholds: &Thresholds) -> Vec<Judged> {
+    let comparable = comparable_by(baseline, run, true);
+    run.records
+        .iter()
+        .filter(|record| record.tool == Tool::Hod)
+        .map(|now| {
+            judge_counts(
+                baseline.find(&now.input, Tool::Hod),
+                now,
+                comparable.as_ref().copied().map_err(String::as_str),
+                thresholds,
+            )
+        })
+        .collect()
+}
+
 /// The outcome of the gate.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Check {
@@ -313,11 +488,31 @@ pub struct Check {
     pub advisory: Option<String>,
     pub judged: Vec<Judged>,
     pub thresholds: Thresholds,
+    /// `--counts`: instructions and memory were judged, not time.
+    pub counts: bool,
 }
 
 impl Check {
+    /// `--counts`: the sum of the compared counts.
+    pub fn sum(&self) -> Option<Sum> {
+        if self.counts && self.advisory.is_none() { Sum::of(&self.judged) } else { None }
+    }
+
+    /// Whether the sum of the counts regressed (`--counts`).
+    pub fn sum_regressed(&self) -> bool {
+        self.sum().is_some_and(|sum| sum.regressed(&self.thresholds))
+    }
+
+    /// The failing inputs, and one more when the sum of the counts
+    /// regressed.
     pub fn failures(&self) -> usize {
-        self.judged.iter().filter(|j| j.verdict.fails()).count()
+        self.judged.iter().filter(|j| j.verdict.fails()).count() + usize::from(self.sum_regressed())
+    }
+
+    /// Inputs hod ran on without a count (`--counts`): the run cannot be
+    /// trusted.
+    pub fn uncounted(&self) -> usize {
+        self.judged.iter().filter(|j| j.verdict == Verdict::Uncounted).count()
     }
 
     /// Inputs the machine was too busy to judge, after every retry.
@@ -327,6 +522,9 @@ impl Check {
 
     /// The table and the count line.
     pub fn text(&self) -> String {
+        if self.counts {
+            return self.counts_text();
+        }
         let mut text = format!(
             "bench: check against {} (recorded {}){}\n",
             self.baseline.display(),
@@ -409,6 +607,119 @@ impl Check {
         }
         text
     }
+
+    /// `--counts`: the table (instructions, memory, and the wall time,
+    /// which is shown and not judged), the sum, and the count line.
+    fn counts_text(&self) -> String {
+        let mut text = format!(
+            "bench: check (counts) against {} (recorded {}){}\n",
+            self.baseline.display(),
+            self.recorded,
+            self.advisory.as_ref().map_or_else(String::new, |why| format!("; advisory: {why}"))
+        );
+        let header: Vec<String> = [
+            "input",
+            "base M instr",
+            "now M instr",
+            "instr",
+            "base MiB",
+            "now MiB",
+            "memory",
+            "base ms",
+            "now ms",
+            "verdict",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        let rows: Vec<Vec<String>> = self.judged.iter().map(counts_row).collect();
+        text.push_str(&table(&header, &rows, &[0, 9]));
+        let thresholds = &self.thresholds;
+        if let Some(sum) = self.sum() {
+            let verdict = if sum.regressed(thresholds) {
+                "REGRESSED (sum)"
+            } else if sum.improved(thresholds) {
+                "improved: re-record"
+            } else {
+                "ok"
+            };
+            let _ = writeln!(
+                text,
+                "bench: check: sum over {} inputs: {} M instructions, baseline {} M ({}): {verdict}",
+                sum.inputs,
+                millions(sum.now),
+                millions(sum.base),
+                percent(delta_bp(sum.base, sum.now)),
+            );
+        }
+        let count = |wanted: fn(&Verdict) -> bool| {
+            self.judged.iter().filter(|j| wanted(&j.verdict)).count()
+        };
+        let improved = count(|v| *v == Verdict::Improved)
+            + usize::from(self.sum().is_some_and(|sum| sum.improved(thresholds)));
+        let _ = writeln!(
+            text,
+            "bench: check: {} inputs: {} ok, {} improved, {} new, {} advisory, {} REGRESSED, {} LOST, \
+             {} without a count, {} not judged; thresholds: instructions +{} per input and +{} on \
+             the sum, memory +{}; wall time is not judged",
+            self.judged.len(),
+            count(|v| *v == Verdict::Ok),
+            count(|v| *v == Verdict::Improved),
+            count(|v| matches!(v, Verdict::New(_))),
+            count(|v| matches!(v, Verdict::Advisory(_))),
+            count(|v| matches!(v, Verdict::RegressedCounts { .. })),
+            count(|v| *v == Verdict::Lost),
+            self.uncounted(),
+            count(|v| matches!(v, Verdict::Unjudged(_))),
+            percent(Some(thresholds.inst_bp as i64)).trim_start_matches('+'),
+            percent(Some(thresholds.inst_sum_bp as i64)).trim_start_matches('+'),
+            percent(Some(thresholds.mem_bp as i64)).trim_start_matches('+'),
+        );
+        if improved > 0 {
+            text.push_str(
+                "bench: check: improved: re-record the counts baseline \
+                 (--update-baseline --counts --reason)\n",
+            );
+        }
+        text
+    }
+}
+
+/// `--counts`: one input's row of the table.
+fn counts_row(judged: &Judged) -> Vec<String> {
+    let pair = |values: Option<(u64, u64)>, absolute: fn(u64) -> String| match values {
+        Some((base, now)) => [absolute(base), absolute(now), percent(delta_bp(base, now))],
+        None => ["-".to_owned(), "-".to_owned(), "-".to_owned()],
+    };
+    let [base_inst, now_inst, inst] = pair(judged.instructions, millions);
+    let [base_mem, now_mem, mem] = pair(judged.mem, mib);
+    let [base_ms, now_ms, _] = pair(judged.time, millis);
+    let mut verdict = match judged.verdict {
+        Verdict::Improved => "improved: re-record".to_owned(),
+        ref other => other.label(),
+    };
+    if judged.status == Status::Declined && !matches!(judged.verdict, Verdict::Unjudged(_)) {
+        verdict.push_str("; declined");
+    }
+    if judged.remeasured > 0 {
+        let _ = write!(verdict, "; measured again {}x", judged.remeasured);
+    }
+    vec![
+        judged.input.clone(),
+        base_inst,
+        now_inst,
+        inst,
+        base_mem,
+        now_mem,
+        mem,
+        base_ms,
+        now_ms,
+        verdict,
+    ]
+}
+
+/// A count in millions, one decimal.
+pub fn millions(count: u64) -> String {
+    format!("{}.{}", count / 1_000_000, count % 1_000_000 / 100_000)
 }
 
 /// Microseconds as milliseconds, two decimals.
@@ -489,12 +800,15 @@ pub fn update_baseline(baseline: &Path, run: &Results, reason: &str) -> Result<(
     run.write(baseline)?;
     let hod: Vec<&Record> = run.records.iter().filter(|record| record.tool == Tool::Hod).collect();
     let built = hod.iter().filter(|record| record.status == Status::Ok).count();
-    let what = format!(
+    let mut what = format!(
         "{} inputs, hod built {built}; {}; {} runs",
         hod.len(),
         run.get("hod_version").unwrap_or("hod ?"),
         run.get("runs").unwrap_or("?")
     );
+    if let Some(mode) = run.get("mode") {
+        let _ = write!(what, "; mode {mode}");
+    }
     let flat = |text: &str| text.replace(['\t', '\n', '\r'], " ");
     let line = format!("{}\t{}\t{}\n", run.get("date").unwrap_or("-"), flat(reason), flat(&what));
     let log = log_path(baseline);
@@ -849,6 +1163,7 @@ mod tests {
             advisory: None,
             judged,
             thresholds,
+            counts: false,
         };
         assert_eq!((check.failures(), check.noisy()), (1, 0));
         assert_eq!(
@@ -939,5 +1254,164 @@ bench: check: an improvement is a reason to update the baseline (--update-baseli
         );
         assert_eq!(Results::read(&path).unwrap(), run);
         assert_eq!(std::fs::read_to_string(log_path(&path)).unwrap().lines().count(), 2);
+    }
+
+    fn counted(input: &str, instructions: Option<u64>, rss: u64, wall: u64) -> Record {
+        Record { input: input.to_owned(), instructions, ..hod(wall, rss) }
+    }
+
+    fn counts_verdict(base: Option<&Record>, now: &Record) -> Verdict {
+        judge_counts(base, now, Ok(()), &Thresholds::default()).verdict
+    }
+
+    // spec/harness.md "bench", "The counts gate": more than 1% more
+    // instructions on an input, or 2% (and 512 KiB) more memory, fails;
+    // 1% fewer is "improved"; anything within passes; wall time, however
+    // far it moved, is not judged.
+    #[test]
+    fn counts_gate_verdicts() {
+        let base = counted("in", Some(100_000_000), 50_000, 100_000);
+        let inst =
+            |count: u64| counts_verdict(Some(&base), &counted("in", Some(count), 50_000, 100_000));
+        assert_eq!(inst(100_000_000), Verdict::Ok);
+        assert_eq!(inst(101_000_000), Verdict::Ok, "at the threshold");
+        assert_eq!(inst(101_000_001), Verdict::RegressedCounts { inst: true, mem: false });
+        // "Improved" when the baseline is above now by more than 1% of now.
+        assert_eq!(inst(99_100_000), Verdict::Ok);
+        assert_eq!(inst(98_000_000), Verdict::Improved);
+        // Within noise (WP-292 measured under 0.02% between runs).
+        assert_eq!(inst(100_020_000), Verdict::Ok);
+        // Wall time is shown, not judged: three times slower is ok.
+        let slow = counted("in", Some(100_000_000), 50_000, 300_000);
+        let judged = judge_counts(Some(&base), &slow, Ok(()), &Thresholds::default());
+        assert_eq!((judged.verdict, judged.time), (Verdict::Ok, Some((100_000, 300_000))));
+        // Memory: 2% and 3 MiB (peak RSS moves by up to 2.2 MiB between
+        // runs on the loaded host).
+        let mem =
+            |rss| counts_verdict(Some(&base), &counted("in", Some(100_000_000), rss, 100_000));
+        assert_eq!(mem(51_001), Verdict::Ok, "2% but under 3 MiB");
+        assert_eq!(mem(53_072), Verdict::Ok);
+        assert_eq!(mem(53_073), Verdict::RegressedCounts { inst: false, mem: true });
+        let big = counted("in", Some(100_000_000), 500_000, 100_000);
+        let big_mem = |rss| counts_verdict(Some(&big), &counted("in", Some(100_000_000), rss, 1));
+        assert_eq!(
+            (big_mem(510_000), big_mem(510_001)),
+            (Verdict::Ok, Verdict::RegressedCounts { inst: false, mem: true })
+        );
+        assert_eq!(
+            counts_verdict(Some(&base), &counted("in", Some(102_000_000), 60_000, 100_000)),
+            Verdict::RegressedCounts { inst: true, mem: true }
+        );
+        assert_eq!(mem(45_000), Verdict::Improved);
+        // An instruction regression is not measured again (it would repeat);
+        // a memory regression alone is.
+        assert!(!Verdict::RegressedCounts { inst: true, mem: true }.remeasure());
+        assert!(Verdict::RegressedCounts { inst: false, mem: true }.remeasure());
+        assert!(Verdict::RegressedCounts { inst: true, mem: false }.fails());
+        assert_eq!(
+            Verdict::RegressedCounts { inst: true, mem: false }.label(),
+            "REGRESSED (instructions)"
+        );
+    }
+
+    // "The counts gate": what is not compared, and why.
+    #[test]
+    fn counts_gate_without_a_comparison() {
+        let base = counted("in", Some(1_000_000), 50_000, 100_000);
+        let now = counted("in", Some(1_000_000), 50_000, 100_000);
+        // Missing baseline (or its input).
+        assert!(matches!(counts_verdict(None, &now), Verdict::New(_)));
+        // No count now: the run cannot be trusted (exit status 3).
+        assert_eq!(
+            counts_verdict(Some(&base), &counted("in", None, 50_000, 1)),
+            Verdict::Uncounted
+        );
+        // No count in the baseline: nothing to compare with.
+        let label = counts_verdict(Some(&counted("in", None, 50_000, 1)), &now).label();
+        assert_eq!(label, "new: the baseline has no instruction count");
+        // The input changed, hod lost it, another machine.
+        let changed = Record { ir_hash: Some("fnv1a64:2".to_owned()), ..now.clone() };
+        assert!(matches!(counts_verdict(Some(&base), &changed), Verdict::Advisory(_)));
+        let declined = Record { status: Status::Declined, ..now.clone() };
+        assert_eq!(counts_verdict(Some(&base), &declined), Verdict::Lost);
+        let elsewhere = judge_counts(
+            Some(&base),
+            &counted("in", Some(9_000_000), 50_000, 1),
+            Err("another machine (m)"),
+            &Thresholds::default(),
+        );
+        assert_eq!(elsewhere.verdict, Verdict::Advisory("another machine (m)".to_owned()));
+        // An error of the run is not judged.
+        let error = Record::blank(Status::Error, "in", Class::Typical, false, Tool::Hod);
+        assert!(matches!(counts_verdict(Some(&base), &error), Verdict::Unjudged(_)));
+        // The llc version does not bind counts; the machine and target do.
+        let mut a = Results::default();
+        a.set("machine", "m");
+        a.set("llc_version", "LLVM version 22.1.8");
+        let mut b = a.clone();
+        b.set("llc_version", "LLVM version 22.1.9");
+        assert!(comparable_by(&a, &b, true).is_ok() && comparable_by(&a, &b, false).is_err());
+        b.set("target", "x86_64-unknown-linux-gnu");
+        assert_eq!(comparable_by(&a, &b, true), Err("another target (?)".to_owned()));
+    }
+
+    // "The counts gate": the sum binds at 0.5%: several inputs each within
+    // 1% that together grew by more fail the gate; the table names every
+    // input, and improvements ask for a re-record.
+    #[test]
+    fn counts_gate_sum_and_text() {
+        let mut baseline = Results::default();
+        baseline.set("date", "2026-11-16T10:00:00Z");
+        let mut run = baseline.clone();
+        for (name, base, now) in [("a", 100_000_000, 100_800_000), ("b", 100_000_000, 100_800_000)]
+        {
+            baseline.records.push(counted(name, Some(base), 50_000, 100_000));
+            run.records.push(counted(name, Some(now), 50_000, 250_000));
+        }
+        let thresholds = Thresholds::default();
+        let check = |judged| Check {
+            baseline: PathBuf::from("bench/baselines/m-counts.tsv"),
+            recorded: "2026-11-16T10:00:00Z".to_owned(),
+            advisory: None,
+            judged,
+            thresholds,
+            counts: true,
+        };
+        let judged = judge_all_counts(&baseline, &run, &thresholds);
+        assert!(judged.iter().all(|one| one.verdict == Verdict::Ok));
+        let failed = check(judged);
+        assert_eq!(failed.sum(), Some(Sum { base: 200_000_000, now: 201_600_000, inputs: 2 }));
+        assert!(failed.sum_regressed());
+        assert_eq!((failed.failures(), failed.noisy(), failed.uncounted()), (1, 0, 0));
+        let text = failed.text();
+        assert!(
+            text.contains("bench: check (counts) against bench/baselines/m-counts.tsv"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "sum over 2 inputs: 201.6 M instructions, baseline 200.0 M (+0.8%): REGRESSED (sum)"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("wall time is not judged"), "{text}");
+        // One input over 1%: it fails and is named.
+        run.records[1].instructions = Some(101_500_000);
+        run.records[0].instructions = Some(97_000_000);
+        let judged = judge_all_counts(&baseline, &run, &thresholds);
+        let one = check(judged);
+        assert_eq!(one.failures(), 1, "the input; the sum (-0.75%) is not");
+        let text = one.text();
+        let line = text.lines().find(|line| line.starts_with("b ")).unwrap();
+        assert!(line.ends_with("REGRESSED (instructions)"), "{text}");
+        assert!(line.contains("+1.5%") && line.contains("250.00"), "{text}");
+        let line = text.lines().find(|line| line.starts_with("a ")).unwrap();
+        assert!(line.ends_with("improved: re-record"), "{text}");
+        assert!(
+            text.contains("re-record the counts baseline (--update-baseline --counts --reason)")
+        );
+        // On another machine nothing binds, the sum included.
+        let advisory = Check { advisory: Some("another machine (x)".to_owned()), ..one };
+        assert_eq!((advisory.sum(), advisory.sum_regressed()), (None, false));
     }
 }

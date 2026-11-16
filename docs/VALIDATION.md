@@ -494,6 +494,18 @@ Speed and memory are properties with tests, not goals with hopes.
   slower or 2% larger in memory on any input fails unless the baseline is
   updated with a written reason. On a machine other than the baseline's the
   check is advisory.
+- On a loaded machine wall time cannot be judged (`--check` says NOISY),
+  so what binds there is the **counts gate** (WP-292, `xtask bench
+  --check --counts`): the instructions strict hod executes under
+  callgrind, which repeat to 0.02% at any load, and peak memory, against
+  a counts baseline of their own (`bench/baselines/<machine
+  id>[-<arch>]-counts.tsv`); wall time is shown and not judged. More
+  than 1% more instructions on an input, more than 0.5% on the sum over
+  the inputs, or the memory bound fails; fewer is "improved: re-record".
+  It is a step of the full gate per target (`bench-aarch64`,
+  `bench-x86_64`, about two minutes each) and not of the hosted lanes,
+  which have no baseline of their own (`spec/harness.md` "bench", "The
+  counts gate").
 - The harness also reports time per phase (ingest, analysis, emission,
   debug info, object writing) and bytes of IR per second, so regressions
   are attributable.

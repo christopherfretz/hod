@@ -16,6 +16,11 @@ binary in one log), then the `irdiff` runs of
 other architecture under its emulator, the full gate's every seed with
 both oracles and hybrid mode), then the `roundtrip` run of "roundtrip", "In the
 gate", then (full gate only, `xtask::ci::FULL_ONLY`, cheapest first)
+`bench-aarch64` and `bench-x86_64`, the counts gate of the benchmark
+(`cargo xtask bench --check --counts --target <arch>`, "bench", "The
+counts gate"; a missing valgrind, `llc` or clang skips the step with the
+line `bench: skipped: no <tool>; under HOD_REQUIRE_TOOLS=1 this fails`,
+and fails it under `HOD_REQUIRE_TOOLS=1`), then
 `debug-x86_64` and `debug-aarch64`, the runs of "debug", "In the gate"
 for each target architecture, and `corpus-aarch64` and `corpus-x86_64`,
 L6: `corpus verify --strict` of that architecture's default corpus
@@ -93,8 +98,10 @@ links no dylib), and a second failure of the step, fails the gate.
 `retries_a_crate_seen_only_as_rmeta_once`.
 
 `--step <name>` (repeatable; `fmt`, `scripts`, `workflows`, `clippy`, `test`, `irdiff`,
-`roundtrip`, `debug-x86_64`, `debug-aarch64`, `corpus-aarch64`,
-`corpus-x86_64`; WP-251 replaced `debug` by the two `debug-<arch>`)
+`roundtrip`, `bench-aarch64`, `bench-x86_64`, `debug-x86_64`,
+`debug-aarch64`, `corpus-aarch64`, `corpus-x86_64`; WP-251 replaced
+`debug` by the two `debug-<arch>`; the usage of `cargo xtask` names
+them all)
 runs only the named steps, in the gate's order
 whatever the order they are named in; without it every step runs. An
 unknown step or argument is a usage error (exit status 2). Test:
@@ -2523,7 +2530,11 @@ an entry is compiled on its own (the `;@ module:` parts, padded as
 `irdiff` pads them), in two modes: `plain` and `pic`. The arguments are
 `--strict -O0 -filetype=obj -mtriple=<the entry's target> [-relocation-model=pic]
 <the entry's llc-args> -o <object> -`, the module on standard input; the
-target is the `;@ target:` directive's, else the module's triple.
+target is the `;@ target:` directive's, else the module's triple. An
+entry that names neither (a `tests/ir` seed, which irdiff builds for
+every target) is compiled once per target hod compiles for (WP-292;
+without `-mtriple` both binaries would refuse it alike and the comparison
+would prove nothing), each comparison with its target.
 `--modules`: every `MODULES.tsv` under the directory (kept by the lane
 with `HOD_OSS_KEEP_MODULES`, "Real projects"): each module with the
 arguments it was really compiled with, its `-o` value replaced (a joined
@@ -2592,7 +2603,9 @@ manifest and the replayed arguments, and the section difference on
 hand-made ELF objects; `xtask/tests/compare_binaries_fakes.rs` with two
 fake hods (shell scripts): every class, the PIC mode alone differing, a
 diagnostic naming the object's path, an entry of two modules, base =
-head passing, an empty corpus failing, a binary that is not executable
+head passing, a seed without a target compared once per target
+(`a_seed_without_a_target_is_compared_per_target`), an empty corpus
+failing, a binary that is not executable
 and one that is missing, kept modules replayed with their arguments, and
 a manifest that does not parse.
 
@@ -2919,7 +2932,8 @@ One action at most; value options are `--name <value>` or
 | `--judge <tool>` | the configuration `--check` judges: `hod` or `hod+fallback` | `hod` |
 | `--target <arch>` | the objects' architecture, `aarch64` or `x86_64`; one that is not this machine's makes a cross run ("Cross runs") | this machine's |
 | `--instructions` | also count the instructions of one run of `llc` and of strict hod per input under callgrind ("Instructions") | |
-| `--baseline <file>` | the baseline to check against or to write | `bench/baselines/<machine id>.tsv`, `<machine id>-<arch>.tsv` for a cross run |
+| `--counts` | the counts gate ("The counts gate"): count strict hod per input under callgrind; `--check` judges instructions and peak memory and shows wall time without judging it; `--update-baseline` writes the counts baseline; not with `--judge` or `--report` | |
+| `--baseline <file>` | the baseline to check against or to write | `bench/baselines/<machine id>.tsv`, `<machine id>-<arch>.tsv` for a cross run; with `--counts`, `-counts` before `.tsv` |
 | `--results <file>` | the results file to write; for `--report`, to read | under the build directory ("Results file") |
 | `--out <file>` | what `--report` writes | `docs/status/perf.md` |
 | `-v`, `--verbose` | also print hod's phase times | |
@@ -3079,7 +3093,9 @@ measured ones did (status 0, or 2 for a decline), or whose output has no
 summary, leaves the record without a count and is a note in the summary.
 The counted run's time limit is 30 times the measured child's. Without
 `valgrind` there are no counts, and the summary says so, as for any
-missing tool. The gate does not judge counts.
+missing tool. The wall-time gate does not judge counts; the counts gate
+does ("The counts gate"), and with `--counts` strict hod is counted
+whether or not `--instructions` is given (`llc` only with it).
 
 ### Measurement
 
@@ -3219,7 +3235,8 @@ code generator's own phases are `ingest`, `analysis`, `emission`,
 
 `<build directory>/bench/results-llvm<major>.tsv`
 (`results-kiln-llvm<major>.tsv` with `--kiln`; with `-<arch>` before
-`-llvm` for a cross run), or the `--results` file.
+`-llvm` for a cross run, and `-counts` before `-llvm` for the counts
+gate), or the `--results` file.
 Each run replaces it (written to a temporary name beside it and renamed).
 A baseline is the same format. The file is text:
 
@@ -3244,6 +3261,7 @@ The header keys, in order; a key whose value is not known is left out:
 | `hod_build` | `workspace, release profile` or `given with --hod` |
 | `producer` | the producer's version |
 | `runs` | `--runs` |
+| `mode` | `counts` for a run of the counts gate; absent otherwise |
 | `usage` | `gnu-time (<path> -f '%M %U %S')` or `none` |
 | `floor_us`, `rss_error_kib` | "The method's error"; the latter with its sign |
 | `load` | the three load averages of `/proc/loadavg` when the measurement started |
@@ -3448,7 +3466,110 @@ So `--check` is run where a baseline exists for the machine and the
 machine is quiet, and it is not part of `cargo xtask ci`, whose runs
 share the machine with other work by design. On the shared host it is a
 memory gate and a detector of large time regressions, and says NOISY for
-the rest.
+the rest. What binds there is the counts gate.
+
+### The counts gate
+
+`--counts` (WP-292) is the gate of a loaded machine. Its verdict rests on
+what does not depend on the load: the instructions strict hod executes
+under callgrind ("Instructions", `HOD_THREADS=1`), and peak memory. Wall
+time is measured as always and shown beside them, never judged.
+
+- **Measurement.** As a run without it (every tool, `--runs` rounds),
+  except that hod's measured runs get `HOD_THREADS=1` as its counted run
+  does (its peak memory then does not depend on how its threads were
+  scheduled, and its wall time is one thread's), and then one counted
+  run of strict hod per input. `llc` is not counted
+  unless `--instructions` is also given: it is not judged, and counting
+  it costs eight times what counting hod does.
+- **Without valgrind** nothing is measured: the summary says
+  `bench: valgrind (--counts): nothing counted or judged: not found;
+  skipped` and the exit status is 0, or 3 under `HOD_REQUIRE_TOOLS=1`.
+- **Its baseline** is its own file, `bench/baselines/<machine
+  id>[-<arch>]-counts.tsv`, with the header `mode counts`, recorded by
+  `--update-baseline --counts --reason "<text>"` (every input, as any
+  baseline; with `--target x86_64` for x86-64 objects). The update is
+  refused (exit status 3, nothing written) when strict hod ran on an
+  input and has no count. The log line ends with `; mode counts`. The
+  wall-time baselines are not touched, and neither gate takes the other's
+  baseline: of the baselines of other machines, `--check` considers only
+  those of its own mode.
+- **Binding.** The baseline binds the run when its `machine` and its
+  `target` are the run's (`llc`'s version does not matter: `llc` is not
+  judged). Elsewhere the comparison is advisory and the exit status 0.
+
+Per input (strict hod's record), the verdict is the first that applies:
+
+| verdict | when | effect |
+|---|---|---|
+| not judged: the run has an error for this input | `now` is an `error` | exit status 3 |
+| new: the baseline does not have this input | no `base`, or `base` is an `error` | |
+| advisory: the input changed since the baseline | the `ir_hash` differs | |
+| not judged: declined, as in the baseline | both are `declined` | |
+| advisory: another machine, another target | the baseline does not bind | |
+| LOST | `base` is `ok` and `now` is not | fails |
+| new: hod builds this input now | `now` is `ok` and `base` is not | |
+| not judged: no instruction count | `now` has no count | exit status 3 |
+| new: the baseline has no instruction count | `base` has none | |
+| REGRESSED (instructions), (memory), (instructions, memory) | `now.instructions` > `base.instructions` × 1.01; `now.rss_kib` > `base.rss_kib` × 1.02 and by more than 3 MiB | fails |
+| improved: re-record | not regressed, and `base` is above `now` by more than the same margins in instructions or in memory | a line that reminds of `--update-baseline --counts` |
+| ok | otherwise | |
+
+**The sum.** Over the inputs whose counts were compared (verdict ok,
+improved or regressed), the sums of the baseline's and the run's counts:
+the run's above the baseline's × 1.005 is `REGRESSED (sum)` and fails the
+gate (it counts as one more failure); below by more than that, the line
+says `improved: re-record`. So a change that adds 0.6% to every input
+fails although no input crosses 1%.
+
+**The thresholds.** Counts repeat: over five runs of every input at
+load 27 to 32 on the development host (WP-292), the largest difference
+between the runs of one input was 0.018% (`small-cxx`, 3.06 M
+instructions), the median 0.003%; what varies is a few thousand to a
+hundred thousand instructions of start-up and allocation (the
+environment, the length of the work directory's path).
+1% per input is fifty times the noise of the noisiest input and still
+catches a change of one phase (interning symbols moves `tables` by about
+21%); 0.5% on the sum, far above the sum's noise, catches what is
+spread thinly over every input. An instruction regression is not measured
+again (it would repeat); a memory regression alone is, as in "The gate".
+Peak memory is less steady than "The gate" assumed: on the same host at
+load 23 to 31 the peak resident set of hod on one input moved by up to
+2.2 MiB between the runs of one measurement (`tiny-functions`, 13.3 to
+15.5 MiB; `exceptions-g` 6.5 to 8.0 MiB), with one thread as with
+several, and the middle of three runs by up to 1.5 MiB between two
+measurements; a few hundred KiB, as "The gate" says, holds only on a
+quiet machine. So the counts gate judges memory at 2% and 3 MiB: a
+regression of a large input's structures (several MiB) fails, the noise
+of a small one does not. A deterministic measure of memory (the heap's
+peak under valgrind's massif or dhat) would bind tighter at the price of
+one more valgrind run per input.
+A change of the Rust toolchain (`rust-toolchain.toml`), of the producer
+or of the C library changes the counts without a change of hod: the
+baseline is re-recorded with it, and the reason says so.
+
+**The table** of a check: input, baseline and current millions of
+instructions and their difference, baseline and current memory and their
+difference, baseline and current fastest wall time (shown, not judged),
+and the verdict; then the line of the sum and a line of counts with the
+thresholds and `wall time is not judged`.
+
+**In the gate.** `cargo xtask ci` runs it per target
+(`bench-aarch64`, `bench-x86_64`, full gate only). Counting every input
+costs about a minute of callgrind per target on the development host at
+load 30 (hod executes 5.6 G instructions over the 20 inputs), and the
+whole step about two minutes, so the step judges every input; there is no
+subset. The hosted lanes do not run it: a hosted runner has no baseline
+of its own (its machine id changes with the processor the job lands on),
+and a check against another machine's baseline is advisory, so the job
+would build hod's release profile and count it for a verdict that can
+never fail. Re-recording after a change that moves the counts is one
+command per target:
+
+```
+cargo xtask bench --update-baseline --counts --reason "<why>"
+cargo xtask bench --update-baseline --counts --reason "<why>" --target x86_64
+```
 
 ### The report
 
@@ -3476,8 +3597,8 @@ child being measured, and is removed when the run ends.
 | status | when |
 |---|---|
 | 0 | measured (or listed, or reported) without an error; a check passed, was advisory, or had no baseline |
-| 1 | `--check`: an input is REGRESSED or LOST against a binding baseline |
-| 3 | not 1, and: a record is an `error`, an input could not be produced, a required tool is missing, an input is NOISY, or the baseline update was refused |
+| 1 | `--check`: an input is REGRESSED or LOST against a binding baseline, or (`--counts`) the sum of the counts is REGRESSED |
+| 3 | not 1, and: a record is an `error`, an input could not be produced, a required tool is missing, an input is NOISY, (`--counts`) strict hod has no count for an input, or the baseline update was refused |
 | 2 | the request cannot be carried out: a usage error, a manifest with errors, a filter that matches nothing, an unusable `--llvm`, `--hod` or `--kiln`, a file that cannot be read or written |
 
 ### Library
@@ -3525,7 +3646,12 @@ of a 64 MiB allocation; skipped without it, required under
 `an_unsteady_measurement_is_not_a_regression`,
 `advisory_on_another_machine`,
 `inputs_without_a_comparison`, `judging_a_run_and_its_text`,
-`number_formats`, `baseline_update_with_reason`.
+`number_formats`, `baseline_update_with_reason`; "The counts gate":
+`counts_gate_verdicts` (regression, improvement, within noise, wall
+time not judged, memory), `counts_gate_without_a_comparison` (missing
+baseline or count, changed input, LOST, another machine, what binds),
+`counts_gate_sum_and_text` (the sum fails alone; the table names the
+input).
 
 `xtask/src/bench/report.rs` ("Summary", "The report"): `summary_text`,
 `perf_report`, `cross_sections_and_instructions`, `units`. `xtask/src/bench.rs` ("Options", "Phases"):
@@ -3544,7 +3670,13 @@ is not judged; slower; larger; LOST; `--judge`), `the_remeasure_rule`,
 `baseline_update_with_reason`, `missing_tools`, `generate_and_report`,
 `a_cross_run_with_instructions` (a fake `valgrind`: the cross run's
 inputs, arguments, results file and baseline; the counts of `llc` and
-strict hod, a decline's too, and none without `valgrind`).
+strict hod, a decline's too, and none without `valgrind`),
+`the_counts_gate` (a fake `valgrind` whose count a control file sets:
+without valgrind a skip, exit 3 under `HOD_REQUIRE_TOOLS=1`; the counts
+baseline and its log, the wall-time baseline untouched; a slower hod
+within the bound passes; 1.5% more instructions fails, names the input
+and the sum and is not measured again; fewer is `improved: re-record`; a
+missing count is exit 3 and refuses the update).
 Their gate thresholds are the contract's except the absolute time margin
 (100 ms) and the drift and spread limits (off, but for the test of a
 busy machine): the fakes run for milliseconds, and the tests that judge

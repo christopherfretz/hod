@@ -74,7 +74,7 @@ pub fn cargo_step(args: &[&str]) -> bool {
 
 /// The steps of `cargo xtask ci`, in the order they run (`spec/harness.md`
 /// "ci"): the quick gate's, then [`FULL_ONLY`].
-pub const STEPS: [&str; 11] = [
+pub const STEPS: [&str; 13] = [
     "fmt",
     "scripts",
     "workflows",
@@ -82,6 +82,8 @@ pub const STEPS: [&str; 11] = [
     "test",
     "irdiff",
     "roundtrip",
+    "bench-aarch64",
+    "bench-x86_64",
     "debug-x86_64",
     "debug-aarch64",
     "corpus-aarch64",
@@ -89,11 +91,18 @@ pub const STEPS: [&str; 11] = [
 ];
 
 /// The steps only the full gate runs, cheapest first so that it fails
-/// fast: L7 (`debug` full tier and `debug verify`) and then L6 (`corpus
-/// verify --strict` with the list of expected results) for each target
-/// architecture, from this one host (`docs/VALIDATION.md` "Gates").
-pub const FULL_ONLY: [&str; 4] =
-    ["debug-x86_64", "debug-aarch64", "corpus-aarch64", "corpus-x86_64"];
+/// fast: the counts gate of the benchmark (WP-292, `bench --check
+/// --counts`), L7 (`debug` full tier and `debug verify`) and then L6
+/// (`corpus verify --strict` with the list of expected results) for each
+/// target architecture, from this one host (`docs/VALIDATION.md` "Gates").
+pub const FULL_ONLY: [&str; 6] = [
+    "bench-aarch64",
+    "bench-x86_64",
+    "debug-x86_64",
+    "debug-aarch64",
+    "corpus-aarch64",
+    "corpus-x86_64",
+];
 
 /// The target architecture a step of [`FULL_ONLY`] is for, by name.
 pub fn step_target(step: &str) -> Option<&'static str> {
@@ -220,6 +229,7 @@ fn run_one(step: &str, args: &Args) -> StepResult {
         _ => match (step.split_once('-'), step_target(step)) {
             (Some(("debug", _)), Some(arch)) => passed(debug_gate(arch)),
             (Some(("corpus", _)), Some(arch)) => corpus_gate(arch),
+            (Some(("bench", _)), Some(arch)) => bench_gate(arch),
             _ => unreachable!("Args::parse accepts only the gate's steps, not '{step}'"),
         },
     }
@@ -323,6 +333,42 @@ fn corpus_gate(arch: &str) -> StepResult {
             StepResult::Failed
         }
     }
+}
+
+/// The counts gate of the benchmark for one target architecture
+/// (spec/harness.md "bench", "The counts gate"; WP-292): `bench --check
+/// --counts --target <arch>` against the committed counts baseline. A
+/// missing valgrind (or `llc`, or clang) skips the step with one line, or
+/// fails it under `HOD_REQUIRE_TOOLS=1`.
+#[cfg(unix)]
+fn bench_gate(arch: &str) -> StepResult {
+    use crate::bench;
+    let mut config = bench::Config::for_workspace();
+    (config.action, config.counts) = (bench::Action::Check, true);
+    config.target = crate::irdiff::Arch::from_name(arch);
+    eprintln!("ci: cargo xtask bench --check --counts --target {arch}");
+    match bench::run(&config) {
+        Ok(run) => {
+            eprint!("{}", run.summary(false));
+            // Nothing measured for want of a tool: a skip, said in a line.
+            if run.results.is_none() && !run.missing_tools.is_empty() && !config.require_tools {
+                let missing = &run.missing_tools[0];
+                let tool = missing.split(" (").next().unwrap_or(missing);
+                eprintln!("bench: skipped: no {tool}; under HOD_REQUIRE_TOOLS=1 this fails");
+                return StepResult::Skipped(format!("no {tool}"));
+            }
+            if run.exit_status() == 0 { StepResult::Passed } else { StepResult::Failed }
+        }
+        Err(message) => {
+            eprintln!("xtask bench: {message}");
+            StepResult::Failed
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn bench_gate(_: &str) -> StepResult {
+    StepResult::Skipped("only available on Unix hosts".to_owned())
 }
 
 #[cfg(not(unix))]
@@ -595,10 +641,24 @@ mod tests {
         assert_eq!(STEPS[STEPS.len() - FULL_ONLY.len()..], FULL_ONLY);
         assert_eq!(
             FULL_ONLY.map(step_target),
-            [Some("x86_64"), Some("aarch64"), Some("aarch64"), Some("x86_64")]
+            [
+                Some("aarch64"),
+                Some("x86_64"),
+                Some("x86_64"),
+                Some("aarch64"),
+                Some("aarch64"),
+                Some("x86_64")
+            ]
         );
-        assert!(FULL_ONLY.iter().take(2).all(|s| s.starts_with("debug-")));
-        assert!(FULL_ONLY.iter().skip(2).all(|s| s.starts_with("corpus-")));
+        // WP-292: the counts gate first (about two minutes per target).
+        assert!(FULL_ONLY.iter().take(2).all(|s| s.starts_with("bench-")));
+        assert!(FULL_ONLY.iter().skip(2).take(2).all(|s| s.starts_with("debug-")));
+        assert!(FULL_ONLY.iter().skip(4).all(|s| s.starts_with("corpus-")));
+        // The usage names every step.
+        let main = include_str!("main.rs");
+        for step in STEPS {
+            assert!(main.contains(&format!(" {step}")), "{step} in the usage of main.rs");
+        }
         assert_eq!(step_target("fmt"), None);
         assert_eq!(step_target("corpus-arm"), None);
     }

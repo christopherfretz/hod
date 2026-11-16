@@ -41,6 +41,11 @@ jobs:
   # corpus, build output of the development machine that a hosted runner
   # does not have (spec/harness.md "CI"; xtask::ci::HOSTED_STEPS, checked
   # against this file by `the_hosted_lane_runs_the_quick_gates_steps`).
+  # The full gate's counts gate of the benchmark (`bench-<arch>`, WP-292)
+  # is not run here: a hosted runner has no counts baseline of its own (its
+  # machine id follows the processor the job lands on), and a check against
+  # another machine's is advisory, so the job could never fail
+  # (spec/harness.md "bench", "The counts gate"). No valgrind is needed.
   lints:
     name: lints
     runs-on: ${{ inputs.runner }}

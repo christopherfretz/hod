@@ -173,6 +173,7 @@ if [ "$tool" = hod ] && [ "${HOD_THREADS-}" != 1 ]; then echo "fake valgrind: HO
 status=$?
 count=4000
 if [ "$tool" = hod ]; then count=1000; fi
+if [ "$tool" = hod ] && [ -f "$(dirname "$0")/hod-count" ]; then count=$(cat "$(dirname "$0")/hod-count"); fi
 printf 'version: 1\ncreator: fake\nevents: Ir\nsummary: %s\n' "$count" > "$out"
 exit $status"#;
 
@@ -863,6 +864,91 @@ fn missing_tools() {
     write_script(&world.bin("llc-22"), FAKE_LLC);
     write_script(&world.bin("clang++-22"), FAKE_COMPILER);
     assert!(bench::run(&config).unwrap_err().ends_with("no-hod' is not a file"));
+}
+
+// "The counts gate" (`--counts`, WP-292): without valgrind nothing is
+// measured (a skip, or exit 3 under HOD_REQUIRE_TOOLS=1); with it only
+// strict hod is counted, the baseline is its own file with `mode counts`,
+// a slower wall time is not judged, and more instructions fail the gate
+// and name the input.
+#[test]
+fn the_counts_gate() {
+    let world = World::new("bench-counts");
+    let mut config = world.config(Action::Check);
+    config.counts = true;
+    let run = world.run(&config);
+    assert_eq!((run.exit_status(), run.results.is_none()), (0, true));
+    assert_eq!(
+        run.summary(false),
+        "bench: valgrind (--counts): nothing counted or judged: not found; skipped\n"
+    );
+    config.require_tools = true;
+    assert_eq!(world.run(&config).exit_status(), 3);
+    config.require_tools = false;
+
+    write_script(&world.bin("valgrind"), FAKE_VALGRIND);
+    world.control("hod-count", "100000000");
+    let mut update = world.config(Action::UpdateBaseline);
+    (update.counts, update.reason) = (true, Some("counts".to_owned()));
+    let updated = world.run(&update);
+    let own = world.scratch.join("ws/bench/baselines/test-machine-4c-counts.tsv");
+    assert_eq!(updated.updated.as_deref(), Some(own.as_path()), "{}", updated.summary(false));
+    assert!(!world.baseline().exists(), "the wall-time baseline is not touched");
+    let baseline = Results::read(&own).unwrap();
+    assert_eq!(baseline.get("mode"), Some("counts"));
+    let count = |results: &Results, input, tool| results.find(input, tool).unwrap().instructions;
+    assert_eq!(count(&baseline, "built", Tool::Hod), Some(100_000_000));
+    assert_eq!(count(&baseline, "plain", Tool::Hod), Some(100_000_000), "a decline is counted");
+    assert_eq!(count(&baseline, "built", Tool::Llc), None, "llc is not counted");
+    let log = std::fs::read_to_string(own.with_extension("log")).unwrap();
+    assert!(log.ends_with("; 2 runs; mode counts\n"), "{log}");
+    // The wall-time gate does not take the counts baseline for its own.
+    let wall = world.run(&world.config(Action::Check));
+    assert!(wall.check.is_none(), "{}", wall.summary(false));
+
+    // Within the bound, with hod three times slower: passes.
+    world.control("hod.delay", "0.3");
+    world.control("hod-count", "100500000");
+    let run = world.run(&config);
+    let text = run.summary(false);
+    assert_eq!(run.exit_status(), 0, "{text}");
+    let check = run.check.as_ref().unwrap();
+    assert_eq!(check.baseline, own);
+    let built = check.judged.iter().find(|one| one.input == "built").unwrap();
+    assert_eq!(built.verdict, Verdict::Ok, "{text}");
+    assert!(built.time.is_some_and(|(base, now)| now > base), "{text}");
+    assert!(text.contains("bench: check (counts) against "), "{text}");
+    world.clear("hod.delay");
+
+    // 1.5% more instructions on every input: fails, names the inputs, and
+    // is not measured again.
+    world.control("hod-count", "101500000");
+    let run = world.run(&config);
+    let text = run.summary(false);
+    assert_eq!(run.exit_status(), 1, "{text}");
+    assert!(
+        text.lines()
+            .any(|line| line.starts_with("built ") && line.ends_with("REGRESSED (instructions)")),
+        "{text}"
+    );
+    assert!(text.contains(": REGRESSED (sum)\n"), "{text}");
+    assert!(run.check.as_ref().unwrap().judged.iter().all(|one| one.remeasured == 0));
+
+    // Fewer: improved, a reminder to re-record, exit 0.
+    world.control("hod-count", "90000000");
+    let run = world.run(&config);
+    let text = run.summary(false);
+    assert_eq!(run.exit_status(), 0, "{text}");
+    assert!(text.contains("improved: re-record"), "{text}");
+
+    // A run whose callgrind writes no summary has no count: exit 3, and no
+    // counts baseline is written from it.
+    world.control("hod-count", "");
+    let run = world.run(&config);
+    assert_eq!(run.exit_status(), 3, "{}", run.summary(false));
+    let refused = world.run(&update);
+    assert!(refused.refused.as_ref().is_some_and(|why| why.contains("no instruction count")));
+    assert_eq!(Results::read(&own).unwrap(), baseline);
 }
 
 // "Inputs" (`--generate`) and "The report" (`--report`).

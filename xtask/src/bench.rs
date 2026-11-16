@@ -58,8 +58,12 @@ options:
                        inputs, results file and baseline
   --instructions       also count the instructions of one run of llc and of
                        strict hod per input, under valgrind's callgrind
-  --baseline <file>    the baseline to check against or to update
-                       (default: bench/baselines/<machine id>[-<arch>].tsv)
+  --counts             the counts gate: count strict hod's instructions under
+                       callgrind; --check judges instructions and peak memory
+                       (wall time is shown, not judged), against the counts
+                       baseline; --update-baseline writes that baseline
+  --baseline <file>    the baseline to check against or to update (default:
+                       bench/baselines/<machine id>[-<arch>][-counts].tsv)
   --results <file>     the results file to write, or for --report to read
                        (default: <build directory>/bench/results[-<arch>]-llvm<major>.tsv)
   --out <file>         what --report writes (default: docs/status/perf.md)
@@ -67,8 +71,9 @@ options:
   -h, --help           this text
 
 exit status: 0; 1 when --check finds hod slower or larger than the baseline
-allows on the baseline's machine; 3 when the run cannot be trusted (a tool
-failed, a required tool is missing, the machine was too busy to judge);
+allows on the baseline's machine (with --counts: more instructions or
+memory); 3 when the run cannot be trusted (a tool failed, a required tool
+is missing, the machine was too busy to judge, a count is missing);
 2 for a usage error.
 ";
 
@@ -103,6 +108,8 @@ pub enum Action {
 }
 
 /// A run's configuration: the command line, and what tests replace.
+/// Each flag of the command line is a field of its own.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug)]
 pub struct Config {
     pub action: Action,
@@ -120,6 +127,8 @@ pub struct Config {
     pub target: Option<Arch>,
     /// `--instructions`: count instructions under callgrind.
     pub instructions: bool,
+    /// `--counts`: the counts gate ("The counts gate").
+    pub counts: bool,
     pub baseline: Option<PathBuf>,
     pub results: Option<PathBuf>,
     pub out: Option<PathBuf>,
@@ -153,6 +162,7 @@ impl Config {
             judge: Tool::Hod,
             target: None,
             instructions: false,
+            counts: false,
             baseline: None,
             results: None,
             out: None,
@@ -211,14 +221,21 @@ impl Config {
     fn own_baseline(&self) -> PathBuf {
         let dir = self.workspace.join("bench").join("baselines");
         self.baseline.clone().unwrap_or_else(|| {
-            baseline_path(&dir, &format!("{}{}", self.machine.id, self.suffix()))
+            baseline_path(&dir, &format!("{}{}{}", self.machine.id, self.suffix(), self.mode()))
         })
+    }
+
+    /// `-counts` for the counts gate, else nothing: what the names of its
+    /// results file and baseline carry.
+    fn mode(&self) -> &'static str {
+        if self.counts { "-counts" } else { "" }
     }
 
     /// The default results file of a run (by kiln or not) with LLVM `major`.
     fn default_results(&self, kiln: bool, major: &str) -> PathBuf {
         let kiln = if kiln { "-kiln" } else { "" };
-        self.bench_dir().join(format!("results{kiln}{}-llvm{major}.tsv", self.suffix()))
+        let (suffix, mode) = (self.suffix(), self.mode());
+        self.bench_dir().join(format!("results{kiln}{suffix}{mode}-llvm{major}.tsv"))
     }
 }
 
@@ -230,6 +247,17 @@ fn bench_target(text: &str) -> Result<Arch, String> {
         return Err(format!("'--target {text}': hod does not compile for it yet"));
     }
     Ok(arch)
+}
+
+/// What `--counts` does not go with.
+fn counts_options(config: &Config) -> Result<(), String> {
+    if config.counts && config.judge != Tool::Hod {
+        return Err("--counts judges strict hod: it takes no --judge".to_owned());
+    }
+    if config.counts && config.action == Action::Report {
+        return Err("--counts measures: --report reads a results file (--results)".to_owned());
+    }
+    Ok(())
 }
 
 /// Parses the command's arguments into `config` (which holds the
@@ -287,9 +315,10 @@ pub fn parse_args(args: &[String], config: &mut Config) -> Result<bool, String> 
                 let text = value()?;
                 config.target = Some(bench_target(&text)?);
             }
-            "--instructions" => {
+            "--instructions" | "--counts" => {
                 flag(&joined)?;
-                config.instructions = true;
+                *(if name == "--counts" { &mut config.counts } else { &mut config.instructions }) =
+                    true;
             }
             "--judge" => {
                 let text = value()?;
@@ -312,6 +341,7 @@ pub fn parse_args(args: &[String], config: &mut Config) -> Result<bool, String> 
     if actions.len() > 1 {
         return Err(format!("{} and {} are two actions; give one", actions[0], actions[1]));
     }
+    counts_options(config)?;
     let reason = config.reason.as_deref().map(str::trim);
     match config.action {
         Action::UpdateBaseline if reason.is_none_or(str::is_empty) => {
@@ -399,7 +429,7 @@ impl Run {
         let untrusted = self.errors() > 0
             || (self.required && !self.missing_tools.is_empty())
             || self.refused.is_some()
-            || self.check.as_ref().is_some_and(|check| check.noisy() > 0);
+            || self.check.as_ref().is_some_and(|check| check.noisy() + check.uncounted() > 0);
         if self.check.as_ref().is_some_and(|check| check.failures() > 0) {
             1
         } else if untrusted {
@@ -553,6 +583,9 @@ struct Context<'a> {
     probe: &'a Probe,
     work: &'a Path,
     limits: Limits,
+    /// `--counts`: hod's measured runs get `HOD_THREADS=1`, so that its
+    /// peak memory does not depend on how its threads were scheduled.
+    one_thread: bool,
 }
 
 /// One run of one tool on one input, classified.
@@ -615,6 +648,9 @@ fn run_once(context: &Context<'_>, id: &str, ir: &Path, tool: Tool) -> Result<Ra
                     c.env_remove(name);
                 }
                 c.env(ENV_TIME_PHASES, &phase_file);
+                if context.one_thread {
+                    c.env("HOD_THREADS", "1");
+                }
             }
             let options = if tool == Tool::Llc { context.llc_options } else { context.hod_options };
             c.args(CODEGEN_ARGS).args(options).arg("-o").arg(&object).arg(ir);
@@ -829,9 +865,18 @@ impl Measured {
     }
 
     /// `--instructions`: counts `llc` and strict hod once each, if they
-    /// did not fail; what cannot be counted is a note.
-    fn count(&mut self, context: &Context<'_>, valgrind: &Path, notes: &mut Vec<String>) {
-        for (runs, tool) in self.tools.iter_mut().zip(Tool::MEASURED).take(2) {
+    /// did not fail; `--counts` alone: strict hod. What cannot be counted
+    /// is a note.
+    fn count(
+        &mut self,
+        context: &Context<'_>,
+        valgrind: &Path,
+        llc: bool,
+        notes: &mut Vec<String>,
+    ) {
+        for (runs, tool) in
+            self.tools.iter_mut().zip(Tool::MEASURED).take(2).skip(usize::from(!llc))
+        {
             let Some(status) = runs.status.filter(|_| runs.failed.is_none()) else { continue };
             let declined = status == Status::Declined;
             let path = &self.generated.path;
@@ -863,10 +908,14 @@ impl Measured {
     }
 }
 
+/// The header value `mode` of a run of the counts gate.
+pub const COUNTS_MODE: &str = "counts";
+
 /// The baseline to check against: the one named; else this machine's;
 /// else the first, by name, of those recorded for other machines.
 /// Of those, only the baselines of the run's target are considered
-/// (their `target` is the run's, or both have none).
+/// (their `target` is the run's, or both have none), and of the run's
+/// mode (`mode` is `counts` for the counts gate, absent otherwise).
 fn find_baseline(config: &Config) -> Result<Option<(PathBuf, Results)>, String> {
     let dir = config.workspace.join("bench").join("baselines");
     let own = config.own_baseline();
@@ -879,9 +928,10 @@ fn find_baseline(config: &Config) -> Result<Option<(PathBuf, Results)>, String> 
     others.retain(|path| path.extension().is_some_and(|extension| extension == "tsv"));
     others.sort();
     let target = config.cross().map(Arch::triple);
+    let mode = config.counts.then_some(COUNTS_MODE);
     for other in others {
         let results = Results::read(&other)?;
-        if results.get("target") == target {
+        if results.get("target") == target && results.get("mode") == mode {
             return Ok(Some((other, results)));
         }
     }
@@ -955,6 +1005,13 @@ pub fn run(config: &Config) -> Result<Run, String> {
     if config.action == Action::Report {
         return write_report(config, run);
     }
+    // The counts gate without callgrind has nothing to judge: it measures
+    // nothing (and fails under HOD_REQUIRE_TOOLS=1).
+    let valgrind = find_on_path(&config.search, "valgrind");
+    if config.counts && config.action != Action::Generate && valgrind.is_none() {
+        run.missing_tools.push("valgrind (--counts): nothing counted or judged".to_owned());
+        return Ok(run);
+    }
     let Some((llvm, producer)) = produce_inputs(config, &mut run)? else { return Ok(run) };
     if config.action == Action::Generate {
         return Ok(run);
@@ -980,7 +1037,7 @@ pub fn run(config: &Config) -> Result<Run, String> {
         run.missing_tools
             .push(format!("GNU time ({}): no memory or CPU figures", config.time.display()));
     }
-    let valgrind = find_on_path(&config.search, "valgrind").filter(|_| config.instructions);
+    let valgrind = valgrind.filter(|_| config.instructions || config.counts);
     if config.instructions && valgrind.is_none() {
         run.missing_tools.push("valgrind (--instructions): no instruction counts".to_owned());
     }
@@ -996,6 +1053,7 @@ pub fn run(config: &Config) -> Result<Run, String> {
         probe: &probe,
         work: &work,
         limits: config.limits,
+        one_thread: config.counts,
     };
     let mut session = Session::default();
     for Listed { input, generated } in listed {
@@ -1013,7 +1071,7 @@ pub fn run(config: &Config) -> Result<Run, String> {
     }
     if let Some(valgrind) = &valgrind {
         for one in &mut session.measured {
-            one.count(&context, valgrind, &mut run.notes);
+            one.count(&context, valgrind, config.instructions, &mut run.notes);
         }
     }
     results.records = session.records();
@@ -1039,17 +1097,38 @@ pub fn run(config: &Config) -> Result<Run, String> {
     run.results_path = Some(path);
 
     if config.action == Action::UpdateBaseline {
-        let path = config.own_baseline();
-        match update_baseline(&path, &results, config.reason.as_deref().unwrap_or("")) {
-            Ok(()) => {
-                run.unsteady = check::unsteady(&results, &config.thresholds);
-                run.updated = Some(path);
-            }
-            Err(why) => run.refused = Some(why),
-        }
+        record_baseline(config, &results, &mut run);
     }
     run.results = Some(results);
     Ok(run)
+}
+
+/// `--update-baseline`: writes the run as the baseline, or says why not.
+fn record_baseline(config: &Config, results: &Results, run: &mut Run) {
+    let path = config.own_baseline();
+    // A counts baseline holds a count for every input strict hod ran on.
+    let uncounted = results.records.iter().find(|record| {
+        config.counts
+            && record.tool == Tool::Hod
+            && record.status != Status::Error
+            && record.instructions.is_none()
+    });
+    let updated = match uncounted {
+        Some(record) => Err(format!(
+            "the run has no instruction count for {}: it is not recorded as a counts baseline",
+            record.input
+        )),
+        None => update_baseline(&path, results, config.reason.as_deref().unwrap_or("")),
+    };
+    match updated {
+        Ok(()) => {
+            if !config.counts {
+                run.unsteady = check::unsteady(results, &config.thresholds);
+            }
+            run.updated = Some(path);
+        }
+        Err(why) => run.refused = Some(why),
+    }
 }
 
 /// Everything measured in a run.
@@ -1097,6 +1176,9 @@ fn header(
     results.set("hod_build", hod_build);
     results.set("producer", producer.version.clone());
     results.set("runs", config.runs.to_string());
+    if config.counts {
+        results.set("mode", COUNTS_MODE);
+    }
     results.set("usage", probe.describe());
     if let Some(floor) = calibration.floor_us {
         results.set("floor_us", floor.to_string());
@@ -1121,7 +1203,11 @@ fn gate(
     let Some((path, baseline)) = find_baseline(config)? else { return Ok(None) };
     let mut again: BTreeMap<String, u32> = BTreeMap::new();
     let mut judged = loop {
-        let judged = judge_all(&baseline, results, config.judge, &config.thresholds);
+        let judged = if config.counts {
+            check::judge_all_counts(&baseline, results, &config.thresholds)
+        } else {
+            judge_all(&baseline, results, config.judge, &config.thresholds)
+        };
         let retry: Vec<&str> = judged
             .iter()
             .filter(|one| {
@@ -1147,10 +1233,11 @@ fn gate(
     }
     Ok(Some(Check {
         recorded: baseline.get("date").unwrap_or("?").to_owned(),
-        advisory: check::comparable(&baseline, results).err(),
+        advisory: check::comparable_by(&baseline, results, config.counts).err(),
         baseline: path,
         judged,
         thresholds: config.thresholds,
+        counts: config.counts,
     }))
 }
 
@@ -1233,6 +1320,19 @@ mod tests {
             (Action::Measure, 3, Tool::Hod)
         );
         assert!(defaults.filters.is_empty() && defaults.llvm.is_none() && !defaults.verbose);
+        assert!(!defaults.counts);
+
+        // WP-292: the counts gate, its baseline and its results file.
+        let counts = parsed(&["--check", "--counts"]).unwrap();
+        assert!(counts.counts && !counts.instructions);
+        let id = &counts.machine.id;
+        let own = counts.own_baseline();
+        assert!(own.ends_with(format!("bench/baselines/{id}-counts.tsv")), "{}", own.display());
+        assert!(counts.default_results(false, "22").ends_with("bench/results-counts-llvm22.tsv"));
+        assert!(parsed(&["--counts=1"]).is_err());
+        assert!(parsed(&["--counts", "--judge", "hod+fallback"]).unwrap_err().contains("--judge"));
+        assert!(parsed(&["--counts", "--report"]).is_err());
+        assert!(parsed(&["--update-baseline", "--counts", "--reason", "x"]).unwrap().counts);
 
         let all = parsed(&[
             "--check",

@@ -174,6 +174,15 @@ impl Target for X86 {
         }
         let gpr = abi::is_gpr(cx.types(), inst.ty());
         match inst.kind() {
+            InstKind::Load { ptr, mem } if mem.ordering().is_some() => {
+                crate::atomic::load(cx, inst, ptr, mem)
+            }
+            InstKind::Store { value, ptr, mem } if mem.ordering().is_some() => {
+                crate::atomic::store(cx, inst, value, ptr, mem)
+            }
+            InstKind::ExtractValue { agg, offset } if crate::atomic::is_cmpxchg_result(cx, agg) => {
+                crate::atomic::extract(cx, inst, agg, offset)
+            }
             _ if crate::x87::owns(cx, inst) => crate::x87::lower(cx, inst),
             InstKind::Binary { lhs, rhs } if gpr => alu::binary(cx, inst, lhs, rhs),
             InstKind::Binary { lhs, rhs } if int::is_wide(cx, inst.result()) => {
@@ -244,8 +253,12 @@ impl Target for X86 {
             InstKind::IndirectBr { .. } => unsupported(control::INDIRECT_BRANCH),
             InstKind::Ret { value } => control::ret(cx, inst, value),
             InstKind::Unreachable => control::unreachable(cx),
-            InstKind::Fence { .. } | InstKind::CmpXchg { .. } | InstKind::AtomicRmw { .. } => {
-                unsupported(mem::ATOMIC)
+            InstKind::Fence { ordering, scope } => crate::atomic::fence(cx, ordering, scope),
+            InstKind::CmpXchg { ptr, expected, replacement, mem, .. } => {
+                crate::atomic::cmpxchg(cx, inst, ptr, expected, replacement, mem)
+            }
+            InstKind::AtomicRmw { op, ptr, value, mem } => {
+                crate::atomic::rmw(cx, inst, op, ptr, value, mem)
             }
             InstKind::ExtractElement { .. }
             | InstKind::InsertElement { .. }

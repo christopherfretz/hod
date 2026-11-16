@@ -123,9 +123,12 @@ their values).
 | `x86:cf-protection` | `cf-protection-*` module flags (`hod_cg`'s `.note.gnu.property`) | — |
 | `x86:atomic` | an ordered load or store, `fence`, `cmpxchg`, `atomicrmw` | I11 |
 | `x86:inline-asm:<detail>` | what inline assembly does not take (§10, `spec/asm.md` §22.5) | I13 (`asm.rs`) |
-| `x86:abi:cc` | a calling convention other than C | I6 (`abi.rs`) |
-| `x86:abi:attr` | `byval`, `sret`, `inreg`, `nest`, the Swift attributes, `inalloca`, `preallocated`, `alignstack` | I6 (`abi.rs`) |
-| `x86:abi:musttail` | a `musttail` call | I6 |
+| `x86:abi:cc` | a calling convention other than C, `coldcc` and `fastcc`; `fastcc` with a floating-point argument or result, an `sret` or a result in memory (`spec/abi-x86.md` §1.2) | — (`fastcc` floating point: I12) |
+| `x86:abi:attr` | the Swift attributes, `inalloca`, `preallocated`, `alignstack`; `sret` other than on the first parameter or on a non-pointer; `inreg` on a floating-point or aggregate argument or in a variadic signature; `byval` above alignment 16 or with `inreg`; `nest` twice or on a taken register (`spec/abi-x86.md` §6.6) | — |
+| `x86:abi:wide-arg` | an `i128` or `fp128` argument (`llc` 19 and 22 place it differently, `spec/abi-x86.md` §12) | — |
+| `x86:abi:x87-pair` | a result with two floating-point leaves (`st0`, `st1`) | I9 |
+| `x86:abi:indirect-edx` | an indirect call with an argument in `edx`, which holds the callee's address (`spec/abi-x86.md` §8.1) | — |
+| `x86:abi:musttail` | a `musttail` call with stack arguments and an argument in `ecx` (`spec/abi-x86.md` §8.5) | — |
 | `x86:varargs` | `va_start`, `va_copy`, `va_end`, `va_arg` | I11 |
 | `x86:dynamic-alloca` | a dynamic `alloca`, an over-aligned slot, `llvm.stacksave`/`stackrestore` | I11 |
 | `x86:intrinsic` | any other intrinsic | per family |

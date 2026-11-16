@@ -132,7 +132,8 @@ fn dynamic_pair(cx: &mut FnCx<'_, X86>, sym: SymId, model: TlsAccess) -> CgResul
     }
     let at = cx.offset();
     let get_addr = SymRef::Runtime(hod_cg::RuntimeFn::TlsGetAddrRegparm);
-    crate::frame::emit_call(cx, CallTarget::Sym(get_addr))?;
+    // `ebx` holds the GOT pointer already (the sequence's own).
+    crate::frame::emit_call(cx, CallTarget::Sym(get_addr), 0)?;
     let len = cx.offset() - at;
     cx.record_call_site(at, len);
     Ok(())

@@ -340,7 +340,7 @@ fn push_operand(cx: &mut FnCx<'_, X86>, slot: FrameRef, bits: u32, ext: Ext) {
 /// §9.2), as `llc` calls these.
 fn call_pushed(cx: &mut FnCx<'_, X86>, func: RuntimeFn) -> CgResult<()> {
     let start = cx.offset();
-    crate::pic::emit_call(cx, CallTarget::Sym(SymRef::Runtime(func)))?;
+    crate::pic::emit_call(cx, CallTarget::Sym(SymRef::Runtime(func)), 0)?;
     cx.record_call_site(start, cx.offset() - start);
     put(cx, mc::add_ri(Size::D, ESP, 16));
     Ok(())

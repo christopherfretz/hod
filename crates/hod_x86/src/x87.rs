@@ -951,7 +951,7 @@ fn libcall<'a>(
         copy_frame(cx, FrameRef::Outgoing(fp.arg_bytes() * i as u32), place, fp.bytes());
     }
     let at = cx.offset();
-    crate::frame::emit_call(cx, CallTarget::Sym(SymRef::Runtime(func)))?;
+    crate::frame::emit_call(cx, CallTarget::Sym(SymRef::Runtime(func)), 0)?;
     let len = cx.offset() - at;
     cx.record_call_site(at, len);
     above(cx, area);

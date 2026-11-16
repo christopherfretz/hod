@@ -310,6 +310,9 @@ pub struct SupportRow {
     pub aarch64: SupportCell,
     /// Its status for `x86_64-unknown-linux-gnu`.
     pub x86_64: SupportCell,
+    /// Its status for `i686-unknown-linux-gnu`: x86-64's unless the row
+    /// says otherwise ([`SupportRow::on_i386`], WP-297).
+    pub i386: SupportCell,
     /// What the name covers, where the name does not say it.
     pub note: &'static str,
 }
@@ -320,16 +323,19 @@ impl SupportRow {
         self.name.split_once(':').map_or(self.name, |(group, _)| group)
     }
 
-    /// The entry for `arch`. 32-bit x86 has no column of its own yet: its
-    /// modules are classified with x86-64's, so that the front half judges
-    /// them as it judges x86-64's, and code generation refuses the module
-    /// as a whole (`x86:not-implemented`, WP-286) until the 32-bit back end
-    /// gives it its column.
+    /// The entry for `arch`.
     pub const fn cell(&self, arch: Arch) -> SupportCell {
         match arch {
             Arch::Aarch64 => self.aarch64,
-            Arch::X86_64 | Arch::I386 => self.x86_64,
+            Arch::X86_64 => self.x86_64,
+            Arch::I386 => self.i386,
         }
+    }
+
+    /// The row with `cell` as its i386 entry (WP-297): a construct whose
+    /// i386 status is not x86-64's.
+    const fn on_i386(self, cell: SupportCell) -> SupportRow {
+        SupportRow { i386: cell, ..self }
     }
 }
 
@@ -361,6 +367,9 @@ const A64_ONLY: &str = "an AArch64 property";
 const X86_CC: &str = "an x86 convention";
 /// WP-141: `llc` treats it as `ccc` on x86-64; no x86-64 front end emits it.
 const X86_32: &str = "a 32-bit x86 convention";
+/// WP-297: a convention the i386 back end refuses as `x86:abi:cc`
+/// (`spec/abi-x86.md` §1.2).
+const I386_CC: &str = "i386 `x86:abi:cc`";
 /// The value classes of the NEON intrinsics' signatures (WP-083): the
 /// lowering refuses a signature it does not take as `a64:intrinsic-target`.
 const NEON: &[TypeClass] = &[
@@ -413,7 +422,7 @@ const fn row(
     x86_64: SupportCell,
     note: &'static str,
 ) -> SupportRow {
-    SupportRow { name, aarch64, x86_64, note }
+    SupportRow { name, aarch64, x86_64, i386: x86_64, note }
 }
 
 /// The same on both targets.
@@ -657,7 +666,8 @@ const FUNCTION: [SupportRow; 6] = [
 const CC: [SupportRow; 26] = [
     both("cc:ccc", ON, ""),
     row("cc:fastcc", ON, ON, "assigned as `ccc` (`spec/abi-a64.md` §1.2, `spec/abi-x64.md` §1.2)"),
-    both("cc:coldcc", todo(LATER), ""),
+    // WP-297: on i386 `coldcc` passes as C (`spec/abi-x86.md` §1.2).
+    both("cc:coldcc", todo(LATER), "").on_i386(ON),
     both("cc:ghccc", todo(LATER), ""),
     both("cc:anyregcc", todo(LATER), ""),
     row(
@@ -665,14 +675,16 @@ const CC: [SupportRow; 26] = [
         ON,
         ON,
         "assigned as `ccc`; the callee also saves `x9`..`x15` (WP-095); x86-64: `rax`, `rcx`, `rdx`, `rsi`, `rdi`, `r8`..`r10` but its result's (WP-181)",
-    ),
+    )
+    .on_i386(todo(I386_CC)),
     // WP-101.
     row(
         "cc:preserve_allcc",
         ON,
         ON,
         "assigned as `ccc`; the callee also saves `x9`..`x15` and `q8`..`q31` whole; x86-64: `preserve_mostcc`'s and `xmm0`..`xmm15` but its result's (WP-181)",
-    ),
+    )
+    .on_i386(todo(I386_CC)),
     row("cc:swiftcc", ON, todo(X64), "assigned as `ccc` (`spec/abi-a64.md` §1.2)"),
     row("cc:cxx_fast_tlscc", ON, todo(X64), "assigned as `ccc` (`spec/abi-a64.md` §1.2)"),
     both("cc:tailcc", todo(LATER), ""),
@@ -680,23 +692,26 @@ const CC: [SupportRow; 26] = [
     both("cc:swifttailcc", todo(LATER), ""),
     both("cc:preserve_nonecc", todo(LATER), ""),
     // WP-141: the x86 conventions LLVM has keywords for.
-    row("cc:x86_stdcallcc", never(X86_CC), never(X86_32), ""),
-    row("cc:x86_fastcallcc", never(X86_CC), never(X86_32), ""),
-    row("cc:x86_thiscallcc", never(X86_CC), never(X86_32), ""),
+    // WP-297: on i386 they are real conventions, refused by the back end.
+    row("cc:x86_stdcallcc", never(X86_CC), never(X86_32), "").on_i386(todo(I386_CC)),
+    row("cc:x86_fastcallcc", never(X86_CC), never(X86_32), "").on_i386(todo(I386_CC)),
+    row("cc:x86_thiscallcc", never(X86_CC), never(X86_32), "").on_i386(todo(I386_CC)),
     row("cc:intel_ocl_bicc", never(X86_CC), todo(LATER), "OpenCL built-ins"),
     row(
         "cc:x86_64_sysvcc",
         never(X86_CC),
         ON,
         "assigned as `ccc`: the System V convention is x86-64 Linux's C convention (`llc` 19 and 22 emit the same code)",
-    ),
+    )
+    .on_i386(todo(I386_CC)),
     // WP-246: `ms_abi` on Linux.
     row(
         "cc:win64cc",
         ON,
         ON,
         "AArch64: assigned as `ccc` but a variadic call's `float`s and `double`s in general registers; the callee also keeps `x18` (`spec/abi-a64.md` §13, WP-247); x86-64: four positions in `rcx`/`xmm0`..`r9`/`xmm3`, a 32-byte shadow area; the callee also keeps `rsi`, `rdi`, `xmm6`..`xmm15` (`spec/abi-x64.md` §13)",
-    ),
+    )
+    .on_i386(todo(I386_CC)),
     row("cc:x86_vectorcallcc", never(X86_CC), never(WINDOWS), "`__vectorcall`"),
     row("cc:hhvmcc", never(X86_CC), todo(LATER), ""),
     row("cc:hhvm_ccc", never(X86_CC), todo(LATER), ""),
@@ -753,8 +768,9 @@ const fn cc_index(id: u16) -> Option<usize> {
 const ATTR_PARAM: [SupportRow; 7] = [
     row("attr:zeroext", ON, ON, ""),
     row("attr:signext", ON, ON, ""),
-    a64("attr:inreg", LATER, ""),
-    row("attr:nest", ON, todo(X64), ""),
+    // WP-297: `spec/abi-x86.md` §3.1, §6.3.
+    a64("attr:inreg", LATER, "").on_i386(ON),
+    row("attr:nest", ON, todo(X64), "").on_i386(ON),
     a64("attr:swiftself", LATER, ""),
     a64("attr:swifterror", LATER, ""),
     a64("attr:swiftasync", LATER, ""),
@@ -1937,6 +1953,10 @@ const fn const_op_index(op: ConstOp) -> usize {
 }
 
 /// In `Intrinsic::ALL` order.
+#[allow(
+    clippy::large_const_arrays,
+    reason = "a table read at compile time (`ROWS`); WP-297's i386 column made it cross the limit"
+)]
 const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len() - INTRINSIC_X86.len()] = [
     row(
         "intrinsic:llvm.memcpy",

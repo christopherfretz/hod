@@ -39,6 +39,10 @@ pub struct CallEmit {
     /// [`Assignment::vector_regs_used`] of the call: for a convention
     /// that passes that count to a variadic callee.
     pub vector_regs_used: u8,
+    /// [`Assignment::callee_pop`] of the call: the bytes the callee
+    /// removes from the stack, which the target puts back after the call
+    /// so that the call sequence frees the area it reserved.
+    pub callee_pop: u32,
 }
 
 /// A place in a function that an indirect branch may reach, other than

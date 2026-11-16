@@ -301,11 +301,13 @@ fn through_eax(cx: &mut FnCx<'_, X86>, inst: Inst) -> CgResult<()> {
 
 /// `Target::emit_call` (module docs): in PIC, a call through the PLT with
 /// the GOT pointer in `ebx` (the value `ebx` held displaced first); every
-/// other call is `frame::emit_call`'s.
+/// other call is `frame::emit_call`'s. `callee_pop` is the bytes the
+/// callee removes (`spec/abi-x86.md` §8.1), put back after the call
+/// either way; a runtime routine's is 0.
 ///
 /// # Errors
 /// `Internal` for an encoder inconsistency or a pinned `ebx`.
-pub fn emit_call(cx: &mut FnCx<'_, X86>, target: CallTarget) -> CgResult<()> {
+pub fn emit_call(cx: &mut FnCx<'_, X86>, target: CallTarget, callee_pop: u32) -> CgResult<()> {
     let plt = match target {
         CallTarget::Sym(SymRef::Module(id)) => {
             hod_cg::call_access(cx.module, id) == hod_cg::CallAccess::Plt
@@ -316,11 +318,11 @@ pub fn emit_call(cx: &mut FnCx<'_, X86>, target: CallTarget) -> CgResult<()> {
     if cx.options.reloc_model.is_pic() && plt {
         cx.take_reg(crate::reg::EBX)?;
         got_pointer(cx, Reg::Rbx)?;
-        crate::frame::emit_call(cx, target)?;
+        crate::frame::emit_call(cx, target, callee_pop)?;
         cx.free_temp(crate::reg::EBX);
         return Ok(());
     }
-    crate::frame::emit_call(cx, target)
+    crate::frame::emit_call(cx, target, callee_pop)
 }
 
 #[cfg(test)]

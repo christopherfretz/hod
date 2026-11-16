@@ -1345,8 +1345,8 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::X86Fp80,
             TypeClass::Vector,
         ]),
-        "an integer wider than 128 bits, or one wider than 64 with `bfloat`, is refused by the \
-         target (`a64:wide-fp-cast`, `x64:wide-fp-cast`)",
+        "an integer wider than 128 bits is refused by the target (`a64:wide-fp-cast`, \
+         `x64:wide-fp-cast`); one wider than 64 to `bfloat` is refused on AArch64 only",
     ),
     row(
         "inst:sitofp",
@@ -1373,8 +1373,8 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::X86Fp80,
             TypeClass::Vector,
         ]),
-        "an integer wider than 128 bits, or one wider than 64 with `bfloat`, is refused by the \
-         target (`a64:wide-fp-cast`, `x64:wide-fp-cast`)",
+        "an integer wider than 128 bits is refused by the target (`a64:wide-fp-cast`, \
+         `x64:wide-fp-cast`); one wider than 64 to `bfloat` is refused on AArch64 only",
     ),
     row(
         "inst:ptrtoint",

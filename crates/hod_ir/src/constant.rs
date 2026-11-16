@@ -1295,6 +1295,36 @@ mod tests {
         assert_eq!(size_of::<ConstOp>(), 1);
     }
 
+    /// §4: ids are the order of first interning, whatever the entries
+    /// hash to and however often the hash table grows (WP-291 changed the
+    /// hash); the constant pool's order reaches the object file.
+    #[test]
+    fn ids_follow_first_interning_across_growth() {
+        let mut m = module();
+        let (t, c) = (&mut m.types, &mut m.consts);
+        let first = c.len();
+        let mut made = Vec::new();
+        for n in 0..4000u32 {
+            let id = if n % 2 == 0 {
+                c.float(t, TypeId::DOUBLE, u128::from((f64::from(n) / 1024.0 + 0.5).to_bits()))
+            } else {
+                c.int(t, TypeId::I32, u64::from(n.wrapping_mul(2_654_435_761)))
+            };
+            let id = id.unwrap();
+            assert_eq!(id.index(), first + made.len());
+            made.push((n, id));
+        }
+        for &(n, id) in made.iter().rev() {
+            let again = if n % 2 == 0 {
+                c.float(t, TypeId::DOUBLE, u128::from((f64::from(n) / 1024.0 + 0.5).to_bits()))
+            } else {
+                c.int(t, TypeId::I32, u64::from(n.wrapping_mul(2_654_435_761)))
+            };
+            assert_eq!(again.unwrap(), id);
+        }
+        assert_eq!(c.len(), first + made.len());
+    }
+
     /// §4.1: integers are their low N bits, however they were given.
     #[test]
     fn integer_canonicalization() {

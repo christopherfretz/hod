@@ -1474,6 +1474,25 @@ mod tests {
         assert_eq!(f.table.get(other).name(), b"_ZN3fooC2Ev");
     }
 
+    /// §2.2: ids, and so the order symbols reach the object file in, are
+    /// the order of first mention, whatever the names hash to and however
+    /// often the hash table grows (WP-291 changed the hash).
+    #[test]
+    fn ids_follow_first_mention_across_growth() {
+        let mut f = fixture();
+        let names: Vec<String> = (0..5000u32)
+            .map(|i| if i % 2 == 0 { format!(".str.{}", 4999 - i) } else { format!("_Z1fi{i}") })
+            .collect();
+        for (i, name) in names.iter().enumerate() {
+            assert_eq!(f.table.named(name.as_bytes()).unwrap().raw(), i as u32);
+        }
+        for (i, name) in names.iter().enumerate().rev() {
+            assert_eq!(f.table.named(name.as_bytes()).unwrap().raw(), i as u32);
+            assert_eq!(f.table.get(SymId::new(i as u32)).name(), name.as_bytes());
+        }
+        assert_eq!(f.table.len(), names.len());
+    }
+
     /// §2.2 `InvalidSymbol`: a name is not empty and has no zero byte.
     #[test]
     fn bad_names_are_errors() {

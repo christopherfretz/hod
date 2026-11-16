@@ -142,6 +142,10 @@ pub struct UnitPlan<'a> {
     /// `(DIE, DIE)`, sorted: the variable a subrange's count names, or
     /// the containing type of a virtual member function (§6.8).
     pub(crate) aux: Vec<(u32, u32)>,
+    /// WP-321: `(DIE, attributes)` of each member function declaration,
+    /// computed when its DIE is created (in DIE order, so sorted), read
+    /// by `finish_types` and the writer without decoding the node again.
+    pub(crate) methods: Vec<(u32, crate::types::MethodAttrs)>,
     /// `(DIE, value, signed)`, sorted: a static member's constant.
     pub(crate) values: Vec<(u32, u64, bool)>,
     /// `(DIE, bytes)`, sorted: a static member's constant wider than 64
@@ -345,6 +349,7 @@ impl<'a> UnitPlan<'a> {
             by_expr: Vec::with_capacity(cu.globals.len()),
             consts,
             aux: Vec::new(),
+            methods: Vec::new(),
             values: Vec::new(),
             wide_values: Vec::new(),
             index_die: NONE,

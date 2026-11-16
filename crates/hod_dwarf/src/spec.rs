@@ -59,6 +59,7 @@ impl UnitPlan<'_> {
                 let mut chain = Vec::new();
                 let parent = self.scope_parent(decl, d.scope, &mut chain)?;
                 let die = self.push(decl, parent, Kind::Method);
+                self.methods.push((die, crate::types::method_attrs(self, &d)));
                 let mut work = std::mem::take(&mut self.build.work);
                 work.clear();
                 self.open(die, &mut work);

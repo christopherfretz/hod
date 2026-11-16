@@ -7,8 +7,8 @@
 mod common;
 
 use hod_dwarf::{
-    Error, FileEntry, FileTable, FunctionLines, LineHeader, Row, Sequence, SourceLoc, Transition,
-    flags, function_rows, write_debug_line,
+    Error, FileEntry, FileTable, FunctionLines, LineHeader, LineProgram, LineUnit, Row, Sequence,
+    SourceLoc, Transition, flags, function_rows, write_debug_line, write_debug_line_units,
 };
 use hod_obj::{Arch, Binding, GroupKind, Object, SectionKind, Symbol, SymbolId, SymbolKind};
 use hod_testutil::Scratch;
@@ -146,6 +146,62 @@ fn sequence_bytes() {
     );
     let last = obj.relocations(s.line).last().unwrap();
     assert_eq!((last.offset as usize, last.symbol, last.addend), (d.len() - 24, text, 0x40));
+}
+
+/// §4.5, §5.6 (WP-296): `push_open` continues the open sequence with a
+/// function that follows its code in the same section, the advance
+/// spanning the padding; another section, or code that does not follow,
+/// ends it at the end of the last function's code and starts one; the
+/// writer ends the sequence still open; an error changes nothing.
+#[test]
+fn push_open_continues_a_run_in_one_section() {
+    let (mut obj, text) = object(Arch::AArch64);
+    let other = obj.add_section(b".text.f", SectionKind::Text, 4).unwrap();
+    obj.append_zeros(other, 16);
+    let other = obj.section_symbol(other);
+    let a = [row(0, 0, 3, 0, STMT), row(20, 0, 4, 7, STMT | PE), row(24, 0, 4, 9, EB)];
+    let b = [row(0, 0, 9, 0, STMT)];
+    let mut p = LineProgram::new(Arch::AArch64);
+    p.push_open(2, &Sequence { order: 0, symbol: text, addend: 0x40, size: 28, rows: &a }).unwrap();
+    let one = p.bytes().len();
+    p.push_open(2, &Sequence { order: 1, symbol: text, addend: 0x70, size: 8, rows: &b }).unwrap();
+    // Column 0, a statement, (+5 lines, +24 bytes from 0x58): +17, then
+    // the special opcode for (+5, +7).
+    assert_eq!(&p.bytes()[one..], [0x05, 0, 0x06, 0x08, 0x79]);
+    assert_eq!(p.sequence_count(), 1);
+
+    let two = p.bytes().len();
+    let third = Sequence { order: 2, symbol: other, addend: 0, size: 4, rows: &b };
+    p.push_open(2, &third).unwrap();
+    let mut want = vec![0x02, 8, 0, 1, 1, 0x04, 0, 0, 9, 2];
+    want.extend([0; 8]);
+    want.push(0x1a); // +8 lines, no advance
+    assert_eq!(&p.bytes()[two..], want.as_slice(), "end at 0x78, then a new sequence");
+    // Code before the end of the open sequence's starts a sequence.
+    p.push_open(2, &third).unwrap();
+    assert_eq!(p.sequence_count(), 3);
+
+    let before = p.clone();
+    let bad = [row(0, 5, 1, 0, STMT)];
+    let err = p.push_open(2, &Sequence { order: 3, symbol: other, addend: 8, size: 4, rows: &bad });
+    assert!(matches!(err, Err(Error::BadFile { .. })));
+    assert_eq!(p, before);
+
+    let unit = LineUnit { header: header(), program: &p };
+    let line = write_debug_line_units(&mut obj, &[unit]).unwrap().sections.line;
+    assert!(obj.data(line).ends_with(&[0x02, 4, 0, 1, 1]), "the open sequence is ended");
+    let addends: Vec<i64> = obj
+        .relocations(line)
+        .filter(|r| r.symbol == text || r.symbol == other)
+        .map(|r| r.addend)
+        .collect();
+    assert_eq!(addends, [0x40, 0, 0]);
+
+    // `push` ends the open sequence and writes one of its own.
+    let mut pushed = before.clone();
+    pushed.push(2, &Sequence { order: 4, symbol: other, addend: 4, size: 4, rows: &b }).unwrap();
+    assert_eq!(pushed.sequence_count(), 4);
+    assert!(pushed.bytes().ends_with(&[0x1a, 0x02, 4, 0, 1, 1]));
 }
 
 /// §4.5: the address relocation carries the first row's offset.

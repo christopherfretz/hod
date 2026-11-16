@@ -39,18 +39,19 @@ const EDI: Reg = Reg::Rdi;
 /// How the length of a call reaches `ecx`.
 #[derive(Clone, Copy)]
 enum Len {
-    /// A `Gpr` integer in a register (zero-extended), pushed with the
-    /// pointers.
-    Reg(Reg),
+    /// A `Gpr` integer already in `ecx` (zero-extended): it takes no pool
+    /// register (`spec/codegen-x86.md` §2, the two-register rule).
+    Ecx,
     /// The low 32 bits of a wide constant.
     Imm(u32),
     /// The low word of a wide integer's slot.
     Slot(hod_cg::FrameRef),
 }
 
-/// The length of a call: a `Gpr` integer in a register, or an integer
-/// of 33 to 64 bits truncated to its low word (as `llc`, whose `size_t`
-/// is 32 bits).
+/// The length of a call: a `Gpr` integer put in `ecx` now (after the
+/// pointers are placed: placing a pointer may call and write `ecx`), or
+/// an integer of 33 to 64 bits truncated to its low word (as `llc`,
+/// whose `size_t` is 32 bits).
 fn length(cx: &mut FnCx<'_, X86>, len: Value) -> CgResult<Len> {
     let ty = crate::common::value_ty(cx, len);
     if crate::int::wide_bits(cx, ty).is_some_and(|bits| bits <= 64) {
@@ -66,22 +67,18 @@ fn length(cx: &mut FnCx<'_, X86>, len: Value) -> CgResult<Len> {
         return unsupported(crate::abi::type_refusal(cx.types(), ty));
     }
     let bits = crate::common::width(cx, len);
-    let r = gp(cx.use_reg(len)?);
-    crate::alu::extend_to(cx, r, bits, crate::alu::Ext::Zero);
-    Ok(Len::Reg(r))
+    cx.put(len, crate::reg::ECX)?;
+    crate::alu::extend_to(cx, ECX, bits, crate::alu::Ext::Zero);
+    Ok(Len::Ecx)
 }
 
-/// Pushes `regs` and a register length; then pops `ecx` from the latter,
-/// or loads a wide length into it.
+/// Pushes `regs`; then loads a constant or wide length into `ecx`.
 fn push_operands(cx: &mut FnCx<'_, X86>, regs: &[Reg], n: Len) {
     for &r in regs {
         put(cx, mc::push_r(r));
     }
     match n {
-        Len::Reg(r) => {
-            put(cx, mc::push_r(r));
-            put(cx, mc::pop_r(ECX));
-        }
+        Len::Ecx => {}
         Len::Imm(v) => crate::common::mov_imm(cx, ECX, v),
         // The slot is `ebp`-relative: the pushes do not move it.
         Len::Slot(slot) => frame_inst(cx, slot, |m| mc::mov_rm(Size::D, ECX, m)),
@@ -103,9 +100,9 @@ pub fn copy(
     if dst == src {
         return Ok(());
     }
-    let n = length(cx, len)?;
     let d = gp(cx.use_reg(dst)?);
     let s = gp(cx.use_reg(src)?);
+    let n = length(cx, len)?;
     push_operands(cx, &[ESI, EDI, d, s], n);
     for r in [ESI, EDI] {
         put(cx, mc::pop_r(r));
@@ -147,9 +144,9 @@ fn index(cx: &FnCx<'_, X86>, r: Reg) -> CgResult<mc::Index> {
 /// # Errors
 /// As [`copy`].
 pub fn set(cx: &mut FnCx<'_, X86>, dst: Value, byte: Value, len: Value) -> CgResult<()> {
-    cx.put(byte, crate::reg::EAX)?;
-    let n = length(cx, len)?;
     let d = gp(cx.use_reg(dst)?);
+    let n = length(cx, len)?;
+    cx.put(byte, crate::reg::EAX)?;
     push_operands(cx, &[EDI, d], n);
     put(cx, mc::pop_r(EDI));
     put(cx, mc::rep_stos(Size::B));

@@ -12,8 +12,9 @@
 //! # Registers
 //!
 //! Every operand is asked for once (`FnCx::use_reg`; an operand that
-//! repeats an earlier one shares its register), so at most three pool
-//! registers are pinned and `Stress::ALL`'s smallest pool suffices. The
+//! repeats an earlier one shares its register), at most two of them (a
+//! funnel shift's amount goes straight into `ecx` / `edx`), so at most
+//! two pool registers are pinned (`spec/codegen-x86.md` §2). The
 //! work is done in the operands' registers and in `eax`, `ecx`, `edx`,
 //! which hold no value; the result is left in the first operand's
 //! register. Nothing asks for a temporary.
@@ -434,10 +435,12 @@ fn funnel<'a>(
         put(cx, mc::or_rr(Size::D, x, EAX));
         return cx.finish(inst, ra);
     }
-    let [ra, rb, rc] = regs(cx, [a, b, c])?;
-    let (x, y, z) = (gp(ra), gp(rb), gp(rc));
+    // The amount goes straight into `ecx` / `edx`: two pool registers
+    // (`spec/codegen-x86.md` §2).
+    let [ra, rb] = regs(cx, [a, b])?;
+    let (x, y) = (gp(ra), gp(rb));
     if bits == 32 {
-        put(cx, mc::mov_rr(Size::D, ECX, z));
+        cx.put(c, crate::reg::ECX)?;
         if left {
             put(cx, mc::shld_rrcl(Size::D, x, y));
             return cx.finish(inst, ra);
@@ -446,7 +449,7 @@ fn funnel<'a>(
         return cx.finish(inst, rb);
     }
     // k = c mod N, in edx.
-    put(cx, mc::mov_rr(Size::D, EDX, z));
+    cx.put(c, crate::reg::EDX)?;
     if bits.is_power_of_two() {
         put(cx, mc::and_ri(Size::D, EDX, imm(bits - 1)));
     } else {

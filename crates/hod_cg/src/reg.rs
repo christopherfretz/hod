@@ -124,9 +124,10 @@ pub const MIN_POOL_GPR: u32 = 4;
 
 /// The least number of general registers the pool of a target with
 /// 4-byte general registers has (32-bit x86, design 0008 §1.4: `ebx`,
-/// `esi`, `edi`). A lowering of such a target pins at most two of them
-/// (`spec/codegen-x86.md`).
-pub const MIN_POOL_GPR_32: u32 = 3;
+/// `esi`, `edi`, of which a coroutine body reserves `esi` as its frame
+/// base). A lowering of such a target pins at most two of them
+/// (`spec/codegen-x86.md` §2, the two-register rule).
+pub const MIN_POOL_GPR_32: u32 = 2;
 
 /// The least number of vector registers a target's pool has (§2.1).
 pub const MIN_POOL_FPR: u32 = 2;

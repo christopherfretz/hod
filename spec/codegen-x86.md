@@ -36,11 +36,47 @@ writes them. hod emits no `endbr32`, never `syscall`, and no `cmov`.
 
 `RegInfo`: pool = holdable = `ebx`, `esi`, `edi` (and `xmm0`..`xmm5`);
 scratch `ecx`, `edx`, `xmm6`, `xmm7`; landing-pad data `eax`, `edx`;
-`gpr_bytes` 4. `hod_cg`'s pool minimum is 3 general registers for a
-4-byte target (`MIN_POOL_GPR_32`, `RegInfo::min_pool_gpr`), and the
-`min_pool` stress mode uses it. `esi`, `edi`, `ebp`, `esp` have no
-low-byte register in 32-bit mode: a byte store or a `setcc` of a value in
-`esi`/`edi` goes through `ecx`/`edx`.
+`gpr_bytes` 4. `hod_cg`'s pool minimum is 2 general registers for a
+4-byte target (`MIN_POOL_GPR_32`, `RegInfo::min_pool_gpr`, WP-331), and
+the `min_pool` stress mode uses it (the two lowest: `ebx`, `esi`).
+`esi`, `edi`, `ebp`, `esp` have no low-byte register in 32-bit mode: a
+byte store or a `setcc` of a value in `esi`/`edi` goes through
+`ecx`/`edx`.
+
+**The two-register rule (WP-331).** No lowering pins more than two
+general pool registers at once (operands, temporaries and the result
+together), on every path: a coroutine body reserves `esi` as its heap
+frame's base (§18), which leaves `ebx`, `edi`. One code path serves the
+three-register and the two-register function. What a lowering uses
+instead of a third pool register:
+
+- the scratch registers `eax`, `ecx`, `edx`: an operand that is only
+  read into a fixed register goes there with `FnCx::put` (nothing is
+  pinned), and a result may be produced in one and moved or stored;
+- the operand's register: a register operand dies at its use, so the
+  result takes it (`FnCx::use_reg`, `FnCx::finish`);
+- memory: every value has a frame slot (`cmp r, [slot]` needs one
+  register).
+
+Placing an operand may call (a TLS address) and write `eax`, `ecx`,
+`edx`: an operand that goes into a scratch register is put there after
+every operand that is placed in a pool register. The sites WP-331
+changed: `alu::icmp` (the result takes the left operand's register),
+`atomic::rmw` (the operand into `edx`, the result in the pointer's
+register), `atomic::cmpxchg` (the replacement into `ecx`), `atomic::store`
+(the value into `ecx`), `bytes::copy` / `bytes::set` (the length into
+`ecx`), `bits::funnel` (a variable amount into `ecx` / `edx`).
+
+**The borrowing rule.** A lowering whose instruction names a pool
+register (`rep movs`: `esi`, `edi`; `rep stos`: `edi`; `cmpxchg8b` and a
+PIC call: `ebx`) borrows it one of two ways, and no other: `ebx` is
+taken from the pool for the instruction (`FnCx::take_reg`, which
+displaces its value; `ebx` is never the coroutine base), and `esi` /
+`edi` are pushed before the sequence and popped after it, with no frame
+access between the first pop and the last (`bytes.rs`: the only frame
+operand of the sequence, a wide length's slot, is read before the
+pops). A
+coroutine's `esi` is therefore intact at every frame access.
 
 ## 3. Frame
 
@@ -80,8 +116,9 @@ byte), `movzx`. `select`: always a branch (`test al, 1`; `je`; `mov`).
 
 The integer intrinsics with a result of 1 to 32 bits (wider: §8), in
 the first operand's register; each operand is asked for once (a repeated
-operand shares its register), so at most three pool registers are
-pinned; the work registers are `eax`, `ecx`, `edx`. Every `cmov` of
+operand shares its register; a funnel shift's variable amount goes
+straight into `ecx` / `edx`), so at most two pool registers are pinned
+(§2); the work registers are `eax`, `ecx`, `edx`. Every `cmov` of
 `hod_x64`'s shape is a branch, on every CPU. `popcnt`, `lzcnt`, `tzcnt`
 are never used (hod's feature model has `popcnt` but no `lzcnt`/`bmi`,
 and the back end reads no feature yet): the generic sequences below

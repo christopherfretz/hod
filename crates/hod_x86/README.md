@@ -4,6 +4,19 @@
 System V psABI. Design `docs/design/0008-i386.md`; behaviour
 `spec/codegen-x86.md`; convention `spec/abi-x86.md`.
 
+## Rules every module follows
+
+- **Two pool registers** (`spec/codegen-x86.md` §2, WP-331): a lowering
+  pins at most two of `ebx`, `esi`, `edi` at once, on every path (a
+  coroutine body keeps its frame base in `esi`). A third value goes in
+  `eax` / `ecx` / `edx` (`FnCx::put`, after every pool operand is
+  placed: placing one may call), in memory, or in a dead operand's
+  register that the result takes. `min_pool` (`MIN_POOL_GPR_32` = 2)
+  checks it in every test.
+- **Borrowing**: `ebx` is taken with `FnCx::take_reg`; `esi` / `edi` are
+  pushed and popped around the sequence that names them, with no frame
+  access between the first pop and the last.
+
 ## Module table
 
 Each file has one owner. A package extends the functions named here and

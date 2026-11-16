@@ -194,7 +194,7 @@ their values).
 | `x86:varargs` | `va_start` outside a variadic function (§12.1) | — |
 | `x86:varargs:va-arg-type` | `va_arg` of an aggregate, a vector, an integer wider than 64 bits (§12.1) | — |
 | `x86:probe-stack` | a function with `"probe-stack"="inline-asm"` (§12.3) | — |
-| `x86:intrinsic` | any other intrinsic (the integer intrinsics of §4.1 and §8 are lowered; the overflow and small intrinsics of §13 and `eh.typeid.for` (§14) are lowered; still refused: every intrinsic none of them names) | per family |
+| `x86:intrinsic` | any other intrinsic (the integer intrinsics of §4.1 and §8 are lowered; the overflow and small intrinsics of §13, `eh.typeid.for` (§14) and `eh.unwind.init` (§18) are lowered; still refused: every intrinsic none of them names) | per family |
 | `x86:call` | a call with operand bundles, `callbr` | — |
 | `x86:blockaddress` | a `blockaddress` of another function's block in code (§15; `x86:indirect-branch` removed by WP-324) | — |
 | `x86:addrspacecast`, `x86:int-cast` | those casts | — |
@@ -1063,3 +1063,16 @@ feature: IBT, SHSTK` in both; per function hod has at least `llc`'s
 freestanding program linked `-nostdlib -static` keeps the property
 through GNU ld, lld and mold when every object has it and loses it when
 one does not, as with `llc`'s objects.
+
+## 18. `llvm.eh.unwind.init` (WP-324)
+
+`llc` 19 and 22 make a function that calls `llvm.eh.unwind.init` save
+every callee-saved register: `ebp` (the frame pointer), `ebx`, `edi`,
+`esi`, with their CFI rows. Every hod frame already saves that set
+(`frame::begin`, §3), so the intrinsic emits nothing (`call.rs`). The
+other frame intrinsics are §13.5's; `llvm.eh.dwarf.cfa` stays
+`x86:intrinsic`.
+
+Evidence: `tests/ir/frame_intrinsics.ll` (newly built on i686) passes
+`cargo xtask irdiff --target i686` with LLVM 19 and 22, GNU ld, lld and
+mold.

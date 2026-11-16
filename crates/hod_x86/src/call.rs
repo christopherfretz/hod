@@ -53,6 +53,9 @@ pub fn lower<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, site: &CallSite<'a>) ->
         Some(Intrinsic::EhTypeidFor) if site.args().len() == 1 => {
             crate::eh::typeid_for(cx, inst, site.args()[0])
         }
+        // WP-324: `llc` saves `ebp`, `ebx`, `esi`, `edi`, the set every
+        // hod frame saves (`frame::begin`): nothing to add.
+        Some(Intrinsic::EhUnwindInit) => Ok(()),
         Some(Intrinsic::Trap) => {
             cx.trap();
             Ok(())

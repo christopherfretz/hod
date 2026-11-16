@@ -470,7 +470,7 @@ fn fp_cast<'a>(
     let bytes = match a {
         X87Size::S => 4,
         X87Size::D => 8,
-        _ => 10,
+        X87Size::T => 10,
     };
     let src = cx.use_mem(arg)?;
     crate::x87::ret_copy(cx, inst, arg, true);
@@ -490,11 +490,11 @@ fn bitcast<'a>(
     to: TypeId,
 ) -> CgResult<()> {
     let types = cx.types();
-    let (fp, int) = if is_sse(cx, from) { (from, to) } else { (to, from) };
-    let bits = types.int_bits(int);
+    let (fp, other) = if is_sse(cx, from) { (from, to) } else { (to, from) };
+    let bits = types.int_bits(other);
     let s = sse(cx, fp)?;
     if bits != Some(8 * s.bytes()) {
-        return unsupported(if matches!(types.kind(int), TypeKind::Vector { .. }) {
+        return unsupported(if matches!(types.kind(other), TypeKind::Vector { .. }) {
             crate::target::VECTOR
         } else {
             CAST

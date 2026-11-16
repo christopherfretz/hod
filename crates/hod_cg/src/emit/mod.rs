@@ -29,8 +29,8 @@ use hod_ir::{
 };
 use hod_obj::elf::{SHF_EXCLUDE, SHF_MERGE, SHF_STRINGS, SHF_TLS};
 use hod_obj::{
-    A64Reloc, Arch, Binding, GroupId, GroupKind, Object, RelocKind, SectionId, SectionKind, Symbol,
-    SymbolId, SymbolKind, SymbolPlace, Visibility, X64Reloc,
+    A64Reloc, Arch, Binding, GroupId, GroupKind, I386Reloc, Machine, Object, RelocKind, SectionId,
+    SectionKind, Symbol, SymbolId, SymbolKind, SymbolPlace, Visibility, X64Reloc,
 };
 
 pub use self::copy::COPY_SUFFIX;
@@ -78,6 +78,12 @@ pub mod unsupported {
     /// An `!llvm.linker.options` entry that is not a pair of strings,
     /// which ELF `llc` refuses ("invalid llvm.linker.options").
     pub const LINKER_OPTION: &str = "module:linker-option-not-a-pair";
+    /// WP-293: a 32-bit x86 module with debug information (design 0008,
+    /// package I10).
+    pub const X86_DEBUG_INFO: &str = "x86:debug-info";
+    /// WP-293: a 32-bit x86 module with `cf-protection-branch` or
+    /// `cf-protection-return` (no `endbr32`, no ELF32 property note).
+    pub const X86_CF_PROTECTION: &str = "x86:cf-protection";
     /// A compile unit with a node the DIE writer does not write yet
     /// (`spec/dwarf.md` §6.5).
     pub const DEBUG_DIE: &str = "debug:die-unsupported";
@@ -240,20 +246,23 @@ fn merge_and_tls(kind: SectionKind) -> (bool, bool) {
 /// The arch-specific parts of emission.
 #[derive(Clone, Copy, Debug)]
 struct ArchInfo {
-    arch: Arch,
+    arch: Machine,
 }
 
 impl ArchInfo {
     /// The absolute relocation of an address field of `size` bytes.
     fn abs(self, size: u8) -> Option<RelocKind> {
         Some(match (self.arch, size) {
-            (Arch::AArch64, 8) => A64Reloc::Abs64.into(),
-            (Arch::AArch64, 4) => A64Reloc::Abs32.into(),
-            (Arch::AArch64, 2) => A64Reloc::Abs16.into(),
-            (Arch::X86_64, 8) => X64Reloc::Abs64.into(),
-            (Arch::X86_64, 4) => X64Reloc::Abs32.into(),
-            (Arch::X86_64, 2) => X64Reloc::Abs16.into(),
-            (Arch::X86_64, 1) => X64Reloc::Abs8.into(),
+            (Machine::AArch64, 8) => A64Reloc::Abs64.into(),
+            (Machine::AArch64, 4) => A64Reloc::Abs32.into(),
+            (Machine::AArch64, 2) => A64Reloc::Abs16.into(),
+            (Machine::X86_64, 8) => X64Reloc::Abs64.into(),
+            (Machine::X86_64, 4) => X64Reloc::Abs32.into(),
+            (Machine::X86_64, 2) => X64Reloc::Abs16.into(),
+            (Machine::X86_64, 1) => X64Reloc::Abs8.into(),
+            // WP-293: `R_386_32`, the one absolute field of design 0008
+            // §3.2 (an `i386` object has no 64-bit relocation).
+            (Machine::I386, 4) => I386Reloc::Abs32.into(),
             _ => return None,
         })
     }
@@ -261,45 +270,52 @@ impl ArchInfo {
     /// The PC-relative relocation of a field of `size` bytes.
     fn prel(self, size: u8) -> Option<RelocKind> {
         Some(match (self.arch, size) {
-            (Arch::AArch64, 8) => A64Reloc::Prel64.into(),
-            (Arch::AArch64, 4) => A64Reloc::Prel32.into(),
-            (Arch::AArch64, 2) => A64Reloc::Prel16.into(),
-            (Arch::X86_64, 8) => X64Reloc::Pc64.into(),
-            (Arch::X86_64, 4) => X64Reloc::Pc32.into(),
-            (Arch::X86_64, 2) => X64Reloc::Pc16.into(),
-            (Arch::X86_64, 1) => X64Reloc::Pc8.into(),
+            (Machine::AArch64, 8) => A64Reloc::Prel64.into(),
+            (Machine::AArch64, 4) => A64Reloc::Prel32.into(),
+            (Machine::AArch64, 2) => A64Reloc::Prel16.into(),
+            (Machine::X86_64, 8) => X64Reloc::Pc64.into(),
+            (Machine::X86_64, 4) => X64Reloc::Pc32.into(),
+            (Machine::X86_64, 2) => X64Reloc::Pc16.into(),
+            (Machine::X86_64, 1) => X64Reloc::Pc8.into(),
+            (Machine::I386, 4) => I386Reloc::Pc32.into(),
             _ => return None,
         })
+    }
+
+    /// The size of an address: 8, or 4 on 32-bit x86.
+    fn address_bytes(self) -> u8 {
+        if self.arch == Machine::I386 { 4 } else { 8 }
     }
 
     /// `R_*_PLT32`.
     fn plt32(self) -> RelocKind {
         match self.arch {
-            Arch::AArch64 => A64Reloc::Plt32.into(),
-            Arch::X86_64 => X64Reloc::Plt32.into(),
+            Machine::AArch64 => A64Reloc::Plt32.into(),
+            Machine::X86_64 => X64Reloc::Plt32.into(),
+            Machine::I386 => I386Reloc::Plt32.into(),
         }
     }
 
-    /// The alignment of `.text` before any code is in it: 4 on both
-    /// targets, as `llc`'s assembler writes it (WP-143).
+    /// The alignment of `.text` before any code is in it: 4 on every
+    /// target, as `llc`'s assembler writes it (WP-143; WP-293 for i386).
     fn text_align(self) -> u64 {
         match self.arch {
-            Arch::AArch64 | Arch::X86_64 => 4,
+            Machine::AArch64 | Machine::X86_64 | Machine::I386 => 4,
         }
     }
 
     /// Whether an address in data names a `dso_local` definition through
     /// its local alias, as code does. `AArch64AsmPrinter::lowerConstant`
-    /// does (`getSymbolPreferLocal`); x86-64 uses `AsmPrinter`'s own,
-    /// which names the symbol itself (WP-143).
+    /// does (`getSymbolPreferLocal`); x86-64 and i386 use `AsmPrinter`'s
+    /// own, which names the symbol itself (WP-143).
     fn data_prefers_local(self) -> bool {
-        self.arch == Arch::AArch64
+        self.arch == Machine::AArch64
     }
 
     /// Whether the target marks code and data in code with mapping
     /// symbols (`$x`, `$d`).
     fn has_mapping_symbols(self) -> bool {
-        self.arch == Arch::AArch64
+        self.arch == Machine::AArch64
     }
 
     /// Pads code to `align`: with `nop`s, as `llc`'s assembler does.
@@ -316,13 +332,17 @@ impl ArchInfo {
         let size = obj.section_size(section);
         let mut pad = (size.wrapping_neg() & (align - 1)) as usize;
         obj.raise_section_align(section, align);
-        if self.arch == Arch::AArch64 && size.is_multiple_of(4) {
+        if self.arch == Machine::AArch64 && size.is_multiple_of(4) {
             while pad > 0 {
                 let n = pad.min(A64_NOPS.len());
                 obj.append(section, &A64_NOPS[..n]);
                 pad -= n;
             }
-        } else if self.arch == Arch::X86_64 {
+        } else if self.arch == Machine::I386 {
+            // WP-293: `llc` 19 and 22 at `i686` with no CPU (`generic`,
+            // no `NOPL`) pad with one-byte `nop`s.
+            obj.append(section, &vec![0x90; pad]);
+        } else if self.arch == Machine::X86_64 {
             // `X86AsmBackend::writeNopData` for the default CPU: the
             // longest `nop` is 10 bytes, and the padding is the longest
             // ones first (WP-143).
@@ -357,13 +377,13 @@ impl<'m> ModuleEmitter<'m> {
     /// out (see [`unsupported`]); an internal error if the object refuses
     /// a name.
     pub fn new(module: &'m Module, options: &Options) -> CgResult<ModuleEmitter<'m>> {
-        let arch = match module.target().arch() {
-            hod_ir::Arch::Aarch64 => Arch::AArch64,
-            hod_ir::Arch::X86_64 => Arch::X86_64,
-            // No 32-bit code generation yet (design 0008, WP-286).
-            hod_ir::Arch::I386 => return Err(CgError::unsupported("x86:not-implemented")),
+        let machine = match module.target().arch() {
+            hod_ir::Arch::Aarch64 => Machine::AArch64,
+            hod_ir::Arch::X86_64 => Machine::X86_64,
+            // WP-293: an ELF32 object (`hod_obj`, WP-284).
+            hod_ir::Arch::I386 => Machine::I386,
         };
-        let mut obj = Object::new(arch);
+        let mut obj = Object::for_machine(machine);
         let count = module.symbol_count();
         obj.reserve(count / 2 + 16, count + 16, count, count * 16);
         let mapping_names =
@@ -399,7 +419,12 @@ impl<'m> ModuleEmitter<'m> {
             return Err(CgError::unsupported(unsupported::LINKER_OPTION));
         }
         emitter.declare()?;
-        emitter.debug = DebugLines::new(module, arch, emitter.options.split_dwarf)?;
+        emitter.debug = match machine.arch() {
+            Some(arch) => DebugLines::new(module, arch, emitter.options.split_dwarf)?,
+            // WP-293: no DWARF for i386 until design 0008's I10.
+            None if module.debug.compile_units().is_empty() => None,
+            None => return Err(CgError::unsupported(unsupported::X86_DEBUG_INFO)),
+        };
         // `.text` exists in every object `llc` writes.
         let text = emitter.arch().text_align();
         let mut name = std::mem::take(&mut emitter.name);
@@ -444,7 +469,14 @@ impl<'m> ModuleEmitter<'m> {
         use hod_obj::elf;
         let bits = self.module.props.branch_protection.bits();
         let on = |bit: u8, feature: u32| if bits & bit != 0 { feature } else { 0 };
-        let features = match self.obj.arch() {
+        let Some(arch) = self.obj.machine().arch() else {
+            // WP-293: no `endbr32`, no ELF32 property note (WP-284).
+            if bits != 0 {
+                return Err(CgError::unsupported(unsupported::X86_CF_PROTECTION));
+            }
+            return Ok(());
+        };
+        let features = match arch {
             Arch::X86_64 => {
                 on(Bp::CET_IBT, elf::GNU_PROPERTY_X86_FEATURE_1_IBT)
                     | on(Bp::CET_SHSTK, elf::GNU_PROPERTY_X86_FEATURE_1_SHSTK)
@@ -459,14 +491,14 @@ impl<'m> ModuleEmitter<'m> {
         };
         if features != 0 {
             let word = features.to_le_bytes();
-            let properties = [(elf::feature_1_and(self.obj.arch()), &word[..])];
+            let properties = [(elf::feature_1_and(arch), &word[..])];
             elf::add_gnu_properties(&mut self.obj, &properties).map_err(obj_err)?;
         }
         Ok(())
     }
 
     fn arch(&self) -> ArchInfo {
-        ArchInfo { arch: self.obj.arch() }
+        ArchInfo { arch: self.obj.machine() }
     }
 
     fn obj_sym(sym: SymId) -> SymbolId {
@@ -558,7 +590,7 @@ impl<'m> ModuleEmitter<'m> {
     /// command line only, not from the module flag): every variable that is
     /// not thread-local, and every function. Never on AArch64.
     fn is_large(&self, sym: SymId, kind: Kind) -> bool {
-        if self.arch().arch != Arch::X86_64 {
+        if self.arch().arch != Machine::X86_64 {
             return false;
         }
         let symbol = self.module.symbol(sym);
@@ -572,7 +604,7 @@ impl<'m> ModuleEmitter<'m> {
     /// Whether the object is built for x86-64's large code model (its
     /// large sections, §9.7).
     pub(super) fn large_model(&self) -> bool {
-        self.arch().arch == Arch::X86_64 && self.large_code_model()
+        self.arch().arch == Machine::X86_64 && self.large_code_model()
     }
 
     /// Whether the object is built for the large code model, on either
@@ -1315,7 +1347,9 @@ impl<'m> ModuleEmitter<'m> {
         let mut order: Vec<u32> = (0..list.len() as u32).collect();
         order.sort_by_key(|&i| list[i as usize].priority);
         let arch = self.arch();
-        let abs = arch.abs(8).expect("both targets have a 64-bit absolute relocation");
+        let Some(abs) = arch.abs(arch.address_bytes()) else {
+            return Err(CgError::internal("no absolute relocation of an address's size"));
+        };
         let mut sections: HashMap<(u16, u32), SectionId> = HashMap::new();
         for index in order {
             let structor = list[index as usize];

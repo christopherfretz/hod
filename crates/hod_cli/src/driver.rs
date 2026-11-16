@@ -424,8 +424,8 @@ hod's own options (each also settable in the environment):
                                                      (without either: a make jobserver's idle
                                                      tokens, else one thread)
 
-TARGETS: aarch64-*-linux-gnu and x86_64-*-linux-gnu; i386-, i486-, i586-, i686-*-linux-gnu are
-read and classified, and declined by code generation (x86:not-implemented).
+TARGETS: aarch64-*-linux-gnu and x86_64-*-linux-gnu; i386-, i486-, i586-, i686-*-linux-gnu in
+part (static model; what is not lowered yet is unsupported under an x86: name).
 
 EXIT STATUS: 0 on success; 1 on an error; 2 when the module is unsupported and no fallback
 ran; otherwise the fallback's own status. The contract is spec/cli.md.
@@ -1366,6 +1366,6 @@ mod tests {
         assert!(HELP.contains("--bitcode-via=<llvm-dis>") && HELP.contains("HOD_BITCODE_VIA"));
         assert!(HELP.contains("--compress-debug-sections=<none|zlib>"));
         assert!(HELP.contains("--threads=<n>") && HELP.contains("HOD_THREADS"));
-        assert!(HELP.contains("i686-*-linux-gnu") && HELP.contains("x86:not-implemented"));
+        assert!(HELP.contains("i686-*-linux-gnu") && HELP.contains("x86: name"));
     }
 }

@@ -388,7 +388,12 @@ impl Session {
         // whatever hod declines with is expected ("Cross targets", the
         // third target), and what is checked is the reference side; an
         // object hod does build is compared as on any target.
-        let refused_target = !arch.compiled_by_hod() && matches!(build, HodBuild::Declined);
+        // i686's back end is partial (design 0008, WP-293 on): a refusal
+        // under an `x86:` name is expected as well, without a directive.
+        let partial =
+            arch == Arch::I686 && reason.as_deref().is_some_and(|r| r.starts_with("x86:"));
+        let refused_target =
+            (!arch.compiled_by_hod() || partial) && matches!(build, HodBuild::Declined);
         let expected =
             expect.unsupported_reason(arch, llvm).or_else(|| refused_target.then_some(ANY_REASON));
         let plan = plan(&build, built_by, reason.as_deref(), expected);

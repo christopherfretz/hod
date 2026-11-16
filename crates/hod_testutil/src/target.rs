@@ -84,9 +84,9 @@ pub fn cpu_with_features(cpu: &str, features: &[&str]) -> String {
 pub enum Target {
     Aarch64,
     X86_64,
-    /// 32-bit x86 Linux, `i686-*-linux-gnu` (design 0008). Programs are
-    /// linked and run for it (the oracle's side); hod does not compile for
-    /// it yet, so it is not in [`Target::COMPILED_BY_HOD`].
+    /// 32-bit x86 Linux, `i686-*-linux-gnu` (design 0008): compiled by
+    /// `hod_x86` since WP-293, which refuses by an `x86:` name what it
+    /// does not lower yet.
     I686,
 }
 
@@ -95,9 +95,9 @@ impl Target {
     pub const ALL: [Self; 3] = [Self::Aarch64, Self::X86_64, Self::I686];
 
     /// The targets hod compiles for: what a test that builds objects with
-    /// hod iterates. THE one place that decides it: `I686` joins when its
-    /// back end does (design 0008, package I5).
-    pub const COMPILED_BY_HOD: [Self; 2] = [Self::Aarch64, Self::X86_64];
+    /// hod iterates. THE one place that decides it: `I686` joined with its
+    /// back end (design 0008, package I5, WP-293).
+    pub const COMPILED_BY_HOD: [Self; 3] = [Self::Aarch64, Self::X86_64, Self::I686];
 
     /// Whether hod compiles for this target ([`Target::COMPILED_BY_HOD`]).
     pub fn compiled_by_hod(self) -> bool {

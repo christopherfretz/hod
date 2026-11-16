@@ -26,6 +26,7 @@ dependencies = [
  "hod_obj",
  "hod_testutil",
  "hod_x64",
+ "hod_x86",
  "hod_xform",
 ]
 
@@ -163,6 +164,18 @@ dependencies = [
  "hod_asm",
  "hod_cg",
  "hod_interp",
+ "hod_ir",
+ "hod_ll",
+ "hod_mc_x64",
+ "hod_obj",
+ "hod_testutil",
+]
+
+[[package]]
+name = "hod_x86"
+version = "1.0.0"
+dependencies = [
+ "hod_cg",
  "hod_ir",
  "hod_ll",
  "hod_mc_x64",

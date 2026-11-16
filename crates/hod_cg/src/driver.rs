@@ -23,7 +23,7 @@ use crate::label::Label;
 use crate::loc::{Class, Key, Kind, Loc, ValState};
 use crate::options::Options;
 use crate::record::{BlockOffset, CfiOp, Chunk, FrameDesc, LineRow, ROW_CONT, VarPlace, VarRow};
-use crate::reg::{MIN_POOL_FPR, MIN_POOL_GPR, RegSet};
+use crate::reg::{MIN_POOL_FPR, RegSet};
 use crate::target::{BranchTarget, Target};
 
 /// Whether `address`, named by a `#dbg_declare`, is the result of a `phi`
@@ -211,7 +211,7 @@ impl<'a, T: Target> FnCx<'a, T> {
         let epilogue = s.labels.create();
         let ri = *target.reg_info();
         let pool = if options.stress.min_pool {
-            let gpr = ri.pool.intersection(ri.gpr).lowest_n(MIN_POOL_GPR);
+            let gpr = ri.pool.intersection(ri.gpr).lowest_n(ri.min_pool_gpr());
             gpr.union(ri.pool.intersection(ri.fpr).lowest_n(MIN_POOL_FPR))
         } else {
             ri.pool

@@ -40,11 +40,15 @@ use linking::{Toolchain, exit_code};
 
 const DRIVER: &str = include_str!("data/alwaysinline_vla/driver.c");
 
+/// The targets of this file: not i686, whose back end refuses a VLA
+/// (`x86:dynamic-alloca`, design 0008's I11).
+const TARGETS: [Target; 2] = [Target::Aarch64, Target::X86_64];
+
 fn module(target: Target) -> &'static str {
     match target {
         Target::Aarch64 => include_str!("data/alwaysinline_vla/vla-aarch64.ll"),
         Target::X86_64 => include_str!("data/alwaysinline_vla/vla-x86_64.ll"),
-        Target::I686 => unreachable!("not in Target::COMPILED_BY_HOD"),
+        Target::I686 => unreachable!("not in TARGETS"),
     }
 }
 
@@ -83,7 +87,7 @@ fn stressed_object(text: &str, target: Target) -> Vec<u8> {
             .unwrap_or_else(|e| panic!("stress: {e}")),
         Target::Aarch64 => hod_a64::compile_to_object(&module, &bodies, &options)
             .unwrap_or_else(|e| panic!("stress: {e}")),
-        Target::I686 => unreachable!("not in Target::COMPILED_BY_HOD"),
+        Target::I686 => unreachable!("not in TARGETS"),
     }
 }
 
@@ -109,7 +113,7 @@ fn llvm_object(dir: &Scratch, major: u32, text: &str, name: &str) -> Option<Path
 // stack pointer after the calls is the one before.
 #[test]
 fn variable_length_arrays_in_always_inline_bodies_run_as_opt_and_llc() {
-    for target in Target::COMPILED_BY_HOD {
+    for target in TARGETS {
         let dir = Scratch::new(&format!("hod-alwaysinline-vla-{}", target.name()));
         let Some(toolchain) = Toolchain::for_target(&dir, target) else { continue };
         let text = module(target);

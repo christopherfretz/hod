@@ -99,6 +99,12 @@ impl ModuleEmitter<'_> {
     /// else `.debug_frame` (WP-150, checked with `llc` 19 and 22 on both
     /// targets).
     pub(super) fn unwind_tables(&mut self) -> CgResult<()> {
+        // 32-bit x86 (WP-293): no unwind tables until design 0008's I10;
+        // `hod_x86` refuses what needs one (`x86:eh`), and debug
+        // information is refused before emission (`x86:debug-info`).
+        if self.obj.machine() == hod_obj::Machine::I386 {
+            return Ok(());
+        }
         let debug = self.debug.is_some();
         let any_eh = self.funcs.iter().any(|f| f.record.needs_unwind_entry());
         if debug && !any_eh {

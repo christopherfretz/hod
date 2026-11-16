@@ -22,6 +22,7 @@ hod_mc_x64 = { path = "crates/hod_mc_x64" }
 hod_cg     = { path = "crates/hod_cg" }
 hod_a64    = { path = "crates/hod_a64" }
 hod_x64    = { path = "crates/hod_x64" }
+hod_x86    = { path = "crates/hod_x86" }
 hod_eh     = { path = "crates/hod_eh" }
 hod_dwarf  = { path = "crates/hod_dwarf" }
 hod_xform  = { path = "crates/hod_xform" }

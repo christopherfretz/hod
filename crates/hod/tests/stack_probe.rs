@@ -34,6 +34,10 @@ use hod_testutil::{LLVM_MAJORS, Scratch, Target, run_with, tool};
 
 const P: u64 = 4096;
 
+/// The targets of this file: not i686, whose back end has no stack
+/// probes yet (its frames refuse what needs one: `x86:dynamic-alloca`).
+const TARGETS: [Target; 2] = [Target::Aarch64, Target::X86_64];
+
 fn triple(target: Target) -> &'static str {
     match target {
         Target::Aarch64 => "aarch64-unknown-linux-gnu",
@@ -46,7 +50,7 @@ fn with_target(body: &str, target: Target) -> String {
     let layout = match target {
         Target::Aarch64 => hod_ir::AARCH64_LINUX_DATA_LAYOUT,
         Target::X86_64 => hod_ir::X86_64_LINUX_DATA_LAYOUT,
-        Target::I686 => unreachable!("not in Target::COMPILED_BY_HOD"),
+        Target::I686 => unreachable!("not in TARGETS"),
     };
     format!("target datalayout = \"{layout}\"\ntarget triple = \"{}\"\n{body}", triple(target))
 }
@@ -312,7 +316,7 @@ fn llc_object(dir: &Scratch, major: u32, text: &str, name: &str) -> Option<PathB
 #[test]
 fn probed_frames_fault_in_the_guard_and_unwind() {
     let dir = Scratch::new("stack-probe-run");
-    for target in Target::COMPILED_BY_HOD {
+    for target in TARGETS {
         let text = with_target(&module(), target);
         let object = compile(text.as_bytes()).expect("hod compiles the module");
         let path = dir.write(&format!("hod-{}.o", target.name()), object);
@@ -334,7 +338,7 @@ fn probed_frames_fault_in_the_guard_and_unwind() {
 /// The module's text and its bitcode by every `llvm-as` give one object.
 #[test]
 fn text_and_bitcode_give_the_same_object() {
-    for target in Target::COMPILED_BY_HOD {
+    for target in TARGETS {
         let text = with_target(&module(), target);
         let from_text = compile(text.as_bytes()).expect("hod compiles the text");
         for major in LLVM_MAJORS {
@@ -365,7 +369,7 @@ fn zero_call_used_regs_skip_changes_nothing() {
              attributes #0 = {{ nounwind \"frame-pointer\"=\"all\" {attrs} }}\n"
         )
     };
-    for target in Target::COMPILED_BY_HOD {
+    for target in TARGETS {
         let plain = with_target(&body(""), target);
         let skip = with_target(&body("\"zero-call-used-regs\"=\"skip\""), target);
         let ours = compile(plain.as_bytes()).expect("hod compiles the plain function");
@@ -398,7 +402,7 @@ fn other_values_are_refused_by_name() {
     let body = |attrs: &str| {
         format!("define void @f() #0 {{\n  ret void\n}}\nattributes #0 = {{ {attrs} }}\n")
     };
-    for target in Target::COMPILED_BY_HOD {
+    for target in TARGETS {
         for (attrs, name) in [
             ("\"probe-stack\"=\"__probestack\"", "attr:probe-stack-function"),
             (
@@ -483,7 +487,7 @@ fn prologue_shapes_are_llc_s() {
         }
     }
     ir += "attributes #0 = { \"probe-stack\"=\"inline-asm\" \"frame-pointer\"=\"all\" }\n";
-    for target in Target::COMPILED_BY_HOD {
+    for target in TARGETS {
         let text = with_target(&ir, target);
         let hod = dir.write("hod.o", compile(text.as_bytes()).expect("hod compiles"));
         let ours = shapes(&objdump, &hod);
@@ -513,7 +517,7 @@ fn prologue_shapes_are_llc_s() {
                     // The loop decisions agree; llc's probe of the rest
                     // above 1024 bytes is hod's `stp`.
                     Target::Aarch64 => assert_eq!(hod.2, llc.2, "llc {major}: {hod:?} {llc:?}"),
-                    Target::I686 => unreachable!("not in Target::COMPILED_BY_HOD"),
+                    Target::I686 => unreachable!("not in TARGETS"),
                 }
             }
         }

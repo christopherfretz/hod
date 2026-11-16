@@ -122,6 +122,12 @@ impl RegSet {
 /// lowering pins at most this many general registers at once.
 pub const MIN_POOL_GPR: u32 = 4;
 
+/// The least number of general registers the pool of a target with
+/// 4-byte general registers has (32-bit x86, design 0008 §1.4: `ebx`,
+/// `esi`, `edi`). A lowering of such a target pins at most two of them
+/// (`spec/codegen-x86.md`).
+pub const MIN_POOL_GPR_32: u32 = 3;
+
 /// The least number of vector registers a target's pool has (§2.1).
 pub const MIN_POOL_FPR: u32 = 2;
 
@@ -170,6 +176,13 @@ pub struct RegInfo {
 }
 
 impl RegInfo {
+    /// The least number of general pool registers: [`MIN_POOL_GPR`], or
+    /// [`MIN_POOL_GPR_32`] for 4-byte general registers. Also the pool
+    /// of the `min_pool` stress mode.
+    pub const fn min_pool_gpr(&self) -> u32 {
+        if self.gpr_bytes == 4 { MIN_POOL_GPR_32 } else { MIN_POOL_GPR }
+    }
+
     /// Whether the description satisfies the invariants above.
     pub fn check(&self) -> Result<(), &'static str> {
         let all = self.gpr.union(self.fpr);
@@ -185,10 +198,10 @@ impl RegInfo {
         if !self.holdable.union(self.scratch).difference(all).is_empty() {
             return Err("a holdable or scratch register is in no class");
         }
-        if self.pool.intersection(self.gpr).len() < MIN_POOL_GPR
+        if self.pool.intersection(self.gpr).len() < self.min_pool_gpr()
             || self.pool.intersection(self.fpr).len() < MIN_POOL_FPR
         {
-            return Err("the pool is below the minimum of four general and two vector registers");
+            return Err("the pool is below the minimum of general and two vector registers");
         }
         if self.scratch.intersection(self.gpr).len() < 2
             || self.scratch.intersection(self.fpr).is_empty()

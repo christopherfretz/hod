@@ -28,7 +28,7 @@ refusal table of `spec/codegen-x86.md` §7) belong to WP-293's owner of
 | `int.rs` | **I7** (WP-298) | integers of 33 to 64 bits, class `Mem`, half by half from their slots; libgcc division | — | `target.rs` arms for `Mem`-class integers, `materialize_mem` | `x86:i64` (but arguments, results, `switch`, intrinsics); refuses `x86:i64:wide` |
 | `pic.rs` | **I8** (WP-299) | the access choice (`address`, `mem_inst`, `emit_call`), the GOT pointer, `R_386_GOTPC`/`GOTOFF`/`GOT32X`, PLT calls with `ebx` | I9 (constants through `mem_inst`) | — | `x86:pic` (removed) |
 | `tls.rs` | **I8** (WP-299) | `%gs` TLS: all four models (general and local dynamic through `___tls_get_addr`), `llvm.thread.pointer` | — | — | `x86:tls`, `x86:tls:dynamic` (removed) |
-| `x87.rs` | **I9** | floating point on the x87 stack | — | new; `target.rs` arms | `x86:float` |
+| `x87.rs` | **I9** (WP-300) | `float`/`double`/`x86_fp80` on the x87 stack, compares, casts, libm calls, the 80-bit copies of a run (`spec/codegen-x86.md` §11); `FnState::x87` | I6 (float arguments and results), I7 (`x86:float:i64-cast`), I12 (SSE), any package lowering a call-like or branching instruction (`barrier`) | `target.rs` arms, `materialize_mem`, `barrier` | `x86:float` but for arguments and results |
 | `asm.rs`, `hod_asm::x86` | **I13** (WP-301) | inline assembly in 32-bit mode (`spec/asm.md` §22) | — | `call::lower`'s asm arm | `x86:inline-asm` (now `x86:inline-asm:<detail>`) |
 
 Outside the crate, `hod_cg` refuses `x86:debug-info` (`emit/mod.rs`,

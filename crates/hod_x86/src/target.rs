@@ -40,10 +40,12 @@ pub const STACK_PROTECTOR: &str = "x86:stack-protector";
 pub struct X86;
 
 /// What the target remembers about the function being compiled.
-#[derive(Clone, Copy, Default, Debug)]
+#[derive(Clone, Default, Debug)]
 pub struct FnState {
     /// The frame: the prologue's patched immediate.
     pub frame: frame::FrameState,
+    /// The 80-bit copies of `float`/`double` results (I9).
+    pub x87: crate::x87::Copies,
 }
 
 /// The registers: pool and holdable `ebx`, `esi`, `edi` (and `xmm0`..
@@ -144,6 +146,7 @@ impl Target for X86 {
         }
         let gpr = abi::is_gpr(cx.types(), inst.ty());
         match inst.kind() {
+            _ if crate::x87::owns(cx, inst) => crate::x87::lower(cx, inst),
             InstKind::Binary { lhs, rhs } if gpr => alu::binary(cx, inst, lhs, rhs),
             InstKind::Binary { lhs, rhs } if int::is_wide(cx, inst.result()) => {
                 int::binary(cx, inst, lhs, rhs)
@@ -273,8 +276,8 @@ impl Target for X86 {
         if int::is_wide(cx, value) {
             return int::materialize_mem(cx, dst, value);
         }
-        let ty = common::value_ty(cx, value);
-        refuse(cx, ty)
+        // Floating point; any other type is refused by its family there.
+        crate::x87::materialize_mem(cx, dst, value)
     }
 
     fn frame_addr(&self, cx: &mut FnCx<'_, Self>, reg: PReg, of: FrameRef) {

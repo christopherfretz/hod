@@ -17,8 +17,9 @@
 #
 # Environment:
 #   HOD_DEBUG_NEXT   the next compiler of the chain (required)
-#   HOD_DEBUG_FLAGS  the flags to add, split at blanks (default: -g)
+#   HOD_DEBUG_FLAGS  the flags to add, split at blanks (default when unset:
+#                    -g; set and empty: none, the non -g control of WP-233)
 set -eu
 : "${HOD_DEBUG_NEXT:?set HOD_DEBUG_NEXT to the compiler this wrapper runs}"
 # shellcheck disable=SC2086
-exec "$HOD_DEBUG_NEXT" ${HOD_DEBUG_FLAGS:--g} "$@"
+exec "$HOD_DEBUG_NEXT" ${HOD_DEBUG_FLAGS--g} "$@"

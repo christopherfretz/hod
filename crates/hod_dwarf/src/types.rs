@@ -248,7 +248,7 @@ fn fixed_method_family(a: &MethodAttrs) -> Option<(usize, u32)> {
     None
 }
 
-impl UnitPlan<'_> {
+impl<'a> UnitPlan<'a> {
     /// The entry point of the type graph (§6.8): type `t`, which `from`'s
     /// field `field` names, has a DIE in this unit, made (with everything
     /// it reaches) if it is new; its index. Later packages call it for
@@ -770,28 +770,30 @@ impl UnitPlan<'_> {
         }
     }
 
+    /// WP-308: the node of DIE `die` (node `node`, kind `kind`) under
+    /// construction and, for a member function, its signature's types:
+    /// decoded at the DIE's first step, kept until its last.
+    fn constructing_node(&mut self, die: u32, node: DiId, kind: Kind) -> (DiNode<'a>, &'a [DiId]) {
+        if let Some(&(_, decoded, types)) = self.constructing.iter().rev().find(|e| e.0 == die) {
+            return (decoded, types);
+        }
+        let decoded = self.debug.node(node);
+        let types = match (kind, decoded) {
+            (Kind::Method, DiNode::Subprogram(sp)) => match sp.ty.map(|t| self.debug.node(t)) {
+                Some(DiNode::SubroutineType(s)) => s.types,
+                _ => &[],
+            },
+            _ => &[],
+        };
+        self.constructing.push((die, decoded, types));
+        (decoded, types)
+    }
+
     /// Step `step` of DIE `die`'s construction; false when it is done.
     fn construct(&mut self, die: u32, step: u32, work: &mut Vec<Task>) -> Result<bool, Error> {
         let Die { node, kind, .. } = self.dies[die as usize];
         let ensure = |field, t: DiId| Task::Ensure { from: node, field, node: t, want: Want::Type };
-        let open = self.constructing.iter().rev().find(|e| e.0 == die);
-        let (decoded, method_types) = match open {
-            Some(&(_, decoded, types)) => (decoded, types),
-            None => {
-                let decoded = self.debug.node(node);
-                let types = match (kind, decoded) {
-                    (Kind::Method, DiNode::Subprogram(sp)) => {
-                        match sp.ty.map(|t| self.debug.node(t)) {
-                            Some(DiNode::SubroutineType(s)) => s.types,
-                            _ => &[],
-                        }
-                    }
-                    _ => &[],
-                };
-                self.constructing.push((die, decoded, types));
-                (decoded, types)
-            }
-        };
+        let (decoded, method_types) = self.constructing_node(die, node, kind);
         match (kind, decoded) {
             (Kind::Derived, DiNode::DerivedType(d)) => match step {
                 0 => Self::then(work, die, 1, d.base_type.map(|b| ensure("baseType", b))),

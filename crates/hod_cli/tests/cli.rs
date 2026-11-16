@@ -1601,14 +1601,17 @@ fn mcpu_selects_i386_features() {
         \x20 %r = select i1 %c, double %x, double %y\n\
         \x20 ret double %r\n}\n";
     let object = |extra: &[&str]| {
-        let outcome =
-            run_hod(hod().args(extra).args(["-O0", "-filetype=obj", "--strict", "-o", "-", "-"]), IR);
+        let outcome = run_hod(
+            hod().args(extra).args(["-O0", "-filetype=obj", "--strict", "-o", "-", "-"]),
+            IR,
+        );
         assert_eq!(exit_code(&outcome), 0, "{extra:?}: {}", outcome.stderr_text());
         outcome.stdout
     };
     let has = |o: &[u8], bytes: &[u8]| o.windows(bytes.len()).any(|w| w == bytes);
-    let fcmov =
-        |o: &[u8]| o.windows(2).any(|w| matches!(w[0], 0xDA | 0xDB) && (0xC0..=0xDF).contains(&w[1]));
+    let fcmov = |o: &[u8]| {
+        o.windows(2).any(|w| matches!(w[0], 0xDA | 0xDB) && (0xC0..=0xDF).contains(&w[1]))
+    };
     let pro = object(&["-mcpu=pentiumpro"]);
     assert!(has(&pro, &[0xDF, 0xE9]), "-mcpu=pentiumpro: fucomip");
     assert!(fcmov(&pro), "-mcpu=pentiumpro: fcmov");

@@ -286,7 +286,7 @@ fn barrier(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
     if tls_barrier(cx, inst) {
         return true;
     }
-    let small =|v: Value, max: u32| {
+    let small = |v: Value, max: u32| {
         cx.types().int_bits(value_ty(cx, v)).is_some_and(|b| b <= 32)
             && const_int(cx, v).is_some_and(|n| n <= max)
     };

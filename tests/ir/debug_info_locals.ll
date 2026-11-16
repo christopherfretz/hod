@@ -3,7 +3,7 @@
 ; `i64` and a `double` local) builds and runs as the oracle's on every
 ; target, i686 included: the debug information changes no code. `scale`
 ; returns 3 * 7 + 2 = 23, `main` prints it with its `i64` and `double`.
-;@ covers: spec/dwarf.md §6.4 subprograms and variables (records of a declared parameter and local)
+;@ covers: spec/ir.md §6 debug information (compile unit, subprograms, `#dbg_declare` records; spec/dwarf.md §6.4)
 ;@ stdout: 23 40000000000 2.5
 
 @.fmt = private unnamed_addr constant [12 x i8] c"%d %lld %g\0A\00"

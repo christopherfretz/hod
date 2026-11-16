@@ -24,6 +24,7 @@
 //!
 //! A missing tool is skipped with a note, unless `HOD_REQUIRE_TOOLS=1`.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -102,9 +103,9 @@ fn dies(text: &str) -> Vec<String> {
             continue;
         };
         if VALUES.contains(&attr) {
-            last.push_str(&format!(" {attr}={}", value(raw)));
+            let _ = write!(last, " {attr}={}", value(raw));
         } else if PRESENT.contains(&attr) {
-            last.push_str(&format!(" {attr}"));
+            let _ = write!(last, " {attr}");
         }
     }
     out

@@ -34,6 +34,8 @@ refusal table of `spec/codegen-x86.md` §7) belong to WP-293's owner of
 
 | `eh.rs` | **I10** (WP-314) | `landingpad` (`eax`/`edx`), `resume`, `llvm.eh.typeid.for`, `extractvalue`/`insertvalue` of `{ ptr, i32 }`; `invoke` is `hod_cg`'s call sequence, the tables `hod_eh::I386` (`spec/codegen-x86.md` §12) | — | `target.rs` arms, `call::lower`'s `eh.typeid.for` arm | `x86:eh` (removed; `x86:eh:<detail>` remain) |
 
-Outside the crate, `hod_cg` refuses `x86:debug-info` (`emit/mod.rs`,
-removed by I10 with the unwind tables in `emit/unwind.rs`) and
-`x86:cf-protection`.
+Debug information (I10, WP-314) is `hod_dwarf`'s at address size 4
+(`spec/codegen-x86.md` §13); the crate's part is `target.rs`'s
+`emit_call` reporting where a call returns. `hod_dwarf` refuses
+`debug:dwarf-4-i386` and `debug:split-dwarf-i386`; outside the crate,
+`hod_cg` refuses `x86:cf-protection` (`x86:debug-info` removed by I10).

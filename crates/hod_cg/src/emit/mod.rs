@@ -16,6 +16,7 @@ mod asm;
 mod copy;
 mod data;
 mod lines;
+mod mason;
 mod module_asm;
 mod noop;
 mod section;
@@ -1148,6 +1149,7 @@ impl<'m> ModuleEmitter<'m> {
         self.debug_tables()?;
         self.define()?;
         self.module_asm_symbols()?;
+        self.mason_unit()?;
         // WP-061: last, once every section is complete.
         self.obj.compress_debug_sections(self.options.debug_compression).map_err(|error| {
             match error {
@@ -1418,6 +1420,29 @@ impl<'m> ModuleEmitter<'m> {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// hod's own `.mason.meta` unit (§9.7.5, WP-332), after every
+    /// variable is placed: in the section an excluded variable of that
+    /// name already made (kiln's container: its unit first, its bytes
+    /// unchanged), else in a new one; `SHT_PROGBITS`, flags exactly
+    /// `SHF_EXCLUDE`, alignment 8, no group, no relocation.
+    fn mason_unit(&mut self) -> CgResult<()> {
+        let unit = mason::unit(crate::access::model_used(self.module, &self.options));
+        let found =
+            self.sections.explicit(mason::SECTION, Kind::Exclude, false, false, NO_GROUP, mason::ALIGN);
+        let section = match found {
+            Found::Old(section) => section,
+            Found::New(new, pending) => {
+                let section = self.obj.add_section(mason::SECTION, new.kind, 1).map_err(obj_err)?;
+                self.sections.created(mason::SECTION, &pending, section, None);
+                section
+            }
+        };
+        self.obj.raise_section_align(section, mason::ALIGN);
+        self.obj.align_to(section, mason::ALIGN, 0);
+        self.obj.append(section, &unit);
         Ok(())
     }
 

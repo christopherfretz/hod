@@ -447,7 +447,13 @@ impl ModuleEmitter<'_> {
                         .with_binding(Binding::Local)
                 }
                 Def::Absolute(value) => Symbol {
-                    value: value as u64,
+                    // ELF32's `st_value` is the value modulo 2^32, as
+                    // LLVM writes it (`k = -1` is 0xffffffff).
+                    value: if module.target().arch() == hod_ir::Arch::I386 {
+                        u64::from(value as u32)
+                    } else {
+                        value as u64
+                    },
                     place: SymbolPlace::Absolute,
                     binding: Binding::Local,
                     ..Symbol::undefined(name)

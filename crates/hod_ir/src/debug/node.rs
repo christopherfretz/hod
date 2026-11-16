@@ -953,11 +953,28 @@ macro_rules! nodes {
                     )*
                 }
 
+                #[cfg(test)]
                 fn refs(&self, visit: &mut dyn FnMut(&'static str, u32, DiId)) {
                     $(
                         Field::refs(&self.$field, &mut |id| {
                             visit($fllvm, nodes!(@class $($class)?), id);
                         });
+                    )*
+                }
+
+                /// [`Self::refs`] of the node stored with `mask` (`dec`
+                /// holds the cells after the mask), without decoding it.
+                #[allow(unused_assignments, unused_variables, reason = "the last field's bit is not read; a kind may have no field")]
+                fn stored_refs<L: Layering>(mask: u32, dec: &mut Dec<'a, L>, visit: &mut dyn FnMut(&'static str, u32, DiId)) {
+                    let mut bit = 1u32;
+                    $(
+                        if mask & bit != 0 {
+                            let value = <$fty as Field<'a>>::get(dec);
+                            Field::refs(&value, &mut |id| {
+                                visit($fllvm, nodes!(@class $($class)?), id);
+                            });
+                        }
+                        bit <<= 1;
                     )*
                 }
 
@@ -1043,7 +1060,9 @@ macro_rules! nodes {
 
             /// Calls `visit(field, class, id)` for every node this one
             /// names: LLVM's field name, the kinds the field may name (a
-            /// `class` bit set) and the id.
+            /// `class` bit set) and the id. What [`DiNode::stored_refs`]
+            /// reads without the node, which the tests hold it against.
+            #[cfg(test)]
             pub(crate) fn refs(&self, visit: &mut dyn FnMut(&'static str, u32, DiId)) {
                 match self {
                     DiNode::Undefined => {}
@@ -1055,6 +1074,16 @@ macro_rules! nodes {
             /// `mask` (`dec` holds the cells after the mask), calling
             /// `visit` as [`Field::ref_cells`] does at every cell that
             /// holds a node id. `dec` is left after the node's last cell.
+            /// [`DiNode::refs`] of the node of `kind` stored with `mask`
+            /// (`dec` holds the cells after the mask; its strings are not
+            /// read), without decoding the node.
+            pub(crate) fn stored_refs<L: Layering>(kind: DiKind, mask: u32, dec: &mut Dec<'a, L>, visit: &mut dyn FnMut(&'static str, u32, DiId)) {
+                match kind {
+                    DiKind::Undefined => {}
+                    $( DiKind::$variant => <$name>::stored_refs(mask, dec, visit), )*
+                }
+            }
+
             pub(crate) fn ref_cells<L: Layering>(kind: DiKind, mask: u32, dec: &mut Dec<'a, L>, visit: &mut dyn FnMut(usize)) {
                 match kind {
                     DiKind::Undefined => {}

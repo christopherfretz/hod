@@ -986,19 +986,29 @@ impl<L: Layering> DebugInfo<L> {
         self.check_defined()?;
         for index in 0..self.heads.len() {
             let id = DiId::new(index as u32);
-            let node = self.node(id);
+            let head = self.heads[index];
+            let kind = DiKind::from_code(head.kind);
+            if kind == DiKind::Undefined {
+                continue;
+            }
+            // `self.node(id).refs(..)`, read from the cells: the strings
+            // and the fields that name nothing are skipped, not built.
+            let at = head.at as usize;
+            let mask = self.cells[at].raw();
+            let cells = self.cells.from(at).get(1..).unwrap_or(&[]);
+            let mut dec = Dec::<L> { cells, strings: None };
             let mut wrong = None;
-            node.refs(&mut |field, allowed, target| {
+            DiNode::stored_refs(kind, mask, &mut dec, &mut |field, allowed, target| {
                 let kind = self.find_kind(target);
                 if wrong.is_none() && kind.is_none_or(|kind| class::of(kind) & allowed == 0) {
                     wrong = Some((field, target, kind));
                 }
             });
-            if let Some((field, target, kind)) = wrong {
-                let found = kind.map_or("no node", DiKind::llvm_name);
+            if let Some((field, target, named)) = wrong {
+                let found = named.map_or("no node", DiKind::llvm_name);
                 return invalid(format!(
                     "{id:?}: {}.{field} names {target:?}, which is {found}",
-                    node.kind().llvm_name()
+                    kind.llvm_name()
                 ));
             }
         }

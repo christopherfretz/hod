@@ -167,10 +167,11 @@ pub fn copy_arguments(cx: &mut FnCx<'_, X86>) -> CgResult<()> {
     }
     let asg = cx.fn_assignment();
     let hidden = matches!(asg.ret_memory, Some(RetMemory { address: Place::Stack(0), .. }));
-    let spans = asg.args.iter().filter(|p| p.kind != PartKind::Pointee).filter_map(|p| match p.place {
-        Place::Stack(start) => Some((start, start + p.size.max(1))),
-        Place::Reg(_) => None,
-    });
+    let spans =
+        asg.args.iter().filter(|p| p.kind != PartKind::Pointee).filter_map(|p| match p.place {
+            Place::Stack(start) => Some((start, start + p.size.max(1))),
+            Place::Reg(_) => None,
+        });
     let spans = spans.chain(hidden.then_some((0, 4)));
     let Some((lo, hi)) = spans.fold(None, |acc: Option<(u32, u32)>, (s, e)| {
         Some(acc.map_or((s, e), |(lo, hi)| (lo.min(s), hi.max(e))))

@@ -152,7 +152,8 @@ fn stack_arguments_are_read_from_their_copy() {
     let mut runs = 0;
     for major in LLVM_MAJORS {
         let Some(llc) = llvm_tool(major, "llc") else { continue };
-        for (cpu, smash) in [("generic", false), ("i686", false), ("generic", true), ("i686", true)] {
+        for (cpu, smash) in [("generic", false), ("i686", false), ("generic", true), ("i686", true)]
+        {
             for pic in [false, true] {
                 let label = format!("args-{major}-{cpu}-{}-{}", u8::from(pic), u8::from(smash));
                 let module = if smash { &over } else { &text };

@@ -62,6 +62,65 @@ Notes:
 7. duckdb -O0 -g: `test/sql/index/art/scan/test_random_uuid.test` failed in the hybrid build's test run with an allocation failure under the 16 GB address-space cap, twice (in the -O0 hybrid run as well); run alone under the same cap it passes (reruns in the -O0 tree), and the strict build's tests equal the control's. Under investigation; not counted as same.
 8. mold: the kiln commit of these builds is not in their reports (kiln 21caaf874 or 21b9110a4).
 
+## x86-64: the fifth set (WP-253)
+
+Host: aarch64; target: x86_64 (cross-built, tests under qemu-x86_64). Rows from `oss-report.py --target x86_64 status`; kiln 1.2.0 at `8f93304ee`; hod as named per row (`hod-02fe2d02` is the 1.0 candidate).
+
+| project | flavour | TUs | objects | built by hod | fell back | not offered | hybrid build | strict build | tests llc | tests hod | tests strict | against the control | hod | kiln |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| ctre | O0 | 25 | 25 | 25 | 0 | 0 | ok | ok | rc 0 | rc 0 | rc 0 | same | `hod-f59b4cc6` | `8f93304ee` |
+| ctre | O0g | 25 | 25 | 25 | 0 | 0 | ok | ok | rc 0 | rc 0 | rc 0 | same | `hod-f59b4cc6` | `8f93304ee` |
+| entt | O0 | 73 | 73 | 73 | 0 | 0 | ok | ok | 68/68 | 68/68 | 68/68 | same | `hod-f59b4cc6` | `8f93304ee` |
+| entt | O0g | 73 | 73 | 73 | 0 | 0 | ok | ok | 68/68 | 68/68 | 68/68 | same | `hod-f59b4cc6` | `8f93304ee` |
+| cereal | O0 | 39 | 39 | 39 | 0 | 0 | ok | ok | 40/40 | 40/40 | 40/40 | same | `hod-8ec6b21e` | `8f93304ee` |
+| cereal | O0g | 39 | 39 | 39 | 0 | 0 | ok | ok | 40/40 | 40/40 | 40/40 | same | `hod-8ec6b21e` | `8f93304ee` |
+| taskflow | O0 | 27 | 27 | 27 | 0 | 0 | ok | ok | 2462/2462 | 2462/2462 | 2462/2462 | same | `hod-8ec6b21e` | `8f93304ee` |
+| scnlib | O0 | 47 | 69 | 47 | 0 | 0 | ok | ok | 24/25 | 24/25 | 24/25 | same | `hod-02fe2d02` | `8f93304ee` |
+| scnlib | O0g | 47 | 69 | 47 | 0 | 0 | ok | ok | 24/25 | 24/25 | 24/25 | same | `hod-02fe2d02` | `8f93304ee` |
+| daw_json_link | O0 | 159 | 159 | 159 | 0 | 0 | failed (0 TUs) | failed (0 TUs) | 147/147 | 104/147 | 104/147 | hod: 43 worse (programs that did not link); strict: 43 worse (programs that did not link) | `hod-02fe2d02` | `8f93304ee` |
+| daw_json_link | O0g | 159 | 159 | 159 | 0 | 0 | failed (0 TUs) | failed (0 TUs) | 147/147 | 104/147 | 104/147 | hod: 43 worse (programs that did not link); strict: 43 worse (programs that did not link) | `hod-02fe2d02` | `8f93304ee` |
+| mp_units | O0 | 64 | 64 | 64 | 0 | 0 | ok | ok | 25/25 | 25/25 | 25/25 | same | `hod-02fe2d02` | `8f93304ee` |
+| mp_units | O0g | 64 | 64 | 64 | 0 | 0 | ok | ok | 25/25 | 25/25 | 25/25 | same | `hod-02fe2d02` | `8f93304ee` |
+| reflect_cpp | O0 | 327 | 323 | 323 | 0 | 0 | ok | ok | 484/484 | 484/484 | 484/484 | same | `hod-02fe2d02` | `8f93304ee` |
+| reflect_cpp | O0g | 327 | 323 | 323 | 0 | 0 | ok | ok | 484/484 | 484/484 | 484/484 | same | `hod-02fe2d02` | `8f93304ee` |
+| libunifex | O0 | 114 | 114 | 97 | 17 | 0 | failed (17 TUs) | - | 91/94 | 76/94 | - | hod: 15 worse (programs not built) | `hod-02fe2d02` | `8f93304ee` |
+| libunifex | O0g | 114 | 114 | 97 | 17 | 0 | failed (17 TUs) | - | 91/94 | 76/94 | - | hod: 15 worse (programs not built) | `hod-02fe2d02` | `8f93304ee` |
+| daw_json_link (re-run, strict) | O0 | 159 | 159 | 159 | 0 | 0 | - | ok | 147/147 | - | 147/147 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| daw_json_link (re-run, strict) | O0g | 159 | 159 | 159 | 0 | 0 | - | ok | 147/147 | - | 147/147 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| libunifex (re-run) | O0 | 114 | 114 | 114 | 0 | 0 | ok | ok | 91/94 | 91/94 | 91/94 | same | `hod-e98267c0` | `8f93304ee` |
+| libunifex (re-run) | O0g | 114 | 114 | 114 | 0 | 0 | ok | ok | 91/94 | 91/94 | 91/94 | same | `hod-e98267c0` | `8f93304ee` |
+| scnlib (re-run, strict) | O0 | 47 | 69 | 47 | 0 | 0 | - | ok | 24/25 | - | 24/25 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| scnlib (re-run, strict) | O0g | 47 | 69 | 47 | 0 | 0 | - | ok | 24/25 | - | 24/25 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| mp_units (re-run, strict) | O0 | 64 | 64 | 64 | 0 | 0 | - | ok | 25/25 | - | 25/25 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| mp_units (re-run, strict) | O0g | 64 | 64 | 64 | 0 | 0 | - | ok | 25/25 | - | 25/25 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| reflect_cpp (re-run, strict) | O0 | 327 | 323 | 323 | 0 | 0 | - | ok | 484/484 | - | 484/484 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| reflect_cpp (re-run, strict) | O0g | 327 | 323 | 323 | 0 | 0 | - | ok | 484/484 | - | 484/484 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| ctre (re-run, strict) | O0 | 25 | 25 | 25 | 0 | 0 | - | ok | rc 0 | - | rc 0 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| ctre (re-run, strict) | O0g | 25 | 25 | 25 | 0 | 0 | - | ok | rc 0 | - | rc 0 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| entt (re-run, strict) | O0 | 73 | 73 | 73 | 0 | 0 | - | ok | 68/68 | - | 68/68 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| entt (re-run, strict) | O0g | 73 | 73 | 73 | 0 | 0 | - | ok | 68/68 | - | 68/68 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| cereal (re-run, strict) | O0 | 39 | 39 | 39 | 0 | 0 | - | ok | 40/40 | - | 40/40 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| cereal (re-run, strict) | O0g | 39 | 39 | 39 | 0 | 0 | - | ok | 40/40 | - | 40/40 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| taskflow (re-run, strict) | O0 | 27 | 27 | 27 | 0 | 0 | - | ok | 2462/2462 | - | 2462/2462 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| glaze (re-run, strict) | O0 | 89 | 114 | 86 | 0 | 0 | - | failed (3 TUs) | 100/102 | - | 100/102 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| glaze (re-run, strict) | O0g | 89 | 112 | 84 | 0 | 0 | - | failed (5 TUs) | 98/102 | - | 98/102 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| stdexec (re-run, strict) | O0 | 231 | 235 | 231 | 0 | 0 | - | ok | 907/907 | - | 907/907 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| stdexec (re-run, strict) | O0g | 231 | 235 | 231 | 0 | 0 | - | ok | 907/907 | - | 907/907 | same | `hod-cd6ef6bc` | `8f93304ee` |
+| glaze | O0 | 89 | 114 | 86 | 0 | 0 | failed (3 TUs) | failed (3 TUs) | 100/102 | 100/102 | 99/102 | strict: 1 worse (lib_test) | `hod-02fe2d02` | `8f93304ee` |
+| glaze | O0g | 89 | 112 | 84 | 0 | 0 | failed (5 TUs) | failed (5 TUs) | 98/102 | 98/102 | 98/102 | same | `hod-02fe2d02` | `8f93304ee` |
+| stdexec | O0 | 231 | 235 | 231 | 0 | 0 | ok | ok | 907/907 | 907/907 | 907/907 | same | `hod-02fe2d02` | `8f93304ee` |
+| stdexec | O0g | 231 | 235 | 231 | 0 | 0 | ok | ok | 907/907 | 907/907 | 907/907 | same | `hod-02fe2d02` | `8f93304ee` |
+
+1. scnlib: the 69 objects include 22 link rows of kiln's statistics log; the object jobs are 47, all by hod. `scn_stdin_test` fails in every mode: its Python driver runs the x86-64 program directly, not under qemu.
+2. daw_json_link: every object is built by hod, but 47 of 158 links fail: hod keeps the call to `daw::ensure::ensure_compile_error(bool)` (declared, never defined) in the arm of `if (__builtin_constant_p(b))` (`llvm.is.constant.i1` on a non-constant), which llc folds away. Every program that links passes. Fixed by WP-261; re-run at the next candidate.
+3. libunifex: 17 objects (coroutine `connect_impl` functions with `invoke` of `llvm.coro.await.suspend.*`) stop hod with an internal error ("a label that code refers to was never bound"); kiln's fallback warning becomes an error under the project's `-Werror`, so the hybrid build loses them too, and no strict build ran. The 3 io_uring tests fail in the control (not executable under qemu).
+4. reflect_cpp: 4 of the 327 TUs are precompiled headers (no object).
+5. glaze: the TUs that fail, fail in kiln in every mode, the control included. `cbor_test`, `msgpack_test` and `cli_menu_test` have front-end errors. At `-O0 -g`, the two `json_test` TUs also fail: kiln runs out of memory under the lane's 3 GB address-space cap. The other objects are link rows. O0 strict `lib_test` aborted (`std::bad_function_call`: no library loaded): the test loads `libtest_lib_d.so` from the source tree's `bin/`, which the project's configure step deletes, and the `*_rejects_*` tests run `cmake --build` on the same tree, which reconfigured it during the test run. It passed 5 of 5 reruns, and passed again in a full re-run of the suite. This is a race in the project's tests, not a difference in hod.
+6. stdexec: the 4 objects not by hod are link rows.
+7. taskflow `-O0 -g` was not run in WP-253.
+8. Re-runs at later candidates. At `hod-e98267c0`, daw_json_link strict declined 21 TUs: the dead-arm fold refused an `invoke` in the dead arm (`intrinsic:const-fold-nounwind-invoke`). At `hod-cd6ef6bc` it is equal to the control. libunifex at `hod-e98267c0`: the 17 internal errors are gone.
+9. Strict re-runs at `hod-cd6ef6bc` (the 1.0 candidate) of scnlib, mp_units, reflect_cpp, ctre, entt, cereal, taskflow `-O0`, glaze and stdexec, against the controls recorded above (kiln `8f93304ee`): every object kiln offered was built by hod, none declined, none not offered, every link as in the control, and every test equal to the control test by test. glaze `lib_test` passed at `-O0` (the difference at `hod-02fe2d02` was the race of note 5).
+
 ## Refusal census (hybrid builds)
 
 `first`: modules for which it was the reason hod gave (the module fell back for it); `census`: modules in which hod found it at all (`HOD_CENSUS=1`).

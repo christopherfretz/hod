@@ -79,7 +79,7 @@ fn make(
             globals.push(GlobalAddr { expr: *expr, symbol, addend: 0 });
         }
     }
-    let mut spans = Vec::new();
+    let mut spans: Vec<CodeSpan> = Vec::new();
     for (k, &(name, comdat, sizes)) in code.sections.iter().enumerate() {
         let sec = obj.add_section(name.as_bytes(), SectionKind::Text, 4).unwrap();
         let section_symbol = obj.section_symbol(sec);
@@ -98,7 +98,15 @@ fn make(
                 let g = obj.add_group(fsym, GroupKind::Comdat);
                 obj.add_group_member(g, sec).unwrap();
             }
-            spans.push(CodeSpan { symbol: section_symbol, addend: at as i64, size });
+            // One span per run of functions, as the bridge gives them
+            // (WP-305, `spec/dwarf.md` §6.17): spans that only touch are
+            // two ranges.
+            match spans.last_mut() {
+                Some(last) if f > 0 => {
+                    last.size = at + size - last.addend as u64;
+                }
+                _ => spans.push(CodeSpan { symbol: section_symbol, addend: at as i64, size }),
+            }
         }
     }
     (obj, globals, spans)
@@ -217,6 +225,35 @@ fn verify_spread() {
     }
 }
 
+/// WP-305 (§6.17): spans of one section that only touch are two
+/// ranges, as `llc` writes two runs of functions that meet; spans that
+/// overlap are one.
+#[test]
+fn touching_spans_stay_two_ranges() {
+    let tools = dwarfdumps();
+    assert!(!tools.is_empty() || !hod_testutil::tools_required(), "llvm-dwarfdump is required");
+    let loaded = load(&empty_module());
+    let plan = UnitPlan::new(&loaded.debug, loaded.units[0]).unwrap();
+    let scratch = Scratch::new("dies-touching");
+    for arch in ARCHES {
+        let b = build(arch, &loaded, &ONE);
+        let s = b.spans[0];
+        let half = CodeSpan { size: 24, ..s };
+        let rest = CodeSpan { addend: s.addend + 24, size: s.size - 24, ..s };
+        let inside = CodeSpan { addend: s.addend + 8, size: 8, ..s };
+        for (code, ranges) in [(vec![half, rest], true), (vec![s, inside], false)] {
+            let bytes = write(&b, &plan, &b.globals, &code);
+            for (major, tool) in &tools {
+                let name = format!("touching-{arch:?}-{ranges}-{major}.o");
+                verify_all(tool, &scratch, &name, &bytes);
+                let info = dump(tool, &scratch, &name, &bytes, &["--debug-info"]);
+                assert_eq!(info.contains("DW_AT_ranges"), ranges, "{name}: {info}");
+                assert_eq!(info.contains("DW_AT_high_pc"), !ranges, "{name}: {info}");
+            }
+        }
+    }
+}
+
 /// §6.3: one copy of each string in `.debug_str`, however often named.
 #[test]
 fn strings_are_pooled() {
@@ -322,7 +359,7 @@ impl Lcg {
 }
 
 /// §7.1: the bytes depend on the inputs as sets: shuffled globals and
-/// spans, spans split into pieces (and overlapping), chunks concatenated
+/// spans, spans split into overlapping pieces, chunks concatenated
 /// in any order, plans built and written on other threads.
 #[test]
 fn order_and_chunking_do_not_matter() {
@@ -335,12 +372,15 @@ fn order_and_chunking_do_not_matter() {
         for round in 0..8 {
             let mut globals = b.globals.clone();
             r.shuffle(&mut globals);
-            // Split every span into pieces at random points; repeat some.
+            // Split every span into two overlapping pieces at random
+            // points (pieces that only touch are two runs, WP-305);
+            // repeat some.
             let mut code = Vec::new();
             for s in &b.spans {
                 let cut = 1 + r.below(s.size as usize - 1) as u64;
                 code.push(CodeSpan { size: cut, ..*s });
-                code.push(CodeSpan { addend: s.addend + cut as i64, size: s.size - cut, ..*s });
+                let at = cut - 1;
+                code.push(CodeSpan { addend: s.addend + at as i64, size: s.size - at, ..*s });
                 if round % 2 == 1 {
                     code.push(CodeSpan { size: cut.max(1), ..*s });
                 }

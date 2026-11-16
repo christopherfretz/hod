@@ -180,7 +180,7 @@ impl<'a> Writer<'a> {
             write_uleb(&mut self.info, u64::from(sp.line));
         }
         if link {
-            self.strx(sp.linkage_name)?;
+            self.strx_of::<DiSubprogram>(plan.debug, sp_id, sp.linkage_name, |v| v.linkage_name())?;
         }
         self.ref4(spec);
         Ok(())

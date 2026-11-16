@@ -4,8 +4,8 @@
 //! `.debug_rnglists`.
 
 use hod_ir::{
-    ChecksumKind, ConstPool, DebugInfo, DiCompileUnit, DiFile, DiId, DiKind, DiNode, DiRecord,
-    DiView, EmissionKind, ExprId, Module, TypeTable,
+    ChecksumKind, ConstPool, DebugInfo, DiCompileUnit, DiFile, DiGlobalVariable, DiId, DiIds,
+    DiKind, DiNamespace, DiNode, DiRecord, DiStr, DiView, EmissionKind, ExprId, Module, TypeTable,
 };
 use hod_obj::elf::{SHF_MERGE, SHF_STRINGS, SHT_PROGBITS};
 use hod_obj::{Object, SectionId, SectionKind, SymbolId};
@@ -773,6 +773,49 @@ impl<'a> Writer<'a> {
         Ok(())
     }
 
+    /// [`Writer::strx`] of a string read from a node of the unit's store,
+    /// found by its id (WP-318).
+    #[inline]
+    pub(crate) fn strx_str(&mut self, s: DiStr<'a>) -> Result<(), Error> {
+        let index = self.strings.index_str(s)?;
+        write_uleb(&mut self.info, u64::from(index));
+        Ok(())
+    }
+
+    /// [`Writer::strx`] of `text`, the string field that `field` reads
+    /// of node `n` (an `R`), by the field's id: for a writer that holds
+    /// the node decoded, whose strings are bytes. Reading the one field
+    /// again is cheaper than hashing it.
+    #[inline]
+    pub(crate) fn strx_of<R: DiRecord>(
+        &mut self,
+        debug: &'a DebugInfo,
+        n: DiId,
+        text: &'a [u8],
+        field: impl FnOnce(DiIds<'a, R>) -> DiStr<'a>,
+    ) -> Result<(), Error> {
+        match debug.view::<R>(n) {
+            Some(v) => {
+                let s = field(v.ids());
+                debug_assert_eq!(s.text(), text, "the field read again is the decoded one");
+                self.strx_str(s)
+            }
+            None => self.strx(text),
+        }
+    }
+
+    /// [`Writer::strx_of`] if `text` is not empty.
+    #[inline]
+    pub(crate) fn opt_name_of<R: DiRecord>(
+        &mut self,
+        debug: &'a DebugInfo,
+        n: DiId,
+        text: &'a [u8],
+        field: impl FnOnce(DiIds<'a, R>) -> DiStr<'a>,
+    ) -> Result<(), Error> {
+        if text.is_empty() { Ok(()) } else { self.strx_of(debug, n, text, field) }
+    }
+
     /// The unit's `.debug_addr` entry for `symbol` + `addend`, added if it
     /// is new: one entry per distinct address, as `llc`'s address pool
     /// (WP-296, §6.4). Its index.
@@ -830,7 +873,11 @@ impl<'a> Writer<'a> {
         Ok(())
     }
 
-    /// Sorts and merges the unit's code spans into `self.spans`.
+    /// Sorts the unit's code spans into `self.spans`, merging those that
+    /// overlap. Spans that only touch stay two ranges (WP-305, §6.17):
+    /// each span is a run of functions, and `llc` starts a range where a
+    /// run ends even when the next run starts at that address (AArch64,
+    /// which has no padding between functions).
     pub(crate) fn spans(&mut self, code: &[CodeSpan], symbols: u32) -> Result<(), Error> {
         self.spans.clear();
         for (i, s) in code.iter().enumerate() {
@@ -850,7 +897,7 @@ impl<'a> Writer<'a> {
             if out > 0 {
                 let last = &mut self.spans[out - 1];
                 let end = last.addend as u64 + last.size;
-                if last.symbol == s.symbol && s.addend as u64 <= end {
+                if last.symbol == s.symbol && (s.addend as u64) < end {
                     last.size = end.max(s.addend as u64 + s.size) - last.addend as u64;
                     continue;
                 }
@@ -975,6 +1022,7 @@ impl<'a> Writer<'a> {
         self.offsets.resize(n, NONE);
         self.patches.clear();
         self.strings.begin_unit();
+        self.strings.use_store(plan.debug);
 
         let str_offsets_base = self.str_offsets.len() + 8;
         let addr_base = self.addr.len() + 8;
@@ -1175,7 +1223,7 @@ impl<'a> Writer<'a> {
                     self.abbrev(code(fam::GLOBAL_NAMELESS, mask, false));
                 } else {
                     self.abbrev(code(fam::GLOBAL_VARIABLE, mask, false));
-                    self.strx(v.name)?;
+                    self.strx_of::<DiGlobalVariable>(plan.debug, d.node, v.name, |v| v.name())?;
                 }
                 self.ref_to(plan, d.node, v.ty.unwrap_or(DiId::NONE))?;
                 if let Some(file) = file {
@@ -1192,16 +1240,14 @@ impl<'a> Writer<'a> {
                     self.info.push(DW_OP_ADDRX);
                     write_uleb(&mut self.info, index);
                 }
-                if !v.linkage_name.is_empty() {
-                    self.strx(v.linkage_name)?;
-                }
+                self.opt_name_of::<DiGlobalVariable>(plan.debug, d.node, v.linkage_name, |v| {
+                    v.linkage_name()
+                })?;
             }
             (Kind::Namespace, DiNode::Namespace(ns)) => {
                 let mask = u32::from(!ns.name.is_empty()) | u32::from(ns.export_symbols) << 1;
                 self.abbrev(code(fam::NAMESPACE, mask, children));
-                if !ns.name.is_empty() {
-                    self.strx(ns.name)?;
-                }
+                self.opt_name_of::<DiNamespace>(plan.debug, d.node, ns.name, |v| v.name())?;
             }
             (Kind::Subprogram, DiNode::Subprogram(sp)) => {
                 self.subprogram_die(plan, die, d.node, &sp, children)?;

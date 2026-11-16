@@ -11,8 +11,8 @@
 //! lookup.
 
 use hod_ir::{
-    Const, DiBasicType, DiBound, DiCompositeType, DiDerivedType, DiFlags, DiId, DiKind, DiNode,
-    DiSubprogram, DiSubroutineType, SpFlags,
+    Const, DiBasicType, DiBound, DiCompositeType, DiDerivedType, DiEnumerator, DiFlags, DiId,
+    DiIds, DiKind, DiNode, DiSubprogram, DiSubroutineType, SpFlags,
 };
 
 use crate::Error;
@@ -1204,13 +1204,13 @@ impl<'a> Writer<'a> {
                         let mask = b(ty.is_some()) | b(!t.name.is_empty()) << 1;
                         self.abbrev(code(fam::POINTER_TYPE, mask, false));
                         self.opt_ref(plan, n, ty)?;
-                        self.opt_name(t.name)?;
+                        self.opt_name_of::<DiDerivedType>(plan.debug, n, t.name, |v| v.name())?;
                     }
                     tag::TYPEDEF if acc == 0 => {
                         let mask = b(ty.is_some()) | b(decl.is_some()) << 1 | b(t.align >= 8) << 2;
                         self.abbrev(code(fam::TYPEDEF, mask, false));
                         self.opt_ref(plan, n, ty)?;
-                        self.strx(t.name)?;
+                        self.strx_of::<DiDerivedType>(plan.debug, n, t.name, |v| v.name())?;
                         self.decl(decl);
                         self.opt_uleb(u64::from(t.align / 8));
                     }
@@ -1221,7 +1221,7 @@ impl<'a> Writer<'a> {
                             | 1 << 3;
                         self.abbrev(code(fam::TYPEDEF_ANY, mask, false));
                         self.opt_ref(plan, n, ty)?;
-                        self.strx(t.name)?;
+                        self.strx_of::<DiDerivedType>(plan.debug, n, t.name, |v| v.name())?;
                         self.opt_uleb(u64::from(t.align / 8));
                         self.info.push(acc);
                         self.decl(decl);
@@ -1232,7 +1232,7 @@ impl<'a> Writer<'a> {
                             if children { fam::TEMPLATE_ALIAS_PARAMS } else { fam::TEMPLATE_ALIAS };
                         self.abbrev(code(family, mask, false));
                         self.opt_ref(plan, n, ty)?;
-                        self.strx(t.name)?;
+                        self.strx_of::<DiDerivedType>(plan.debug, n, t.name, |v| v.name())?;
                         self.opt_byte(acc);
                         self.decl(decl);
                     }
@@ -1295,7 +1295,7 @@ impl<'a> Writer<'a> {
                         | b(m.align >= 8) << 5;
                     self.abbrev(code(family, mask, false));
                 }
-                self.strx(m.name)?;
+                self.strx_of::<DiDerivedType>(plan.debug, n, m.name, |v| v.name())?;
                 self.opt_ref(plan, n, m.base_type)?;
                 self.decl(decl);
                 self.opt_byte(acc);
@@ -1327,11 +1327,11 @@ impl<'a> Writer<'a> {
                 if has(c.flags, DiFlags::FWD_DECL) {
                     if acc == 0 {
                         self.abbrev(code(fam::STRUCTURE_DECL + t, b(!c.name.is_empty()), children));
-                        self.opt_name(c.name)?;
+                        self.opt_name_of::<DiCompositeType>(plan.debug, n, c.name, |v| v.name())?;
                     } else {
                         let mask = b(!c.name.is_empty()) | 1 << 1;
                         self.abbrev(code(fam::STRUCTURE_DECL_ANY + t, mask, children));
-                        self.opt_name(c.name)?;
+                        self.opt_name_of::<DiCompositeType>(plan.debug, n, c.name, |v| v.name())?;
                         self.info.push(acc);
                     }
                     return Ok(());
@@ -1367,7 +1367,7 @@ impl<'a> Writer<'a> {
                     self.ref4(h);
                 }
                 self.opt_byte(cc);
-                self.opt_name(c.name)?;
+                self.opt_name_of::<DiCompositeType>(plan.debug, n, c.name, |v| v.name())?;
                 write_uleb(&mut self.info, c.size / 8);
                 self.opt_byte(acc);
                 self.decl(decl);
@@ -1403,7 +1403,7 @@ impl<'a> Writer<'a> {
                     self.abbrev(code(fam::ENUMERATION_ANY, mask, children));
                 }
                 self.opt_ref(plan, n, ty)?;
-                self.opt_name(c.name)?;
+                self.opt_name_of::<DiCompositeType>(plan.debug, n, c.name, |v| v.name())?;
                 if let Some(s) = size {
                     write_uleb(&mut self.info, s);
                 }
@@ -1419,7 +1419,7 @@ impl<'a> Writer<'a> {
                     None => false,
                 };
                 self.abbrev(code(fam::ENUMERATOR, if unsigned { 1 } else { 2 }, false));
-                self.strx(e.name)?;
+                self.strx_of::<DiEnumerator>(plan.debug, n, e.name, |v| v.name())?;
                 if unsigned {
                     write_uleb(&mut self.info, e.value as u64);
                 } else {
@@ -1450,7 +1450,7 @@ impl<'a> Writer<'a> {
                     write_uleb(&mut self.info, c.size / 8);
                 }
                 self.opt_ref(plan, n, c.base_type)?;
-                self.opt_name(c.name)?;
+                self.opt_name_of::<DiCompositeType>(plan.debug, n, c.name, |v| v.name())?;
             }
             (Kind::Subrange, DiNode::Subrange(r)) => {
                 let var = plan.aux_of(die);
@@ -1520,8 +1520,10 @@ impl<'a> Writer<'a> {
                     .or_else(|| method_family(&a))
                     .ok_or(unsupported(n, "a member function declaration"))?;
                 self.abbrev(code(family, mask, children));
-                self.opt_name(sp.linkage_name)?;
-                self.strx_if(family, sp.name)?;
+                self.opt_name_of::<DiSubprogram>(plan.debug, n, sp.linkage_name, |v| {
+                    v.linkage_name()
+                })?;
+                self.strx_if(plan, n, family, sp.name)?;
                 let decl = Self::decl_of(plan, n, sp.file, sp.line)?;
                 self.decl(decl);
                 if a.cc {
@@ -1551,11 +1553,18 @@ impl<'a> Writer<'a> {
 
     /// A member function's name: always in the reserved families, when
     /// set in the general ones (whose name is option bit 1).
-    fn strx_if(&mut self, family: usize, name: &'a [u8]) -> Result<(), Error> {
+    fn strx_if(
+        &mut self,
+        plan: &UnitPlan<'a>,
+        n: DiId,
+        family: usize,
+        name: &'a [u8],
+    ) -> Result<(), Error> {
+        let field = |v: DiIds<'a, DiSubprogram<'a>>| v.name();
         if matches!(family, fam::METHOD | fam::METHOD_QUALIFIED) {
-            self.opt_name(name)
+            self.opt_name_of(plan.debug, n, name, field)
         } else {
-            self.strx(name)
+            self.strx_of(plan.debug, n, name, field)
         }
     }
 
@@ -1607,7 +1616,7 @@ impl<'a> Writer<'a> {
         if !bitfield && m.align == 0 && !virt {
             let mask = b(name) | b(decl.is_some()) << 1 | 1 << 2 | b(art) << 3 | b(acc != 0) << 4;
             self.abbrev(code(fam::MEMBER, mask, false));
-            self.opt_name(m.name)?;
+            self.opt_name_of::<DiDerivedType>(plan.debug, n, m.name, |v| v.name())?;
             self.opt_ref(plan, n, m.base_type)?;
             self.decl(decl);
             write_uleb(&mut self.info, m.offset / 8);
@@ -1623,7 +1632,7 @@ impl<'a> Writer<'a> {
             | b(virt) << 6
             | b(art) << 7;
         self.abbrev(code(fam::MEMBER_ANY, mask, false));
-        self.opt_name(m.name)?;
+        self.opt_name_of::<DiDerivedType>(plan.debug, n, m.name, |v| v.name())?;
         self.opt_ref(plan, n, m.base_type)?;
         self.decl(decl);
         if bitfield {

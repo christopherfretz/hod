@@ -15,7 +15,7 @@
 //! `llc` writes nothing for a value it has no form for here (a float, a
 //! null pointer, an address with an offset), and neither does hod.
 
-use hod_ir::{Const, DiId, DiNode};
+use hod_ir::{Const, DiId, DiNode, DiString, DiTemplateTypeParameter, DiTemplateValueParameter};
 use hod_obj::SymbolId;
 
 use crate::Error;
@@ -228,7 +228,9 @@ impl<'a> Writer<'a> {
                 if let Some(t) = tp.ty {
                     self.ref_to(plan, node, t)?;
                 }
-                self.opt_name(tp.name)?;
+                self.opt_name_of::<DiTemplateTypeParameter>(plan.debug, node, tp.name, |v| {
+                    v.name()
+                })?;
             }
             DiNode::TemplateValueParameter(tp) if tp.tag == tag::TEMPLATE_VALUE_PARAMETER => {
                 let value = plan.template_value(node, tp.value)?;
@@ -263,7 +265,9 @@ impl<'a> Writer<'a> {
                 if let Some(t) = tp.ty {
                     self.ref_to(plan, node, t)?;
                 }
-                self.opt_name(tp.name)?;
+                self.opt_name_of::<DiTemplateValueParameter>(plan.debug, node, tp.name, |v| {
+                    v.name()
+                })?;
                 match value {
                     Value::Int(bits, false) => write_uleb(&mut self.info, bits),
                     Value::Int(bits, true) => write_sleb(&mut self.info, bits as i64),
@@ -280,7 +284,9 @@ impl<'a> Writer<'a> {
             }
             DiNode::TemplateValueParameter(tp) if tp.tag == tag::GNU_TEMPLATE_PARAMETER_PACK => {
                 self.abbrev(code(fam::TEMPLATE_PACK, b(!tp.name.is_empty()), children));
-                self.opt_name(tp.name)?;
+                self.opt_name_of::<DiTemplateValueParameter>(plan.debug, node, tp.name, |v| {
+                    v.name()
+                })?;
             }
             DiNode::TemplateValueParameter(tp) => {
                 let Some(DiNode::String(s)) = tp.value.map(|v| plan.debug.node(v)) else {
@@ -292,8 +298,11 @@ impl<'a> Writer<'a> {
                 } else {
                     self.abbrev(code(fam::TEMPLATE_TEMPLATE, b(name), false));
                 }
-                self.opt_name(tp.name)?;
-                self.strx(s.text)?;
+                self.opt_name_of::<DiTemplateValueParameter>(plan.debug, node, tp.name, |v| {
+                    v.name()
+                })?;
+                let value = tp.value.unwrap_or(DiId::NONE);
+                self.strx_of::<DiString>(plan.debug, value, s.text, |v| v.text())?;
             }
             _ => return Err(bad(node, "templateParams")),
         }

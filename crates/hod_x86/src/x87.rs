@@ -1,6 +1,920 @@
-//! Floating point on the x87 stack: design 0008's I9 owns this file.
-//! WP-293 refuses every floating-point value under [`FLOAT`].
+//! Floating point on the x87 stack: design 0008's I9 (WP-300,
+//! `spec/codegen-x86.md` §9).
+//!
+//! `float`, `double` and `x86_fp80` are class `Mem`: a frame slot of the
+//! type's size (4, 8, 12 bytes; 10 of them the `x86_fp80` image). Loads,
+//! stores, `phi`s, `freeze` and `select` copy the bytes with integer
+//! instructions (bit-exact for every encoding). An operation pushes its
+//! operands (`fld` at their width), operates, and pops its result to its
+//! slot at its type's width (`fstp`), which is where the result rounds.
+//!
+//! # Carried results (excess precision as `llc` has it)
+//!
+//! `llc -O0` keeps a result in an x87 register, at 80 bits, while its
+//! use is in the same block and nothing in between clobbers the stack:
+//! `(a * b) + c` in `double` adds the unrounded product. hod does the
+//! same with a *carried* result ([`carried`]): one that is left on the
+//! x87 stack for its only use, under rules that make the stack a
+//! function of the IR alone (no state across instructions): the use is
+//! in the same block within [`WINDOW`] instructions, is an operation that
+//! takes an operand from the stack ([`consumes`]), and every instruction
+//! in between is one that touches the x87 stack only in a balanced way
+//! and calls nothing ([`neutral`]), any carried result defined in
+//! between being used no later than that use (the stack stays LIFO).
+//! At most [`DEPTH`] results are carried at once. Every other value is
+//! stored, rounded to its type, as `llc` spills at a block's end and
+//! around a call. The x87 stack is empty at every call and block end.
 
-/// A floating-point value, `fcmp`, `fneg`, a floating-point cast or
-/// intrinsic: removed by I9.
+use hod_cg::const_fold::Action as FoldAction;
+use hod_cg::sym::{FpOp, FpType, fp_routine};
+use hod_cg::{CallTarget, CgError, CgResult, FnCx, FrameRef, RuntimeFn, SymRef};
+use hod_ir::{
+    Arch, Const, FloatPredicate, FnStr, Inst, InstId, InstKind, Intrinsic, MemFlags, Opcode,
+    SymbolKind, TypeId, TypeKind, Value, ValueKind, X86Features,
+};
+use hod_mc_x64 as mc;
+use hod_mc_x64::{Cond, Mem, Reg, Size, St, X87Size};
+
+use crate::common::{
+    EAX, ECX, EDX, ESP, copy_frame, frame_inst, gp, put, sym_inst, unsupported, value_ty,
+};
+use crate::target::X86;
+
+/// What `abi.rs` still refuses: a floating-point argument or result of a
+/// call or a function (design 0008 I6 passes them).
 pub const FLOAT: &str = "x86:float";
+/// `half`.
+pub const HALF: &str = "x86:float:half";
+/// `bfloat`.
+pub const BFLOAT: &str = "x86:float:bfloat";
+/// `fp128`.
+pub const FP128: &str = "x86:float:fp128";
+/// A `float` operation under SSE, a `double` one under SSE2: `llc`
+/// computes those in `xmm` registers (design 0008 I12).
+pub const SSE: &str = "x86:float:sse";
+/// A conversion between a floating-point type and an integer wider than
+/// 32 bits (with design 0008 I7's 64-bit integers).
+pub const I64_CAST: &str = "x86:float:i64-cast";
+/// A floating-point intrinsic this package does not lower.
+pub const INTRINSIC: &str = "x86:float:intrinsic";
+/// A cast between floating types that is no `fpext`/`fptrunc` (a
+/// `bitcast` of a floating value).
+pub const CAST: &str = "x86:float:cast";
+
+/// The instructions between a carried result and its use, at most.
+const WINDOW: u32 = 12;
+/// The carried results on the x87 stack at most (of 8 registers; an
+/// operation pushes at most two more).
+const DEPTH: u32 = 4;
+
+/// One of the three x87 types.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Fp {
+    /// `float`.
+    F32,
+    /// `double`.
+    F64,
+    /// `x86_fp80`.
+    F80,
+}
+
+impl Fp {
+    const fn size(self) -> X87Size {
+        match self {
+            Fp::F32 => X87Size::S,
+            Fp::F64 => X87Size::D,
+            Fp::F80 => X87Size::T,
+        }
+    }
+
+    /// The bytes of the encoding.
+    const fn bytes(self) -> u32 {
+        match self {
+            Fp::F32 => 4,
+            Fp::F64 => 8,
+            Fp::F80 => 10,
+        }
+    }
+
+    /// The bytes it takes as a stack argument.
+    const fn arg_bytes(self) -> u32 {
+        match self {
+            Fp::F32 => 4,
+            Fp::F64 => 8,
+            Fp::F80 => 12,
+        }
+    }
+
+    const fn fp_type(self) -> FpType {
+        match self {
+            Fp::F32 => FpType::Float,
+            Fp::F64 => FpType::Double,
+            Fp::F80 => FpType::X86Fp80,
+        }
+    }
+}
+
+/// Whether `kind` is a floating-point type.
+const fn is_fp_kind(kind: &TypeKind<'_>) -> bool {
+    matches!(
+        kind,
+        TypeKind::Half
+            | TypeKind::BFloat
+            | TypeKind::Float
+            | TypeKind::Double
+            | TypeKind::Fp128
+            | TypeKind::X86Fp80
+    )
+}
+
+fn is_fp(cx: &FnCx<'_, X86>, ty: TypeId) -> bool {
+    is_fp_kind(&cx.types().kind(ty))
+}
+
+/// The x87 type of `ty`, or its refusal.
+fn fp_of(cx: &FnCx<'_, X86>, ty: TypeId) -> CgResult<Fp> {
+    let fp = match cx.types().kind(ty) {
+        TypeKind::Float => Fp::F32,
+        TypeKind::Double => Fp::F64,
+        TypeKind::X86Fp80 => Fp::F80,
+        TypeKind::Half => return unsupported(HALF),
+        TypeKind::BFloat => return unsupported(BFLOAT),
+        TypeKind::Fp128 => return unsupported(FP128),
+        _ => return cx.bug("an x87 operation on a type that is no floating type"),
+    };
+    let features = features(cx);
+    let sse = match fp {
+        Fp::F32 => features.has(X86Features::SSE),
+        Fp::F64 => features.has(X86Features::SSE2),
+        Fp::F80 => false,
+    };
+    if sse { unsupported(SSE) } else { Ok(fp) }
+}
+
+/// The CPU features of the function, as `llc` decides them (unknown CPU:
+/// none, `generic`'s).
+fn features(cx: &FnCx<'_, X86>) -> X86Features {
+    let SymbolKind::Function { attrs, .. } = cx.module.symbol(cx.body.symbol()).kind() else {
+        return X86Features::NONE;
+    };
+    let attrs = cx.module.fn_attrs(attrs);
+    let text = |what| attrs.string(what).and_then(|s| std::str::from_utf8(s).ok());
+    X86Features::of_function(text(FnStr::TargetCpu), text(FnStr::TargetFeatures), None, &[])
+        .unwrap_or(X86Features::NONE)
+}
+
+// ---- which instructions this module lowers ----
+
+/// The intrinsics of a floating-point value lowered here.
+fn fp_intrinsic(which: Intrinsic<'_>) -> bool {
+    matches!(which, Intrinsic::Sqrt | Intrinsic::Fabs | Intrinsic::CopySign | Intrinsic::FmulAdd)
+        || routine_op(which).is_some()
+}
+
+/// Whether `inst` is this module's: a floating result or operand.
+pub fn owns(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
+    match inst.kind() {
+        InstKind::Binary { .. }
+        | InstKind::Unary { .. }
+        | InstKind::Load { .. }
+        | InstKind::Select { .. } => is_fp(cx, inst.ty()),
+        InstKind::Cast { arg } => is_fp(cx, inst.ty()) || is_fp(cx, value_ty(cx, arg)),
+        InstKind::FCmp { .. } => true,
+        InstKind::Store { value, .. } => is_fp(cx, value_ty(cx, value)),
+        InstKind::Call(site) => {
+            site.intrinsic().is_some_and(fp_intrinsic)
+                && (is_fp(cx, inst.ty()) || site.args().iter().any(|&a| is_fp(cx, value_ty(cx, a))))
+        }
+        _ => false,
+    }
+}
+
+// ---- carried results ----
+
+fn inst_at<'a>(cx: &FnCx<'a, X86>, raw: u32) -> Option<Inst<'a>> {
+    (raw < cx.body.insts().len() as u32).then(|| cx.body.inst(InstId::new(raw)))
+}
+
+fn uses_value(inst: Inst<'_>, of: InstId) -> bool {
+    inst.operands().iter().any(|v| v.as_inst() == Some(of))
+}
+
+/// Whether `inst` takes `operand` from the x87 stack when it is carried.
+fn consumes(cx: &FnCx<'_, X86>, inst: Inst<'_>, operand: InstId) -> bool {
+    let is = |v: Value| v.as_inst() == Some(operand);
+    let ok = match inst.kind() {
+        InstKind::Binary { .. } => {
+            matches!(inst.opcode(), Opcode::FAdd | Opcode::FSub | Opcode::FMul | Opcode::FDiv)
+        }
+        InstKind::Unary { .. } => inst.opcode() == Opcode::FNeg,
+        InstKind::FCmp { .. } => true,
+        InstKind::Store { value, ptr, mem } => is(value) && !is(ptr) && mem.ordering().is_none(),
+        InstKind::Cast { .. } => match inst.opcode() {
+            Opcode::FPExt | Opcode::FPTrunc => true,
+            Opcode::FPToSI | Opcode::FPToUI => {
+                cx.types().int_bits(inst.ty()).is_some_and(|b| b <= 32)
+            }
+            _ => false,
+        },
+        InstKind::Call(site) => matches!(site.intrinsic(), Some(Intrinsic::Sqrt | Intrinsic::Fabs)),
+        _ => false,
+    };
+    ok && cx.fold_action(inst) == FoldAction::Emit
+        && (matches!(inst.kind(), InstKind::Store { .. }) || !inst.uses().is_unused())
+}
+
+/// Whether `inst` may stand between a carried result and its use: it
+/// calls nothing and leaves the x87 stack as it found it (but for the
+/// carried results it uses or defines).
+fn neutral(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
+    if cx.fold_action(inst) != FoldAction::Emit {
+        return false;
+    }
+    let small = |ty: TypeId| crate::abi::is_gpr(cx.types(), ty) || is_fp(cx, ty);
+    match inst.kind() {
+        InstKind::Load { mem, .. } => mem.ordering().is_none() && small(inst.ty()),
+        InstKind::Store { value, mem, .. } => {
+            mem.ordering().is_none() && small(value_ty(cx, value))
+        }
+        InstKind::PtrAdd(_) | InstKind::ICmp { .. } | InstKind::FCmp { .. } => true,
+        InstKind::Binary { .. } => inst.opcode() != Opcode::FRem && small(inst.ty()),
+        InstKind::Unary { .. } | InstKind::Select { .. } => small(inst.ty()),
+        InstKind::Cast { arg } => small(inst.ty()) && small(value_ty(cx, arg)),
+        InstKind::Call(site) => {
+            matches!(site.intrinsic(), Some(Intrinsic::Sqrt | Intrinsic::Fabs)) && small(inst.ty())
+        }
+        _ => false,
+    }
+}
+
+/// Whether `inst` could be carried, its use not yet checked: a floating
+/// result with one use, in its block.
+fn single(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
+    let uses = inst.uses();
+    uses.count() == 1 && !uses.used_outside_block() && is_fp(cx, inst.ty())
+}
+
+/// The use of `p` if `p` is carried to it ([`carried`]'s rule but the
+/// depth).
+fn carry_user<'a>(cx: &FnCx<'a, X86>, p: Inst<'a>) -> Option<Inst<'a>> {
+    if !single(cx, p) || cx.fold_action(p) != FoldAction::Emit {
+        return None;
+    }
+    let start = p.id().raw();
+    for raw in start + 1..=start + WINDOW {
+        let q = inst_at(cx, raw)?;
+        if uses_value(q, p.id()) {
+            if !consumes(cx, q, p.id()) {
+                return None;
+            }
+            // Every result in between that might be carried is used by
+            // `q` at the latest.
+            for mid in start + 1..raw {
+                let m = inst_at(cx, mid)?;
+                if single(cx, m)
+                    && !(mid + 1..=raw)
+                        .any(|u| inst_at(cx, u).is_some_and(|u| uses_value(u, m.id())))
+                {
+                    return None;
+                }
+            }
+            return Some(q);
+        }
+        if !neutral(cx, q) {
+            return None;
+        }
+    }
+    None
+}
+
+/// Whether the result of `inst` stays on the x87 stack for its only use
+/// (the module comment).
+pub fn carried(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
+    // Only a result computed on the stack is left there: not a load, a
+    // `select`, a `freeze` or a `copysign` (copies in memory).
+    let computed = match inst.kind() {
+        InstKind::Binary { .. } | InstKind::Cast { .. } => true,
+        InstKind::Unary { .. } => inst.opcode() == Opcode::FNeg,
+        InstKind::Call(site) => {
+            site.intrinsic().is_some_and(|i| i != Intrinsic::CopySign && fp_intrinsic(i))
+        }
+        _ => false,
+    };
+    if !computed || carry_user(cx, inst).is_none() {
+        return false;
+    }
+    // The results that may be on the stack under it: those of the
+    // window before it whose use comes after it (an upper bound).
+    let at = inst.id().raw();
+    let mut depth = 0;
+    for raw in at.saturating_sub(WINDOW)..at {
+        let Some(m) = inst_at(cx, raw) else { continue };
+        if single(cx, m)
+            && !(raw + 1..=at).any(|u| inst_at(cx, u).is_some_and(|u| uses_value(u, m.id())))
+        {
+            depth += 1;
+        }
+    }
+    depth < DEPTH
+}
+
+/// Whether operand `v` is on the x87 stack.
+fn on_stack(cx: &FnCx<'_, X86>, v: Value) -> bool {
+    v.as_inst().is_some_and(|id| carried(cx, cx.body.inst(id)))
+}
+
+// ---- the stack and the frame ----
+
+fn fld(cx: &mut FnCx<'_, X86>, fp: Fp, place: FrameRef) {
+    frame_inst(cx, place, |m| mc::fld_m(fp.size(), m));
+}
+
+fn fstp(cx: &mut FnCx<'_, X86>, fp: Fp, place: FrameRef) {
+    frame_inst(cx, place, |m| mc::fstp_m(fp.size(), m));
+}
+
+/// `[esp + disp]`.
+fn sp(disp: i32) -> Mem {
+    Mem::base(ESP, disp)
+}
+
+/// Takes `n` bytes below the stack pointer.
+fn below(cx: &mut FnCx<'_, X86>, n: u32) {
+    put(cx, mc::lea(Size::D, ESP, sp(-(n as i32))));
+}
+
+/// Gives back `n` bytes.
+fn above(cx: &mut FnCx<'_, X86>, n: u32) {
+    put(cx, mc::lea(Size::D, ESP, sp(n as i32)));
+}
+
+/// Pushes operand `v` (of type `fp`) unless it is carried.
+fn push(cx: &mut FnCx<'_, X86>, v: Value, fp: Fp) -> CgResult<()> {
+    if on_stack(cx, v) {
+        return Ok(());
+    }
+    let place = cx.use_mem(v)?;
+    fld(cx, fp, place);
+    Ok(())
+}
+
+/// Puts `a` in `st1` and `b` in `st0`.
+fn push_two(cx: &mut FnCx<'_, X86>, a: Value, b: Value, fp: Fp) -> CgResult<()> {
+    let (ca, cb) = (on_stack(cx, a), on_stack(cx, b));
+    match (ca, cb) {
+        (true, true) => {
+            // Both carried: in the order of their definitions.
+            if a.as_inst() > b.as_inst() {
+                put(cx, mc::fxch(St::St1));
+            }
+        }
+        (_, false) => {
+            push(cx, a, fp)?;
+            push(cx, b, fp)?;
+        }
+        (false, true) => {
+            push(cx, a, fp)?;
+            put(cx, mc::fxch(St::St1));
+        }
+    }
+    Ok(())
+}
+
+/// The result in `st0`: left there if carried, else popped to its slot.
+fn result(cx: &mut FnCx<'_, X86>, inst: Inst<'_>, fp: Fp) -> CgResult<()> {
+    if carried(cx, inst) {
+        return Ok(());
+    }
+    let r = def_mem(cx, inst)?;
+    fstp(cx, fp, r);
+    Ok(())
+}
+
+fn def_mem(cx: &mut FnCx<'_, X86>, inst: Inst<'_>) -> CgResult<FrameRef> {
+    let inst = cx.body.inst(inst.id());
+    cx.def_mem(inst)
+}
+
+/// Rounds `st0` to `fp` through memory.
+fn round(cx: &mut FnCx<'_, X86>, fp: Fp) {
+    below(cx, 16);
+    put(cx, mc::fstp_m(fp.size(), sp(0)));
+    put(cx, mc::fld_m(fp.size(), sp(0)));
+    above(cx, 16);
+}
+
+// ---- constants (`Target::materialize_mem`) ----
+
+/// Writes the constant `value` of a floating type to `dst` by `mov`s of
+/// its encoding (no constant pool, so no relocation); any other type is
+/// refused by its family.
+///
+/// # Errors
+/// The refusal of a type that is no x87 type.
+pub fn materialize_mem(cx: &mut FnCx<'_, X86>, dst: FrameRef, value: Value) -> CgResult<()> {
+    let ty = value_ty(cx, value);
+    if !is_fp(cx, ty) {
+        return Err(crate::target::refusal_of(cx, ty));
+    }
+    let fp = fp_of(cx, ty)?;
+    let ValueKind::Const(id) = value.kind() else {
+        return cx.bug("materialize_mem of something that is no constant");
+    };
+    let bits: u128 = match cx.module.consts.get(id) {
+        Const::Float { bits, .. } => u128::from(bits),
+        Const::WideFloat { bits, .. } => bits,
+        Const::Zero(_) | Const::Undef(_) | Const::Poison(_) => 0,
+        _ => return unsupported(crate::common::CONSTANT),
+    };
+    let bytes = fp.bytes();
+    let mut at = 0;
+    while at < bytes {
+        let size = if bytes - at >= 4 { Size::D } else { Size::W };
+        let piece = (bits >> (8 * at)) as u32;
+        let imm =
+            if size == Size::D { i64::from(piece as i32) } else { i64::from(piece as u16 as i16) };
+        frame_inst(cx, dst.offset_by(at), |m| mc::mov_mi(size, m, imm));
+        at += if size == Size::D { 4 } else { 2 };
+    }
+    Ok(())
+}
+
+// ---- memory ----
+
+/// Where a pointer operand points.
+#[derive(Clone, Copy)]
+enum At {
+    Frame(FrameRef),
+    Sym(hod_ir::SymId),
+    Reg(Reg),
+}
+
+fn address(cx: &mut FnCx<'_, X86>, ptr: Value) -> CgResult<At> {
+    match ptr.kind() {
+        ValueKind::Slot(slot) => match cx.slot_place(slot)? {
+            hod_cg::SlotPlace::Direct(place) => Ok(At::Frame(place)),
+            hod_cg::SlotPlace::Indirect(pointer) => {
+                frame_inst(cx, pointer, |m| mc::mov_rm(Size::D, EDX, m));
+                Ok(At::Reg(EDX))
+            }
+        },
+        ValueKind::Sym(sym)
+            if !matches!(
+                hod_cg::sym_access(cx.module, cx.options, sym),
+                hod_cg::Access::Tls(_)
+            ) =>
+        {
+            Ok(At::Sym(sym))
+        }
+        _ => Ok(At::Reg(gp(cx.use_reg(ptr)?))),
+    }
+}
+
+fn access(
+    cx: &mut FnCx<'_, X86>,
+    at: At,
+    k: u32,
+    make: impl FnOnce(Mem) -> mc::Inst,
+) -> CgResult<()> {
+    match at {
+        At::Frame(place) => {
+            frame_inst(cx, place.offset_by(k), make);
+            Ok(())
+        }
+        At::Sym(sym) => sym_inst(cx, sym, i64::from(k), make),
+        At::Reg(base) => {
+            put(cx, make(Mem::base(base, k as i32)));
+            Ok(())
+        }
+    }
+}
+
+/// The pieces of an encoding of `bytes`: (offset, size).
+fn pieces(bytes: u32) -> impl Iterator<Item = (u32, Size)> {
+    (0..bytes.div_ceil(4)).map(move |i| (4 * i, if bytes - 4 * i >= 4 { Size::D } else { Size::W }))
+}
+
+fn check(mem: MemFlags) -> CgResult<()> {
+    if mem.ordering().is_some() { unsupported(crate::mem::ATOMIC) } else { Ok(()) }
+}
+
+fn load<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, ptr: Value, mem: MemFlags) -> CgResult<()> {
+    check(mem)?;
+    let fp = fp_of(cx, inst.ty())?;
+    let at = address(cx, ptr)?;
+    let r = cx.def_mem(inst)?;
+    for (k, size) in pieces(fp.bytes()) {
+        access(cx, at, k, |m| mc::mov_rm(size, ECX, m))?;
+        frame_inst(cx, r.offset_by(k), |m| mc::mov_mr(size, m, ECX));
+    }
+    Ok(())
+}
+
+fn store(cx: &mut FnCx<'_, X86>, value: Value, ptr: Value, mem: MemFlags) -> CgResult<()> {
+    check(mem)?;
+    let fp = fp_of(cx, value_ty(cx, value))?;
+    if on_stack(cx, value) {
+        let at = address(cx, ptr)?;
+        return access(cx, at, 0, |m| mc::fstp_m(fp.size(), m));
+    }
+    let src = cx.use_mem(value)?;
+    let at = address(cx, ptr)?;
+    for (k, size) in pieces(fp.bytes()) {
+        frame_inst(cx, src.offset_by(k), |m| mc::mov_rm(size, ECX, m));
+        access(cx, at, k, |m| mc::mov_mr(size, m, ECX))?;
+    }
+    Ok(())
+}
+
+/// `inst`'s result: a copy of `v`.
+fn copy_of<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, v: Value, fp: Fp) -> CgResult<()> {
+    let src = cx.use_mem(v)?;
+    let r = cx.def_mem(inst)?;
+    if r != src {
+        copy_frame(cx, r, src, fp.bytes());
+    }
+    Ok(())
+}
+
+// ---- arithmetic ----
+
+fn binary<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, lhs: Value, rhs: Value) -> CgResult<()> {
+    let fp = fp_of(cx, inst.ty())?;
+    let op = match inst.opcode() {
+        Opcode::FAdd => mc::faddp(St::St1),
+        Opcode::FSub => mc::fsubp(St::St1),
+        Opcode::FMul => mc::fmulp(St::St1),
+        Opcode::FDiv => mc::fdivp(St::St1),
+        Opcode::FRem => {
+            let func = routine(FpOp::Rem, fp)?;
+            return libcall(cx, inst, func, &[lhs, rhs], fp);
+        }
+        _ => return cx.bug("an integer opcode on a floating type"),
+    };
+    push_two(cx, lhs, rhs, fp)?;
+    put(cx, op);
+    result(cx, inst, fp)
+}
+
+/// `fneg` (the sign flipped: `fchs` on the stack, `xor` of the sign byte
+/// in memory) and `freeze` (a copy).
+fn unary<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, arg: Value) -> CgResult<()> {
+    let fp = fp_of(cx, inst.ty())?;
+    if inst.opcode() != Opcode::FNeg {
+        return copy_of(cx, inst, arg, fp);
+    }
+    sign_op(cx, inst, arg, fp, mc::fchs(), |m| mc::xor_mi(Size::B, m, -0x80))
+}
+
+/// A sign operation: `on_stack` when the operand or the result is
+/// carried, else the copy and `in_mem` on its sign byte.
+fn sign_op<'a>(
+    cx: &mut FnCx<'a, X86>,
+    inst: Inst<'a>,
+    arg: Value,
+    fp: Fp,
+    on: mc::Inst,
+    in_mem: fn(Mem) -> mc::Inst,
+) -> CgResult<()> {
+    if on_stack(cx, arg) || carried(cx, inst) {
+        push(cx, arg, fp)?;
+        put(cx, on);
+        return result(cx, inst, fp);
+    }
+    copy_of(cx, inst, arg, fp)?;
+    let r = cx.def_mem(inst)?;
+    frame_inst(cx, r.offset_by(fp.bytes() - 1), in_mem);
+    Ok(())
+}
+
+// ---- compares ----
+
+/// How a predicate reads the flags of `st0 = x` compared with `st1 = y`
+/// (`fucomi`, or `fucompp`, `fnstsw`, `sahf`): unordered sets `ZF`, `PF`
+/// and `CF`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FpCond {
+    One(Cond),
+    All(Cond, Cond),
+    Any(Cond, Cond),
+}
+
+/// Whether the operands are swapped (`x` = the right one) and the
+/// condition.
+const fn conditions(pred: FloatPredicate) -> (bool, FpCond) {
+    use FloatPredicate as P;
+    match pred {
+        P::Oeq => (false, FpCond::All(Cond::E, Cond::Np)),
+        P::Ogt => (false, FpCond::One(Cond::A)),
+        P::Oge => (false, FpCond::One(Cond::Ae)),
+        P::Olt => (true, FpCond::One(Cond::A)),
+        P::Ole => (true, FpCond::One(Cond::Ae)),
+        // `true` is `cmp eax, eax` (ZF set), `false` reads `ZF` clear.
+        P::One | P::False => (false, FpCond::One(Cond::Ne)),
+        P::Ord => (false, FpCond::One(Cond::Np)),
+        P::Ueq | P::True => (false, FpCond::One(Cond::E)),
+        P::Ugt => (true, FpCond::One(Cond::B)),
+        P::Uge => (true, FpCond::One(Cond::Be)),
+        P::Ult => (false, FpCond::One(Cond::B)),
+        P::Ule => (false, FpCond::One(Cond::Be)),
+        P::Une => (false, FpCond::Any(Cond::Ne, Cond::P)),
+        P::Uno => (false, FpCond::One(Cond::P)),
+    }
+}
+
+fn fcmp<'a>(
+    cx: &mut FnCx<'a, X86>,
+    inst: Inst<'a>,
+    pred: FloatPredicate,
+    lhs: Value,
+    rhs: Value,
+) -> CgResult<()> {
+    let fp = fp_of(cx, value_ty(cx, lhs))?;
+    let rd = cx.def_reg(inst)?;
+    let (swap, cond) = conditions(pred);
+    if matches!(pred, FloatPredicate::True | FloatPredicate::False) {
+        // Carried operands still leave the stack.
+        for v in [lhs, rhs] {
+            if on_stack(cx, v) {
+                put(cx, mc::fstp_st(St::St0));
+            }
+        }
+        put(cx, mc::cmp_rr(Size::D, EAX, EAX));
+    } else {
+        let (x, y) = if swap { (rhs, lhs) } else { (lhs, rhs) };
+        if x == y {
+            push(cx, x, fp)?;
+            put(cx, mc::fld_st(St::St0));
+        } else {
+            push_two(cx, y, x, fp)?;
+        }
+        if features(cx).has(X86Features::CMOV) {
+            put(cx, mc::fucomip(St::St1));
+            put(cx, mc::fstp_st(St::St0));
+        } else {
+            put(cx, mc::fucompp());
+            put(cx, mc::fnstsw_ax());
+            put(cx, mc::sahf());
+        }
+    }
+    let r = gp(rd);
+    match cond {
+        FpCond::One(c) => put(cx, mc::setcc_r(c, EAX)),
+        FpCond::All(c1, c2) | FpCond::Any(c1, c2) => {
+            put(cx, mc::setcc_r(c1, EAX));
+            put(cx, mc::setcc_r(c2, ECX));
+            let all = matches!(cond, FpCond::All(..));
+            put(cx, if all { mc::and_rr(Size::B, EAX, ECX) } else { mc::or_rr(Size::B, EAX, ECX) });
+        }
+    }
+    put(cx, mc::movzx_rr(Size::D, r, Size::B, EAX));
+    cx.finish(inst, rd)
+}
+
+/// `select` of floating values: a branch on the condition and one copy.
+fn select<'a>(
+    cx: &mut FnCx<'a, X86>,
+    inst: Inst<'a>,
+    cond: Value,
+    if_true: Value,
+    if_false: Value,
+) -> CgResult<()> {
+    let fp = fp_of(cx, inst.ty())?;
+    let t = cx.use_mem(if_true)?;
+    let f = cx.use_mem(if_false)?;
+    let r = cx.def_mem(inst)?;
+    cx.put(cond, crate::reg::EAX)?;
+    let other = cx.new_label();
+    let done = cx.new_label();
+    put(cx, mc::test_ri(Size::B, EAX, 1));
+    crate::common::branch_cond(cx, Cond::E, other)?;
+    copy_frame(cx, r, t, fp.bytes());
+    crate::common::branch(cx, done)?;
+    cx.bind(other)?;
+    copy_frame(cx, r, f, fp.bytes());
+    cx.bind(done)
+}
+
+// ---- casts ----
+
+fn cast<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, arg: Value) -> CgResult<()> {
+    let from = value_ty(cx, arg);
+    match inst.opcode() {
+        Opcode::FPExt | Opcode::FPTrunc if is_fp(cx, from) && is_fp(cx, inst.ty()) => {
+            let (a, b) = (fp_of(cx, from)?, fp_of(cx, inst.ty())?);
+            push(cx, arg, a)?;
+            if inst.opcode() == Opcode::FPTrunc && carried(cx, inst) {
+                round(cx, b);
+            }
+            result(cx, inst, b)
+        }
+        Opcode::SIToFP | Opcode::UIToFP => from_int(cx, inst, arg),
+        Opcode::FPToSI | Opcode::FPToUI => to_int(cx, inst, arg),
+        _ => unsupported(CAST),
+    }
+}
+
+/// The width of integer type `ty`, at most 32, or [`I64_CAST`].
+fn int_bits(cx: &FnCx<'_, X86>, ty: TypeId) -> CgResult<u32> {
+    match cx.types().int_bits(ty) {
+        Some(bits) if bits <= 32 => Ok(bits),
+        Some(_) => unsupported(I64_CAST),
+        None => unsupported(CAST),
+    }
+}
+
+/// `sitofp`/`uitofp`: the integer extended in `ecx` to 32 bits, `fild`
+/// of it (of 64 bits with a zero high half for an unsigned `i32`).
+fn from_int<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, arg: Value) -> CgResult<()> {
+    let fp = fp_of(cx, inst.ty())?;
+    let bits = int_bits(cx, value_ty(cx, arg))?;
+    let signed = inst.opcode() == Opcode::SIToFP;
+    let r = cx.use_reg(arg)?;
+    put(cx, mc::mov_rr(Size::D, ECX, gp(r)));
+    let ext = if signed { crate::alu::Ext::Sign } else { crate::alu::Ext::Zero };
+    crate::alu::extend_to(cx, ECX, bits, ext);
+    below(cx, 16);
+    put(cx, mc::mov_mr(Size::D, sp(0), ECX));
+    if !signed && bits == 32 {
+        put(cx, mc::mov_mi(Size::D, sp(4), 0));
+        put(cx, mc::fild_m(Size::Q, sp(0)));
+    } else {
+        put(cx, mc::fild_m(Size::D, sp(0)));
+    }
+    above(cx, 16);
+    result(cx, inst, fp)
+}
+
+/// `fptosi`/`fptoui`: rounding toward zero around `fistp` (`fnstcw`,
+/// `or 0xC00`, `fldcw`, `fistp`, `fldcw` of the saved word), of 64 bits
+/// for an unsigned `i32`.
+fn to_int<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, arg: Value) -> CgResult<()> {
+    let fp = fp_of(cx, value_ty(cx, arg))?;
+    let bits = int_bits(cx, inst.ty())?;
+    let wide = inst.opcode() == Opcode::FPToUI && bits == 32;
+    let rd = cx.def_reg(inst)?;
+    push(cx, arg, fp)?;
+    below(cx, 16);
+    put(cx, mc::fnstcw_m(sp(0)));
+    put(cx, mc::movzx_rm(Size::D, ECX, Size::W, sp(0)));
+    put(cx, mc::or_ri(Size::D, ECX, 0xc00));
+    put(cx, mc::mov_mr(Size::W, sp(2), ECX));
+    put(cx, mc::fldcw_m(sp(2)));
+    put(cx, mc::fistp_m(if wide { Size::Q } else { Size::D }, sp(4)));
+    put(cx, mc::fldcw_m(sp(0)));
+    put(cx, mc::mov_rm(Size::D, gp(rd), sp(4)));
+    above(cx, 16);
+    cx.finish(inst, rd)
+}
+
+// ---- intrinsics and libm ----
+
+fn routine_op(which: Intrinsic<'_>) -> Option<FpOp> {
+    use FpOp as O;
+    use Intrinsic as I;
+    Some(match which {
+        I::Sin => O::Sin,
+        I::Cos => O::Cos,
+        I::Tan => O::Tan,
+        I::Exp => O::Exp,
+        I::Exp2 => O::Exp2,
+        I::Log => O::Log,
+        I::Log2 => O::Log2,
+        I::Log10 => O::Log10,
+        I::Pow => O::Pow,
+        I::Floor => O::Floor,
+        I::Ceil => O::Ceil,
+        I::Trunc => O::Trunc,
+        I::Round => O::Round,
+        I::RoundEven => O::RoundEven,
+        I::NearbyInt => O::NearbyInt,
+        I::Rint => O::Rint,
+        I::Fma => O::Fma,
+        _ => return None,
+    })
+}
+
+/// libm's routine of `op` for `fp`: `llc`'s symbol (`floorf`, `floor`,
+/// `floorl`), the same names as x86-64's.
+fn routine(op: FpOp, fp: Fp) -> CgResult<RuntimeFn> {
+    match fp_routine(op, fp.fp_type(), Arch::X86_64) {
+        Some(func) => Ok(func),
+        None => unsupported(INTRINSIC),
+    }
+}
+
+fn intrinsic<'a>(
+    cx: &mut FnCx<'a, X86>,
+    inst: Inst<'a>,
+    which: Intrinsic<'a>,
+    args: &[Value],
+) -> CgResult<()> {
+    let fp = fp_of(cx, inst.ty())?;
+    match (which, args) {
+        (Intrinsic::Sqrt, &[x]) => {
+            push(cx, x, fp)?;
+            put(cx, mc::fsqrt());
+            result(cx, inst, fp)
+        }
+        (Intrinsic::Fabs, &[x]) => {
+            sign_op(cx, inst, x, fp, mc::fabs(), |m| mc::and_mi(Size::B, m, 0x7f))
+        }
+        (Intrinsic::CopySign, &[x, y]) => {
+            let ys = cx.use_mem(y)?;
+            copy_of(cx, inst, x, fp)?;
+            let r = cx.def_mem(inst)?;
+            let sign = fp.bytes() - 1;
+            frame_inst(cx, ys.offset_by(sign), |m| mc::movzx_rm(Size::D, ECX, Size::B, m));
+            put(cx, mc::and_ri(Size::D, ECX, 0x80));
+            frame_inst(cx, r.offset_by(sign), |m| mc::and_mi(Size::B, m, 0x7f));
+            frame_inst(cx, r.offset_by(sign), |m| mc::or_mr(Size::B, m, ECX));
+            Ok(())
+        }
+        (Intrinsic::FmulAdd, &[a, b, c]) => {
+            // `llc` without FMA: the product unrounded into the sum.
+            push_two(cx, a, b, fp)?;
+            put(cx, mc::fmulp(St::St1));
+            push(cx, c, fp)?;
+            put(cx, mc::faddp(St::St1));
+            result(cx, inst, fp)
+        }
+        _ => match routine_op(which) {
+            Some(op) if args.iter().all(|&a| value_ty(cx, a) == inst.ty()) => {
+                let func = routine(op, fp)?;
+                libcall(cx, inst, func, args, fp)
+            }
+            _ => unsupported(INTRINSIC),
+        },
+    }
+}
+
+/// A call of libm's `func` with the floating arguments `args` (each on
+/// the stack at its width) and the result in `st0` (hod's own call, not
+/// the convention's: the general registers that hold values are
+/// callee-saved, the x87 stack is empty).
+fn libcall<'a>(
+    cx: &mut FnCx<'a, X86>,
+    inst: Inst<'a>,
+    func: RuntimeFn,
+    args: &[Value],
+    fp: Fp,
+) -> CgResult<()> {
+    let mut places = Vec::with_capacity(args.len());
+    for &a in args {
+        places.push(cx.use_mem(a)?);
+    }
+    let area = (fp.arg_bytes() * args.len() as u32).next_multiple_of(16);
+    below(cx, area);
+    for (i, &place) in places.iter().enumerate() {
+        copy_frame(cx, FrameRef::Outgoing(fp.arg_bytes() * i as u32), place, fp.bytes());
+    }
+    let at = cx.offset();
+    crate::frame::emit_call(cx, CallTarget::Sym(SymRef::Runtime(func)))?;
+    let len = cx.offset() - at;
+    cx.record_call_site(at, len);
+    above(cx, area);
+    result(cx, inst, fp)
+}
+
+// ---- the dispatch ----
+
+/// The lowering of an instruction [`owns`] says is this module's.
+///
+/// # Errors
+/// The refusals of this module; what the operands report.
+pub fn lower<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>) -> CgResult<()> {
+    match inst.kind() {
+        InstKind::Binary { lhs, rhs } => binary(cx, inst, lhs, rhs),
+        InstKind::Unary { arg } => unary(cx, inst, arg),
+        InstKind::Load { ptr, mem } => load(cx, inst, ptr, mem),
+        InstKind::Store { value, ptr, mem } => store(cx, value, ptr, mem),
+        InstKind::Select { cond, if_true, if_false } => select(cx, inst, cond, if_true, if_false),
+        InstKind::Cast { arg } => cast(cx, inst, arg),
+        InstKind::FCmp { pred, lhs, rhs } => fcmp(cx, inst, pred, lhs, rhs),
+        InstKind::Call(site) => match site.intrinsic() {
+            Some(which) => intrinsic(cx, inst, which, site.args()),
+            None => unsupported(INTRINSIC),
+        },
+        _ => Err(CgError::unsupported(FLOAT)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_predicate_has_a_condition() {
+        for &pred in FloatPredicate::ALL {
+            let _ = conditions(pred);
+        }
+        assert_eq!(conditions(FloatPredicate::Olt), (true, FpCond::One(Cond::A)));
+    }
+
+    #[test]
+    fn pieces_cover_the_encodings() {
+        let p: Vec<_> = pieces(10).collect();
+        assert_eq!(p, [(0, Size::D), (4, Size::D), (8, Size::W)]);
+        assert_eq!(pieces(4).count(), 1);
+    }
+}

@@ -49,7 +49,23 @@ pub const fn gpr(reg: Reg) -> PReg {
 /// The DWARF register number of `reg`.
 pub const fn dwarf(reg: PReg) -> u16 {
     let n = reg.index();
-    if n < XMM_BASE { n as u16 } else { 21 + (n - XMM_BASE) as u16 }
+    if n < XMM_BASE {
+        n as u16
+    } else if n < ST_BASE {
+        21 + (n - XMM_BASE) as u16
+    } else {
+        11 + (n - ST_BASE) as u16
+    }
+}
+
+/// The first x87 index (`st0`; design 0008 I9). No value lives in one:
+/// the indexes exist for their DWARF numbers.
+const ST_BASE: u8 = 16;
+
+/// `st<n>`, `n` < 8.
+pub const fn st(n: u8) -> PReg {
+    assert!(n < 8, "the x87 stack has st0..st7");
+    PReg::new(ST_BASE + n)
 }
 
 /// The DWARF number of `ebp`.
@@ -89,6 +105,8 @@ mod tests {
         assert_eq!(dwarf(EDI), 7);
         assert_eq!(dwarf(xmm(0)), 21);
         assert_eq!(dwarf(xmm(7)), 28);
+        assert_eq!(dwarf(st(0)), 11);
+        assert_eq!(dwarf(st(7)), 18);
         assert!(has_low_byte(reg(EBX)) && !has_low_byte(reg(ESI)));
     }
 }

@@ -144,6 +144,7 @@ impl Target for X86 {
         }
         let gpr = abi::is_gpr(cx.types(), inst.ty());
         match inst.kind() {
+            _ if crate::x87::owns(cx, inst) => crate::x87::lower(cx, inst),
             InstKind::Binary { lhs, rhs } if gpr => alu::binary(cx, inst, lhs, rhs),
             InstKind::Unary { arg } if gpr && inst.opcode() != Opcode::FNeg => {
                 alu::freeze(cx, inst, arg)
@@ -246,11 +247,10 @@ impl Target for X86 {
     fn materialize_mem(
         &self,
         cx: &mut FnCx<'_, Self>,
-        _dst: FrameRef,
+        dst: FrameRef,
         value: Value,
     ) -> CgResult<()> {
-        let ty = common::value_ty(cx, value);
-        refuse(cx, ty)
+        crate::x87::materialize_mem(cx, dst, value)
     }
 
     fn frame_addr(&self, cx: &mut FnCx<'_, Self>, reg: PReg, of: FrameRef) {

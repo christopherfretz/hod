@@ -145,6 +145,72 @@ fn debug_information_round_trips_with_the_same_dwarf() {
     eprintln!("debug round trips: {checked}");
 }
 
+/// `text` with every specialized node's fields in a spelling other than
+/// the one LLVM's writer prints: with `first`, a blank after the node's
+/// `(`, so that no field of it is read from the bytes; otherwise a blank
+/// after its first `, ` outside a string, so that the token path takes
+/// over in the middle of the node.
+fn respelled(text: &[u8], first: bool) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len() + text.len() / 8);
+    let mut inside = false;
+    let mut string = false;
+    for (at, &byte) in text.iter().enumerate() {
+        out.push(byte);
+        match byte {
+            b'"' if inside => string = !string,
+            b'(' if !inside => {
+                let word = text[..at]
+                    .iter()
+                    .rev()
+                    .take_while(|b| b.is_ascii_alphanumeric() || **b == b'_')
+                    .count();
+                if word > 2
+                    && text[..at - word].ends_with(b"!")
+                    && text[at - word..].starts_with(b"DI")
+                {
+                    inside = true;
+                    if first {
+                        out.push(b' ');
+                    }
+                }
+            }
+            b',' if inside && !string && text.get(at + 1) == Some(&b' ') => {
+                inside = false;
+                if !first {
+                    out.push(b' ');
+                }
+            }
+            b')' if inside && !string => inside = false,
+            _ => {}
+        }
+    }
+    out
+}
+
+/// WP-328: the fields read from the bytes in LLVM's spelling are the
+/// fields the token path reads in another spelling: the module prints the
+/// same, the unsupported constructs are the same.
+#[test]
+fn debug_fields_read_from_the_bytes_are_the_tokens_reading() {
+    let mut texts = vec![("kiln_types.ll".to_owned(), data("debug/kiln_types.ll"))];
+    if let Some(llvm) = Llvm::find(22) {
+        for source in ["debug_types.cpp", "debug_c.c"] {
+            texts.push((source.to_owned(), llvm.clang(source, Arch::Aarch64, &["-g"])));
+        }
+    }
+    for (name, text) in texts {
+        let (module, bodies, unsupported) = read(&text).expect(&name);
+        let printed = print(&module, &bodies, 22).expect(&name);
+        for first in [true, false] {
+            let other = respelled(&text, first);
+            assert_ne!(other, text, "{name}");
+            let (module, bodies, refused) = read(&other).expect(&name);
+            assert_eq!(refused, unsupported, "{name} first={first}");
+            assert_eq!(print(&module, &bodies, 22).expect(&name), printed, "{name} first={first}");
+        }
+    }
+}
+
 /// §11.9: an assign record is read, and the printer refuses it by name:
 /// the `DIAssignID` that ties it to its stores is not kept.
 #[test]

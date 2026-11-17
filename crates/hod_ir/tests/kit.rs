@@ -259,6 +259,8 @@ fn metadata_names_and_branch_protection_flags() {
     assert_eq!(GlobalAttachment::of(b"exclude"), GlobalAttachment::Exclude);
     assert_eq!(NamedMetadataKind::of(b"llvm.module.flags"), NamedMetadataKind::ModuleFlags);
     assert_eq!(NamedMetadataKind::of(b"llvm.ident"), NamedMetadataKind::Dropped);
+    // WP-353: GCOVProfiler's input; llc writes the same object without it.
+    assert_eq!(NamedMetadataKind::of(b"llvm.gcov"), NamedMetadataKind::Dropped);
     assert_eq!(NamedMetadataKind::of(b"llvm.foo"), NamedMetadataKind::Unsupported);
     let mut m = Module::new(TargetSpec::aarch64_linux_gnu());
     let mut upgrade = Some(BranchUpgrade::default());

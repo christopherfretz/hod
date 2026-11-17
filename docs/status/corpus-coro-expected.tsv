@@ -1,0 +1,12 @@
+# What `cargo xtask corpus verify --strict` expects of the coroutine corpus
+# besides a PASS (spec/harness.md "corpus", "Expected results"; WP-353),
+# read by the full gate's steps corpus-coro-aarch64 and corpus-coro-x86_64.
+# The coroutine corpus is `<build root>/corpus-coro/corpus` and
+# `corpus-coro/corpus-x64`, captured with `corpus capture --route hod`
+# (spec/landed/harness/WP-350.md). Its own list: a row naming a test that is
+# not in the corpus verified is a list problem, so the main corpus's rows
+# (docs/status/corpus-expected.tsv) are not here, nor these there.
+# One line per target and test, every LLVM major of the test:
+#   <target><TAB>refused<TAB><source> <test><TAB><refusal name><TAB><reason>
+#   <target><TAB>undefined<TAB><source> <test><TAB>-<TAB><evidence>
+# No row: hod builds every entry on AArch64 and x86-64, equal to llc.

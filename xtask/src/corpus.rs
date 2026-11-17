@@ -132,9 +132,26 @@ pub const NO_I686_CORPUS: &str =
 /// The corpus directory of `target` when none is given: `corpus` for this
 /// machine's architecture, `corpus-x64` (`corpus-a64`) for the other.
 pub fn default_dir_for(build_dir: &Path, target: Option<Arch>) -> PathBuf {
+    build_root(build_dir).join(dir_name(target))
+}
+
+/// The directory of the build root that holds the coroutine corpus
+/// (WP-350): a capture with `--route hod`, kept apart from the main
+/// corpus because its entries have the paths of the main corpus's.
+pub const CORO_DIR: &str = "corpus-coro";
+
+/// The coroutine corpus of `target` (WP-353): `<build root>/corpus-coro/`
+/// and in it the name [`default_dir_for`] gives, `corpus` for this
+/// machine's architecture, `corpus-x64` (`corpus-a64`) for the other.
+pub fn coro_dir_for(build_dir: &Path, target: Option<Arch>) -> PathBuf {
+    build_root(build_dir).join(CORO_DIR).join(dir_name(target))
+}
+
+/// The name of `target`'s corpus directory.
+fn dir_name(target: Option<Arch>) -> String {
     match other_target(target) {
-        Some(other) => build_root(build_dir).join(format!("corpus-{}", short(other))),
-        None => build_root(build_dir).join("corpus"),
+        Some(other) => format!("corpus-{}", short(other)),
+        None => "corpus".to_owned(),
     }
 }
 

@@ -206,6 +206,7 @@ pub fn ret_pop(cx: &mut FnCx<'_, X86>, pop: u16, resumed: bool) -> CgResult<()> 
 pub fn stubs(cx: &mut FnCx<'_, X86>) -> CgResult<()> {
     let frame = crate::frame::final_size(cx.frame_size())?;
     let below = 12 + i64::from(frame);
+    let prologue = crate::frame::prologue_size(cx)?;
     let words = cx.coro_slots()?;
     let layout = cx.coro_layout()?;
     let local = |place: FrameRef| -> CgResult<Mem> {
@@ -243,7 +244,8 @@ pub fn stubs(cx: &mut FnCx<'_, X86>) -> CgResult<()> {
             let cfa_offset = -12 - 4 * index as i32;
             cx.cfi(CfiOp::Offset { reg: dwarf(gpr(saved)), cfa_offset });
         }
-        put(cx, mc::sub_ri(Size::D, ESP, i64::from(frame)));
+        // WP-354: the whole prologue's size, the outgoing area included.
+        put(cx, mc::sub_ri(Size::D, ESP, i64::from(prologue)));
         // The frame base, the mode, the frame word, the suspend result.
         put(cx, mc::mov_rr(Size::D, ESI, ECX));
         put(cx, mc::mov_mi(Size::D, mode, 1));

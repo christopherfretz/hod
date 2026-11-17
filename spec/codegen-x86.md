@@ -91,7 +91,33 @@ patched at the end of the function) is the local area rounded up to
 `≡ 12 (mod 16)`, so `esp` is 16-aligned after the prologue and at every
 call. A local `Local(o)` is `[ebp + o - 12 - FRAME]` (a `disp32` biased at
 the end of the function); an incoming argument `Incoming(n)` is
-`[ebp + 8 + n]`; an outgoing one `[esp + n]`. The DWARF frame base is
+`[ebp + 8 + n]`; an outgoing one `[esp + n]`.
+
+**The outgoing argument area (WP-354).** As `llc` does for a function
+without variable-sized objects, a function reserves its calls' outgoing
+argument area once in the prologue: `sub esp, FRAME + OUT`, where `OUT`
+is the largest stack-argument area of any call sequence of the function
+(each rounded up to 16), known when the function ends and patched into
+the same `imm32`. A call stores its stack arguments at `[esp + n]` and
+nothing moves `esp` around it, except after a callee that pops (a hidden
+`sret` pointer, `stdcall`, `fastcall`, `thiscall`): `lea esp, [esp - p]`
+re-reserves the `p` popped bytes, as `llc`'s `sub esp, p`. The area is
+below the local area, so `Local(o)`, the frame description and every
+CFI row are unchanged (the CFA is `ebp`-based; no `DW_CFA_GNU_args_size`
+is written, as `llc` writes none for a reserved frame). Invariant: `esp`
+is 16-aligned after the prologue and at every `call` (`FRAME ≡ 12 (mod
+16)`, `OUT ≡ 0 (mod 16)`); `i386_outgoing.rs` checks it at run time.
+**Old path:** a function with an `alloca` instruction left in the body (a
+dynamic size or outside the entry block) or a slot aligned above 16
+(`dynamic_slot`'s area in the entry code) moves `esp` below the
+prologue's: there each call sequence moves `esp` down by its area
+before the stores and back after the call (`lea esp, [esp ± area]`), as
+before WP-354 (`llc` too adjusts around each call there).
+`llvm.stacksave` / `llvm.stackrestore` alone do not move `esp` from the
+prologue's, so they qualify (as in `llc`). A `musttail` call stages its
+arguments in the local area (no area); the hand-written runtime calls of
+`x87`, `sse`, `fpclass` and `tls` still move `esp` around their own
+call (correct, not `llc`'s shape; a follow-up). The DWARF frame base is
 `ebp`, the frame description `12 + FRAME` bytes below it. The CFI rows are
 recorded (CFA `ebp + 8`, `ebp` at -8, `ebx`, `esi`, `edi` at -12, -16,
 -20); `hod_cg` writes them to `.eh_frame` (§14, WP-314).

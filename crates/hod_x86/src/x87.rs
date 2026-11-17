@@ -299,6 +299,7 @@ fn barrier(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
                 ValueKind::Asm(id) => asm_barrier(cx.module.asm(id).constraints),
                 _ => true,
             },
+            (Some(which), _) if crate::coro::is_barrier(which) => true,
             (Some(Intrinsic::Memcpy | Intrinsic::Memmove | Intrinsic::Memset), _) => {
                 crate::bytes::site_calls_libc(cx, &site)
             }

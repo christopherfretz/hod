@@ -72,6 +72,9 @@ pub fn lower<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, site: &CallSite<'a>) ->
         Some(which @ (Intrinsic::ThreadLocalAddress | Intrinsic::ThreadPointer)) => {
             crate::tls::intrinsic(cx, inst, which, site.args())
         }
+        Some(which) if crate::coro::owns(which) => {
+            crate::coro::intrinsic(cx, inst, which, site.args())
+        }
         Some(which) if crate::agg::is_overflow(which) => {
             crate::agg::overflow(cx, inst, which, site.args())
         }

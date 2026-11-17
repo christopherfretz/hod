@@ -1,5 +1,78 @@
 # libc++ test suite on i686 through hod
 
+## Release 1.1.0 candidate (2026-11-17, strict and hybrid, no `-g`)
+
+Candidate `C` = hod `a68a0d5d`: the frozen release binary, sha256
+`baf397f0f4cd9b2325884e122d39f2b1de000135486f2b832b1d22334b566077`
+(`--version` prints `hod version 1.0.0`, because the version number
+moves only after the lanes). kiln's pin `K` (`8f93304ee`) is not used
+on this lane: clang 22 is the front end (`--target=i686-linux-gnu`). kiln
+only provides the runner (`cargo xtask libcxx`). The full listing
+(9,247 tests) ran in strict and then in hybrid, 20 shards per mode, at
+`HOD_JOBS=4` on the lanes' pool. The WP-339 control run (all `llc`) is
+reused, not rerun, because it does not depend on hod. Everything else is
+as in WP-348: the suite, archives, emulator and runner are unchanged.
+
+| outcome | control (WP-339) | hybrid | strict |
+|---|---:|---:|---:|
+| PASS | 8,619 | 8,618 | 8,619 |
+| FAIL | 8 | 9 | 8 |
+| TIMEOUT | 1 | 1 | 1 |
+| XFAIL | 33 | 33 | 33 |
+| XPASS | 1 | 1 | 1 |
+| UNSUPPORTED | 585 | 585 | 585 |
+| wall, sum of the 20 shards | 5,056 s | 8,371 s | 6,987 s |
+
+- 7,215 tests compile 7,223 modules. hod builds 7,221 modules and every
+  module of 7,213 tests. In WP-348 it built 7,206 modules and all
+  modules of 7,198 tests.
+- Strict has the control's outcome for every test (0 rows differ).
+- The 15 tests that WP-348 left with a declined module and that pass in
+  the control now build every module with hod, and all 15 PASS. They
+  are the 14 `locale.num.get` tests (`llvm.sadd.with.overflow.i65`) and
+  `murmur2_or_cityhash_ubsan_unsigned_overflow_ignored.pass.cpp` (an
+  `i64` inline-asm operand).
+- Hybrid has the control's outcome for every test but one,
+  `charconv.msvc/test.pass.cpp`. It failed once with `round-trip failed`,
+  and it is the only row of `suspects.tsv`. This is the test's own
+  behaviour, the same with `llc` (see below).
+- `trouble.tsv` is empty in both modes. strict's hod exits 0 for 7,221
+  modules and 2 for 2 modules. Its longest hod step is 0.88 s; in
+  hybrid the longest step is 2.38 s, including the `llc` fallback.
+- Back end, over the 7,221 modules hod built (matched by source path
+  and occurrence in `time.tsv`): control `llc` 832.0 s, hod 295.4 s in
+  strict and 399.6 s in hybrid. All 7,223 modules under `llc`:
+  835.7 s.
+
+Census: 2 tests have a declined module, with one reason each and no
+new name. Both are `x86:atomic:libatomic`
+(`__atomic_ref_base<long long>::__compare_exchange`) in
+`atomics.ref/compare_exchange_{strong,weak}.pass.cpp`, which are XFAIL
+in the control too. `x86:i64:wide` and `x86:inline-asm:operand-type`
+no longer appear.
+
+`charconv.msvc/test.pass.cpp`. The test seeds `mt19937_64` from
+`random_device` and prints the seed. Its failure comes from
+`test_floating_prefix<true>`, which takes a random 64-bit pattern, then
+runs `to_chars` scientific, then `from_chars`, and compares the bits.
+- Rerun alone through the runner three times per mode: control PASS
+  3/3, hybrid FAIL 1/3, strict FAIL 3/3. Each failure ends in under
+  40 s, while a pass takes about 330 s.
+- Replay by seed. The upstream test rejects any argument, so a copy
+  reads the seed words from a file named by `argv[1]` and writes stdout
+  unbuffered (`abort()` otherwise drops the end of the seed). That copy
+  was built once with `llc` and once with hod and run under
+  `qemu-i386`, with and without the runner's 3,072 MiB address-space
+  cap.
+- The two executables gave the same outcome on every seed, with the
+  same failing value: 2 seeds FAIL on both (`round-trip failed for
+  0xC04FC825A2485059`, `... 0x45DCCE47A18BE2E7`) and 4 seeds PASS on
+  both. Four more runs of hod's executable with fresh seeds all passed,
+  so no third failing seed was found. The outcome is set by the seed, and the back end and the cap do
+  not change it. It is the test's own behaviour on this target and
+  equal to the control; the different fail rates per mode are the
+  random seeds.
+
 ## WP-348 full run (2026-11-17, hybrid and strict, no `-g`)
 
 The full listing (9,247 tests) again, in hybrid and strict, with hod

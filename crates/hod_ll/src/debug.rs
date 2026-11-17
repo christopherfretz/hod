@@ -1552,6 +1552,18 @@ impl Made<'_> {
             return kit::di_node(None, self.name, []);
         };
         let mut node = DiNode::llvm_default(kind);
+        Self::fill(&mut node, fields, scratch, src)?;
+        Ok(node)
+    }
+
+    /// Sets the fields of `node` from `fields`.
+    #[inline]
+    fn fill<'s>(
+        node: &mut DiNode<'s>,
+        fields: &'s [(Key, Val)],
+        scratch: &'s DebugScratch,
+        src: &'s [u8],
+    ) -> hod_ir::IrResult<()> {
         for &(key, value) in fields {
             let value = match value {
                 Val::UInt(value) => DiFieldValue::UInt(value),
@@ -1572,7 +1584,7 @@ impl Made<'_> {
                 Key::Name(field) => node.set(field.as_bytes(), value)?,
             }
         }
-        Ok(node)
+        Ok(())
     }
 
     fn define<L: Layering>(
@@ -1583,7 +1595,15 @@ impl Made<'_> {
         src: &[u8],
         distinct: bool,
     ) -> hod_ir::IrResult<()> {
-        let node = self.node(&scratch.fields[self.first..], scratch, src)?;
+        // The node built where it is defined from (WP-356): no copy of a
+        // returned node.
+        let fields = &scratch.fields[self.first..];
+        let Some(kind) = self.kind else {
+            let node = kit::di_node(None, self.name, [])?;
+            return kit::define_di_node(debug, id, &node, distinct);
+        };
+        let mut node = DiNode::llvm_default(kind);
+        Self::fill(&mut node, fields, scratch, src)?;
         kit::define_di_node(debug, id, &node, distinct)
     }
 

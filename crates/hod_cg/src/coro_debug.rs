@@ -50,6 +50,7 @@ impl<T: Target> FnCx<'_, T> {
     /// places become offsets: the rows of a coroutine body's variables
     /// from `start` on, rewritten as the module doc says. Nothing outside
     /// a coroutine.
+    #[allow(clippy::too_many_lines, reason = "the table's rules, in order, on one set of rows")]
     pub(crate) fn coro_vars(&mut self, start: usize) {
         let Some(view) = self.coro_debug_view() else { return };
         let (t, desc) = (self.target, self.frame_desc);

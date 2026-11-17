@@ -12,6 +12,14 @@ Head: see `git log -1` (code commit `a1ab662e`, then README row + this file).
   `inst:srem/int-wide`). Re-run it.
 - `crates/hod/tests/i386_i64.rs:118-125`: i128 add -> udiv, asserts `x86:i64:wide:div`.
 
+## Result of the i386 run (t2.log)
+14 binaries ok, then `i386_i64_rest.rs` `wider_than_64_bits_is_refused_by_name`
+failed (panic at :176): its last two cases (`getelementptr` with an `i128` / `i96`
+index) now COMPILE by design (low limb, as llc). Fix: drop those two cases from
+the list in `crates/hod/tests/i386_i64_rest.rs:154-172` (or move them to an
+"index compiles" assertion). cargo stopped at that binary: re-run step 1 with
+`--no-fail-fast`; the other 18 binaries have not run.
+
 ## Remaining, in order (each: `cd /Volumes/AgentWork/hod-helper/hod/.worktrees/wp-346 && source scripts/env.sh && export CARGO_TARGET_DIR=/Volumes/AgentWork/hod-helper/.build/target-wp-346 &&` ...)
 1. Every i386 test binary (a run was started; its log is
    `/Volumes/AgentWork/hod-helper/.build/target-wp-346/t2.log`, last line `exit N`):

@@ -14,17 +14,18 @@
   table; `tests/debug/coro_byval.cpp`; `crates/hod/tests/coro_byval_debug.rs`.
 - New program, debug lane: aarch64 30/30 PASS, x86_64 30/30 PASS (head).
 
+- Full debug lanes, base f20f08b6 -> head: aarch64 1217 PASS/30 FAIL ->
+  1247 PASS/0 FAIL; x86_64 1120 PASS/12 FAIL -> 1150 PASS/0 FAIL; every
+  base FAIL is coro_byval.cpp, no PASS becomes anything else. i686, the new
+  program only: 12 PASS, 1 SKIP (kiln has no i686).
+- fmt, clippy (`-D warnings`), `cargo test -q -p` hod_dwarf, hod_cg, hod: clean.
+
 ## Remaining, in order
-1. Read the results of the chained run (task started at handback time):
-   `/Volumes/AgentWork/hod-helper/.build/target-wp-342/l7-new-i686.log`, then
-   `l7-{base,head}-{aarch64,x86_64}.tsv` (base binary
-   `/Volumes/AgentWork/hod-helper/.build/target-wp-342-base/debug/hod`, built
-   from f20f08b6): no PASS becomes FAIL.
-2. Clippy/tests results: `.build/target-wp-342/clippy.log`, `test-{hod_dwarf,hod_cg,hod}.log`.
-3. Not started: `cargo xtask compare-binaries --base <base hod> --head
+1. Not started (base binary kept for it:
+   `/Volumes/AgentWork/hod-helper/.build/target-wp-342-base/debug/hod`): `cargo xtask compare-binaries --base <base hod> --head
    <head hod> --corpus tests/ir --corpus /Volumes/AgentWork/hod-helper/.build/corpus/kiln
    --corpus /Volumes/AgentWork/hod-helper/.build/corpus-x64/kiln -j 4 --out <abs dir>`;
    count `debug:variable-twice` refusals before/after.
-4. Not written: `spec/landed/dwarf/WP-342.md` (findings: see the handback).
-5. Delete `/Volumes/AgentWork/hod-helper/.build/target-wp-342-base` and
+2. Not written: `spec/landed/dwarf/WP-342.md` (findings: see the handback).
+3. Delete `/Volumes/AgentWork/hod-helper/.build/target-wp-342-base` and
    `.build/target-wp-342/base-src` afterwards; remove this file.

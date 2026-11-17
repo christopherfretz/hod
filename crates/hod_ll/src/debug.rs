@@ -1415,21 +1415,31 @@ enum Quick {
 }
 
 /// The end of the word (`[A-Za-z0-9_]*`) at `from`, at most `end`.
+/// WP-349: one table read per byte, over a slice (no bounds check per
+/// byte); the scan was 3.8% of a `-g` input's instructions.
+#[inline]
 fn word_end(src: &[u8], from: usize, end: usize) -> usize {
-    let mut at = from;
-    while at < end && (src[at].is_ascii_alphanumeric() || src[at] == b'_') {
-        at += 1;
-    }
-    at
+    let bytes = src.get(from..end.min(src.len())).unwrap_or(&[]);
+    from + bytes.iter().position(|&b| !WORD_BYTE[usize::from(b)]).unwrap_or(bytes.len())
 }
 
-/// The end of the decimal digits at `from`, at most `end`.
-fn digits_end(src: &[u8], from: usize, end: usize) -> usize {
-    let mut at = from;
-    while at < end && src[at].is_ascii_digit() {
-        at += 1;
+/// Whether a byte is in `[A-Za-z0-9_]`.
+static WORD_BYTE: [bool; 256] = {
+    let mut table = [false; 256];
+    let mut b = 0;
+    while b < 256 {
+        let c = b as u8;
+        table[b] = c.is_ascii_alphanumeric() || c == b'_';
+        b += 1;
     }
-    at
+    table
+};
+
+/// The end of the decimal digits at `from`, at most `end`.
+#[inline]
+fn digits_end(src: &[u8], from: usize, end: usize) -> usize {
+    let bytes = src.get(from..end.min(src.len())).unwrap_or(&[]);
+    from + bytes.iter().position(|b| !b.is_ascii_digit()).unwrap_or(bytes.len())
 }
 
 /// `A | B | 7` at `at` read from the bytes, as `Parser::flag_bits` reads
@@ -1443,10 +1453,8 @@ fn quick_flags(src: &[u8], mut at: usize, end: usize, di: bool) -> Option<(u64, 
         let text = src.get(at..word).filter(|text| !text.is_empty())?;
         bits |= if text[0].is_ascii_digit() {
             parse_u64(text)?
-        } else if di {
-            u64::from(DiFlags::named(text)?.0)
         } else {
-            u64::from(SpFlags::named(text)?.0)
+            u64::from(flag_bits(text, di)?)
         };
         if src.get(word..word + 3) == Some(b" | ") && word + 3 < end {
             at = word + 3;
@@ -1454,6 +1462,35 @@ fn quick_flags(src: &[u8], mut at: usize, end: usize, di: bool) -> Option<(u64, 
             return Some((bits, word));
         }
     }
+}
+
+/// Flag names grouped by their length: entry `n` lists the names of `n`
+/// bytes with their bits, in the order of `names`.
+type FlagsByLength = Vec<Vec<(&'static [u8], u32)>>;
+
+fn flags_by_length(names: &'static [(&'static str, u32)]) -> FlagsByLength {
+    let mut by_length = FlagsByLength::new();
+    for &(name, bits) in names {
+        if by_length.len() <= name.len() {
+            by_length.resize_with(name.len() + 1, Vec::new);
+        }
+        by_length[name.len()].push((name.as_bytes(), bits));
+    }
+    by_length
+}
+
+/// The bits of the flag LLVM writes as `text`: `DiFlags::named` (`di`)
+/// or `SpFlags::named`, compared with the names of `text`'s length only
+/// (WP-349: the full search compared every word with every name).
+fn flag_bits(text: &[u8], di: bool) -> Option<u32> {
+    static DI: std::sync::OnceLock<FlagsByLength> = std::sync::OnceLock::new();
+    static SP: std::sync::OnceLock<FlagsByLength> = std::sync::OnceLock::new();
+    let table = if di {
+        DI.get_or_init(|| flags_by_length(DiFlags::NAMES))
+    } else {
+        SP.get_or_init(|| flags_by_length(SpFlags::NAMES))
+    };
+    table.get(text.len())?.iter().find(|&&(name, _)| name == text).map(|&(_, bits)| bits)
 }
 
 /// The `'static` name of a mapped field LLVM calls `field` that is not
@@ -1565,5 +1602,56 @@ mod tests {
         }
         assert_eq!(required(DiKind::Label), ["scope", "name", "file", "line"]);
         assert!(required(DiKind::Subprogram).is_empty());
+    }
+
+    /// WP-349: `word_end` and `digits_end` stop where the byte-by-byte
+    /// scans stop, for every byte value and every bound.
+    #[test]
+    fn word_and_digit_ends() {
+        let reference = |src: &[u8], from: usize, end: usize, word: bool| {
+            let mut at = from;
+            while at < end
+                && (if word {
+                    src[at].is_ascii_alphanumeric() || src[at] == b'_'
+                } else {
+                    src[at].is_ascii_digit()
+                })
+            {
+                at += 1;
+            }
+            at
+        };
+        for b in 0..=255u8 {
+            let src = [b'a', b'7', b, b'_', b'Z', b' ', b'9'];
+            for from in 0..=src.len() {
+                for end in 0..=src.len() {
+                    assert_eq!(word_end(&src, from, end), reference(&src, from, end, true));
+                    assert_eq!(digits_end(&src, from, end), reference(&src, from, end, false));
+                }
+            }
+        }
+    }
+
+    /// WP-349: the flag lookup by length finds what `DiFlags::named` and
+    /// `SpFlags::named` find, for every name and for words that are not
+    /// names (prefixes, extensions, the other set's names, empty).
+    #[test]
+    fn flag_bits_is_named() {
+        let mut words: Vec<Vec<u8>> = vec![Vec::new(), b"DIFlag".to_vec(), b"DISPFlag".to_vec()];
+        for &(name, _) in DiFlags::NAMES.iter().chain(SpFlags::NAMES) {
+            let name = name.as_bytes();
+            words.push(name.to_vec());
+            words.push(name[..name.len() - 1].to_vec());
+            words.push([name, b"x"].concat());
+            let mut changed = name.to_vec();
+            changed[name.len() / 2] ^= 1;
+            words.push(changed);
+        }
+        for word in &words {
+            assert_eq!(flag_bits(word, true), DiFlags::named(word).map(|f| f.0), "{word:?}");
+            assert_eq!(flag_bits(word, false), SpFlags::named(word).map(|f| f.0), "{word:?}");
+        }
+        assert!(DiFlags::NAMES.iter().all(|&(n, b)| flag_bits(n.as_bytes(), true) == Some(b)));
+        assert!(SpFlags::NAMES.iter().all(|&(n, b)| flag_bits(n.as_bytes(), false) == Some(b)));
     }
 }

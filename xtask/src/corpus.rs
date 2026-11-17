@@ -56,6 +56,9 @@ torture suite, and keeps every module whose program can be an irdiff test.
   -j <N>, --jobs <N>   tests captured at once (default 3, at most 16)
   --force              capture again what is already in the corpus
   --retry-skipped      try again the tests the last capture skipped
+  --route <llc|hod>    kiln's backend route to capture (default llc); hod
+                       keeps the module kiln gives hod, before opt
+                       (coroutines unsplit), as an `input: pre-opt` entry
 
 verify: checks the corpus against its manifest, then runs every entry
 through irdiff in hybrid mode, with each LLVM the corpus was captured for.
@@ -244,6 +247,11 @@ pub fn parse_capture(args: &[String], options: &mut capture::Options) -> Result<
             "-j" | "--jobs" => options.jobs = jobs(value(args, &mut index, arg)?)?,
             "--force" => options.force = true,
             "--retry-skipped" => options.retry_skipped = true,
+            "--route" => match value(args, &mut index, arg)? {
+                "llc" => options.route = capture::Route::Llc,
+                "hod" => options.route = capture::Route::Hod,
+                other => return Err(format!("unknown route '{other}': expected llc or hod")),
+            },
             other => return Err(format!("unknown argument '{other}'")),
         }
         index += 1;
@@ -627,6 +635,13 @@ mod tests {
         assert_eq!(options.torture, Path::new("/t"));
         assert_eq!((options.limit, options.jobs), (Some(7), 2));
         assert!(options.force && options.retry_skipped);
+        assert_eq!(options.route, capture::Route::Llc);
+        assert_eq!(parse(&["--route", "hod"]).unwrap().route, capture::Route::Hod);
+        assert_eq!(
+            parse(&["--route", "hod", "--route", "llc"]).unwrap().route,
+            capture::Route::Llc
+        );
+        assert!(parse(&["--route", "opt"]).is_err());
         assert_eq!(
             parse(&["--source", "gcc-torture", "--source", "kiln"]).unwrap().sources,
             ["kiln", "gcc-torture"]

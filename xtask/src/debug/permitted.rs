@@ -487,7 +487,7 @@ impl Blocks {
 /// `<file>:<line>:<column>` at the end of an lldb `frame #N:` line's
 /// position (` at file:L:C`): the text before the column, the line, the
 /// column.
-fn frame_position(line: &str) -> Option<(&str, u32, u32)> {
+pub(crate) fn frame_position(line: &str) -> Option<(&str, u32, u32)> {
     let at = line.rfind(" at ")?;
     let position = &line[at + 4..];
     let (before, column) = position.rsplit_once(':')?;

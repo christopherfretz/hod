@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+# i686-cc (and i686-c++, a link to it): clang 22 for i686-linux-gnu with
+# hod or llc as the back end, the compiler of the i386 real-project lane
+# (scripts/oss/i686/i686-oss.sh, spec/landed/harness/WP-351.md). Derived
+# from scripts/libcxx-i686-clang.sh (WP-330, WP-339). Every invocation
+# gets `--target=i686-linux-gnu` (clang finds the cross GCC installation,
+# its linker and /usr/i686-linux-gnu by itself). One that writes code from
+# sources (no -fsyntax-only, -E, -M, -MM, -S, -emit-llvm, -x, standard
+# input; sources .c .cc .cpp .cxx) lowers each source to IR with clang
+# at the invocation's own flags plus `-Xclang -disable-llvm-passes`:
+# the front end's module before any LLVM pass, whatever -O the project
+# asks for (the module hod is meant for, as kiln hands it at -O0), and
+# the SAME module for every mode. The back end then writes the object:
+#
+#   control  llc -O0 -global-isel=0 -fast-isel=0 (the reference)
+#   hybrid   hod, with that llc as its fallback (HOD_CENSUS=1)
+#   strict   hod --strict (HOD_CENSUS=1): a refusal fails the compile
+#
+# all with -relocation-model=pic when the module has a "PIC Level" flag.
+# Any other invocation (a link of objects, an assembly file, a probe) goes
+# to clang unchanged but for the target.
+#
+# Environment:
+#   HOD_I686_MODE    control (default), hybrid or strict
+#   HOD_I686_HOD     the hod binary (hybrid, strict)
+#   HOD_I686_BIN     the LLVM 22 bin directory (default /usr/lib/llvm-22/bin)
+#   HOD_I686_LOGDIR  when set: <dir>/time.tsv gets one line per step
+#                    (step ir|llc|hod|link, microseconds, status, source,
+#                    object), <dir>/cov.tsv hod's coverage lines (the
+#                    source first), and a module hod refused with a reason
+#                    not seen before is copied to <dir>/refused/<reason>.ll
+#   HOD_I686_KEEP    1 (default): keep <object>.ll beside each object
+#   HOD_I686_LAUNCH  1: an executable is linked to <out>.i686 and <out>
+#                    becomes a script running it under qemu-i386 (the CPU
+#                    of hod_testutil's I686_EMULATED_CPU, no SSE); 0
+#                    (default, configure): the executable itself
+#   HOD_I686_QEMU    the emulator (default qemu-i386)
+#   HOD_I686_DROP_FLAGS  arguments left out of every command, space separated
+#                    (zlib's -coverage: no i686 libclang_rt.profile.a here)
+set -euo pipefail
+self="$(cd "${BASH_SOURCE[0]%/*}" && pwd)/${BASH_SOURCE[0]##*/}"
+bin="${HOD_I686_BIN:-/usr/lib/llvm-22/bin}"
+llc="$bin/llc"
+if [ "${HOD_I686_AS_LLC:-0}" = 1 ]; then
+    # hybrid's fallback: the control's llc, so a declined module is built
+    # exactly as the control builds it (hod forwards its own options).
+    exec "$llc" -global-isel=0 -fast-isel=0 "$@"
+fi
+case "${0##*/}" in *++) clang="$bin/clang++" ;; *) clang="$bin/clang" ;; esac
+mode="${HOD_I686_MODE:-control}"
+logdir="${HOD_I686_LOGDIR:-}"
+triple=i686-unknown-linux-gnu
+
+args=("--target=i686-linux-gnu")
+srcs=() src_at=()
+out="" links=1 codegen=1 prev=""
+drop=" ${HOD_I686_DROP_FLAGS:-} "
+for a in "$@"; do
+    case "$drop" in *" $a "*) [ -z "$prev" ] && continue ;; esac
+    if [ -n "$prev" ]; then
+        [ "$prev" = -o ] && out="$a"
+        prev=""; args+=("$a"); continue
+    fi
+    case "$a" in
+        -o | -I | -isystem | -iquote | -idirafter | -include | -imacros | -MF | -MT | -MQ | \
+            -Xclang | -Xlinker | -Xpreprocessor | -Xassembler | -mllvm | -D | -U | -L | -l | \
+            -isysroot | --sysroot | -target | -resource-dir | -include-pch | -arch | -F | -z | \
+            -u | -T)
+            prev="$a"; args+=("$a") ;;
+        -x | -) codegen=0; args+=("$a") ;;
+        -c) links=0; args+=("$a") ;;
+        -o?*) out="${a#-o}"; args+=("$a") ;;
+        -fsyntax-only | -E | -M | -MM | -S | -emit-llvm | --precompile | -shared | -r | \
+            -### | -v | --version | -dumpversion | -dumpmachine | -print-*)
+            links=0; codegen=0; args+=("$a") ;;
+        -*) args+=("$a") ;;
+        *.c | *.cc | *.cpp | *.cxx)
+            src_at+=("${#args[@]}"); srcs+=("$a"); args+=("$a") ;;
+        *) args+=("$a") ;;
+    esac
+done
+
+note() { # step, microseconds, status, source, object
+    [ -z "$logdir" ] || printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" >> "$logdir/time.tsv"
+    return 0
+}
+
+if [ "$codegen" = 1 ] && [ "${#srcs[@]}" -gt 0 ]; then
+    irflags=()
+    skip=0 keep=0
+    for i in "${!args[@]}"; do
+        a="${args[$i]}"
+        if [ "$skip" = 1 ]; then skip=0; continue; fi
+        if [ "$keep" = 1 ]; then keep=0; irflags+=("$a"); continue; fi
+        is_src=0
+        for j in "${src_at[@]}"; do [ "$i" = "$j" ] && is_src=1; done
+        [ "$is_src" = 1 ] && continue
+        case "$a" in
+            -o | -Xlinker | -l | -L | -z | -u | -T) skip=1 ;;
+            # an option's value is kept whatever it looks like (-MT x.c.o)
+            -I | -isystem | -iquote | -idirafter | -include | -imacros | -MF | -MT | -MQ | -Xclang | \
+                -Xpreprocessor | -Xassembler | -mllvm | -D | -U | -isysroot | --sysroot | -target | \
+                -resource-dir | -include-pch | -arch | -F)
+                keep=1; irflags+=("$a") ;;
+            -c | -l* | -L* | -Wl,* | -static | -pie | -no-pie | -rdynamic | *.o | *.a | *.so) ;;
+            *) irflags+=("$a") ;;
+        esac
+    done
+    n=0
+    for s in "${srcs[@]}"; do
+        base="${s##*/}"; base="${base%.*}"
+        if [ "$links" = 0 ] && [ -n "$out" ] && [ "${#srcs[@]}" = 1 ]; then
+            obj="$out"
+        elif [ "$links" = 0 ]; then
+            obj="$base.o"
+        else
+            obj="$PWD/hod-i686-$$-$n-$base.o"
+        fi
+        ll="$obj.ll"
+        case "$obj" in /*) oabs="$obj" ;; *) oabs="$PWD/$obj" ;; esac
+        t0="${EPOCHREALTIME/./}"
+        set +e
+        "$clang" "${irflags[@]}" -Xclang -disable-llvm-passes -Wno-unused-command-line-argument \
+            -S -emit-llvm -o "$ll" "$s"
+        st=$?
+        set -e
+        t1="${EPOCHREALTIME/./}"
+        note ir "$((t1 - t0))" "$st" "$s" "$oabs"
+        [ "$st" = 0 ] || exit "$st"
+        be=(-O0 -filetype=obj "-mtriple=$triple")
+        grep -q '"PIC Level"' "$ll" && be+=(-relocation-model=pic)
+        cov=""
+        [ -z "$logdir" ] || cov="$(mktemp "$logdir/cov-XXXXXX")"
+        set +e
+        case "$mode" in
+            control)
+                "$llc" "${be[@]}" -global-isel=0 -fast-isel=0 "$ll" -o "$obj"
+                st=$?; step=llc ;;
+            hybrid)
+                HOD_CENSUS=1 HOD_I686_AS_LLC=1 HOD_COVERAGE_LOG="$cov" \
+                    "${HOD_I686_HOD:?set HOD_I686_HOD}" "${be[@]}" "--fallback=$self" "$ll" -o "$obj"
+                st=$?; step=hod ;;
+            strict)
+                HOD_CENSUS=1 HOD_COVERAGE_LOG="$cov" \
+                    "${HOD_I686_HOD:?set HOD_I686_HOD}" "${be[@]}" --strict "$ll" -o "$obj"
+                st=$?; step=hod ;;
+            *) echo "i686-cc: HOD_I686_MODE must be control, hybrid or strict" >&2; exit 2 ;;
+        esac
+        set -e
+        t2="${EPOCHREALTIME/./}"
+        note "$step" "$((t2 - t1))" "$st" "$s" "$oabs"
+        if [ -n "$cov" ]; then
+            if [ -s "$cov" ]; then
+                sed "s|^|$s\t|" "$cov" >> "$logdir/cov.tsv"
+                # One saved module per refusal reason not seen before.
+                mkdir -p "$logdir/refused"
+                awk -F'\t' '$1 != "hod" { r = ($11 != "" && $11 != "-") ? $11 : $2; n = split(r, a, ","); for (i = 1; i <= n; i++) print a[i] }' "$cov" |
+                    sort -u | while read -r r; do
+                        f="$logdir/refused/$(printf '%s' "$r" | tr -c 'A-Za-z0-9_.:-' '_').ll"
+                        [ -e "$f" ] || { cp "$ll" "$f"; printf '%s\t%s\n' "$r" "$s" >> "$logdir/refused/INDEX.tsv"; }
+                    done
+            fi
+            rm -f "$cov"
+        fi
+        [ "${HOD_I686_KEEP:-1}" = 1 ] || rm -f "$ll"
+        [ "$st" = 0 ] || exit "$st"
+        args[${src_at[$n]}]="$obj"
+        n=$((n + 1))
+    done
+    [ "$links" = 0 ] && exit 0
+    args+=("-Wno-unused-command-line-argument")
+fi
+
+if [ "$links" = 0 ] || [ -z "$out" ] || [ "$out" = /dev/null ] || [ "${HOD_I686_LAUNCH:-0}" != 1 ]; then
+    exec "$clang" "${args[@]}"
+fi
+
+# An executable: link it beside <out>, then make <out> the qemu launcher.
+case "$out" in /*) abs="$out" ;; *) abs="$PWD/$out" ;; esac
+qemu="${HOD_I686_QEMU:-qemu-i386}"
+case "$abs$qemu" in *"'"*) echo "i686-cc: a quote in $abs or $qemu" >&2; exit 2 ;; esac
+real="$abs.i686"
+for i in "${!args[@]}"; do
+    if [ "${args[$i]}" = "-o" ]; then
+        args[$((i + 1))]="$real"
+    elif [ "${args[$i]}" = "-o$out" ]; then
+        args[i]="-o$real"
+    fi
+done
+rm -f "$abs"
+t0="${EPOCHREALTIME/./}"
+set +e
+"$clang" "${args[@]}"
+st=$?
+set -e
+t1="${EPOCHREALTIME/./}"
+note link "$((t1 - t0))" "$st" "-" "$real"
+[ "$st" = 0 ] || exit "$st"
+printf '#!/bin/sh\nexec %s -cpu pentium2,-mmx -L /usr/i686-linux-gnu -R 0x40000000 -0 "$0" %s "$@"\n' \
+    "'$qemu'" "'$real'" > "$abs"
+chmod +x "$abs"

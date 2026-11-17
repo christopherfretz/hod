@@ -677,6 +677,24 @@ hod emits none (a terminate landing pad left behind by a folded
   `invoke` at that line in the IR, with lldb's source caret moving with
   it; nothing else in the transcript may differ. Matching `llc` would
   mean modelling its register allocator.
+- `return-row` (sessions, i686 only, WP-352): on i386 hod's return
+  address is the release of the call's outgoing argument area (`add`
+  or `lea` of `esp`), at the call's location: the stop after `finish`
+  is still in the call statement's row, so it may differ from `llc`'s
+  (which reserves the area in the prologue; its return address is a
+  reload of the PIC base in a line 0 row, which lldb's step-out steps
+  past to the next row, or the next statement) in line as well as
+  column, and gdb may print `0x? in` on one side only. Permitted when
+  hod's program has, at hod's stop position, a `call` whose return
+  address is in a row of that same position, read from hod's linked
+  program (`spec/harness.md` "Permitted differences of sessions"). A
+  later stop that differs because of it (a `next` from the call's line
+  instead of the next statement's) is not permitted.
+- `entry-row` (lldb sessions, i686 only, WP-352): `breakpoint set
+  --name F` stops at F's first `prologue_end` row; when `llc` builds F
+  without a frame that row is at F's first byte and lldb names it `F`,
+  hod's after its prologue, `F + ?`. Permitted when the position is F's
+  first `prologue_end` row in both programs.
 - Columns of a line `llc` and hod both have (`cargo xtask debug columns`,
   `spec/harness.md` "debug", "Columns") are compared but do not fail the
   run: `llc`'s instruction selection folds instructions into others (a
@@ -716,8 +734,8 @@ set of (line, column) positions 666 before, 732 after of 981; positions
 only `llc` has 777 before, 320 after. With key instructions it decides
 statements (§5.9): the compare and the branch are separate atoms.
 
-The **row location** of an instruction is its location, except for two
-whose code has none, so that it stays in the row before it (a line-0
+The **row location** of an instruction is its location, except for
+those whose code has none, so that it stays in the row before it (a line-0
 row when it is the first code of its block, §5.3):
 
 - `unreachable`: `llc` writes no code for it; hod's trap is no statement
@@ -727,7 +745,15 @@ row when it is the first code of its block, §5.3):
   the first member of a struct): its value is its base's, so its code is
   a copy or reload of the base or the materialization of a frame or
   symbol address, which `llc` folds into the user or emits without a
-  location (frame-index materializations, register-allocator reloads).
+  location (frame-index materializations, register-allocator reloads);
+- on i386 only (WP-352), a `ptradd` whose base is a slot of the guarded
+  block (§5.6.24 of `spec/codegen.md`, reached through its pointer slot,
+  `spec/codegen-x86.md` §19.2) and whose indices are all constants: its
+  code (the reload of the pointer, the `lea`) is `llc`'s frame-index
+  materialization, which `llc` folds into the user. With a row of its
+  own the first row of the line was the `getelementptr`'s column
+  (`stack_protector.c` 42:14 against `llc`'s 42:44, an lldb step stop).
+  The 64-bit targets fold that address into its use and are unchanged.
 
 Nothing here changes code: the `.text` of the corpus's and the `-g`
 set's modules is byte-identical before and after (WP-097). Making a

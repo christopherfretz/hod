@@ -881,6 +881,14 @@ that only i686 is ever named):
 
 | test | condition | class |
 |---|---|---|
+| `tests/ir/coro/byaddr-param-g-19.ll` | i686 | lp64-abi |
+| `tests/ir/coro/byaddr-param-g-22.ll` | i686 | lp64-abi |
+| `tests/ir/coro/kiln-byaddr-param-g-19.ll` | i686 | lp64-abi |
+| `tests/ir/coro/kiln-byaddr-param-g-22.ll` | i686 | lp64-abi |
+| `tests/ir/coro/kiln-transfer-ssp-19.ll` | i686 | lp64-abi |
+| `tests/ir/coro/kiln-transfer-ssp-22.ll` | i686 | lp64-abi |
+| `tests/ir/coro/protected-ramp-19.ll` | i686 | lp64-abi |
+| `tests/ir/coro/protected-ramp-22.ll` | i686 | lp64-abi |
 | `tests/ir/coro/await-bool-19.ll` | i686 | lp64-abi |
 | `tests/ir/coro/await-bool-22.ll` | i686 | lp64-abi |
 | `tests/ir/coro/deep-transfer-19.ll` | i686 | lp64-abi |
@@ -2056,7 +2064,7 @@ the same `Expectations` back. Files need not be in this order.
 cargo xtask corpus capture [--target <arch>] [--source kiln|gcc-torture|all]
                            [--llvm <major>] [--out <dir>] [--kiln <kiln++>]
                            [--kiln-repo <dir>] [--torture <dir>] [--limit <N>]
-                           [-j <N>] [--force] [--retry-skipped]
+                           [-j <N>] [--force] [--retry-skipped] [--route llc|hod]
 cargo xtask corpus verify  [--target <arch>] [-j <N>] [--hod <binary>] [--strict]
                            [--linker <name>]... [--manifest-only] [--keep] [-v]
                            [<corpus dir>]
@@ -2116,6 +2124,7 @@ everything that can be captured has been; `wild` is optional, as for
 | `-j <N>`, `--jobs <N>` | Tests captured at once, and `irdiff`'s jobs in admission. Default 3, at most 16. |
 | `--force` | Capture again what is already in the corpus. |
 | `--retry-skipped` | Capture again what the last capture skipped. |
+| `--route <llc\|hod>` | kiln's backend route the capture keeps (default `llc`); `hod`: "The hod route". |
 
 The default is every source with every installed LLVM major and no
 limit: on the reference machine that is 6250 entries in 191 MiB, made in
@@ -2200,6 +2209,26 @@ writes it as text with the group's `llvm-dis` (`llvm-dis-<N>`, found as
 failing `llvm-dis` is `llvm-dis-fails`; without `llvm-dis` the test is
 skipped with its `opt-first-*` reason. `-flto` is still `opt-first-lto`:
 kiln gives `llc` nothing.
+
+So a coroutine module of the default capture is what `opt`'s coroutine
+passes made of it, split: hod's own lowering of unsplit coroutines
+(`spec/codegen.md` §7.6), which kiln's hod route exercises, is not in it
+(WP-350).
+
+**The hod route** (`--route hod`, WP-350). kiln++ also gets
+`-fkiln-backend=hod`, and `KILN_HOD` names a second script of the work
+directory (xtask `corpus/kiln.rs`, `capture_hod_script`): it saves its
+arguments without the leading `--strict` and its standard input as the
+`llc` script does, with an empty file `hod` beside them, then runs the
+group's `opt -passes=default<O0>` on the module and the real `llc` with
+the oracle's selector on the result, which is how irdiff's oracle builds
+an `input: pre-opt` test ("Pre-opt input, dialects and oracle skips").
+The module kept is byte for byte what kiln gives hod on its own route,
+before `opt` (coroutines unsplit, `always_inline` callees not inlined);
+the entry is `input: pre-opt`, with `; delivered: pre-opt` (the manifest's
+`delivered` the same). A module kiln did not offer to hod (its fallback
+gave it to `llc`) skips the test as `hod-route-declined`. The groups are
+those of the `llc` route; such a capture goes to a directory of its own.
 
 **Several translation units.** A test with `module:` or `unit:` lines in
 its header, or `two-step`, is built in separate steps as kiln's own
@@ -4175,8 +4204,9 @@ linkers are GNU ld, lld and mold: wild and mortar do not link the
 lane's dynamic PIE programs (`hod_testutil::linkers::EXCEPTIONS` case
 `elf-i386`; a note, and an error when asked for by `--linker`). kiln++
 refuses `--target=i686-*`: its units are SKIP, with a note. A unit hod
-declines with `debug:split-dwarf-i386` or `debug:dwarf-4-i386`
-(`sessions::KEPT_OFF_I686`) is SKIP with the detail `kept off on i686:
+declines with `debug:split-dwarf-i386`, `debug:dwarf-4-i386` or
+`x86:probe-stack` (`sessions::KEPT_OFF_I686`; the last is the i386
+refusal of `"probe-stack"="inline-asm"`, which x86-64 lowers, WP-352) is SKIP with the detail `kept off on i686:
 <name>`, and the summary counts them (`debug: of the SKIPs, kept off on
 i686: ...`); any other refusal is a FAIL, as on every target. `debug
 verify --target i686` is refused (no i686 corpus). The full gate has no
@@ -4226,7 +4256,51 @@ number of lines, and every differing pair of lines is in a stop whose
 `rax` keeps the call's location where `llc` coalesced it, WP-136) being
 that of a `call` or `invoke` at that line in the IR, or the source caret
 line (`^`) after such a line
-(`spec/dwarf.md` §5.7 `return-column`). A `pre-opt: checks` test's
+(`spec/dwarf.md` §5.7 `return-column`).
+
+On `--target i686` three more classes are checked against the linked
+programs' line tables (`debug::rows`, WP-352; `llvm-dwarfdump
+--debug-line`, `llvm-nm -S`, `llvm-objdump -d` of hod's program, and of
+`llc`'s for `entry-row`; `llvm-nm --defined-only` of both for
+`local-label`). A **return row** of a program is a position
+(line, column) at which it has a `call` whose row and whose return
+address's row (the row covering the next instruction's address) are at
+that same position.
+
+- `permitted: return-row` (`spec/dwarf.md` §5.7 `return-row`): the
+  transcripts have the same number of lines and every differing pair is
+  in a stop after `finish`. lldb (`rows::lldb_only_return_rows`): the
+  stop's `stop reason` is `step out`; its `frame #0:` lines are equal
+  but for line and column, hod's position is one of hod's return rows,
+  and the other differing lines are those up to the next `(lldb) `
+  prompt (the source listing). gdb (`rows::gdb_only_return_rows`): the
+  k-th stop line of `llc`'s transcript (`[Breakpoint N, ][0x? in ]F
+  (args) at file:LINE`, not a backtrace line) is the k-th stopping
+  command's of the script (`run`, `continue`, `step`, `next`, `finish`,
+  `until` and their short forms) and that command is `finish`; the two
+  stop lines are equal but for `0x? in ` and the line, hod's line is
+  the line of one of hod's return rows, and the next pair are the two
+  lines' source lines.
+- `permitted: entry-row` (lldb, `rows::lldb_entry_rows`): a pair of
+  `Breakpoint N: where = prog`F[ + ?] at file:L:C, ...` lines equal
+  but for ` + ?`, where (L, C) is F's entry row (its first
+  `prologue_end` row) in BOTH programs; every other differing pair is
+  then permitted by `return-column` or `return-row`, or there is none.
+- `permitted: local-label` (gdb and lldb, `rows::only_local_labels`,
+  checked first): the transcripts have the same number of lines and
+  every differing pair is `llc`'s line equal to hod's once each
+  ` <NAME>` or ` <NAME+?>` is removed from it whose NAME begins with
+  `.L`, is a LOCAL symbol of `llc`'s linked program (`llvm-nm
+  --defined-only`, a lower-case type letter) and is no symbol of hod's.
+  The cause (witness, WP-352): `llc`'s i386 object defines a local
+  `.L.str` for each `R_386_GOTOFF` into a merged-string section, hod's
+  relocates against the section symbol; mold keeps local `.L` symbols
+  in the program's `.symtab`, GNU ld and lld drop them (the same `llc`
+  object linked by lld or GNU ld prints no `<.L.str>`), so gdb names the
+  string's address only in `llc`'s mold-linked program.
+
+Only the three i686 classes are checked against the programs; the
+64-bit lanes do not apply them. A `pre-opt: checks` test's
 sessions are judged by its checks (above). Nothing else is permitted.
 
 ### Linker exceptions

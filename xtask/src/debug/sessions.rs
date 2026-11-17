@@ -14,6 +14,7 @@ use super::cross;
 use super::directives::{self, DebugTest, Lang, Objects};
 use super::lines::{self, LineTools, LinesReport};
 use super::permitted::{self, IrFacts};
+use super::rows;
 use super::transcript::{self, Debugger, Ended};
 use super::xlink;
 use crate::fuzz::case::{self, OTHER_SELECTORS, SELECTOR_SPLIT, SelectorRows, SelectorSplit};
@@ -990,6 +991,40 @@ impl Run<'_> {
                     xlink::witness(entry.case, p, witness_tools?).ok()
                 };
                 let theirs_witnessed = if broken.is_some() { witness(&reference) } else { None };
+                // WP-352: the i686 classes checked against the programs'
+                // line tables (`super::rows`); `llc`'s program is read
+                // once, when a rule needs it.
+                let i686_tools = if self.target_name() == "i686" {
+                    self.line_tools.cloned().or_else(find_line_tools)
+                } else {
+                    None
+                };
+                let llc_rows: std::cell::OnceCell<Option<rows::ProgramRows>> =
+                    std::cell::OnceCell::new();
+                let i686_rule: std::cell::Cell<Option<&'static str>> = std::cell::Cell::new(None);
+                let i686_rows = |masked: &str,
+                                 ours: &Path,
+                                 theirs: &str,
+                                 commands: &[String]|
+                 -> Option<&'static str> {
+                    let tools = i686_tools.as_ref()?;
+                    let hod = rows::ProgramRows::read(ours, tools).ok()?;
+                    if debugger.is_gdb() {
+                        return rows::gdb_only_return_rows(masked, theirs, commands, &hod)
+                            .then_some("return-row");
+                    }
+                    if rows::lldb_only_return_rows(masked, theirs, &hod) {
+                        return Some("return-row");
+                    }
+                    let llc = llc_rows
+                        .get_or_init(|| rows::ProgramRows::read(&reference, tools).ok())
+                        .as_ref()?;
+                    rows::lldb_entry_rows(masked, theirs, &hod, llc, |m, t| {
+                        permitted::only_return_columns(m, t, &facts)
+                            || rows::lldb_only_return_rows(m, t, &hod)
+                    })
+                    .then_some("entry-row")
+                };
                 for (variant, ours) in &programs {
                     done.sessions += 1;
                     let (outcome, detail) = match session(ours) {
@@ -1018,6 +1053,21 @@ impl Run<'_> {
                                         ) =>
                                 {
                                     (Outcome::Pass, "permitted: return-column".to_owned())
+                                }
+                                // WP-352, i686: `return-row`, `entry-row`.
+                                Some(_)
+                                    if {
+                                        i686_rule.set(i686_rows(
+                                            &masked,
+                                            ours,
+                                            &theirs_text,
+                                            &script.commands,
+                                        ));
+                                        i686_rule.get().is_some()
+                                    } =>
+                                {
+                                    let rule = i686_rule.get().unwrap_or_default();
+                                    (Outcome::Pass, format!("permitted: {rule}"))
                                 }
                                 // `spec/dwarf.md` §6.7 `value-range` (WP-162).
                                 Some(_) if permitted::only_value_ranges(&masked, &theirs_text) => {

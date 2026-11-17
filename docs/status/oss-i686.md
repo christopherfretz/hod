@@ -21,4 +21,21 @@ Trees and logs: `$CARGO_TARGET_DIR/oss-i686/<project>/<mode>/`
 (`logs/`: build, test, `tests.tsv`, `time.tsv`, `cov.tsv`,
 `refused/<reason>.ll`).
 
-RESULTS
+## WP-351 first run (2026-11-17, hod from `8b8844f4`)
+
+| project | control | hybrid (by hod / refused) | strict (by hod / refused) | tests control / hybrid / strict |
+|---|---:|---:|---:|---|
+| bzip2 1.0.8 | 9 units | 9 / 0 | 9 / 0 | 32 / 32 / 32 of 32 |
+| zlib 1.3.2 | 37 units | 37 / 0 | 37 / 0 | 11 / 11 / 11 of 11 |
+| zstd 1.5.7 | 118 units | 118 / 0 | 118 / 0 | 3 / 3 / 3 of 3 |
+
+- Suspected miscompiles (a test passing in control, failing with hod):
+  none.
+- Census at the lane's flags: empty. zlib's `-coverage` (dropped by the
+  lane: no i686 profile runtime here) gives one refusal,
+  `named-metadata:llvm.gcov`.
+- Back-end time, same modules, one at a time (fastest of three), llc
+  against hod: bzip2 256 / 191 ms, zlib 836 / 889 ms (small modules,
+  within noise), zstd 4991 / 2084 ms.
+
+Details: `spec/landed/harness/WP-351.md`.

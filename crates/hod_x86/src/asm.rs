@@ -726,8 +726,8 @@ fn emit<'a>(
             && !op.indirect
             && matches!(plan.places[i], Some(Place::Mem(_)))
             && copied_to_memory(cx, plan.tys[i]);
-        let size = if copy { cx.types().alloc_size_of(plan.tys[i]).max(8) } else { 8 };
-        let slot = cx.alloc_slot(size, 4)?;
+        let slot_bytes = if copy { cx.types().alloc_size_of(plan.tys[i]).max(8) } else { 8 };
+        let slot = cx.alloc_slot(slot_bytes, 4)?;
         match class {
             Class::Gpr => {
                 let r = cx.use_reg(value)?;

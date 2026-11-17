@@ -249,7 +249,7 @@ pub fn stubs(cx: &mut FnCx<'_, X86>) -> CgResult<()> {
         put(cx, mc::mov_mi(Size::D, mode, 1));
         put(cx, mc::mov_mr(Size::D, word, ECX));
         // WP-324, §19.2: this activation's guard and guarded block.
-        crate::ssp::stub_enter(cx, &local)?;
+        crate::ssp::stub_enter(cx, local)?;
         // WP-108 (debug hook): the stub's `prologue_end`.
         cx.coro_stub_ready();
         mov_imm(cx, Reg::Rax, which as u32);

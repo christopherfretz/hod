@@ -19,7 +19,10 @@
 //!   `!coro.outside.frame`): there in the ramp (mode word 0), at address
 //!   0 in a resumed activation, whose stack slot the ramp never wrote, so
 //!   that a debugger says it cannot read it instead of showing another
-//!   activation's bytes.
+//!   activation's bytes;
+//! - a parameter passed by address and copied into the heap (a `byval`
+//!   argument, or AArch64's pointer to the caller's copy): the caller's
+//!   copy in the ramp, the heap copy in a resumed activation (WP-342).
 
 use crate::leb::{write_sleb, write_uleb};
 
@@ -65,6 +68,22 @@ pub enum CoroAt {
         stack: i64,
         /// The frame-base offset of the mode word.
         mode: i64,
+    },
+    /// A parameter passed by address (a `byval` argument, or the address
+    /// of the caller's copy) and copied into the heap frame (WP-342): the
+    /// caller's copy in the ramp (mode word 0), the heap copy at offset
+    /// `heap` in a resumed activation, as `CoroSplit`'s ramp and clones
+    /// describe it.
+    Passed {
+        /// The machine-stack place of the incoming copy, or of its
+        /// address when `deref`.
+        stack: i64,
+        /// `stack` holds the incoming copy's address.
+        deref: bool,
+        /// The frame-base offset of the mode word.
+        mode: i64,
+        /// The heap offset of the frame copy.
+        heap: u32,
     },
 }
 
@@ -121,6 +140,25 @@ pub(crate) fn location(out: &mut Vec<u8>, place: CoroPlace) {
             branch(out, DW_OP_SKIP, 1);
             out.push(DW_OP_LIT0);
         }
+        CoroAt::Passed { stack, deref, mode, heap } => {
+            // mode, deref, bra RESUMED, fbreg stack, [deref,] skip END,
+            // RESUMED: word, deref, plus_uconst heap, END:
+            let mut in_ramp = Vec::new();
+            fbreg(&mut in_ramp, stack);
+            if deref {
+                in_ramp.push(DW_OP_DEREF);
+            }
+            let mut in_heap = Vec::new();
+            fbreg(&mut in_heap, place.word);
+            in_heap.push(DW_OP_DEREF);
+            plus(&mut in_heap, heap);
+            fbreg(out, mode);
+            out.push(DW_OP_DEREF);
+            branch(out, DW_OP_BRA, in_ramp.len() + 3);
+            out.extend_from_slice(&in_ramp);
+            branch(out, DW_OP_SKIP, in_heap.len());
+            out.extend_from_slice(&in_heap);
+        }
     }
     if place.indirect {
         out.push(DW_OP_DEREF);
@@ -166,5 +204,27 @@ mod tests {
         let place =
             CoroPlace { word: 16, at: CoroAt::Ramp { stack: 28, mode: 24 }, indirect: false };
         assert_eq!(bytes(place), [0x91, 0x18, 0x06, 0x28, 5, 0, 0x91, 0x1c, 0x2f, 1, 0, 0x30]);
+    }
+
+    #[test]
+    fn a_passed_parameter_is_the_incoming_copy_in_the_ramp_and_the_heap_after() {
+        let at = CoroAt::Passed { stack: -40, deref: true, mode: 24, heap: 0x18 };
+        let place = CoroPlace { word: 16, at, indirect: false };
+        assert_eq!(
+            bytes(place),
+            [
+                0x91, 0x18, 0x06, // mode, deref
+                0x28, 6, 0, // bra over the ramp's place and the skip
+                0x91, 0x58, 0x06, // fbreg -40, deref
+                0x2f, 5, 0, // skip over the heap's place
+                0x91, 0x10, 0x06, 0x23, 0x18, // word, deref, plus_uconst 0x18
+            ]
+        );
+        let at = CoroAt::Passed { stack: 16, deref: false, mode: 24, heap: 0 };
+        let place = CoroPlace { word: 8, at, indirect: false };
+        assert_eq!(
+            bytes(place),
+            [0x91, 0x18, 0x06, 0x28, 5, 0, 0x91, 0x10, 0x2f, 3, 0, 0x91, 8, 0x06]
+        );
     }
 }

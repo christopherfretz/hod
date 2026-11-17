@@ -36,6 +36,39 @@ for arg in \"$@\"; do printf '%s\\n' \"$arg\"; done > \"$call/args\" || exit 97\
 cat > \"$call/stdin\" || exit 97\n\
 exec \"${HOD_FALLBACK_LLC:?}\" \"$@\" -global-isel=0 -fast-isel=0 < \"$call/stdin\"\n";
 
+/// The script that stands where hod stands on kiln's hod route
+/// (`-fkiln-backend=hod`, kiln's `KILN_HOD`) for `capture --route hod`:
+/// like [`CAPTURE_SCRIPT`] it saves the arguments (without the leading
+/// `--strict`) and the standard input into `llc-<pid>`, with an empty file
+/// `hod` that tells it from an `llc` call of the route's fallback; then it
+/// builds the module as irdiff's oracle builds an `input: pre-opt` test
+/// (`spec/harness.md` "Pre-opt input, dialects and oracle skips"): `opt`
+/// `-passes=default<O0>`, then the real `llc` with the oracle's selector.
+/// `opt` and `llc` are absolute paths without a `'`.
+pub fn capture_hod_script(opt: &Path, llc: &Path) -> Result<String, String> {
+    let quoted = |path: &Path| {
+        let text = path.to_str().filter(|text| path.is_absolute() && !text.contains('\''));
+        text.map(|text| format!("'{text}'"))
+            .ok_or_else(|| format!("'{}' cannot be written in the hod script", path.display()))
+    };
+    Ok(format!(
+        "#!/bin/sh\n\
+         # Written by `cargo xtask corpus capture --route hod` (spec/harness.md \"corpus\").\n\
+         # Saves what kiln gives hod, then builds it as irdiff's oracle builds a\n\
+         # pre-opt test: opt -passes=default<O0>, then llc with the selector.\n\
+         call=\"${{HOD_CORPUS_CAPTURE:?}}/llc-$$\"\n\
+         mkdir \"$call\" || exit 97\n\
+         : > \"$call/hod\" || exit 97\n\
+         if [ \"$1\" = --strict ]; then shift; fi\n\
+         for arg in \"$@\"; do printf '%s\\n' \"$arg\"; done > \"$call/args\" || exit 97\n\
+         cat > \"$call/stdin\" || exit 97\n\
+         {} '-passes=default<O0>' \"$call/stdin\" -o \"$call/post-opt.bc\" || exit 97\n\
+         exec {} \"$@\" -global-isel=0 -fast-isel=0 < \"$call/post-opt.bc\"\n",
+        quoted(opt)?,
+        quoted(llc)?
+    ))
+}
+
 /// The source language of a test, from its extension.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lang {
@@ -661,6 +694,9 @@ pub fn plan_for(
 pub struct BackendCall {
     pub args: Vec<String>,
     pub stdin: Vec<u8>,
+    /// Saved by [`capture_hod_script`] (kiln's hod route), not by
+    /// [`CAPTURE_SCRIPT`] (`llc`, the route's fallback).
+    pub hod: bool,
 }
 
 /// Reads the `llc-*` directories the capture script left in `dir`.
@@ -678,7 +714,8 @@ pub fn backend_calls(dir: &Path) -> Result<Vec<BackendCall>, String> {
     for call in names {
         let args = fs::read_to_string(call.join("args")).map_err(failed)?;
         let stdin = fs::read(call.join("stdin")).map_err(failed)?;
-        calls.push(BackendCall { args: args.lines().map(str::to_owned).collect(), stdin });
+        let hod = call.join("hod").exists();
+        calls.push(BackendCall { args: args.lines().map(str::to_owned).collect(), stdin, hod });
     }
     Ok(calls)
 }
@@ -882,6 +919,48 @@ mod tests {
         // The script itself is plain `sh` with the two variables only.
         assert!(CAPTURE_SCRIPT.starts_with("#!/bin/sh\n"));
         assert_eq!(CAPTURE_SCRIPT.matches("HOD_").count(), 2);
+    }
+
+    // `--route hod`: the script kiln++ runs as hod saves kiln's module
+    // (without `--strict`) and builds it with `opt` and then `llc`.
+    #[test]
+    fn hod_script_saves_and_builds() {
+        let scratch = Scratch::new("corpus-capture-hod-script");
+        // `opt <passes> <input> -o <output>`: passes the module through.
+        let opt = scratch.write_script(
+            "real-opt",
+            "[ \"$1\" = '-passes=default<O0>' ] && [ \"$3\" = -o ] && cp \"$2\" \"$4\"",
+        );
+        let llc = scratch.write_script(
+            "real-llc",
+            "printf 'llc:'; for a in \"$@\"; do printf ' [%s]' \"$a\"; done; echo; cat; exit 5",
+        );
+        let text = capture_hod_script(&opt, &llc).unwrap();
+        let script = scratch.join("capture-hod");
+        hod_testutil::write_script(&script, text.strip_prefix("#!/bin/sh\n").unwrap());
+        let captures = scratch.join("captures");
+        fs::create_dir(&captures).unwrap();
+        let mut command = std::process::Command::new(&script);
+        command
+            .args(["--strict", "-O0", "-o", "/tmp/a b.o", "-"])
+            .env("HOD_CORPUS_CAPTURE", &captures);
+        let module = b"define void @f() presplitcoroutine {\n  ret void\n}\n";
+        let outcome = hod_testutil::run_with(&mut command, module, hod_testutil::DEFAULT_TIMEOUT);
+        assert_eq!(outcome.status.and_then(|status| status.code()), Some(5));
+        let mut want =
+            b"llc: [-O0] [-o] [/tmp/a b.o] [-] [-global-isel=0] [-fast-isel=0]\n".to_vec();
+        want.extend_from_slice(module);
+        assert_eq!(outcome.stdout, want);
+        let calls = backend_calls(&captures).unwrap();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].hod);
+        assert_eq!(calls[0].args, ["-O0", "-o", "/tmp/a b.o", "-"]);
+        assert_eq!(calls[0].stdin, module);
+        // `opt` ran irdiff's pre-opt pipeline on the saved module.
+        assert!(text.contains("'-passes=default<O0>' \"$call/stdin\""));
+        // A path the script cannot quote is refused.
+        assert!(capture_hod_script(Path::new("rel/opt"), &llc).is_err());
+        assert!(capture_hod_script(Path::new("/a'b/opt"), &llc).is_err());
     }
 
     // "The kiln source": the header of a test.
@@ -1164,6 +1243,7 @@ mod tests {
         let call = |object: &str| BackendCall {
             args: strings(&["-O0", "-o", object, "-"]),
             stdin: object.as_bytes().to_vec(),
+            hod: false,
         };
         let ordered = in_link_order(vec![
             call("/tmp/kiln-7/10-t.o"),

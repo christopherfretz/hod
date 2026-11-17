@@ -41,14 +41,19 @@ pub struct Recipe {
     /// The arguments of the producer's `llc` run that the entry's
     /// `llc-args` directive repeats.
     pub llc_args: Vec<String>,
+    /// The modules are kiln's input to hod, before `opt`: the entry is
+    /// `input: pre-opt`.
+    pub pre_opt: bool,
 }
 
-/// How a module reached `llc`: as text, or as bitcode that the capture
-/// wrote as text with `llvm-dis`.
+/// How a module reached its backend: as text, or as bitcode that the
+/// capture wrote as text with `llvm-dis`, both given to `llc`; or as the
+/// text kiln gives hod on its own route (`--route hod`), before `opt`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Delivered {
     Text,
     Bitcode,
+    PreOpt,
 }
 
 impl Delivered {
@@ -56,6 +61,7 @@ impl Delivered {
         match self {
             Self::Text => "text",
             Self::Bitcode => "bitcode",
+            Self::PreOpt => "pre-opt",
         }
     }
 }
@@ -126,6 +132,7 @@ pub fn expectations(recipe: &Recipe, run: &Output) -> Result<Expectations, Unfit
         libs: recipe.libs.clone(),
         pie: recipe.pie,
         llc_args: recipe.llc_args.clone(),
+        pre_opt: recipe.pre_opt,
         covers: Some(recipe.covers.clone()),
         ..Expectations::default()
     };
@@ -237,6 +244,7 @@ mod tests {
             args: Vec::new(),
             stdin: Vec::new(),
             llc_args: Vec::new(),
+            pre_opt: false,
         }
     }
 

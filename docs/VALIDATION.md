@@ -70,6 +70,20 @@ status, required target, required LLVM version). Sources:
 Because the corpus is IR, it does not depend on kiln's state, and tests the
 backend from the first milestone, before any C++ feature is complete.
 
+The capture keeps what kiln gives `llc`. For a coroutine translation unit
+kiln runs `opt`'s coroutine passes first, so those entries (`; delivered:
+bitcode`) hold coroutines already split, and hod's own lowering of
+unsplit ones (`spec/codegen.md` §7.6, what kiln's hod route sends) is not
+in the default capture. `corpus capture --route hod` (WP-350,
+`spec/harness.md` "The hod route") keeps the module kiln gives hod,
+before `opt`, as an `input: pre-opt` entry; it is captured into a
+directory of its own from a suite of coroutine tests (kiln's coroutine
+`run` tests and programs written for it: generators, symmetric transfer,
+exceptions, coroutine lambdas, by-address parameters, each plain, `-g`,
+stack-protected and static) and folded into both corpora. The seeds
+`tests/ir/coro/*-19.ll` / `*-22.ll` (`input: pre-opt`) carry a share of
+it on every run, `-g` and `sspstrong` among them.
+
 ### Moving kiln's pin
 
 kiln is pinned in three places that move together: the `kiln` submodule

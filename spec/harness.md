@@ -845,6 +845,14 @@ that only i686 is ever named):
 
 | test | condition | class |
 |---|---|---|
+| `tests/ir/coro/byaddr-param-g-19.ll` | i686 | lp64-abi |
+| `tests/ir/coro/byaddr-param-g-22.ll` | i686 | lp64-abi |
+| `tests/ir/coro/kiln-byaddr-param-g-19.ll` | i686 | lp64-abi |
+| `tests/ir/coro/kiln-byaddr-param-g-22.ll` | i686 | lp64-abi |
+| `tests/ir/coro/kiln-transfer-ssp-19.ll` | i686 | lp64-abi |
+| `tests/ir/coro/kiln-transfer-ssp-22.ll` | i686 | lp64-abi |
+| `tests/ir/coro/protected-ramp-19.ll` | i686 | lp64-abi |
+| `tests/ir/coro/protected-ramp-22.ll` | i686 | lp64-abi |
 | `tests/ir/coro/await-bool-19.ll` | i686 | lp64-abi |
 | `tests/ir/coro/await-bool-22.ll` | i686 | lp64-abi |
 | `tests/ir/coro/deep-transfer-19.ll` | i686 | lp64-abi |
@@ -2020,7 +2028,7 @@ the same `Expectations` back. Files need not be in this order.
 cargo xtask corpus capture [--target <arch>] [--source kiln|gcc-torture|all]
                            [--llvm <major>] [--out <dir>] [--kiln <kiln++>]
                            [--kiln-repo <dir>] [--torture <dir>] [--limit <N>]
-                           [-j <N>] [--force] [--retry-skipped]
+                           [-j <N>] [--force] [--retry-skipped] [--route llc|hod]
 cargo xtask corpus verify  [--target <arch>] [-j <N>] [--hod <binary>] [--strict]
                            [--linker <name>]... [--manifest-only] [--keep] [-v]
                            [<corpus dir>]
@@ -2080,6 +2088,7 @@ everything that can be captured has been; `wild` is optional, as for
 | `-j <N>`, `--jobs <N>` | Tests captured at once, and `irdiff`'s jobs in admission. Default 3, at most 16. |
 | `--force` | Capture again what is already in the corpus. |
 | `--retry-skipped` | Capture again what the last capture skipped. |
+| `--route <llc\|hod>` | kiln's backend route the capture keeps (default `llc`); `hod`: "The hod route". |
 
 The default is every source with every installed LLVM major and no
 limit: on the reference machine that is 6250 entries in 191 MiB, made in
@@ -2164,6 +2173,26 @@ writes it as text with the group's `llvm-dis` (`llvm-dis-<N>`, found as
 failing `llvm-dis` is `llvm-dis-fails`; without `llvm-dis` the test is
 skipped with its `opt-first-*` reason. `-flto` is still `opt-first-lto`:
 kiln gives `llc` nothing.
+
+So a coroutine module of the default capture is what `opt`'s coroutine
+passes made of it, split: hod's own lowering of unsplit coroutines
+(`spec/codegen.md` §7.6), which kiln's hod route exercises, is not in it
+(WP-350).
+
+**The hod route** (`--route hod`, WP-350). kiln++ also gets
+`-fkiln-backend=hod`, and `KILN_HOD` names a second script of the work
+directory (xtask `corpus/kiln.rs`, `capture_hod_script`): it saves its
+arguments without the leading `--strict` and its standard input as the
+`llc` script does, with an empty file `hod` beside them, then runs the
+group's `opt -passes=default<O0>` on the module and the real `llc` with
+the oracle's selector on the result, which is how irdiff's oracle builds
+an `input: pre-opt` test ("Pre-opt input, dialects and oracle skips").
+The module kept is byte for byte what kiln gives hod on its own route,
+before `opt` (coroutines unsplit, `always_inline` callees not inlined);
+the entry is `input: pre-opt`, with `; delivered: pre-opt` (the manifest's
+`delivered` the same). A module kiln did not offer to hod (its fallback
+gave it to `llc`) skips the test as `hod-route-declined`. The groups are
+those of the `llc` route; such a capture goes to a directory of its own.
 
 **Several translation units.** A test with `module:` or `unit:` lines in
 its header, or `two-step`, is built in separate steps as kiln's own

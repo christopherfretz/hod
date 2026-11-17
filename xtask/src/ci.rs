@@ -74,7 +74,7 @@ pub fn cargo_step(args: &[&str]) -> bool {
 
 /// The steps of `cargo xtask ci`, in the order they run (`spec/harness.md`
 /// "ci"): the quick gate's, then [`FULL_ONLY`].
-pub const STEPS: [&str; 13] = [
+pub const STEPS: [&str; 14] = [
     "fmt",
     "scripts",
     "workflows",
@@ -86,6 +86,7 @@ pub const STEPS: [&str; 13] = [
     "bench-x86_64",
     "debug-x86_64",
     "debug-aarch64",
+    "debug-i686",
     "corpus-aarch64",
     "corpus-x86_64",
 ];
@@ -95,11 +96,12 @@ pub const STEPS: [&str; 13] = [
 /// --counts`), L7 (`debug` full tier and `debug verify`) and then L6
 /// (`corpus verify --strict` with the list of expected results) for each
 /// target architecture, from this one host (`docs/VALIDATION.md` "Gates").
-pub const FULL_ONLY: [&str; 6] = [
+pub const FULL_ONLY: [&str; 7] = [
     "bench-aarch64",
     "bench-x86_64",
     "debug-x86_64",
     "debug-aarch64",
+    "debug-i686",
     "corpus-aarch64",
     "corpus-x86_64",
 ];
@@ -107,7 +109,7 @@ pub const FULL_ONLY: [&str; 6] = [
 /// The target architecture a step of [`FULL_ONLY`] is for, by name.
 pub fn step_target(step: &str) -> Option<&'static str> {
     let (_, arch) = step.split_once('-')?;
-    ["aarch64", "x86_64"].into_iter().find(|known| *known == arch)
+    ["aarch64", "x86_64", "i686"].into_iter().find(|known| *known == arch)
 }
 
 /// How a step of the gate ended.
@@ -659,14 +661,15 @@ mod tests {
                 Some("x86_64"),
                 Some("x86_64"),
                 Some("aarch64"),
+                Some("i686"),
                 Some("aarch64"),
                 Some("x86_64")
             ]
         );
         // WP-292: the counts gate first (about two minutes per target).
         assert!(FULL_ONLY.iter().take(2).all(|s| s.starts_with("bench-")));
-        assert!(FULL_ONLY.iter().skip(2).take(2).all(|s| s.starts_with("debug-")));
-        assert!(FULL_ONLY.iter().skip(4).all(|s| s.starts_with("corpus-")));
+        assert!(FULL_ONLY.iter().skip(2).take(3).all(|s| s.starts_with("debug-")));
+        assert!(FULL_ONLY.iter().skip(5).all(|s| s.starts_with("corpus-")));
         // The usage names every step.
         let main = include_str!("main.rs");
         for step in STEPS {

@@ -677,19 +677,25 @@ hod emits none (a terminate landing pad left behind by a folded
   `invoke` at that line in the IR, with lldb's source caret moving with
   it; nothing else in the transcript may differ. Matching `llc` would
   mean modelling its register allocator.
-- `return-row` (sessions, i686 only, WP-352): on i386 hod's return
-  address is the release of the call's outgoing argument area (`add`
-  or `lea` of `esp`), at the call's location: the stop after `finish`
-  is still in the call statement's row, so it may differ from `llc`'s
-  (which reserves the area in the prologue; its return address is a
-  reload of the PIC base in a line 0 row, which lldb's step-out steps
-  past to the next row, or the next statement) in line as well as
-  column, and gdb may print `0x? in` on one side only. Permitted when
-  hod's program has, at hod's stop position, a `call` whose return
-  address is in a row of that same position, read from hod's linked
-  program (`spec/harness.md` "Permitted differences of sessions"). A
-  later stop that differs because of it (a `next` from the call's line
-  instead of the next statement's) is not permitted.
+- `return-line0` (gdb sessions, i686, WP-354): `llc`'s i386 PIC code
+  reloads the PIC base right after each call (its fast register
+  allocator reloads a value live across a call where the block uses it
+  again) in a row of line 0, so gdb's `finish` stops inside that row and
+  prints `0x? in` with the call's line, and a following `next` goes to
+  the next statement. hod reloads nothing (`ebx` is callee-saved): its
+  return address is the next instruction and starts a row, of the
+  call's line or, when nothing of the statement follows the call, of
+  the next statement, exactly as `llc`'s x86-64 code. Permitted, checked
+  against both linked programs (`spec/harness.md` "Permitted
+  differences of sessions"): part 1, the `finish` stop at the return
+  address of a call to the same callee from the same function, `llc`'s
+  row there of line 0 and hod's address starting a row, may differ in
+  `0x? in` and the line; part 2, when the lines differ and the next
+  command is `next` or `step`, `llc`'s report of that command must be
+  hod's `finish` report (and `llc`'s row after the line-0 row hod's
+  row), and hod's report of that one command is not compared. Imitating
+  `llc` would need a look-ahead for a later GOT use and a no-op load
+  after each call.
 - `entry-row` (lldb sessions, i686 only, WP-352): `breakpoint set
   --name F` stops at F's first `prologue_end` row; when `llc` builds F
   without a frame that row is at F's first byte and lldb names it `F`,

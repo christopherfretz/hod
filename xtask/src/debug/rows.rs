@@ -1,14 +1,20 @@
 //! The i686 permitted classes that are checked against the linked
-//! programs' line tables (WP-352; `spec/harness.md` "Permitted
-//! differences of sessions", `spec/dwarf.md` §5.7 `return-row` and
+//! programs' line tables (WP-352, WP-354; `spec/harness.md` "Permitted
+//! differences of sessions", `spec/dwarf.md` §5.7 `return-line0` and
 //! `entry-row`).
 //!
-//! - **return-row**: a stop after `finish` may differ in line and column
-//!   when hod's stop is at a position (line, column) at which hod's
-//!   program has a `call` whose return address is in a row of that same
-//!   position: the stop is then the return address, still in the call
-//!   statement's row (on i386 the instruction there releases the
-//!   outgoing argument area, which `llc` reserves in the prologue).
+//! - **return-line0** (gdb): a stop after `finish` at the return address
+//!   of a call to the same callee from the same function in both
+//!   programs, where `llc`'s row starting at that address is line 0 and
+//!   hod's address starts a row. Part 1: the stop line may differ in
+//!   `0x? in ` and the line, and the source line under it. Part 2, when
+//!   the lines differ and the next stopping command is `step` or `next`:
+//!   `llc`'s first row after the line-0 row has the file and line of
+//!   hod's row at the return address, and `llc`'s report of that command
+//!   is the location hod reported at the `finish`; hod's own report of
+//!   that one command (it is one statement ahead) is not compared. On
+//!   i386 PIC `llc`'s return address is its reload of the PIC base,
+//!   which it gives no location.
 //! - **entry-row**: lldb's breakpoint at `F + ?` of one program against
 //!   one at `F` of the other, at the same
 //!   position, when in both programs that position is F's entry row (its
@@ -22,7 +28,7 @@
 //!   (both resolve to the same string), and mold keeps
 //!   local `.L` symbols that GNU ld and lld drop.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use super::lines::{self, LineTools, Row};
@@ -30,15 +36,53 @@ use super::lines::{self, LineTools, Row};
 /// What the classes read from one linked program.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProgramRows {
-    /// `(line, column)` of each `call` whose row and whose return
-    /// address's row have that same position (line other than 0).
-    pub return_rows: BTreeSet<(u32, u32)>,
+    /// Each direct `call`'s return site, in address order.
+    pub return_sites: Vec<ReturnSite>,
     /// Each function's entry row: the position of its first
     /// `prologue_end` row.
     pub entries: BTreeMap<String, (u32, u32)>,
     /// Every defined symbol's name (`nm --defined-only`), the local ones
     /// (a lower-case type letter) flagged.
     pub symbols: BTreeMap<String, bool>,
+}
+
+/// A direct `call` of a program, read at its return address (the next
+/// instruction's).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReturnSite {
+    /// The function holding the call.
+    pub caller: String,
+    /// The called function (`call 0x? <callee>`).
+    pub callee: String,
+    /// The line of the row covering the call instruction.
+    pub call_line: Option<u32>,
+    /// `(file, line)` of the row starting at the return address (the
+    /// last one there); `None` when the address is inside a row.
+    pub starts: Option<(String, u32)>,
+    /// `(file, line)` of the first row after the one starting at the
+    /// return address, at a higher address.
+    pub after: Option<(String, u32)>,
+}
+
+/// The direct calls of `llvm-objdump -d`: the call instruction's address
+/// and its callee, from `call… 0x? <callee>` (not `<f+0x…>`).
+pub fn parse_call_targets(text: &str) -> BTreeMap<u64, String> {
+    let mut out = BTreeMap::new();
+    for line in text.lines() {
+        let Some((address, rest)) = line.split_once(':') else { continue };
+        let Ok(address) = u64::from_str_radix(address.trim(), 16) else { continue };
+        let mut words = rest.split_whitespace();
+        if !words.next().is_some_and(|m| m.starts_with("call")) {
+            continue;
+        }
+        let Some(target) = rest.split_once('<').and_then(|(_, t)| t.split_once('>')) else {
+            continue;
+        };
+        if !target.0.contains('+') {
+            out.insert(address, target.0.to_owned());
+        }
+    }
+    out
 }
 
 /// The names `nm --defined-only` lists, each with whether it is local
@@ -73,16 +117,19 @@ impl ProgramRows {
             &lines::parse_line_tables(&table),
             &lines::parse_symbols(&symbols),
             &lines::parse_instructions(&code),
+            &parse_call_targets(&code),
         );
         out.symbols = parse_defined(&defined);
         Ok(out)
     }
 
-    /// The facts of a program's rows, symbols and instructions.
+    /// The facts of a program's rows, symbols, instructions and direct
+    /// calls (`parse_call_targets`).
     pub fn of(
         rows: &[Row],
         symbols: &[(u64, u64, String)],
         code: &BTreeMap<u64, String>,
+        calls: &BTreeMap<u64, String>,
     ) -> ProgramRows {
         let mut sorted: Vec<&Row> = rows.iter().collect();
         sorted.sort_by_key(|r| r.address);
@@ -94,16 +141,33 @@ impl ProgramRows {
             (!row.end_sequence).then_some((row.line, row.column))
         };
         let mut out = ProgramRows::default();
+        let function = |address: u64| {
+            symbols
+                .iter()
+                .find(|(start, end, _)| address >= *start && address < *end)
+                .map(|(_, _, name)| name.clone())
+        };
         for ((&address, mnemonic), (&next, _)) in code.iter().zip(code.iter().skip(1)) {
-            if !mnemonic.starts_with("call") {
+            let (true, Some(called), Some(holder)) =
+                (mnemonic.starts_with("call"), calls.get(&address), function(address))
+            else {
                 continue;
-            }
-            if let (Some(call), Some(back)) = (covering(address), covering(next))
-                && call == back
-                && call.0 != 0
-            {
-                out.return_rows.insert(call);
-            }
+            };
+            // The last row starting at the return address, and the first
+            // row at a higher address.
+            let at = sorted.partition_point(|r| r.address <= next);
+            let start = at
+                .checked_sub(1)
+                .and_then(|i| sorted.get(i))
+                .filter(|r| r.address == next && !r.end_sequence);
+            let after = start.and(sorted.get(at)).filter(|r| !r.end_sequence);
+            out.return_sites.push(ReturnSite {
+                caller: holder,
+                callee: called.clone(),
+                call_line: covering(address).map(|(line, _)| line),
+                starts: start.map(|r| (r.file.clone(), r.line)),
+                after: after.map(|r| (r.file.clone(), r.line)),
+            });
         }
         for (start, end, name) in symbols {
             let entry = sorted.iter().find(|r| {
@@ -116,18 +180,23 @@ impl ProgramRows {
         out
     }
 
-    /// The lines of [`ProgramRows::return_rows`].
-    fn return_lines(&self) -> BTreeSet<u32> {
-        self.return_rows.iter().map(|&(line, _)| line).collect()
+    /// The return sites of the calls from `caller` to `callee`, in
+    /// address order.
+    fn sites(&self, from: &str, to: &str) -> Vec<&ReturnSite> {
+        self.return_sites.iter().filter(|s| s.caller == from && s.callee == to).collect()
     }
+}
+
+/// A gdb command's verb.
+fn verb(command: &str) -> &str {
+    command.split_whitespace().next().unwrap_or("")
 }
 
 /// The commands of a gdb script after which gdb prints where it
 /// stopped.
 fn gdb_stops(command: &str) -> bool {
-    let verb = command.split_whitespace().next().unwrap_or("");
     matches!(
-        verb,
+        verb(command),
         "run" | "r" | "continue" | "c" | "step" | "s" | "next" | "n" | "finish" | "fin" | "until"
     )
 }
@@ -147,99 +216,143 @@ fn gdb_stop(line: &str) -> Option<(&str, u32)> {
     Some((before.strip_prefix("0x? in ").unwrap_or(before), number))
 }
 
-/// The `return-row` rule for gdb (module doc): two masked gdb
-/// transcripts of as many lines whose differing pairs are each the stop
-/// line of a stop made by a `finish` of `commands` (the k-th stop line
-/// of `llc`'s transcript is the k-th stopping command's), with the same
-/// text but for `0x? in ` and the line, hod's line being one of
-/// `hod`'s return rows, and the source line after it.
-pub fn gdb_only_return_rows(
+/// A gdb source line `N<tab>text`: N.
+fn gdb_source(line: &str) -> Option<u32> {
+    line.split_once('\t')?.0.parse().ok()
+}
+
+/// The function and the file of a stop line's text before its line
+/// (`[Breakpoint N, ]F (args) at FILE`).
+fn function_and_file(text: &str) -> Option<(&str, &str)> {
+    let text = match text.split_once(", ") {
+        Some((head, rest)) if head.starts_with("Breakpoint ") => rest,
+        _ => text,
+    };
+    let function = text.split([' ', '(']).next().filter(|f| !f.is_empty())?;
+    Some((function, text.rsplit_once(") at ")?.1))
+}
+
+/// The same source file: equal paths, or equal names (the two programs'
+/// line tables may spell the directory differently).
+fn same_file(a: &str, b: &str) -> bool {
+    a == b || Path::new(a).file_name() == Path::new(b).file_name()
+}
+
+/// The `return-line0` rule for gdb (module doc; `spec/harness.md`
+/// "Permitted differences of sessions"): `Some(two)` when two masked gdb
+/// transcripts differ only as it permits, `two` telling whether part 2
+/// (one step ahead) was applied; `None` otherwise.
+///
+/// Stops are counted on `llc`'s side by their source lines (each stop
+/// prints one), so a script with `list` is refused. At the first line of
+/// a differing pair both lines are stop lines of a `finish` (the k-th
+/// stopping command, k the stops so far), equal but for `0x? in ` and
+/// the line; the callee is the function of `llc`'s last stop line before
+/// it, the caller and file are the stop's. Among the calls from caller to
+/// callee (the same number in both programs, paired in address order)
+/// one pair has: `llc`'s row starting at the return address of line 0,
+/// its call in a row of `llc`'s reported line; hod's return address
+/// starting a row of hod's reported line, in that file. The next pair of
+/// lines are the two reported lines' source lines. Part 2, when the
+/// lines differ and the next stopping command is `step` or `next`:
+/// `llc`'s first row after its line-0 row has hod's row's file and line,
+/// and `llc`'s report of that command (an optional stop line, then a
+/// source line, after the lines both print for the `finish`) equals
+/// hod's `finish` report (stop line without `0x? in `, source line);
+/// hod's report of it (an optional stop line, then a source line) is
+/// skipped. Everything else is compared line by line.
+#[expect(
+    clippy::many_single_char_names,
+    reason = "two transcripts walked in step: lines a, b, x, y at i, j; sites h, l"
+)]
+pub fn gdb_return_line0(
     ours: &str,
     theirs: &str,
     commands: &[String],
     hod: &ProgramRows,
-) -> bool {
+    llc: &ProgramRows,
+) -> Option<bool> {
     let (a, b): (Vec<&str>, Vec<&str>) = (ours.lines().collect(), theirs.lines().collect());
-    if a.len() != b.len() || a == b {
-        return false;
+    if a == b || commands.iter().any(|c| matches!(verb(c), "list" | "l")) {
+        return None;
     }
-    let stops: Vec<&String> = commands.iter().filter(|c| gdb_stops(c)).collect();
-    let lines = hod.return_lines();
-    let mut stop = 0;
-    let mut source: Option<(u32, u32)> = None;
-    for (x, y) in a.iter().zip(&b) {
-        let theirs_stop = gdb_stop(y);
-        if theirs_stop.is_some() {
-            stop += 1;
-        }
-        let expected_source = source.take();
-        if x == y {
-            continue;
-        }
-        if let Some((la, lb)) = expected_source
-            && x.starts_with(&format!("{la}\t"))
-            && y.starts_with(&format!("{lb}\t"))
+    let stops: Vec<&str> = commands.iter().filter(|c| gdb_stops(c)).map(|c| verb(c)).collect();
+    let (mut i, mut j, mut done) = (0, 0, 0);
+    let mut function: Option<&str> = None;
+    let (mut used, mut ahead) = (false, false);
+    // Part 2 pending: hod's `finish` report (stop text, line, source line).
+    let mut pending: Option<(&str, u32, &str)> = None;
+    loop {
+        let (x, y) = match (a.get(i), b.get(j)) {
+            (None, None) => break,
+            (Some(x), Some(y)) => (*x, *y),
+            _ => return None,
+        };
+        if let Some((text, line, source)) = pending
+            && (gdb_stop(y).is_some() || gdb_source(y).is_some())
         {
+            pending = None;
+            // `llc`'s report of the stepping command: hod's `finish` one.
+            let mut theirs_end = j;
+            if let Some((t, l)) = gdb_stop(y) {
+                if (t, l) != (text, line) {
+                    return None;
+                }
+                function = function_and_file(t).map(|(f, _)| f);
+                theirs_end += 1;
+            }
+            if b.get(theirs_end) != Some(&source) {
+                return None;
+            }
+            // hod's report of it, one statement further: not compared.
+            let mut ours_end = i + usize::from(gdb_stop(x).is_some());
+            a.get(ours_end).and_then(|l| gdb_source(l))?;
+            ours_end += 1;
+            (i, j, done, ahead) = (ours_end, theirs_end + 1, done + 1, true);
             continue;
-        }
-        let (Some((pa, la)), Some((pb, lb))) = (gdb_stop(x), theirs_stop) else { return false };
-        let finish = stops
-            .get(stop - 1)
-            .is_some_and(|c| matches!(c.split_whitespace().next(), Some("finish" | "fin")));
-        if pa != pb || !finish || !lines.contains(&la) {
-            return false;
-        }
-        source = Some((la, lb));
-    }
-    true
-}
-
-/// The `return-row` rule for lldb (module doc): two masked lldb
-/// transcripts of as many lines whose differing pairs are each in a stop
-/// whose `stop reason` is `step out`, from its `frame #0:` line (the
-/// same text but for line and column, hod's position one of `hod`'s
-/// return rows) to the next prompt (the source listing around it).
-pub fn lldb_only_return_rows(ours: &str, theirs: &str, hod: &ProgramRows) -> bool {
-    let (a, b): (Vec<&str>, Vec<&str>) = (ours.lines().collect(), theirs.lines().collect());
-    if a.len() != b.len() || a == b {
-        return false;
-    }
-    let mut step_out = false;
-    let mut moved = false;
-    for (x, y) in a.iter().zip(&b) {
-        if y.contains("stop reason = ") {
-            step_out = y.contains("stop reason = step out");
-            moved = false;
-        }
-        if y.starts_with("(lldb) ") {
-            moved = false;
         }
         if x == y {
-            continue;
-        }
-        if !step_out {
-            return false;
-        }
-        if moved {
-            continue;
-        }
-        // `frame_position`'s text ends with `:LINE`; the file before it
-        // is the same, the line may differ.
-        let file =
-            |text: &str, line: u32| text.strip_suffix(&format!(":{line}")).map(str::to_owned);
-        match (super::permitted::frame_position(x), super::permitted::frame_position(y)) {
-            (Some((pa, la, ca)), Some((pb, lb, _)))
-                if file(pa, la).is_some()
-                    && file(pa, la) == file(pb, lb)
-                    && y.trim_start().starts_with("frame #0:")
-                    && hod.return_rows.contains(&(la, ca)) =>
-            {
-                moved = true;
+            if let Some((t, _)) = gdb_stop(y) {
+                function = function_and_file(t).map(|(f, _)| f);
             }
-            _ => return false,
+            done += usize::from(gdb_source(y).is_some());
+            (i, j) = (i + 1, j + 1);
+            continue;
+        }
+        // Part 1.
+        let (Some((pa, la)), Some((pb, lb))) = (gdb_stop(x), gdb_stop(y)) else { return None };
+        if pa != pb || pending.is_some() || !matches!(stops.get(done), Some(&("finish" | "fin"))) {
+            return None;
+        }
+        let (Some((holder, file)), Some(called)) = (function_and_file(pb), function) else {
+            return None;
+        };
+        let (ours_sites, theirs_sites) = (hod.sites(holder, called), llc.sites(holder, called));
+        if ours_sites.len() != theirs_sites.len() {
+            return None;
+        }
+        let (h, l) = ours_sites.iter().zip(&theirs_sites).find(|(h, l)| {
+            l.starts.as_ref().is_some_and(|(_, line)| *line == 0)
+                && l.call_line == Some(lb)
+                && h.starts.as_ref().is_some_and(|(f, line)| *line == la && same_file(f, file))
+        })?;
+        let (Some(sx), Some(sy)) = (a.get(i + 1), b.get(j + 1)) else { return None };
+        if gdb_source(sx) != Some(la) || gdb_source(sy) != Some(lb) || (la == lb && sx != sy) {
+            return None;
+        }
+        (used, function) = (true, Some(holder));
+        (i, j, done) = (i + 2, j + 2, done + 1);
+        if la != lb && matches!(stops.get(done), Some(&("next" | "n" | "step" | "s"))) {
+            let (Some((hf, hl)), Some((lf, ll))) = (h.starts.as_ref(), l.after.as_ref()) else {
+                return None;
+            };
+            if hl != ll || !same_file(hf, lf) {
+                return None;
+            }
+            pending = Some((pa, la, *sx));
         }
     }
-    true
+    (used && pending.is_none()).then_some(ahead)
 }
 
 /// lldb's breakpoint line (`Breakpoint N: where = prog`, a backtick,
@@ -257,7 +370,7 @@ fn breakpoint_where(line: &str) -> Option<(String, &str, u32, u32)> {
     Some((line.replacen(" + ?", "", 1), function, number, column))
 }
 
-/// The `entry-row` rule (module doc), alone or after `return-row`: two
+/// The `entry-row` rule (module doc), alone or after `return-column`: two
 /// masked lldb transcripts of as many lines whose differing pairs are
 /// either breakpoint lines equal but for ` + ?` after the function,
 /// at a position that is the function's entry row in both programs, or
@@ -355,69 +468,163 @@ mod tests {
     }
 
     fn program() -> ProgramRows {
-        // f: entry row 3:5 at 0x13; a call at 0x20 in row 5:3 whose
-        // return address 0x25 is still in it; a call at 0x30 in row 6:3
-        // whose return address starts the row 7:1.
+        // f: entry row 3:5 at 0x13; a call of g at 0x20 in row 5:3 whose
+        // return address 0x25 is inside it; a call of g at 0x30 in row
+        // 6:3 whose return address starts the row 0:3, then 7:1; an
+        // indirect call at 0x37.
         let mut rows = vec![
             row(0x10, 2, 0, false),
             row(0x13, 3, 5, true),
             row(0x1c, 5, 3, false),
             row(0x2a, 6, 3, false),
-            row(0x35, 7, 1, false),
+            row(0x35, 0, 3, false),
+            row(0x37, 7, 1, false),
             row(0x40, 7, 1, false),
         ];
         rows.last_mut().unwrap().end_sequence = true;
         let symbols = vec![(0x10, 0x40, "f".to_owned())];
-        let code: BTreeMap<u64, String> =
-            [(0x10, "pushl"), (0x20, "calll"), (0x25, "addl"), (0x30, "calll"), (0x35, "movl")]
-                .into_iter()
-                .map(|(a, m)| (a, m.to_owned()))
-                .collect();
-        ProgramRows::of(&rows, &symbols, &code)
+        let text = "  20:  calll 0x50 <g>\n  30:  calll 0x50 <g>\n  37:  calll *%eax\n";
+        let code: BTreeMap<u64, String> = [
+            (0x10, "pushl"),
+            (0x20, "calll"),
+            (0x25, "addl"),
+            (0x30, "calll"),
+            (0x35, "movl"),
+            (0x37, "calll"),
+            (0x39, "retl"),
+        ]
+        .into_iter()
+        .map(|(a, m)| (a, m.to_owned()))
+        .collect();
+        ProgramRows::of(&rows, &symbols, &code, &parse_call_targets(text))
     }
 
     #[test]
-    fn reads_return_rows_and_entries() {
+    fn reads_return_sites_and_entries() {
         let p = program();
-        assert_eq!(p.return_rows, BTreeSet::from([(5, 3)]));
+        let site = |line, starts: Option<u32>, after: Option<u32>| ReturnSite {
+            caller: "f".to_owned(),
+            callee: "g".to_owned(),
+            call_line: Some(line),
+            starts: starts.map(|l| ("/t/a.c".to_owned(), l)),
+            after: after.map(|l| ("/t/a.c".to_owned(), l)),
+        };
+        assert_eq!(p.return_sites, vec![site(5, None, None), site(6, Some(0), Some(7))]);
         assert_eq!(p.entries.get("f"), Some(&(3, 5)));
     }
 
-    #[test]
-    fn gdb_return_rows() {
-        let p = program();
-        let commands: Vec<String> =
-            ["break g", "run", "finish", "continue"].iter().map(|s| (*s).to_owned()).collect();
-        let llc = "Breakpoint 1, g () at a.c:9\n9\tx;\nf () at a.c:6\n6\t  y();\nend";
-        let hod = "Breakpoint 1, g () at a.c:9\n9\tx;\n0x? in f () at a.c:5\n5\t  g();\nend";
-        assert!(gdb_only_return_rows(hod, llc, &commands, &p));
-        // Not a row of a call's return address.
-        let other = "Breakpoint 1, g () at a.c:9\n9\tx;\n0x? in f () at a.c:6\n6\t  y();\nend";
-        assert!(!gdb_only_return_rows(
-            other,
-            "Breakpoint 1, g () at a.c:9\n9\tx;\nf () at a.c:7\n7\tz;\nend",
-            &commands,
-            &p
-        ));
-        // Not after `finish`.
-        let steps: Vec<String> =
-            ["break g", "run", "next", "continue"].iter().map(|s| (*s).to_owned()).collect();
-        assert!(!gdb_only_return_rows(hod, llc, &steps, &p));
+    /// One return site of `main` calling `callee`.
+    fn site(callee: &str, call: u32, starts: Option<u32>, after: Option<u32>) -> ReturnSite {
+        ReturnSite {
+            caller: "main".to_owned(),
+            callee: callee.to_owned(),
+            call_line: Some(call),
+            starts: starts.map(|l| ("/src/a.c".to_owned(), l)),
+            after: after.map(|l| ("/src/a.c".to_owned(), l)),
+        }
+    }
+
+    /// `key_call.c`'s two programs on i386 PIC: `llc`'s return addresses
+    /// in line-0 rows, hod's starting rows (after `p` on line 16 a row
+    /// of 16, after `c` the next statement's row).
+    fn key_call() -> (ProgramRows, ProgramRows) {
+        let llc = ProgramRows {
+            return_sites: vec![
+                site("p", 16, Some(0), Some(16)),
+                site("c", 16, Some(0), Some(17)),
+                site("p", 17, Some(0), Some(17)),
+                site("c", 17, Some(0), Some(18)),
+            ],
+            ..ProgramRows::default()
+        };
+        let hod = ProgramRows {
+            return_sites: vec![
+                site("p", 16, Some(16), None),
+                site("c", 16, Some(17), None),
+                site("p", 17, None, None),
+                site("c", 17, Some(18), None),
+            ],
+            ..ProgramRows::default()
+        };
+        (hod, llc)
+    }
+
+    fn script(stepping: &str) -> Vec<String> {
+        ["break a.c:16", "run", "step", "finish", "step", "finish", stepping, "continue"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect()
+    }
+
+    const LLC: &str = "Breakpoint 1, main () at a.c:16\n16\t  c(p(x));\n\
+        p (x=4) at a.c:10\n10\tint p(int x) { return x * 3; }\n\
+        0x? in main () at a.c:16\n16\t  c(p(x));\nValue returned is $1 = 12\n\
+        c (v=12) at a.c:12\n12\tvoid c(int v) { seen = v; }\n\
+        0x? in main () at a.c:16\n16\t  c(p(x));\n17\t  c(p(x) + 1);\n\
+        [Inferior 1 (process ?) exited normally]";
+
+    /// `LLC` with hod's stops: the first `finish` without `0x? in `, the
+    /// second at line 17, and the `next` at line 18.
+    fn hod_session() -> String {
+        LLC.replacen("0x? in main () at a.c:16", "main () at a.c:16", 1).replace(
+            "0x? in main () at a.c:16\n16\t  c(p(x));\n17\t  c(p(x) + 1);",
+            "main () at a.c:17\n17\t  c(p(x) + 1);\n18\t  return 0;",
+        )
     }
 
     #[test]
-    fn lldb_return_rows() {
-        let p = program();
-        let head = "(lldb) finish\nProcess ? stopped\n* thread #1, stop reason = step out\n";
-        let hod = format!("{head}    frame #0: 0x? prog`f at a.c:5:3\n-> 5 g();\n(lldb) next\nx");
-        let llc = format!("{head}    frame #0: 0x? prog`f at a.c:6:3\n-> 6 y();\n(lldb) next\nx");
-        assert!(lldb_only_return_rows(&hod, &llc, &p));
-        let off = format!("{head}    frame #0: 0x? prog`f at a.c:6:3\n-> 6 y();\n(lldb) next\nx");
-        let llc7 = format!("{head}    frame #0: 0x? prog`f at a.c:7:1\n-> 7 z;\n(lldb) next\nx");
-        assert!(!lldb_only_return_rows(&off, &llc7, &p));
-        // A difference after the next prompt is not permitted.
-        let late = format!("{head}    frame #0: 0x? prog`f at a.c:5:3\n-> 5 g();\n(lldb) next\ny");
-        assert!(!lldb_only_return_rows(&late, &llc, &p));
+    fn return_line0_the_stop_alone() {
+        let (hod, llc) = key_call();
+        // Only the first `finish` differs, in `0x? in `: part 1.
+        let ours = LLC.replacen("0x? in main () at a.c:16", "main () at a.c:16", 1);
+        assert_eq!(gdb_return_line0(&ours, LLC, &script("next"), &hod, &llc), Some(false));
+        // The second `finish` a statement ahead, then `continue`: part 1.
+        let theirs = LLC.replace("17\t  c(p(x) + 1);\n", "");
+        let ours = hod_session().replace("18\t  return 0;\n", "");
+        assert_eq!(gdb_return_line0(&ours, &theirs, &script("continue"), &hod, &llc), Some(false));
+        assert_eq!(gdb_return_line0(LLC, LLC, &script("next"), &hod, &llc), None);
+    }
+
+    #[test]
+    fn return_line0_one_step_ahead() {
+        let (hod, llc) = key_call();
+        let ours = hod_session();
+        assert_eq!(gdb_return_line0(&ours, LLC, &script("next"), &hod, &llc), Some(true));
+        assert_eq!(gdb_return_line0(&ours, LLC, &script("step"), &hod, &llc), Some(true));
+    }
+
+    #[test]
+    fn return_line0_refused() {
+        let (hod, llc) = key_call();
+        let ours = hod_session();
+        let commands = script("next");
+        let with = |f: &dyn Fn(&mut ProgramRows, &mut ProgramRows)| {
+            let (mut h, mut l) = key_call();
+            f(&mut h, &mut l);
+            gdb_return_line0(&ours, LLC, &commands, &h, &l)
+        };
+        // `llc`'s row at the return address is not line 0.
+        assert_eq!(with(&|_, l| l.return_sites[1].starts = Some(("/src/a.c".into(), 16))), None);
+        // hod's return address is inside a row.
+        assert_eq!(with(&|h, _| h.return_sites[1].starts = None), None);
+        // Another callee in hod's program.
+        assert_eq!(with(&|h, _| h.return_sites[1].callee = "d".to_owned()), None);
+        // `llc`'s next row is another line than hod's row.
+        assert_eq!(with(&|_, l| l.return_sites[1].after = Some(("/src/a.c".into(), 19))), None);
+        // `llc`'s report of the `next` is not where hod's `finish` was.
+        let theirs = LLC.replace("17\t  c(p(x) + 1);", "17\t  c(p(x) + 2);");
+        assert_eq!(gdb_return_line0(&ours, &theirs, &commands, &hod, &llc), None);
+        // A later command still differs.
+        let late = ours.replace("exited normally", "exited with code 01");
+        assert_eq!(gdb_return_line0(&late, LLC, &commands, &hod, &llc), None);
+        // The command after the `finish` is not `next` or `step`.
+        assert_eq!(gdb_return_line0(&ours, LLC, &script("continue"), &hod, &llc), None);
+        // Not after a `finish`.
+        let steps: Vec<String> = script("next")
+            .into_iter()
+            .map(|c| if c == "finish" { "next".to_owned() } else { c })
+            .collect();
+        assert_eq!(gdb_return_line0(&ours, LLC, &steps, &hod, &llc), None);
     }
 
     #[test]

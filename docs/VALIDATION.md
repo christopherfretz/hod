@@ -561,7 +561,9 @@ it, in `cargo test` (the ABI grids of `hod_a64` and `hod_x64`).
 steps with the whole corpus for L2 and every L4 seed with both oracles
 and in hybrid mode, then, cheapest first, L7 and L6 for each target
 architecture: `debug-x86_64`, `debug-aarch64` (every debugger test,
-then `debug verify` of the target's corpus), `corpus-aarch64`,
+then `debug verify` of the target's corpus), `debug-i686` (every
+debugger test for i686; no i686 corpus, so no `debug verify`),
+`corpus-aarch64`,
 `corpus-x86_64` (`corpus verify --strict` of the target's corpus with
 the list of expected results, `docs/status/corpus-expected.tsv`: a
 refusal or an undefined entry not on the list fails, and so does a row

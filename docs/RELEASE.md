@@ -236,9 +236,10 @@ the set, so:
 The budget (seeds per target, profile, mode and LLVM major) is
 `docs/VALIDATION.md` "Random programs (L10)", "The budget" (WP-241); the
 one command, with the frozen hod and fresh seeds:
-`cargo xtask fuzz --budget --seed 200001 -j 4 --hod <frozen hod> --out <dir>`
+`cargo xtask fuzz --budget --seed <first seed> -j 4 --hod <frozen hod> --out <dir>`
 (62 slices, 26,250 seeds; the first run took 4 h 44 min, `fuzz.md`; it
-is resumable). Its harness is of `64b45de6` (WP-249) or later, which sets
+is resumable). Each candidate takes seeds no earlier run used: 1.0.0
+started at 200001, 1.1.0 at 300001, the next candidate starts at 400001. Its harness is of `64b45de6` (WP-249) or later, which sets
 apart the three classes of the first run on their own evidence
 (`ub-float-cast`, `selector-split`, `llc19-int128-last-register`). **Page:**
 `docs/status/fuzz.md`, rewritten for `C`. **Pass:** the budget's run on
@@ -255,7 +256,7 @@ does not depend on them) and its numbers are of runs at `C`.
 | `support.md` | `HOD_BLESS=1 cargo test -q -p hod_ir --test classify_support_doc`; the test fails while the page differs from `crates/hod_ir/src/classify/matrix.rs`, so a gated commit has it current |
 | `corpus.md`, `corpus-x64-census.md` | `cargo xtask corpus census` and `cargo xtask corpus census --target x86_64` (generated; they change only when the corpus is captured again, that is, with `K`) |
 | `corpus-x64.md`, `corpus-x64-differences.tsv` | hand-written record of the x86-64 capture (WP-139) and its later recaptures; rewrite when the corpus is recaptured |
-| `reasons.md`, `reasons-x64.md` | `cargo xtask corpus reasons --hod <frozen hod> -j 3 --report docs/status/reasons.md`, and with `--target x86_64 --report docs/status/reasons-x64.md` after 3.2 (the x86-64 page reads the hybrid `corpus verify --target x86_64` results); the generated pages name no commit, so `release.md` records their hod, kiln and date (regenerated for `02fe2d02` by WP-257) |
+| `reasons.md`, `reasons-x64.md` | `cargo xtask corpus reasons --llc --hod <frozen hod> -j 3 --report docs/status/reasons.md`, and with `--target x86_64 --report docs/status/reasons-x64.md` after 3.2 (the x86-64 page reads the hybrid `corpus verify --target x86_64` results); `--llc` also times `llc` on each module, without it the pages lose their timing tables. The generated pages name no commit, so `release.md` records their hod, kiln and date (regenerated for `02fe2d02` by WP-257, for `a68a0d5d` with release 1.1.0). Their times are of processes started from the build volume: the timing that counts is `perf.md` |
 | `debug.md`, `debug-x64.md` | section 3 |
 | `libcxx-baseline.md`, `libcxx-baseline-x64.md` | 4.1, 4.2 (only when `K` or the suite moved) |
 | `libcxx-hod.md`, `libcxx-hod-x64.md`, `libcxx-hod-debug.md`, `libcxx-hod-debug-x64.md` | 4.3 to 4.7 |
@@ -263,7 +264,7 @@ does not depend on them) and its numbers are of runs at `C`.
 | `oss-x64.md` | after section 5.2: `source scripts/env.sh && B=$(dirname "$CARGO_TARGET_DIR") && python3 -I scripts/oss/oss-report.py --target x86_64 status --root $B/oss --root $B/oss2 --root $B/oss3 --root $B/oss5 --root $B/oss6 --root $H/x86_64 --provenance scripts/oss/provenance-x86_64.tsv --candidate C [--carried-from P] --out docs/status/oss-x64.md` |
 | `oss-llvm.md` | section 5.4, by hand from the LLVM lane's records |
 | `fuzz.md` | section 6 |
-| `perf.md` | not a 1.0 condition: stays as last measured (`docs/VALIDATION.md` "Release candidate") |
+| `perf.md` | not a condition of a release (`docs/VALIDATION.md` "Release candidate"); when it is rerun for a candidate (1.1.0: WP-357), hod, its inputs and its outputs are on the machine's own disk, not on the build volume, whose cost of starting a process is larger than hod's time on a small module |
 | `release.md` | the checklist: each row's state moved to `met at C` with its page |
 
 ## 8. The version (only on the owner's word)

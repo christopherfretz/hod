@@ -1138,7 +1138,7 @@ impl<L: Layering> Verifier<'_, L> {
             if debug.location(loc).is_none() {
                 return fail("is not a location");
             }
-            let owner = debug.function_of(loc);
+            let owner = debug.owner_of(loc);
             if owner.is_none() {
                 return fail("does not lead to a subprogram");
             }

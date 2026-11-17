@@ -818,7 +818,10 @@ impl<L: Layering> Module<L> {
         self.debug.verify()?;
         let invalid = |message: String| err(IrErrorKind::InvalidDebugInfo, message);
         for raw in 0..self.debug.node_count() as u32 {
-            if let DiNode::Constant(node) = self.debug.node(DiId::new(raw))
+            // The kind first (one byte read): only constants are decoded.
+            let id = DiId::new(raw);
+            if self.debug.kind(id) == DiKind::Constant
+                && let DiNode::Constant(node) = self.debug.node(id)
                 && node.value.index() >= self.consts.len()
             {
                 return invalid(format!(

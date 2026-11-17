@@ -7069,8 +7069,12 @@ nothing else is left out for it.
   named `.mason.meta` with no group and not in `llvm.used` (kiln's
   container, H-1) when the module has one whose alignment is at least 8
   and whose size is a multiple of 8 (MT-10: it then ends with a whole
-  unit), else a new section of that name after every other (so a section
-  of another shape stays `llc`'s byte for byte, and hod never pads it).
+  unit), else a new section of that name: the last section module
+  emission makes (after the module's code and data, the unwind tables
+  and the debug sections), so before the sections the object writer
+  adds at the end (`.note.GNU-stack`, the relocation sections,
+  `.symtab`, `.strtab`). A section of another shape thus stays `llc`'s
+  byte for byte, and hod never pads it.
   A container that has a relocation section or is a member of a COMDAT
   group is of another shape too (mortar drops such a container whole):
   hod leaves it untouched and its unit goes into the new section.

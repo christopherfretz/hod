@@ -276,6 +276,42 @@ kiln's lanes). Its rules:
    decision; `a_runner_with_flags_runs_what_the_host_cannot`),
    `abi::zmm::zmm_machines_require_their_features`,
    `abi::zmm::generator_makes_every_signature`.
+9. **No core dumps.** A program a test crashes on purpose (a stack
+   protector's abort, `abort`, a trap) ends with its signal's own
+   status and nothing else happens, as in the development container
+   (`core_pattern` a plain file name, `RLIMIT_CORE` 0). A hosted
+   runner's kernel has `core_pattern =
+   |/usr/lib/systemd/systemd-coredump ...`, and core(5): "The
+   RLIMIT_CORE limit is not enforced for core dumps that are piped to a
+   program", so `--ulimit core=0` on the job's container does not stop
+   the dump there; the limit of 1 byte, the kernel's exception
+   ("oss-run", "No core dumps"), stops it for a native program only: a
+   program under qemu-user is dumped all the same (measured below;
+   qemu-user sets its own soft limit to 0 before it dies of the guest's
+   signal). So the jobs
+   that run such programs (`test <part>`, `irdiff`, and `avx512.yml`'s)
+   start their container with `--ulimit core=0 -v
+   /proc/sys/kernel/core_pattern:/host_core_pattern`, and the hod-ci
+   action writes `core` through that mount (the runner is a virtual
+   machine of one job) and fails the job if the pattern is still a
+   pipe; it prints the pattern and the limits either way. No
+   `--privileged`: Docker's seccomp profile stays, so the debuggers
+   leave ASLR on as in the development container. Measured on the
+   runners (2026-11-17, four processors each; a C program that
+   overflows a protected buffer, under qemu-i386): piped, one run takes
+   240 to 450 ms and sixteen at once 4 to 7 s for the slowest; 300 runs,
+   four at a time as a test binary's threads make them, take 143 s on
+   the AArch64 runner and 498 s on the x86-64 one (limit 1 there), the
+   slowest single run 65 s and a `gcc -c` of a small file beside them up
+   to 78 s, with the runner's load average near 280; twelve at a time took
+   624 s on one runner and ended the other. With limit 1 a native
+   aborting program takes 3 ms and 300 of them 0.7 s. With
+   the plain pattern sixteen qemu-i386 runs at once take 0.1 to 0.2 s
+   and the 300 take 1.9 to 3.4 s at a load under 3. Wave 45's first
+   aborting qemu-i386 programs (`i386_ssp.rs`,
+   `stack_protector_stack_args.ll`) ran into the piped cost on both
+   lanes: their runs and later `clang` calls of the same job timed out
+   at 60 s (hosted run 44027212625).
 
 What runs where, and the tests compiled or run for one host only, is
 `docs/VALIDATION.md` "Hosted CI".

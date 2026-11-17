@@ -79,6 +79,7 @@ pub fn final_size(size: u32) -> CgResult<u32> {
 /// None today.
 pub fn begin(cx: &mut FnCx<'_, X86>) -> CgResult<()> {
     reset_function();
+    crate::cet::entry(cx); // WP-324: `endbr32` before the frame
     put(cx, mc::push_r(EBP));
     cx.cfi(CfiOp::DefCfaOffset(8));
     cx.cfi(CfiOp::Offset { reg: DWARF_EBP, cfa_offset: -8 });
@@ -95,6 +96,8 @@ pub fn begin(cx: &mut FnCx<'_, X86>) -> CgResult<()> {
     // `81 EC imm32`: the immediate is the last four bytes.
     cx.state.frame.frame_imm = cx.offset() + sub.bytes().len() as u32 - 4;
     put(cx, sub);
+    crate::ssp::reserve(cx)?; // WP-324: the low guard, first in the local area
+    crate::ssp::copy_arguments(cx)?; // WP-324: stack arguments below the guard
     // `spec/abi-x86.md` §5.2: a function that writes its result through
     // a hidden pointer finds it in the first stack argument (`agg`);
     // §6.1: an `inreg sret` pointer is kept for the return, before any
@@ -117,6 +120,7 @@ pub fn begin(cx: &mut FnCx<'_, X86>) -> CgResult<()> {
 /// # Errors
 /// `limit:frame-size`; an encoding error of the function.
 pub fn end(cx: &mut FnCx<'_, X86>) -> CgResult<()> {
+    crate::ssp::place(cx)?; // WP-324: the guarded block, last in the local area
     let frame = final_size(cx.frame_size())?;
     let below = 12 + frame;
     let at = cx.state.frame.frame_imm as usize;
@@ -124,6 +128,7 @@ pub fn end(cx: &mut FnCx<'_, X86>) -> CgResult<()> {
         return cx.bug("the prologue is not where it was emitted");
     }
     cx.bind(cx.epilogue())?;
+    crate::ssp::check(cx, false)?; // WP-324: the stack guard, before anything is popped
     // §5.2, §6.1: the `sret` pointer is returned in `eax`; a stack one
     // is popped by `ret $4`.
     let pop = abi::callee_pop(cx.fn_assignment());
@@ -148,6 +153,7 @@ pub fn end(cx: &mut FnCx<'_, X86>) -> CgResult<()> {
         // The exit comes after another exit sequence: the body's rule
         // again; the saved registers' rows never changed.
         cx.cfi(CfiOp::DefCfa { reg: DWARF_EBP, offset: INCOMING_BASE });
+        crate::ssp::check(cx, true)?; // WP-324: `ecx` may hold an argument
         teardown(cx);
         cx.tail_branch_here(index, dwarf);
         match exit.target {
@@ -175,6 +181,7 @@ pub fn end(cx: &mut FnCx<'_, X86>) -> CgResult<()> {
         }
         cx.tail_branch_ends_here(index);
     }
+    crate::ssp::fail(cx)?; // WP-324: the failure call after the exits
     bias_local_sites(cx, -i64::from(below))?;
     cx.set_frame_desc(FrameDesc { frame_size: below, frame_base: DWARF_EBP });
     take_admit_error(cx)

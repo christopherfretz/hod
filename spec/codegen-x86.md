@@ -226,7 +226,7 @@ their values).
 | `x86:eh:landingpad`, `x86:eh:landingpad-clause`, `x86:eh:resume`, `x86:eh:typeid` | a `landingpad` or `resume` of a type other than `{ ptr, i32 }`; a clause that is not a symbol, `null` or an array of them; `llvm.eh.typeid.for` of a non-symbol (§14; `x86:eh` itself removed by WP-314) | — |
 | `debug:dwarf-4-i386` | a DWARF 4 unit (`Dwarf Version` 4 or less) on i386 (`hod_dwarf` `split.rs`, §15; `x86:debug-info` removed by WP-314) | — (needs `dwarf4.rs` at address size 4: the unit header's address size, `.debug_ranges` and `.debug_loc` with 4-byte address pairs, `DW_OP_addr` with a 4-byte operand and `R_386_32`) |
 | `debug:split-dwarf-i386` | split DWARF (`-gsplit-dwarf`) on i386 (`hod_dwarf` `split.rs`, §15) | — (needs `split.rs` at address size 4: the skeleton's and the `.dwo` unit's headers, the object's `.debug_addr` of 4-byte entries, and the `.dwo` output path through the driver) |
-| `x86:cf-protection` | `cf-protection-*` module flags (`hod_cg`'s `.note.gnu.property`) | — |
+| `x86:nocf-check-indirect-call` | an indirect `nocf_check` call in a module with `cf-protection-branch` (needs `notrack`; §19.3; `x86:cf-protection` removed by WP-324) | — |
 | `x86:atomic:no-cx8` | an 8-byte atomic operation on a CPU without `cmpxchg8b` (§12.2) | — |
 | `x86:atomic:libatomic` | an atomic access of another size than 1, 2, 4, 8 bytes or below its natural alignment (§12.2) | — |
 | `x86:atomic:float-op` | `atomicrmw` `fmax`, `fmin` and the other floating operations; `fadd` and `fsub` are lowered since join D (§12.2) | — |
@@ -242,12 +242,11 @@ their values).
 | `x86:varargs` | `va_start` outside a variadic function (§12.1) | — |
 | `x86:varargs:va-arg-type` | `va_arg` of an aggregate, a vector, an integer wider than 64 bits (§12.1) | — |
 | `x86:probe-stack` | a function with `"probe-stack"="inline-asm"` (§12.3) | — |
-| `x86:intrinsic` | any other intrinsic (the integer intrinsics of §4.1 and §8 are lowered; the overflow and small intrinsics of §13, `eh.typeid.for` (§14) and the coroutine handle intrinsics of §18 are lowered; still refused: every intrinsic none of them names, including a coroutine body's) | per family |
+| `x86:intrinsic` | any other intrinsic (the integer intrinsics of §4.1 and §8 are lowered; the overflow and small intrinsics of §13, `eh.typeid.for` (§14) and the coroutine handle intrinsics of §18 and `eh.unwind.init` (§19.4) are lowered; still refused: every intrinsic none of them names, including a coroutine body's) | per family |
 | `x86:coro-promise` | `llvm.coro.promise` whose alignment is not a constant power of two of at most 2^30, or whose direction is not a constant (§18) | — |
 | `coro:target` | a module with a coroutine body (`presplitcoroutine`), at the facade before any body is read (§18, `spec/codegen.md` §7.6) | WP-327 follow-up |
 | `x86:call` | a call with operand bundles, `callbr` | — |
-| `x86:blockaddress`, `x86:indirect-branch` | `blockaddress`, `indirectbr` | — |
-| `x86:stack-protector` | a function with a stack guard | — |
+| `x86:blockaddress` | a `blockaddress` of another function's block in code (§19.1; `x86:indirect-branch` removed by WP-324) | — |
 | `x86:addrspacecast`, `x86:int-cast` | those casts | — |
 | `x86:constant` | a constant expression or other constant reaching a register | — |
 | `x86:funclet` | a funclet pad | — |
@@ -1257,3 +1256,175 @@ and what remains).
 Tests: `crates/hod/tests/i386_coro.rs` (`coro/handles.ll`, static and
 PIE, default CPU and `-mcpu=i686`, three linkers, plain and under
 `Stress::ALL`, against the `opt` + `llc` oracle).
+## 19. Indirect branches, stack protectors, control-flow protection, `llvm.eh.unwind.init` (WP-324)
+
+### 19.1 Indirect branches (`ibr`, WP-324)
+
+`indirectbr ptr %a, [...]` is `jmp r` on the address's register; on a
+`blockaddress` constant of the function itself it is a direct branch to
+that block (as on x86-64). A `blockaddress` of the function's own block
+in a register is position independent in every relocation model and
+needs no relocation:
+
+```text
+call 0f                ; e8 00000000: pushes the address of 0
+0: pop rd
+lea rd, [rd + disp32]  ; REL32 fixup to the block's label: label - (0 + 7)
+lea rd, [rd + 7]
+```
+
+It writes `rd` only and keeps the flags. `llc` writes `movl $.Ltmp, %r`
+(`R_386_32`) in the static model and `leal .Ltmp@GOTOFF(%ebx), %r` under
+PIC; the value is the same. Neither is an x87 barrier beyond what `llc`
+has: `indirectbr` ends its block, a `blockaddress` is one `mov`/`lea` in
+`llc`. A `blockaddress` in a global's initializer is the module
+emitter's (`R_386_32` against the function's section, plus the block's
+offset). The address of another function's block in code stays refused,
+`x86:blockaddress`. Evidence: `tests/i386_ibr.rs` (a computed-goto
+interpreter with a static table of label addresses, one built at run
+time, a label address selected and compared; `-march=i586` and the
+default CPU, static and PIE, GNU ld, lld and mold, `llc` 19 and 22, also
+under `Stress::ALL`).
+
+### 19.2 Stack protectors (`ssp`, WP-324)
+
+`ssp`, `sspstrong` and `sspreq` follow `spec/codegen.md` §5.6.24 rules 1
+to 4 and 7 unchanged (which functions, which slots move into the guarded
+block and in which order, the block at the top of the local area, the low
+guard at `Local(0)` with a dynamic area, the check at every exit
+sequence: the epilogue and every `musttail` exit; none at `unreachable`,
+a `noreturn` call or `resume`). The i386 parts:
+
+- **The guard value** is `gs:[0x14]` (glibc's TCB `stack_guard`), what
+  `llc` 19 and 22 read for `i686-*-linux-gnu` in the static, PIC and PIE
+  models alike. The guard word is the block's 8 bytes
+  (`hod_cg::GUARD_BYTES`); the value is in its first 4, right after the
+  top slot. The module flags `stack-protector-guard*` are refused by the
+  front half (`module-flag:<name>`, as on the other targets); `safestack`
+  stays refused (`attr:safestack`).
+- **Entry code** (scratch `ecx`, `edx`): `mov ecx, gs:[0x14]` · `lea edx,
+  [ebp + block]` (a local access whose displacement `end_function`
+  writes before the bias) · `mov [edx + guard], ecx` · (`mov [low],
+  ecx`) · per slot of the block `lea ecx, [edx + k]` · `mov [pointer],
+  ecx`.
+- **The check**: `mov ecx, [guard]` · `cmp ecx, gs:[0x14]` · `jne fail`
+  (and the same for the low guard). At a `musttail` exit `ecx` may hold
+  an argument (`fastcc`, `inreg`): there the load and compare are
+  bracketed by `push ecx` · `pop ecx` (`pop` keeps the flags). The result
+  registers (`eax`, `edx`, `st0`) are not touched.
+- **The failure call** follows the last exit, under the body's CFA rule:
+  `call __stack_chk_fail` through `pic::emit_call` (`R_386_PLT32`; under
+  PIC with the GOT pointer in `ebx` first). `llc` 19 and 22 call
+  `__stack_chk_fail@PLT` in the static, PIC and PIE models; they never
+  call `__stack_chk_fail_local`.
+- **x87**: `llc` checks the guard in a block of its own (`SP_return`)
+  before the `ret`, so a `float`/`double` result live into the return
+  is stored at its type before the check and reloaded: a function `llc`
+  protects returns its result rounded to its type, never the 80-bit copy
+  of §11 (`control::ret` passes `!ssp::checks_at_return` to
+  `x87::ret_copy`). Measured with `llc` 19 and 22 at `-O0`, CPU
+  `generic` and `i686`, on a `float` product computed after a call and
+  one computed before it (both are `fstps` · check · `flds` · `ret`).
+  hod protects a superset of `llc`'s functions and its own check does not
+  touch the x87 stack, so the rounding follows `llc`'s choice as far as
+  hod sees it without slot types: `sspreq`; a dynamic area; under
+  `sspstrong` an escaping slot; under `ssp` an escaping slot of at least
+  8 bytes (clang's default `"stack-protector-buffer-size"`). Where that
+  guess differs from `llc` (a struct local reached only through constant
+  field offsets under `sspstrong`, an escaping non-character array of 8
+  bytes or more under `ssp`) a `float`/`double` result live into the
+  return is rounded by hod and not by `llc`. The check is no barrier
+  elsewhere: nothing else is live across it.
+- **The incoming stack arguments are copied below the guard.** They lie
+  above the return address, so an overflow that gets past the guard
+  reaches them before the check runs. `llc` 19 and 22 (`-O0`, CPU
+  `generic` and `i686`, static and PIC) load every stack argument the
+  body uses after the entry block in the entry block, and keep it in a
+  spill slot below the protected arrays: the struct result's hidden
+  pointer (`spec/abi-x86.md` §5.2) for each store of the result and for
+  the `eax` result, a scalar or pointer argument for each later use. It
+  reads `byval` copies in place. In a protected function hod copies, in
+  `begin_function` right after the low guard's slot and before any
+  argument register is read, every word of the incoming area that holds
+  the hidden pointer or a part that is not `byval` (scratch `esi`, which
+  the prologue saved and which carries no argument). The copy goes into
+  one local slot, 16-aligned, that keeps each byte's offset modulo 16.
+  Like every slot outside the guarded block, it lies below the block
+  (`spec/codegen.md` §5.6.24 rule 3). From then on every access to those
+  bytes (`ssp::incoming`, applied by `common::frame_inst`) goes to the
+  copy: argument homes, the hidden pointer for the stores of the result
+  and for `eax`. The exception is a `musttail` call's copy of its stack
+  arguments into the real incoming area. An overflow therefore never
+  makes the body write through an overwritten pointer before the check
+  aborts. `byval` copies stay in place, as under `llc`. Debug locations
+  of stack arguments still name the incoming slot, which holds the same
+  value until it is overwritten.
+
+Evidence: `tests/i386_ssp.rs`: `ssp/smash.c` with `-fstack-protector`,
+`-strong` and `-all` and `ssp/tail.ll` run as `llc`'s (output and status;
+`-march=i586` and the default CPU, static and PIE, GNU ld, lld and mold,
+`llc` 19 and 22, also under `Stress::ALL`); with `-DOVERFLOW=1..6` (one
+buffer, several slots, the low guard, an `i64` result, a `float` result,
+a struct result through its hidden pointer) every build aborts with
+`*** stack smashing detected ***` and SIGABRT, as `llc`'s. `ssp/args.ll`
+(the hidden pointer, a pointer argument and a scalar argument on the
+stack, used after the buffer is written) runs as `llc`'s in bounds. With
+its overflow, every build aborts the same way (CPU `generic` and
+`i686`, static and PIE, `llc` 19 and 22, every linker, also under
+`Stress::ALL`). Without the copy, hod's build faulted on the store
+through the overwritten result pointer.
+
+### 19.3 Control-flow protection (`cet`, WP-324)
+
+The module flags `cf-protection-branch` and `cf-protection-return`
+(clang's `-fcf-protection=`) compile; `x86:cf-protection` is gone.
+
+- **The property note.** `hod_cg`'s emitter writes `.note.gnu.property`
+  for i386 as for x86-64: one `NT_GNU_PROPERTY_TYPE_0` note owned by
+  `GNU` with `GNU_PROPERTY_X86_FEATURE_1_AND` (`0xc0000002`), bit IBT (1)
+  for `cf-protection-branch`, bit SHSTK (2) for `cf-protection-return`.
+  In ELF32 the property array is padded to 4 bytes and the section is
+  aligned to 4 (`hod_obj`'s `add_gnu_properties`, the padding the
+  machine's address size): 28 bytes, `llc`'s byte for byte.
+- **`endbr32`** (`F3 0F 1E FB`) when the module has
+  `cf-protection-branch`, where `llc` 19 and 22 put it
+  (`X86IndirectBranchTracking`): first in every function but a
+  `nocf_check` one, before `push ebp`; at every block whose address is
+  taken and every landing pad (`Target::branch_target`, which `hod_cg`
+  also calls at an `invoke`'s pad stub); right after a direct call of a
+  function declared `returns_twice`. hod's places are a superset of
+  `llc`'s: `llc` leaves the entry of a local function whose address is
+  not taken unmarked, and puts one marker per landing pad where hod has
+  one at the stub and one at the pad. `endbr32` is a no-op outside a CET
+  process.
+- **`cf-protection-return`** changes no code: hod's returns go to the
+  address its calls pushed.
+- **Refused**: an indirect call with `nocf_check` in a module with
+  `cf-protection-branch` needs the `notrack` prefix, which the encoder
+  lacks (`x86:nocf-check-indirect-call`, as on x86-64). Without the flag
+  `nocf_check` changes nothing. hod makes no jump table, so it has no
+  `notrack` jump.
+
+Evidence: `tests/i386_cet.rs`: `cet/cet.c` and `cet/throw.cpp` built
+with `-fcf-protection=full` run as `llc`'s (static and PIE, GNU ld, lld
+and mold, `llc` 19 and 22, also under `Stress::ALL`); the note's bytes,
+type, flags and alignment are `llc`'s and `llvm-readelf -n` reads `x86
+feature: IBT, SHSTK` in both; per function hod has at least `llc`'s
+`endbr32` count, one at every entry where `llc` has one, one after each
+`setjmp` call and none at the `nocf_check` function's entry; a
+freestanding program linked `-nostdlib -static` keeps the property
+through GNU ld, lld and mold when every object has it and loses it when
+one does not, as with `llc`'s objects.
+
+### 19.4 `llvm.eh.unwind.init` (WP-324)
+
+`llc` 19 and 22 make a function that calls `llvm.eh.unwind.init` save
+every callee-saved register: `ebp` (the frame pointer), `ebx`, `edi`,
+`esi`, with their CFI rows. Every hod frame already saves that set
+(`frame::begin`, §3), so the intrinsic emits nothing (`call.rs`). The
+other frame intrinsics are §13.5's; `llvm.eh.dwarf.cfa` stays
+`x86:intrinsic`.
+
+Evidence: `tests/ir/frame_intrinsics.ll` (newly built on i686) passes
+`cargo xtask irdiff --target i686` with LLVM 19 and 22, GNU ld, lld and
+mold.

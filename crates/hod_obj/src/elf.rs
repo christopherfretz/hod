@@ -16,7 +16,7 @@ pub use conventions::{
     GNU_PROPERTY_AARCH64_FEATURE_1_GCS, GNU_PROPERTY_AARCH64_FEATURE_1_PAC,
     GNU_PROPERTY_X86_FEATURE_1_AND, GNU_PROPERTY_X86_FEATURE_1_IBT,
     GNU_PROPERTY_X86_FEATURE_1_SHSTK, add_fini_array, add_gnu_properties, add_gnu_property_note,
-    add_init_array, feature_1_and, gnu_properties, gnu_property_note,
+    add_init_array, feature_1_and, gnu_properties, gnu_properties_padded, gnu_property_note,
 };
 
 use crate::error::{Error, Limit, SymbolProblem, WriteError};

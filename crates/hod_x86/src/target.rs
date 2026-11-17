@@ -35,8 +35,6 @@ pub const VECTOR: &str = "x86:vector";
 pub const AGGREGATE: &str = "x86:aggregate";
 /// A funclet pad (Windows exception handling).
 pub const FUNCLET: &str = "x86:funclet";
-/// A function with a stack protector: hod has no i386 guard.
-pub const STACK_PROTECTOR: &str = "x86:stack-protector";
 
 /// The i686 Linux target (i386 System V psABI, every relocation model).
 /// `cpu` is the command line's `-mcpu`, the CPU of a function without a
@@ -94,6 +92,8 @@ pub struct FnState {
     pub x87: crate::x87::Copies,
     /// The 80-bit values of SSE call results (I12).
     pub sse: crate::sse::Views,
+    /// The stack guard (WP-324).
+    pub ssp: crate::ssp::GuardState,
 }
 
 /// The registers: pool and holdable `ebx`, `esi`, `edi` (and `xmm0`..
@@ -337,7 +337,7 @@ impl Target for X86 {
                 control::cond_br(cx, cond, if_true, if_false)
             }
             InstKind::Switch(switch) => control::switch(cx, &switch),
-            InstKind::IndirectBr { .. } => unsupported(control::INDIRECT_BRANCH),
+            InstKind::IndirectBr { addr, .. } => crate::ibr::indirect_br(cx, inst, addr),
             InstKind::Ret { value } => control::ret(cx, inst, value),
             InstKind::Unreachable => control::unreachable(cx),
             InstKind::Fence { .. } | InstKind::CmpXchg { .. } | InstKind::AtomicRmw { .. } => {
@@ -377,6 +377,10 @@ impl Target for X86 {
     fn copy(&self, cx: &mut FnCx<'_, Self>, dst: FrameRef, src: FrameRef, bytes: u32) {
         if dst == src || bytes == 0 {
             return;
+        }
+        if let FrameRef::Incoming(_) = dst {
+            // WP-324: a `musttail` call's arguments go to the real area.
+            return crate::ssp::raw_incoming(cx, |cx| common::copy_frame(cx, dst, src, bytes));
         }
         common::copy_frame(cx, dst, src, bytes);
     }
@@ -457,9 +461,17 @@ impl Target for X86 {
         // (`spec/dwarf.md` §6.19, as on the other targets).
         crate::pic::emit_call(cx, call.target, 0)?;
         cx.call_returns_here(call.target, crate::reg::dwarf);
+        // WP-324: `endbr32` right after the call instruction, before the
+        // stack adjustment, as `llc`'s IBT pass places it.
+        crate::cet::after_call(cx, call.target);
         if call.callee_pop != 0 {
             frame::adjust_sp(cx, -i64::from(call.callee_pop));
         }
+        Ok(())
+    }
+
+    fn branch_target(&self, cx: &mut FnCx<'_, Self>, _at: hod_cg::BranchTarget) -> CgResult<()> {
+        crate::cet::landing(cx); // WP-324
         Ok(())
     }
 
@@ -473,8 +485,8 @@ impl Target for X86 {
         crate::dynstack::dynamic_slot(cx, ptr, size, align)
     }
 
-    fn enter_guard(&self, _cx: &mut FnCx<'_, Self>) -> CgResult<()> {
-        unsupported(STACK_PROTECTOR)
+    fn enter_guard(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()> {
+        crate::ssp::enter(cx)
     }
 
     fn patch_branch(code: &mut [u8], at: u32, kind: FixupKind, displacement: i64) -> bool {

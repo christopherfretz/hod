@@ -138,9 +138,19 @@ pub fn add_gnu_property_note(obj: &mut Object, features: u32) -> Result<SectionI
 /// # Panics
 /// Never for a note below 4 GiB.
 pub fn gnu_properties(properties: &[(u32, &[u8])]) -> Vec<u8> {
+    gnu_properties_padded(properties, 8)
+}
+
+/// [`gnu_properties`] with each property's data padded to a multiple of
+/// `pad` bytes: 8 in ELF64, 4 in ELF32 (the object's address size, as
+/// `llc` writes the i386 note: 28 bytes for one feature word).
+///
+/// # Panics
+/// Never for a note below 4 GiB.
+pub fn gnu_properties_padded(properties: &[(u32, &[u8])], pad: usize) -> Vec<u8> {
     let mut order: Vec<&(u32, &[u8])> = properties.iter().collect();
     order.sort_by_key(|&&(kind, _)| kind);
-    let desc: usize = order.iter().map(|(_, data)| 8 + data.len().next_multiple_of(8)).sum();
+    let desc: usize = order.iter().map(|(_, data)| 8 + data.len().next_multiple_of(pad)).sum();
     let mut note = Vec::with_capacity(16 + desc);
     let desc = u32::try_from(desc).expect("a property note below 4 GiB");
     for word in [4, desc, NT_GNU_PROPERTY_TYPE_0, u32::from_le_bytes(*b"GNU\0")] {
@@ -151,14 +161,15 @@ pub fn gnu_properties(properties: &[(u32, &[u8])]) -> Vec<u8> {
         note.extend_from_slice(&kind.to_le_bytes());
         note.extend_from_slice(&size.to_le_bytes());
         note.extend_from_slice(data);
-        note.resize(note.len().next_multiple_of(8), 0);
+        note.resize(note.len().next_multiple_of(pad), 0);
     }
     note
 }
 
-/// Adds the `.note.gnu.property` section (kind `Note`, alignment 8) that
-/// holds `properties` (see [`gnu_properties`]). An object has at most
-/// one: a producer collects every property of the object first.
+/// Adds the `.note.gnu.property` section (kind `Note`, aligned to the
+/// address size: 8 in ELF64, 4 in ELF32) that holds `properties` (see
+/// [`gnu_properties_padded`], padded to the same size). An object has at
+/// most one: a producer collects every property of the object first.
 ///
 /// # Errors
 /// As [`Object::add_section`].
@@ -166,9 +177,9 @@ pub fn add_gnu_properties(
     obj: &mut Object,
     properties: &[(u32, &[u8])],
 ) -> Result<SectionId, Error> {
-    refuse_elf32(obj)?;
-    let section = obj.add_section(b".note.gnu.property", SectionKind::Note, 8)?;
-    obj.append(section, &gnu_properties(properties));
+    let pad = obj.machine().address_size();
+    let section = obj.add_section(b".note.gnu.property", SectionKind::Note, u64::from(pad))?;
+    obj.append(section, &gnu_properties_padded(properties, usize::from(pad)));
     Ok(section)
 }
 

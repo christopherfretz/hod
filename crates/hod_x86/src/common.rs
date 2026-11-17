@@ -151,6 +151,7 @@ fn frame_mem(place: FrameRef) -> (Mem, bool) {
 
 /// Emits the instruction `make` builds over the operand of `place`.
 pub fn frame_inst(cx: &mut FnCx<'_, X86>, place: FrameRef, make: impl FnOnce(Mem) -> Inst) {
+    let place = crate::ssp::incoming(cx, place); // WP-324: the arguments' copy
     let (mem, local) = frame_mem(place);
     let inst = make(mem);
     let at = cx.offset();
@@ -362,7 +363,7 @@ pub fn materialize_const(cx: &mut FnCx<'_, X86>, rd: Reg, id: ConstId) -> CgResu
         Const::Addr { sym, addend } => sym_address(cx, rd, sym, addend)?,
         Const::IntOfAddr { addr, .. } => return materialize_const(cx, rd, addr),
         Const::DsoLocalEquivalent(sym) | Const::NoCfi(sym) => sym_address(cx, rd, sym, 0)?,
-        Const::BlockAddr { .. } => return unsupported(crate::control::BLOCKADDRESS),
+        Const::BlockAddr { func, block } => crate::ibr::block_address(cx, rd, func, block)?,
         _ => return unsupported(CONSTANT),
     }
     Ok(())

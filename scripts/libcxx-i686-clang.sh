@@ -15,8 +15,11 @@
 #    (.cpp .cc .cxx .c .pcm) is lowered to IR by clang (`-S -emit-llvm`,
 #    the invocation's own flags) and the IR to an object by the back end
 #    of $HOD_I686_MODE: `hybrid` hod with `llc` as its fallback and
-#    HOD_CENSUS=1, `strict` hod alone, `control` `llc` alone (`-O0
-#    -global-isel=0 -fast-isel=0`, the reference); both get
+#    HOD_CENSUS=1, `strict` hod alone (also HOD_CENSUS=1, which lists
+#    every reason in the coverage log and leaves the answer as it is,
+#    so a run without hybrid still has the census; WP-339), `control` `llc` alone (`-O0
+#    -global-isel=0 -fast-isel=0`, the reference; hybrid's fallback `llc`
+#    gets the same two flags, see HOD_I686_AS_LLC below); all get
 #    `-relocation-model=pic` when the module has a "PIC Level" flag
 #    (clang's default PIE). The objects take the sources' places in the
 #    link (or are the `-c` outputs);
@@ -59,6 +62,16 @@ guest="${HOD_I686_GUEST:-0x40000000}"
 sysroot=/usr/i686-linux-gnu
 cpu=pentium2,-mmx
 triple=i686-unknown-linux-gnu
+# hybrid's fallback is this script again, with HOD_I686_AS_LLC=1: `llc`
+# with the control's instruction selection (`-global-isel=0
+# -fast-isel=0`, WP-339), so that a module hod declines is built exactly
+# as the control builds it. hod forwards its own command line, and an
+# option it does not know would send every module to the fallback, so the
+# flags are added here rather than on hod's command line.
+if [ "${HOD_I686_AS_LLC:-0}" = 1 ]; then
+    exec "$llc" -global-isel=0 -fast-isel=0 "$@"
+fi
+self="$(cd "$here" && pwd)/${BASH_SOURCE[0]##*/}"
 
 args=("--target=i686-linux-gnu")
 srcs=()
@@ -158,11 +171,11 @@ if [ "$codegen" = 1 ] && [ "${#srcs[@]}" -gt 0 ]; then
                 "$llc" "${be[@]}" -global-isel=0 -fast-isel=0 "$ll" -o "$obj"
                 st=$?; step=llc ;;
             hybrid)
-                HOD_CENSUS=1 HOD_COVERAGE_LOG="${logdir:+$logdir/cov/$key.tsv}" \
-                    "${HOD_I686_HOD:?set HOD_I686_HOD}" "${be[@]}" "--fallback=$llc" "$ll" -o "$obj"
+                HOD_CENSUS=1 HOD_I686_AS_LLC=1 HOD_COVERAGE_LOG="${logdir:+$logdir/cov/$key.tsv}" \
+                    "${HOD_I686_HOD:?set HOD_I686_HOD}" "${be[@]}" "--fallback=$self" "$ll" -o "$obj"
                 st=$?; step=hod ;;
             strict)
-                HOD_COVERAGE_LOG="${logdir:+$logdir/cov/$key.tsv}" \
+                HOD_CENSUS=1 HOD_COVERAGE_LOG="${logdir:+$logdir/cov/$key.tsv}" \
                     "${HOD_I686_HOD:?set HOD_I686_HOD}" "${be[@]}" --strict "$ll" -o "$obj"
                 st=$?; step=hod ;;
             *) echo "HOD_I686_MODE must be hybrid, strict or control" >&2; exit 2 ;;

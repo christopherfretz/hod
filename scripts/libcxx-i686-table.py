@@ -6,7 +6,8 @@ docs/status/libcxx-hod-i686.md).
     scripts/libcxx-i686-table.py <run dir> <out dir>
 
 <run dir> holds control.tsv, hybrid.tsv, strict.tsv and the merged log
-directories hybrid/ and strict/ (`libcxx-hod-i686.sh merge`). Which back
+directories hybrid/ and strict/ (`libcxx-hod-i686.sh merge`); hybrid may
+be missing (its column is then "-" and the census is strict's). Which back
 end built a module is read from the coverage log's first field (`hod`,
 `fallback`, `error`), never from an exit status. Writes to <out dir>:
 
@@ -19,7 +20,8 @@ end built a module is read from the coverage log's first field (`hod`,
 - census.md: every reason by the tests it blocks (any) and the tests it
   alone blocks (only), from the hybrid census;
 - suspects.tsv: tests that PASS in control and do not pass in hybrid or
-  strict although hod built at least one of their modules in that mode.
+  strict although hod built at least one of their modules in that mode;
+- trouble.tsv: hod steps that crashed, panicked or ran 60 s or more.
 """
 import collections
 import os
@@ -79,11 +81,37 @@ def all_reasons(line):
     return rs.split(",")
 
 
+def trouble(run, out, modes):
+    """trouble.tsv: hod steps that ended other than 0 (built) or 2 (declined:
+    a refusal in strict) -- a panic (101), a signal (128 + n), another
+    error -- or that ran 60 s or more, from <mode>/time.tsv (WP-339)."""
+    with open(os.path.join(out, "trouble.tsv"), "w", encoding="utf-8") as f:
+        f.write("# mode\ttest\tkey\tstatus\tseconds\tsource\n")
+        for m in modes:
+            logdir = os.path.join(run, m)
+            keys = key_tests(logdir)
+            with open(os.path.join(logdir, "time.tsv"), encoding="utf-8", errors="replace") as tf:
+                for line in tf:
+                    p = line.rstrip("\n").split("\t")
+                    if len(p) < 5 or p[1] != "hod":
+                        continue
+                    secs = int(p[2]) / 1e6
+                    if p[3] not in ("0", "2") or secs >= 60:
+                        f.write(f"{m}\t{keys.get(p[0], '-')}\t{p[0]}\t{p[3]}\t{secs:.1f}\t{p[4]}\n")
+
+
 def main():
     run, out = sys.argv[1], sys.argv[2]
     os.makedirs(out, exist_ok=True)
-    res = {m: results(os.path.join(run, f"{m}.tsv")) for m in ("control", "hybrid", "strict")}
-    cov = {m: per_test_cov(os.path.join(run, m)) for m in ("hybrid", "strict")}
+    # A run may lack hybrid (WP-339 ran control and strict only): its column
+    # is then "-", and the census comes from strict's coverage logs, which
+    # list every reason too (the runner gives strict HOD_CENSUS=1).
+    have = {m: os.path.exists(os.path.join(run, f"{m}.tsv")) for m in ("hybrid", "strict")}
+    res = {m: results(os.path.join(run, f"{m}.tsv")) if have.get(m, True) else {}
+           for m in ("control", "hybrid", "strict")}
+    cov = {m: per_test_cov(os.path.join(run, m)) if have[m] else {} for m in ("hybrid", "strict")}
+    census_from = "hybrid" if have["hybrid"] else "strict"
+    trouble(run, out, [m for m in ("hybrid", "strict") if have[m]])
     tests = sorted(set().union(*res.values()))
 
     def built(m, t):
@@ -96,7 +124,8 @@ def main():
         hb, hn = built("hybrid", t)
         sb, sn = built("strict", t)
         refused = sorted({l[1] for l in cov["strict"].get(t, []) if l[0] != "hod"})
-        census = sorted({r for l in cov["hybrid"].get(t, []) if l[0] != "hod" for r in all_reasons(l)})
+        census = sorted({r for l in cov[census_from].get(t, []) if l[0] != "hod"
+                         for r in all_reasons(l)})
         rows.append((t, c, h, s, f"{hb}/{hn}", f"{sb}/{sn}", ",".join(refused) or "-",
                      ",".join(census) or "-"))
         for m, o, b in (("hybrid", h, hb), ("strict", s, sb)):
@@ -105,7 +134,7 @@ def main():
                                  res[m].get(t, ("-", "-"))[1][:200]))
     with open(os.path.join(out, "table.tsv"), "w", encoding="utf-8") as f:
         f.write("# test\tcontrol\thybrid\tstrict\thybrid-hod/modules\tstrict-hod/modules"
-                "\tstrict-refusals\thybrid-census\n")
+                f"\tstrict-refusals\t{census_from}-census\n")
         for r in rows:
             f.write("\t".join(r) + "\n")
     with open(os.path.join(out, "suspects.tsv"), "w", encoding="utf-8") as f:
@@ -121,6 +150,8 @@ def main():
                                              for i in (1, 2, 3)) + " |\n")
         f.write(f"| total | {len(rows)} | {len(rows)} | {len(rows)} |\n\n")
         for m, i in (("hybrid", 4), ("strict", 5)):
+            if not have[m]:
+                continue
             with_obj = [r for r in rows if not r[i].endswith("/0")]
             full = [r for r in with_obj if r[i].split("/")[0] == r[i].split("/")[1]]
             mods = sum(int(r[i].split("/")[1]) for r in rows)
@@ -145,7 +176,8 @@ def main():
         for x in ([] if r[6] == "-" else r[6].split(",")):
             first[x] += 1
     with open(os.path.join(out, "census.md"), "w", encoding="utf-8") as f:
-        f.write(f"{sum(1 for r in rows if r[7] != '-')} tests with a declined module (hybrid census)\n\n")
+        f.write(f"{sum(1 for r in rows if r[7] != '-')} tests with a declined module "
+                f"({census_from} census)\n\n")
         f.write("| reason | tests blocked | blocked only by it | strict: tests, as first refusal |\n"
                 "|---|---:|---:|---:|\n")
         for x, n in sorted(anyc.items(), key=lambda kv: (-kv[1], -only[kv[0]], kv[0])):

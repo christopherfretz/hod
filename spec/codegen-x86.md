@@ -1644,6 +1644,22 @@ On x86-64 and AArch64 `llc -O0` makes the same plain call (the operand
 in `xmm0` / `d0` / on the stack for `x86_fp80`, the pointer in `rdi` /
 `x0`); hod does not lower it there yet (`intrinsic:llvm.modf`).
 
+**`llvm.frexp`** of `float`, `double`, `x86_fp80` (WP-341; clang 19
+and 22 write it for `__builtin_frexp*`, libc++'s `frexp`): the same
+sequence as `modf` with `frexpf` / `frexp` / `frexpl` (`llc` 19 and 22,
+measured at CPU `generic`, `i686`, with SSE2, static and PIC): the
+operand at its width in the outgoing area (4, 8, or 10 of 12 bytes),
+the address of the result's second field (the `i32` exponent, written
+by the routine) after it, the fraction popped from `st0` to the first
+field at its type's width; `llc`'s exponent temporary is a stack slot
+it copies to the result, hod's is the result's field itself. The call
+is a barrier (`x87::barrier`) unless `llc` folds it: an operand that is
+a constant or a folded result (`llc` 19 and 22 fold `frexp` of a
+constant, with exponent 0 for an infinity or a NaN as libm's); hod
+still calls the routine there (the same values) but keeps the block's
+80-bit copies, as `llc`. A `half`, `fp128` or vector operand is the
+classifier's `intrinsic:llvm.frexp/<class>` on i386.
+
 **`bitcast` between `x86_fp80` and `i80`**: the 10 bytes copied
 between the homes (the `i80`'s is a slot of its size; its bytes above
 80 bits are unspecified). `icmp` of an `i80` with the constant 0, every
@@ -1657,6 +1673,6 @@ compare with another value) stays `x86:i64:wide`.
 on every CPU (`generic`, `pentium`, `i686`), never an inline `lock
 cmpxchg8b`; hod's tests link no libatomic.
 
-Tests: `crates/hod/tests/i386_fpclass.rs` (static and PIE, plain and
+Tests: `crates/hod/tests/i386_fpclass.rs`, `i386_frexp.rs` (static and PIE, plain and
 under `Stress::ALL`, CPU `generic`, `i686` and `pentium4` through
 `target-cpu`; `llc` 19 and 22 but where named).

@@ -159,8 +159,8 @@ kiln's lanes). Its rules:
    the `kiln` job builds and saves it on a miss, the `test` jobs restore
    it and fail on a miss, the `irdiff` job builds it on a miss without
    saving; each gets `HOD_MORTAR=/opt/mortar/mortar`. Any failure of
-   these steps fails the job. mortar stays optional to the tests
-   (`MORTAR_REQUIRED` is false) until a hosted run has shown the step.
+   these steps fails the job. mortar is required by the tests under
+   `HOD_REQUIRE_TOOLS=1` (`MORTAR_REQUIRED` is true since wave 45).
 5. **The steps.** The lane's jobs `lints` (`--step fmt`, `--step
    scripts`, `--step workflows`, `--step clippy`), `test <part>` (`--step test --part <part>`, one job per
    part of `xtask::ci::TEST_PARTS`, so that no job runs much over 15
@@ -626,7 +626,7 @@ What is missing:
 | the emulator or the system root, for the other architecture | objects are built, nothing is linked or run ("Cross targets"), with a note | failure |
 | `bfd`, `lld` or `mold` | that linker is not in the matrix, with a note | failure |
 | `wild` | not in the matrix, with a note | still a note: wild is optional (`hod_testutil::linkers::WILD_REQUIRED` is false and stays so; not a condition of 1.0) |
-| `mortar` | not in the matrix, with a note | still a note: mortar is optional (`hod_testutil::linkers::MORTAR_REQUIRED` is false) |
+| `mortar` | not in the matrix, with a note | failure (`hod_testutil::linkers::MORTAR_REQUIRED` is true since wave 45) |
 | a linker named with `--linker` | usage error (exit status 2) | the same |
 
 A failure for a missing tool does not stop the run: the tests still run
@@ -1517,8 +1517,8 @@ for every test that links: `MATRIX` is `bfd`, `lld`, `mold`, `wild`,
   the matrix, used where it is installed, as by the lanes' set-up
   `.github/actions/hod-ci`, which exports `HOD_WILD`; its cases are
   excepted on the harness side, never worked around in hod). mortar is
-  optional the same way (`MORTAR_REQUIRED` is false; no hosted lane
-  builds it).
+  required, as GNU ld, lld and mold are (`MORTAR_REQUIRED` is true since
+  wave 45: it is provisioned locally and on both hosted runners).
 - **Refused kinds.** `REFUSALS` lists the output kinds a linker refuses
   by name: linker, version, the flag (`-shared`, `-r`) and the text its
   refusal prints (mortar: `unsupported option: -shared`, `unsupported

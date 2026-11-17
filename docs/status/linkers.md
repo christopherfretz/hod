@@ -36,8 +36,9 @@ from the commit `hod_testutil::linkers::MORTAR_COMMIT` (the one pin) with
 its own toolchain file's Rust (1.95.0, the workspace's) and
 `cargo build --release -p mortar`, into
 `.toolchain/mortar/<commit>/mortar`, or named by `HOD_MORTAR`. One
-executable links both targets. It is optional, as wild is
-(`MORTAR_REQUIRED` is false; no hosted lane builds it). It keeps unused
+executable links both targets. It is required under
+`HOD_REQUIRE_TOOLS=1` (`MORTAR_REQUIRED` is true since wave 45; it is
+provisioned locally and on both hosted runners). It keeps unused
 sections by default, so it needs no `--no-gc-sections`; it signs
 `.comment` with `mortar <version>`.
 
@@ -172,9 +173,8 @@ linker signed its programs (now it does, as `irdiff`).
 ### Not yet run with mortar
 
 - The hosted lanes: `.github/actions/mortar` builds the pinned commit
-  (WP-310) on both runners, unproven until a hosted run; until then
-  `MORTAR_REQUIRED` stays false. The x86-64 host's native runs with
-  mortar happen there first.
+  (WP-310) on both runners, and `MORTAR_REQUIRED` is true since wave 45.
+  The x86-64 host's native runs with mortar happen there.
 - i686 through the harness: only `-static` links, which no i686 run of
   the harness makes.
 - The libc++ shard and the real-project lanes.

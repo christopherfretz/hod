@@ -1,5 +1,75 @@
 # libc++ test suite through hod with `-g` (native AArch64)
 
+## At the candidate a68a0d5d (release 1.1.0, RELEASE.md 4.6, 2026-11-17, strict, `-g`)
+
+The 1.1.0 release candidate `C`, hod `main` at `a68a0d5d` (frozen release
+binary, sha256
+`baf397f0f4cd9b2325884e122d39f2b1de000135486f2b832b1d22334b566077`;
+`--version` prints `hod version 1.0.0`, the number moves after the
+lanes), with kiln 1.2.0 at `K` = `8f93304ee`, LLVM `/usr/lib/llvm-22`
+behind a shim made from the frozen binary. Strict is
+`scripts/libcxx-hod-debug.sh` at `a68a0d5d` with its defaults
+(`--timeout 20 --mem-limit 3072 --no-fail`), `HOD_JOBS=3`, on the lanes'
+jobserver pool (`HOD_JOBSERVER_FIFO=/run/hod/lanes.fifo`),
+`HOD_DEBUG_FLAGS` unset, so every compile carries `-g` (the log's header
+says `flags '-g'`):
+
+```
+env -u HOD_DEBUG_FLAGS HOD_JOBS=3 HOD_JOBSERVER_FIFO=/run/hod/lanes.fifo HOD_SHIM=$S scripts/libcxx-hod-debug.sh strict $D
+python3 -I scripts/libcxx-hod-report.py $D/strict $D/strict.tsv .build/libcxx-5/native-g/control.tsv
+```
+
+The control is the `-g` control recorded at `K` for the `cd6ef6bc`
+section below and reused (kiln + `llc`, no hod in it, not re-run):
+`.build/libcxx-5/native-g/control.tsv`.
+
+| | `-g` control at `K` (kiln + `llc`) | **strict at `a68a0d5d`** |
+|---|---|---|
+| date (EST) | 2026-11-15 20:10:09 to 22:07:18 | 2026-11-17 07:52:08 to 09:09:56 |
+| total | 9,247 | 9,247 |
+| pass | 8,608 | 8,608 |
+| fail | 4 | 4 |
+| xfail | 46 | 46 |
+| xpass | 2 | 2 |
+| unsupported | 585 (24 driver) | 585 (24 driver) |
+| timeout | 2 | 2 |
+| killed, error | 0, 0 | 0, 0 |
+| wall time, `-j 3` | 7,027.3 s | 4,667.7 s |
+| `oom_kill` (cgroup `memory.events`) | 1 before, 1 after | 0 before, 0 after |
+| modules by hod | - | 7,226 of 7,226; 0 refused, 0 fallback, 0 outcome error |
+
+In strict, 7,218 tests have objects, all of them built by hod, and 7,185
+of those pass; the inputs are 392 bitcode and 6,834 text modules; hod's
+time summed over modules is 237.1 s (phases 240.8 s: parse 76.8, write
+47.3, emission 46.7, bodies 27.5, read 27.2, object 8.7). The run shared
+the host with a full gate, a fuzz run and the i686 libc++ lane; the wall
+times are not a timing comparison.
+
+**Result: strict equals the `-g` control.** Two outcomes differ, the
+same two tests and the same directions as at `cd6ef6bc`, both at the
+20 s limit:
+
+- `std/atomics/atomics.types.operations/atomics.types.operations.wait/lost_wakeup.pass.cpp`:
+  PASS in the control (23.10 s), TIMEOUT in strict (22.41 s). Run alone
+  at `HOD_JOBS=1`, `-g`, 20 s, three times per mode (2026-11-17 09:10 to
+  09:13 EST): TIMEOUT in all six runs (control 21.33 s, 22.40 s,
+  21.78 s; strict 21.60 s, 21.73 s, 21.72 s). The test runs past the
+  20 s limit in both modes.
+- `ifstream.members/buffered_reads.pass.cpp`: TIMEOUT in the control
+  (23.96 s), PASS in strict (19.24 s).
+
+`offset_range.pass.cpp` times out in both modes. The four filesystem
+failures (`directory_iterator` and `recursive_directory_iterator`
+constructors, `fs.op.remove`, `fs.op.remove_all`) and the XPASSes
+(`rel_ops.depr_in_cxx20.verify.cpp`, `variant.hash/hash.depr.verify.cpp`)
+are the same in both modes.
+
+Not covered: hybrid was not run (strict refused nothing); the debug
+information quality (`cargo xtask debug trees`) was not sampled at the
+candidate; only `-O0 -g` as the suite builds it. Raw results:
+`.build/release-1.1.0/libcxx-a64/g/` (`strict.{log,tsv}`, `strict/`,
+`report-strict.txt`, `rerun-lw.log`, `rerun-lw-*`).
+
 ## At the candidate cd6ef6bc (WP-271, 2026-11-15, control and strict, `-g`)
 
 The 1.0 release candidate, hod `main` at `cd6ef6bc` (release binary,

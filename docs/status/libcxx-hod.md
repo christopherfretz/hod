@@ -225,31 +225,26 @@ baseline took 3176 s.
 
 ## Native AArch64 runner
 
-Of the earlier hosted run below (2026-11-13), not of the 1.1.0
-candidate `a68a0d5d`; no hosted run of `a68a0d5d` was given to this lane.
-
-Run [43465227200](https://github.com/christopherfretz/hod/actions/runs/43465227200)
-of `.github/workflows/sweep.yml` (WP-164; `spec/harness.md` "CI", rule
-6), 2026-11-13: `wp/158-sweep` at `a67370e`, kiln 1.0.1 at `bd60e1829`,
-LLVM 22.1.8 (Debian 13), libc++ 22.1.8 from Debian's `libc++-22-dev`,
-the locales generated; kiln's `cargo xtask libcxx std libcxx --tag
-llvmorg-22.1.8 -j 4 --timeout 60 --mem-limit 3072 --no-fail` in six
-shards, once with hod strict (`HOD_STRICT=1`, no fallback) and once with
-kiln++ and `llc` alone, natively on the runner. Every test binary runs on
-the runner's own CPU, no emulator.
+Run [44078910283](https://github.com/christopherfretz/hod/actions/runs/44078910283)
+of `.github/workflows/sweep.yml` (`spec/harness.md` "CI", rule 6),
+2026-11-17, of exactly the 1.1.0 candidate `a68a0d5d`: kiln 1.2.0 at
+`8f93304ee`, LLVM 22.1.8, libc++ 22.1.8, the locales generated; kiln's
+`cargo xtask libcxx std libcxx --tag llvmorg-22.1.8 -j 4 --timeout 60
+--mem-limit 3072 --no-fail` in six shards, once with hod strict
+(`HOD_STRICT=1`, no fallback) and once with kiln++ and `llc` alone,
+natively on the runner. Every test binary runs on the runner's own CPU,
+no emulator.
 
 | `ubuntu-24.04-arm` | total | pass | fail | xfail | xpass | unsupported | timeout | shards (s) | modules by hod |
 |---|---:|---:|---:|---:|---:|---:|---:|---|---|
-| hod, strict | 9,247 | 8,748 | 5 | 47 | 1 | 446 | 0 | 287 to 368 | 7,364 of 7,365 |
-| `llc` | 9,247 | 8,749 | 4 | 47 | 1 | 446 | 0 | 321 to 415 | - |
+| hod, strict | 9,247 | 8,749 | 4 | 46 | 2 | 446 | 0 | 323 to 372 | 7,365 of 7,365 |
+| `llc` | 9,247 | 8,749 | 4 | 46 | 2 | 446 | 0 | 328 to 402 | - |
 
-The one difference: `std/algorithms/alg.nonmodifying/alg.find/find.pass.cpp`
-FAILs to compile with hod (`unsupported construct 'abi:vector-element'`, a
-vector in a signature; **open, no owner yet**) and passes with `llc`.
-The four filesystem failures (`directory_iterator` and
-`recursive_directory_iterator` `ctor.pass.cpp`, `remove.pass.cpp`,
-`remove_all.pass.cpp`) fail with `llc` as well: the runner's
-environment, not hod.
+No test's outcome differs between hod and `llc`: the run's summary lists
+none, and no test passes with `llc` and not with hod. The 4 failures are
+therefore the same tests on both sides (the runner's environment, not
+hod). The earlier hosted run of this section (43465227200, 2026-11-13,
+one test refused by name) is in this file's history.
 
 ## Third measurement (WP-102, strict only)
 

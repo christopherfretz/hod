@@ -91,7 +91,33 @@ patched at the end of the function) is the local area rounded up to
 `≡ 12 (mod 16)`, so `esp` is 16-aligned after the prologue and at every
 call. A local `Local(o)` is `[ebp + o - 12 - FRAME]` (a `disp32` biased at
 the end of the function); an incoming argument `Incoming(n)` is
-`[ebp + 8 + n]`; an outgoing one `[esp + n]`. The DWARF frame base is
+`[ebp + 8 + n]`; an outgoing one `[esp + n]`.
+
+**The outgoing argument area (WP-354).** As `llc` does for a function
+without variable-sized objects, a function reserves its calls' outgoing
+argument area once in the prologue: `sub esp, FRAME + OUT`, where `OUT`
+is the largest stack-argument area of any call sequence of the function
+(each rounded up to 16), known when the function ends and patched into
+the same `imm32`. A call stores its stack arguments at `[esp + n]` and
+nothing moves `esp` around it, except after a callee that pops (a hidden
+`sret` pointer, `stdcall`, `fastcall`, `thiscall`): `lea esp, [esp - p]`
+re-reserves the `p` popped bytes, as `llc`'s `sub esp, p`. The area is
+below the local area, so `Local(o)`, the frame description and every
+CFI row are unchanged (the CFA is `ebp`-based; no `DW_CFA_GNU_args_size`
+is written, as `llc` writes none for a reserved frame). Invariant: `esp`
+is 16-aligned after the prologue and at every `call` (`FRAME ≡ 12 (mod
+16)`, `OUT ≡ 0 (mod 16)`); `i386_outgoing.rs` checks it at run time.
+**Old path:** a function with an `alloca` instruction left in the body (a
+dynamic size or outside the entry block) or a slot aligned above 16
+(`dynamic_slot`'s area in the entry code) moves `esp` below the
+prologue's: there each call sequence moves `esp` down by its area
+before the stores and back after the call (`lea esp, [esp ± area]`), as
+before WP-354 (`llc` too adjusts around each call there).
+`llvm.stacksave` / `llvm.stackrestore` alone do not move `esp` from the
+prologue's, so they qualify (as in `llc`). A `musttail` call stages its
+arguments in the local area (no area); the hand-written runtime calls of
+`x87`, `sse`, `fpclass` and `tls` still move `esp` around their own
+call (correct, not `llc`'s shape; a follow-up). The DWARF frame base is
 `ebp`, the frame description `12 + FRAME` bytes below it. The CFI rows are
 recorded (CFA `ebp + 8`, `ebp` at -8, `ebx`, `esi`, `edi` at -12, -16,
 -20); `hod_cg` writes them to `.eh_frame` (§14, WP-314).
@@ -204,7 +230,8 @@ their values).
 |---|---|---|
 | `x86:i64` | not reachable since WP-315 (§13.4): every integer of 33 to 64 bits is taken by §8, `abi.rs` or §13 | I6, WP-306, WP-315 |
 | `x86:i64:wide` | not reachable since WP-346: an integer of 65 to 128 bits is §22's, each operation it leaves out has a name of its own | WP-346 |
-| `x86:i64:wide:shift`, `x86:i64:wide:div`, `x86:i64:wide:intrinsic`, `x86:i64:wide:switch`, `x86:i64:wide:abi`, `x86:i64:wide:width` | an integer of 65 to 128 bits as a shift, a division, an integer intrinsic (but the overflow ones), a `switch` condition, an argument or result; an integer wider than 128 bits (§22) | — |
+| `x86:i64:wide:div`, `x86:i64:wide:intrinsic`, `x86:i64:wide:abi`, `x86:i64:wide:width` | an integer of 65 to 128 bits as a division, an integer intrinsic §22 leaves out, an argument or result; an integer wider than 128 bits (§22) | — |
+| `x86:i64:wide:shift`, `x86:i64:wide:switch` | not reachable since WP-355: shifts and `switch` at 65 to 128 bits are §22's | WP-355 |
 | `x86:float` | a floating-point value in a register where §11 takes none (arguments and results are I6's since the join) | — |
 | `x86:float:half` | a `half` value in a function without SSE2; a `half` parameter or result of `fastcc` or `inreg` (§16) | — |
 | `x86:float:half:intrinsic` | an intrinsic on `half` (§16) | — |
@@ -355,7 +382,7 @@ through `ecx`). Wider than 64 bits: §22.
     shifted right by `64 - N`. No libgcc call (`llc` calls `__umoddi3`
     for a variable amount of a width that is no power of two; the result
     is the same).
-  - Wider than 64 bits: `x86:i64:wide:intrinsic` (§22; an odd width above 64 is refused
+  - Wider than 64 bits: §22 (WP-355), else `x86:i64:wide:intrinsic`; a width other than 128 is refused
     before, by the shared classifier, as `intrinsic:<name>/int-wide`).
 - `scmp`, `ucmp` of operands of 33 to 64 bits (i386 join C;
   `int::three_way`), a result of 2 to 64 bits: `a > b` by the order
@@ -1706,7 +1733,7 @@ between the homes (the `i80`'s is a slot of its size; its bytes above
 predicate, reads two facts of the 10 bytes: negative (bit 79) and zero
 (clang's `signbit` of a `long double` is `icmp slt i80 %b, 0`). Every
 other operation on an `i80` is §22's since WP-346 (an integer of three
-limbs; a shift is `x86:i64:wide:shift`).
+limbs; a shift is §22's since WP-355).
 
 **Not lowered:** `x86:atomic:libatomic` stays: `llc` 19 and 22 call
 `__atomic_compare_exchange` (size 8) for a `cmpxchg i64` at `align 4`
@@ -1798,6 +1825,52 @@ chain.
 - The overflow result `{iN, i1}`: the integer zero-extended with its
   store size, the flag as a byte at its field offset.
 
+**Shifts, intrinsics, `switch` (WP-355).** Same slot convention: an
+operand's bits above `N` are ignored (its top limb is extended where they
+could reach the result), a result's are unspecified.
+- `shl` / `lshr` / `ashr` (`llc` 19 and 22 do the same, in line, with no
+  call and no branch at every width and CPU): a frame buffer of `L + 4`
+  limbs holds the value (top limb extended by zero, by sign for `ashr`)
+  and 4 limbs of fill (0, or the sign) below it for `shl`, above it for
+  the right shifts. With `q = amount / 32`, `s = amount % 32`, result
+  limb `i` is `shld` of buffer limbs `i - q` and `i - q - 1` by `s`
+  (`shl`) or `shrd` of `i + q` and `i + q + 1` (right). A constant amount
+  chooses the limbs at compile time; one of `N` or more is poison and
+  nothing is computed. A variable amount's low limb goes to `ecx`;
+  `edx = &buffer -/+ 4 ((ecx >> 5) & 3)`; per limb `mov eax, [edx + d]`,
+  stored, `mov eax, [edx + d']`, `shld` / `shrd [r + 4 i], eax, cl`. The
+  mask keeps every access inside the buffer for any amount (an
+  out-of-range amount is poison and computes garbage without a fault);
+  the amount's other limbs are not read.
+- `switch`: the top limb zero-extended into `edx`; per case `cmp dword
+  [cond + 4 k], imm` and `jne next` for each lower limb, `cmp edx, imm`
+  and `je case`; then the default. A constant condition is a branch.
+- Intrinsics at 128 bits (the shared classifier refuses the integer
+  intrinsics at the other widths above 64, `intrinsic:<name>/int-wide`;
+  `hod_x86` lowers them at every width and the run tests reach the odd
+  ones through its own entry): `ctpop` (each limb's count, the top one
+  zero-extended, summed), `ctlz` / `cttz` (the first limb that is not
+  zero from the top / bottom, `bsr`·`xor 31` / `bsf` plus 32 per limb
+  passed; `cttz` sets bit `N` of the top limb below 32 bits; `N` for 0
+  whatever the flag), `bswap` / `bitreverse` (each limb reversed into the
+  opposite limb of a frame area, then shifted right by `32 L - N`),
+  `abs` (`x ^ s - s` with `s` the sign, the `sub` / `sbb` chain run on
+  the result's limbs after the `xor`s, which write the flags), `smax` /
+  `smin` / `umax` / `umin` (the order compare above, a copy of the chosen
+  operand on each side of a branch). Clang 19 and 22 write all of these
+  from `_BitInt(N)` with `__builtin_{popcountg,clzg,ctzg}` and
+  `__builtin_elementwise_{abs,max,min,bitreverse}`; they also write
+  `{s,u}{add,sub}.sat` and (clang 22) `fshl` / `fshr`, which stay
+  refused (`llc` calls compiler-rt's `__umodti3` for a funnel shift at an
+  odd width; libgcc for i386 has none).
+- x87 barriers (`x87::int_branch`, measured at `generic` and `i686` with
+  `llc` 19 and 22): without `cmov` `llc` branches for `ctlz`, `cttz` and
+  min / max as at 33 to 64 bits, and not for `ctpop`, `bswap`,
+  `bitreverse`, `abs` or a shift; with `cmov` for none. The constants it
+  treats apart are compared as 128-bit values: `umax` / `umin` with 0 or
+  all ones and `smax` / `smin` with the width's own extremes do not
+  branch; `smax` with `2^63` and `smin` with `2^63 - 1` at `i128` do.
+
 None of these is an x87 barrier: `llc` lowers none of them with a
 branch, a call or a loop but `select`, which §8 already lowers the
 same way.
@@ -1807,10 +1880,10 @@ longer reached):
 
 | name | what |
 |---|---|
-| `x86:i64:wide:shift` | `shl`, `lshr`, `ashr` |
+| `x86:i64:wide:shift` | no longer reached (WP-355: every shift compiles) |
 | `x86:i64:wide:div` | `udiv`, `sdiv`, `urem`, `srem` (libgcc has no `__divti3` on i386; `llc` calls compiler-rt's) |
-| `x86:i64:wide:intrinsic` | an integer intrinsic but the overflow ones (bit counts, `bswap`, `abs`, min / max, saturating, funnel shifts, `scmp` / `ucmp`); an odd width is the classifier's `intrinsic:<name>/int-wide` first |
-| `x86:i64:wide:switch` | a `switch` on such an integer |
+| `x86:i64:wide:intrinsic` | an integer intrinsic but the overflow ones and those of "Shifts, intrinsics, `switch`" below: the saturating `add` / `sub` and shifts, the funnel shifts, `scmp` / `ucmp`; a width other than 128 is the classifier's `intrinsic:<name>/int-wide` first |
+| `x86:i64:wide:switch` | no longer reached (WP-355) |
 | `x86:i64:wide:abi` | a result by value of 65 to 127 bits, a call's (`abi::type_refusal`); an `i128` result is returned in memory as `llc` does (hidden pointer, `eax`, `ret $4`), and a wide argument is the convention's `x86:abi:wide-arg` first |
 | `x86:i64:wide:width` | an integer wider than 128 bits |
 

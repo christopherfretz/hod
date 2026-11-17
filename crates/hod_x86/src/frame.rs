@@ -17,6 +17,10 @@
 //! left it `≡ 12`). A local `Local(o)` is `[ebp + o - 12 - FRAME]`,
 //! emitted with a `disp32` that `end` biases; an incoming argument
 //! `Incoming(n)` is `[ebp + 8 + n]`; an outgoing one `[esp + n]`.
+//! WP-354: a function that [`reserves_calls`] adds its largest outgoing
+//! argument area below the local area to the prologue's `sub`
+//! ([`prologue_size`]); its call sequences then move `esp` only for a
+//! callee pop ([`call_area`]).
 //!
 //! The epilogue is `lea esp, [ebp - 12]` · `pop edi` · `pop esi` · `pop
 //! ebx` · `pop ebp` · `ret`. The CFI rows are recorded for the unwind
@@ -58,6 +62,43 @@ pub struct FrameState {
     /// The slot that keeps an `inreg sret` pointer, returned in `eax`
     /// (`spec/abi-x86.md` §6.1).
     pub sret_slot: Option<FrameRef>,
+    /// WP-354: the outgoing argument area is reserved in the prologue
+    /// ([`reserves_calls`]).
+    pub reserved: bool,
+    /// WP-354: the largest outgoing argument area of the function's call
+    /// sequences (a multiple of 16), when `reserved`.
+    pub outgoing: u32,
+}
+
+/// WP-354 (`spec/codegen-x86.md` §3): whether the function reserves its
+/// calls' outgoing argument area once in the prologue, as `llc` does for
+/// a function without variable-sized objects. Not when `esp` moves in the
+/// body below the area: a dynamic `alloca` (any `alloca` instruction left
+/// in the body) or an over-aligned slot (`hod_cg`'s `dynamic_slot`, an
+/// area of its own in the entry code). `llvm.stacksave` /
+/// `llvm.stackrestore` alone qualify: without a dynamic area the saved
+/// `esp` is the prologue's.
+pub fn reserves_calls(cx: &FnCx<'_, X86>) -> bool {
+    let over_aligned = cx.body.slots().iter().any(|slot| slot.align() > 16);
+    let dynamic =
+        cx.body.insts().any(|inst| matches!(inst.kind(), hod_ir::InstKind::Alloca { .. }));
+    !over_aligned && !dynamic
+}
+
+/// The prologue's `FRAME`: the local area's ([`final_size`]) and, when
+/// reserved, the outgoing argument area below it (a multiple of 16, so the
+/// alignment is kept and a local's address from `ebp` does not change).
+///
+/// # Errors
+/// `limit:frame-size`.
+pub fn prologue_size(cx: &FnCx<'_, X86>) -> CgResult<u32> {
+    let frame = final_size(cx.frame_size())?;
+    let state = cx.state.frame;
+    let outgoing = if state.reserved { state.outgoing } else { 0 };
+    match frame.checked_add(outgoing) {
+        Some(total) if total <= MAX_FRAME => Ok(total),
+        _ => Err(CgError::unsupported(LIMIT_FRAME_SIZE)),
+    }
 }
 
 /// The final `FRAME` for a local area of `size` bytes: the least value
@@ -92,6 +133,8 @@ pub fn begin(cx: &mut FnCx<'_, X86>) -> CgResult<()> {
         let reg = dwarf(crate::reg::gpr(reg));
         cx.cfi(CfiOp::Offset { reg, cfa_offset: -12 - 4 * index as i32 });
     }
+    cx.state.frame.reserved = reserves_calls(cx);
+    cx.state.frame.outgoing = 0;
     let sub = mc::sub_ri(Size::D, ESP, 0x7fff_ffff);
     // `81 EC imm32`: the immediate is the last four bytes.
     cx.state.frame.frame_imm = cx.offset() + sub.bytes().len() as u32 - 4;
@@ -126,7 +169,8 @@ pub fn end(cx: &mut FnCx<'_, X86>) -> CgResult<()> {
     let frame = final_size(cx.frame_size())?;
     let below = 12 + frame;
     let at = cx.state.frame.frame_imm as usize;
-    if !mc::Fixup::Abs32.patch(cx.code_mut(), at, i64::from(frame)) {
+    let prologue = prologue_size(cx)?;
+    if !mc::Fixup::Abs32.patch(cx.code_mut(), at, i64::from(prologue)) {
         return cx.bug("the prologue is not where it was emitted");
     }
     cx.bind(cx.epilogue())?;
@@ -252,6 +296,24 @@ pub fn adjust_sp(cx: &mut FnCx<'_, X86>, delta: i64) {
         let step = left.clamp(-STEP, STEP);
         put(cx, mc::lea(Size::D, ESP, Mem::base(ESP, step as i32)));
         left -= step;
+    }
+}
+
+/// `Target::adjust_sp`, which `hod_cg`'s call sequence alone calls: it
+/// reserves a call's outgoing area (`delta < 0`) and frees it after the
+/// call and in an `invoke`'s pad stub (`delta > 0`). WP-354: in a function
+/// that [`reserves_calls`], the area is the prologue's, so only its size
+/// is recorded and nothing is emitted; elsewhere [`adjust_sp`].
+pub fn call_area(cx: &mut FnCx<'_, X86>, delta: i64) {
+    let state = &mut cx.state.frame;
+    if !state.reserved {
+        adjust_sp(cx, delta);
+        return;
+    }
+    if delta < 0 {
+        // Above `MAX_FRAME` the prologue's size is refused (`end`).
+        let area = u32::try_from(delta.unsigned_abs()).unwrap_or(MAX_FRAME).min(MAX_FRAME);
+        state.outgoing = state.outgoing.max(area.next_multiple_of(16));
     }
 }
 

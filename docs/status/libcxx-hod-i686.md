@@ -1,5 +1,60 @@
 # libc++ test suite on i686 through hod
 
+## WP-348 full run (2026-11-17, hybrid and strict, no `-g`)
+
+The full listing (9,247 tests) again, in hybrid and strict, with hod
+`b9d4aad4` (sha256 `5b369672...`), against the WP-339 control run (not
+rerun: it does not depend on hod). Same clang 22, suite, archives,
+emulator, runner and 20 shards per mode. Since `436a3755` hod has
+`llvm.is.fpclass`, `llvm.modf`, `llvm.frexp` and the fp80 casts on
+i386 (WP-337, WP-341) and vectors without SSE2 lane by lane (WP-338).
+Evidence and commands: `spec/landed/harness/WP-348.md`.
+
+First, strict over only the 195 tests that had a declined module in
+WP-339: 178 now build completely with hod; 177 PASS and 1 FAILs
+(`charconv.msvc/test.pass.cpp`, not a miscompile, see below). 17 still
+have a declined module (15 FAIL, 2 XFAIL, as in the control).
+
+| outcome | control | hybrid | strict |
+|---|---:|---:|---:|
+| PASS | 8,619 | 8,618 | 8,604 |
+| FAIL | 8 | 9 | 23 |
+| TIMEOUT | 1 | 1 | 1 |
+| XFAIL | 33 | 33 | 33 |
+| XPASS | 1 | 1 | 1 |
+| UNSUPPORTED | 585 | 585 | 585 |
+| wall, `-j 4`, 20 shards | 5,056 s | 6,918 s | 8,414 s |
+
+- 7,215 tests compile 7,223 modules; hod builds 7,206 modules and every
+  module of 7,198 tests (99.8 %, WP-339: 97.3 %).
+- strict's 15 extra FAILs are exactly the 15 tests with a declined
+  module that pass in the control; hybrid gives them the control's
+  outcome.
+- The one test that passes in the control and fails with every module
+  built by hod (`suspects.tsv`) is `charconv.msvc/test.pass.cpp`
+  (hybrid here, strict in the 195-test run), with `round-trip failed
+  for <random string>`. It seeds itself from `random_device`; rerun
+  three times it passed 3/3 in strict and 2/3 in hybrid, and the
+  control (`llc`) failed 1 of 3 with the same message. A flaky test
+  that fails under `llc` too, not a miscompile.
+- hod crashes, panics, timeouts: none (`trouble.tsv` is empty; strict
+  exits 7,206 times 0 and 17 times 2; longest hod step 1.43 s strict,
+  2.48 s hybrid with its `llc` fallback).
+- Back end, summed over the 7,206 modules hod built in strict: control
+  `llc` 830.8 s; hod 394.0 s in strict and 313.6 s in hybrid (the same
+  modules, so the difference is machine load: strict ran later, with
+  a longer wall time). The whole 7,223 modules under `llc`: 835.7 s.
+
+Census of the 17 declined modules (one reason each, no new name):
+
+| reason | tests | function and construct |
+|---|---:|---|
+| `x86:i64:wide` | 14 | `num_get::__do_get_integral<long long>`: `llvm.sadd.with.overflow.i65` (the `locale.num.get` tests; in WP-339 they stopped at an earlier refusal) |
+| `x86:atomic:libatomic` | 2 | `__atomic_ref_base<long long>::__compare_exchange` (`atomics.ref`, XFAIL) |
+| `x86:inline-asm:operand-type` | 1 | `DoNotOptimize<unsigned long long>`: `i64` operand, `"r|m"` |
+
+The reduced modules of all three were written in WP-339.
+
 ## WP-339 full run (2026-11-16, control and strict, no `-g`)
 
 All 9,247 tests of libc++'s suite (`std libcxx`, the full listing) for

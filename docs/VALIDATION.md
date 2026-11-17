@@ -337,6 +337,16 @@ HOD_OSS_KEEP_MODULES=$PWD/../.build/kept scripts/oss/oss-run.sh fmt --modes "hod
 cargo xtask compare-binaries --base <old hod> --head <new hod> --modules ../.build/kept --out <abs dir>
 ```
 
+The full comparison of two hod binaries over the repository's inputs
+(the seeds, both main corpora and both coroutine corpora, WP-353; `<B>`
+the build root) is:
+
+```
+cargo xtask compare-binaries --base <old hod> --head <new hod> -j 4 --out <abs dir> \
+    --corpus tests/ir --corpus <B>/corpus --corpus <B>/corpus-x64 \
+    --corpus <B>/corpus-coro/corpus --corpus <B>/corpus-coro/corpus-x64
+```
+
 The same lane runs for x86-64 on the AArch64 host (`--target x86_64`,
 `spec/landed/harness/WP-191.md`): kiln is given
 `--target=x86_64-unknown-linux-gnu` and finds the cross GCC and its
@@ -561,12 +571,25 @@ it, in `cargo test` (the ABI grids of `hod_a64` and `hod_x64`).
 steps with the whole corpus for L2 and every L4 seed with both oracles
 and in hybrid mode, then, cheapest first, L7 and L6 for each target
 architecture: `debug-x86_64`, `debug-aarch64` (every debugger test,
-then `debug verify` of the target's corpus), `corpus-aarch64`,
+then `debug verify` of the target's corpus), `debug-i686` (every
+debugger test for i686; no i686 corpus, so no `debug verify`),
+`corpus-aarch64`,
 `corpus-x86_64` (`corpus verify --strict` of the target's corpus with
 the list of expected results, `docs/status/corpus-expected.tsv`: a
 refusal or an undefined entry not on the list fails, and so does a row
 the corpus no longer needs; `spec/harness.md` "corpus", "Expected
-results"). It runs on the development machine, where the corpora are;
+results"), then `corpus-coro-aarch64`, `corpus-coro-x86_64` (WP-353:
+`corpus verify --strict` of the coroutine corpus,
+`<build root>/corpus-coro/corpus` and `corpus-coro/corpus-x64`, with
+its own list, `docs/status/corpus-coro-expected.tsv`). The coroutine
+corpus is captured on kiln's hod route, so its modules hold unsplit
+coroutines that the main corpora never have (`spec/landed/harness/WP-350.md`):
+`cargo xtask corpus capture --route hod --kiln-repo <suite> --out
+<build root>/corpus-coro/corpus` and the same with `--target x86_64`
+into `corpus-coro/corpus-x64`, where `<suite>` is the directory WP-350
+assembles (kiln's coroutine `run` tests and `tests/corpus-coro/hod.coro/`).
+An absent coroutine corpus is a skip, and a failure under
+`HOD_REQUIRE_TOOLS=1`, as for the main corpus. It runs on the development machine, where the corpora are;
 each step prints its wall time and the gate ends with a table of the
 steps. "Both targets" means both target architectures, from one host
 (the other's programs under its emulator), unless a step says

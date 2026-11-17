@@ -660,7 +660,7 @@ pub fn intrinsic<'a>(
         return three_way(cx, inst, which == I::Scmp, a, b);
     }
     if wide::wide_bits(cx, inst.ty()).is_some() {
-        return unsupported(wide::INTRINSIC);
+        return wide::intrinsic(cx, inst, which, args);
     }
     let bits = bits_of(cx, inst.ty())?;
     match (which, args) {
@@ -679,7 +679,7 @@ pub fn intrinsic<'a>(
 }
 
 /// The population count of `r` in `r` (`t` written; flags written).
-fn pop32(cx: &mut FnCx<'_, X86>, r: Reg, t: Reg) {
+pub(crate) fn pop32(cx: &mut FnCx<'_, X86>, r: Reg, t: Reg) {
     put(cx, mc::mov_rr(Size::D, t, r));
     put(cx, mc::shr_ri(Size::D, t, 1));
     put(cx, mc::and_ri(Size::D, t, imm(0x5555_5555)));
@@ -698,7 +698,7 @@ fn pop32(cx: &mut FnCx<'_, X86>, r: Reg, t: Reg) {
 }
 
 /// The bits of `r` reversed, in `r` (`t` written; flags written).
-fn rev32(cx: &mut FnCx<'_, X86>, r: Reg, t: Reg) {
+pub(crate) fn rev32(cx: &mut FnCx<'_, X86>, r: Reg, t: Reg) {
     put(cx, mc::bswap(Size::D, r));
     for (s, m) in [(4, 0x0f0f_0f0f), (2, 0x3333_3333), (1, 0x5555_5555)] {
         put(cx, mc::mov_rr(Size::D, t, r));
@@ -1186,7 +1186,7 @@ fn funnel<'a>(
 /// [`WIDE`]; what the operand and the branches report.
 pub fn switch<'a>(cx: &mut FnCx<'a, X86>, switch: &Switch<'a>) -> CgResult<()> {
     if wide::wide_bits(cx, value_ty(cx, switch.cond)).is_some() {
-        return unsupported(wide::SWITCH);
+        return wide::switch(cx, switch);
     }
     let bits = bits_of(cx, value_ty(cx, switch.cond))?;
     let all = u64::MAX >> (64 - bits);

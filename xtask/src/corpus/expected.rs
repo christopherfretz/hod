@@ -30,6 +30,17 @@ pub fn default_path() -> PathBuf {
     crate::irdiff::workspace_root().join("docs").join("status").join(FILE)
 }
 
+/// The file name of the coroutine corpus's list (WP-353), in
+/// `docs/status/`: its own, because a row naming a test absent from the
+/// corpus verified is a list problem, and the coroutine corpus holds
+/// none of the main corpus's tests' entries nor they its.
+pub const CORO_FILE: &str = "corpus-coro-expected.tsv";
+
+/// The coroutine corpus's list of this workspace.
+pub fn coro_path() -> PathBuf {
+    crate::irdiff::workspace_root().join("docs").join("status").join(CORO_FILE)
+}
+
 /// What a row expects.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -501,5 +512,9 @@ mod tests {
     fn the_workspaces_list_reads() {
         let list = Expected::read(&default_path()).unwrap();
         assert!(list.rows.iter().all(|row| !row.note.is_empty()));
+        // WP-353: the coroutine corpus's list reads too, and is its own.
+        let coro = Expected::read(&coro_path()).unwrap();
+        assert!(coro.rows.iter().all(|row| !row.note.is_empty()));
+        assert_ne!(coro_path(), default_path());
     }
 }

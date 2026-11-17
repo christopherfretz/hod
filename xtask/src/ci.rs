@@ -74,7 +74,7 @@ pub fn cargo_step(args: &[&str]) -> bool {
 
 /// The steps of `cargo xtask ci`, in the order they run (`spec/harness.md`
 /// "ci"): the quick gate's, then [`FULL_ONLY`].
-pub const STEPS: [&str; 13] = [
+pub const STEPS: [&str; 16] = [
     "fmt",
     "scripts",
     "workflows",
@@ -86,28 +86,36 @@ pub const STEPS: [&str; 13] = [
     "bench-x86_64",
     "debug-x86_64",
     "debug-aarch64",
+    "debug-i686",
     "corpus-aarch64",
     "corpus-x86_64",
+    "corpus-coro-aarch64",
+    "corpus-coro-x86_64",
 ];
 
 /// The steps only the full gate runs, cheapest first so that it fails
 /// fast: the counts gate of the benchmark (WP-292, `bench --check
 /// --counts`), L7 (`debug` full tier and `debug verify`) and then L6
 /// (`corpus verify --strict` with the list of expected results) for each
-/// target architecture, from this one host (`docs/VALIDATION.md` "Gates").
-pub const FULL_ONLY: [&str; 6] = [
+/// target architecture, from this one host (`docs/VALIDATION.md` "Gates"),
+/// last L6 of the coroutine corpus (WP-350, WP-353) with its own list.
+pub const FULL_ONLY: [&str; 9] = [
     "bench-aarch64",
     "bench-x86_64",
     "debug-x86_64",
     "debug-aarch64",
+    "debug-i686",
     "corpus-aarch64",
     "corpus-x86_64",
+    "corpus-coro-aarch64",
+    "corpus-coro-x86_64",
 ];
 
-/// The target architecture a step of [`FULL_ONLY`] is for, by name.
+/// The target architecture a step of [`FULL_ONLY`] is for, by name: the
+/// part after its last `-` (`corpus-coro-x86_64`: `x86_64`).
 pub fn step_target(step: &str) -> Option<&'static str> {
-    let (_, arch) = step.split_once('-')?;
-    ["aarch64", "x86_64"].into_iter().find(|known| *known == arch)
+    let (_, arch) = step.rsplit_once('-')?;
+    ["aarch64", "x86_64", "i686"].into_iter().find(|known| *known == arch)
 }
 
 /// How a step of the gate ended.
@@ -226,9 +234,10 @@ fn run_one(step: &str, args: &Args) -> StepResult {
         }
         "irdiff" => passed(irdiff_gate(args.quick)),
         "roundtrip" => roundtrip_gate(args.quick),
-        _ => match (step.split_once('-'), step_target(step)) {
+        _ => match (step.rsplit_once('-'), step_target(step)) {
             (Some(("debug", _)), Some(arch)) => passed(debug_gate(arch)),
-            (Some(("corpus", _)), Some(arch)) => corpus_gate(arch),
+            (Some(("corpus", _)), Some(arch)) => corpus_gate(arch, false),
+            (Some(("corpus-coro", _)), Some(arch)) => corpus_gate(arch, true),
             (Some(("bench", _)), Some(arch)) => bench_gate(arch),
             _ => unreachable!("Args::parse accepts only the gate's steps, not '{step}'"),
         },
@@ -299,18 +308,26 @@ fn debug_gate(arch: &str) -> bool {
 
 /// The L6 step of one target architecture (spec/harness.md "corpus",
 /// "In the gate"): `corpus verify --strict` of that architecture's
-/// default corpus, with the workspace's list of expected results. A
-/// missing corpus skips the step, or fails it under `HOD_REQUIRE_TOOLS=1`.
+/// default corpus, with the workspace's list of expected results; with
+/// `coro`, of its coroutine corpus with that corpus's own list (WP-353,
+/// [`corpus_gate_inputs`]). A missing corpus skips the step, or fails it
+/// under `HOD_REQUIRE_TOOLS=1`.
 #[cfg(unix)]
-fn corpus_gate(arch: &str) -> StepResult {
+fn corpus_gate(arch: &str, coro: bool) -> StepResult {
     use crate::corpus::{self, manifest, verify};
     let target = crate::irdiff::Arch::from_name(arch);
     let build_dir = crate::irdiff::default_build_dir();
     let mut options = corpus::verify_defaults(&build_dir, target);
+    (options.dir, options.expected) = corpus_gate_inputs(&build_dir, target, coro);
     options.config.mode = crate::irdiff::Mode::Strict;
     options.config.jobs = crate::irdiff::Config::for_workspace().jobs;
     if !options.dir.join(manifest::MANIFEST).is_file() {
-        let why = format!("no corpus at '{}' (cargo xtask corpus capture)", options.dir.display());
+        let capture = if coro {
+            "cargo xtask corpus capture --route hod, spec/landed/harness/WP-350.md"
+        } else {
+            "cargo xtask corpus capture"
+        };
+        let why = format!("no corpus at '{}' ({capture})", options.dir.display());
         if options.config.require_tools {
             eprintln!("corpus: error: {why} (HOD_REQUIRE_TOOLS=1)");
             return StepResult::Failed;
@@ -319,8 +336,9 @@ fn corpus_gate(arch: &str) -> StepResult {
         return StepResult::Skipped(why);
     }
     eprintln!(
-        "ci: cargo xtask corpus verify --target {arch} --strict -j {} {}",
+        "ci: cargo xtask corpus verify --target {arch} --strict -j {} --expected {} {}",
         options.config.jobs,
+        options.expected.as_deref().unwrap_or(std::path::Path::new("-")).display(),
         options.dir.display()
     );
     match verify::verify(&options) {
@@ -388,8 +406,26 @@ fn debug_gate(_: &str) -> bool {
     true
 }
 
+/// The corpus and the list of expected results an L6 step verifies: the
+/// target's default corpus with `docs/status/corpus-expected.tsv`, or
+/// (`coro`) its coroutine corpus, `<build root>/corpus-coro/corpus`
+/// (`corpus-x64`, `corpus-a64`), with `docs/status/corpus-coro-expected.tsv`.
+#[cfg(unix)]
+pub fn corpus_gate_inputs(
+    build_dir: &std::path::Path,
+    target: Option<crate::irdiff::Arch>,
+    coro: bool,
+) -> (std::path::PathBuf, Option<std::path::PathBuf>) {
+    use crate::corpus::{self, expected};
+    if coro {
+        (corpus::coro_dir_for(build_dir, target), Some(expected::coro_path()))
+    } else {
+        (corpus::default_dir_for(build_dir, target), Some(expected::default_path()))
+    }
+}
+
 #[cfg(not(unix))]
-fn corpus_gate(_: &str) -> StepResult {
+fn corpus_gate(_: &str, _: bool) -> StepResult {
     StepResult::Skipped("only available on Unix hosts".to_owned())
 }
 
@@ -659,14 +695,19 @@ mod tests {
                 Some("x86_64"),
                 Some("x86_64"),
                 Some("aarch64"),
+                Some("i686"),
+                Some("aarch64"),
+                Some("x86_64"),
                 Some("aarch64"),
                 Some("x86_64")
             ]
         );
         // WP-292: the counts gate first (about two minutes per target).
         assert!(FULL_ONLY.iter().take(2).all(|s| s.starts_with("bench-")));
-        assert!(FULL_ONLY.iter().skip(2).take(2).all(|s| s.starts_with("debug-")));
-        assert!(FULL_ONLY.iter().skip(4).all(|s| s.starts_with("corpus-")));
+        assert!(FULL_ONLY.iter().skip(2).take(3).all(|s| s.starts_with("debug-")));
+        assert!(FULL_ONLY.iter().skip(5).all(|s| s.starts_with("corpus-")));
+        // WP-353: the coroutine corpus last, after the main corpus's steps.
+        assert!(FULL_ONLY.iter().skip(7).all(|s| s.starts_with("corpus-coro-")));
         // The usage names every step.
         let main = include_str!("main.rs");
         for step in STEPS {
@@ -674,6 +715,32 @@ mod tests {
         }
         assert_eq!(step_target("fmt"), None);
         assert_eq!(step_target("corpus-arm"), None);
+        assert_eq!(step_target("corpus-coro-x86_64"), Some("x86_64"));
+    }
+
+    // spec/harness.md "ci" (WP-353): the coroutine corpus's steps verify
+    // `<build root>/corpus-coro/corpus[-x64]` with its own list, the main
+    // corpus's steps the default corpus with the workspace's list.
+    #[cfg(unix)]
+    #[test]
+    fn the_coroutine_corpus_steps_have_their_own_corpus_and_list() {
+        use super::corpus_gate_inputs;
+        use crate::corpus::expected;
+        use crate::irdiff::Arch;
+        use std::path::Path;
+        let build = Path::new("/b/target-wp");
+        let other = match Arch::host() {
+            Some(Arch::X86_64) => (Arch::Aarch64, "corpus-a64"),
+            _ => (Arch::X86_64, "corpus-x64"),
+        };
+        let (dir, list) = corpus_gate_inputs(build, Arch::host(), true);
+        assert_eq!(dir, Path::new("/b/corpus-coro/corpus"));
+        assert_eq!(list, Some(expected::coro_path()));
+        let (dir, _) = corpus_gate_inputs(build, Some(other.0), true);
+        assert_eq!(dir, Path::new("/b/corpus-coro").join(other.1));
+        let (dir, list) = corpus_gate_inputs(build, Some(other.0), false);
+        assert_eq!(dir, Path::new("/b").join(other.1));
+        assert_eq!(list, Some(expected::default_path()));
     }
 
     // spec/harness.md "ci": every step's wall time, and the table the gate

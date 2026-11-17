@@ -600,14 +600,15 @@ fn long_double_classification_from_c() {
     eprintln!("i386 long double classification: {runs} runs equal llc's");
 }
 
+/// An `i80` shift compiles since WP-355 (`spec/codegen-x86.md` §22; the
+/// shifts' run tests are `i386_wide_int.rs`'s `shifts_as_llc`).
 #[test]
-fn other_i80_operations_stay_refused() {
+fn an_i80_shift_compiles() {
     let shift = "define i32 @f(x86_fp80 %x) {
   %b = bitcast x86_fp80 %x to i80
   %s = lshr i80 %b, 64
   %t = trunc i80 %s to i32
   ret i32 %t
 }";
-    let error = refusal(shift, None).expect("an i80 shift compiles");
-    assert!(error.contains("x86:i64:wide"), "{error}");
+    assert_eq!(refusal(shift, None), None, "an i80 shift is refused");
 }

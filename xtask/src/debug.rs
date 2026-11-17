@@ -186,6 +186,13 @@ pub fn gate(target: Option<crate::irdiff::directives::Arch>) -> bool {
             false
         }
     };
+    // WP-354: the `debug-i686` step runs the sessions only; there is no
+    // i686 corpus for `debug verify` (`spec/harness.md` "debug", "In the
+    // gate").
+    if target == Some(crate::irdiff::directives::Arch::I686) {
+        eprintln!("xtask debug: debug verify skipped for i686: no i686 corpus");
+        return sessions_ok;
+    }
     let options = verify::Options {
         paths: Vec::new(),
         jobs: 4,

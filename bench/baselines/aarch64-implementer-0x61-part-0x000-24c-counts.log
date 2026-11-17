@@ -4,3 +4,4 @@
 2026-11-16T22:32:19Z	wave 44: WP-312 (object written from its sections), WP-320 (three debug decodes), WP-321 (section names hashed once), WP-326 (long words against the long keywords only)	20 inputs, hod built 20; hod version 1.0.0; 3 runs; mode counts
 2026-11-17T01:46:16Z	wave 45: WP-332 (hod's .mason.meta unit in every object), WP-331 (two-register i386 pool), WP-324, WP-329, WP-330, WP-328	20 inputs, hod built 20; hod version 1.0.0; 3 runs; mode counts
 2026-11-17T02:50:46Z	wave 45 join G (WP-334, WP-333, WP-336, WP-335, WP-338, WP-337, the protected coroutine stubs)	20 inputs, hod built 20; hod version 1.0.0; 3 runs; mode counts
+2026-11-17T11:28:25Z	wave 48 with wave 47 (WP-349: the -g path after the parse; WP-356: the parser's metadata nodes and Made::define; WP-354, WP-355, WP-353)	20 inputs, hod built 20; hod version 1.0.0; 3 runs; mode counts

@@ -21,12 +21,20 @@ gate", then (full gate only, `xtask::ci::FULL_ONLY`, cheapest first)
 counts gate"; a missing valgrind, `llc` or clang skips the step with the
 line `bench: skipped: no <tool>; under HOD_REQUIRE_TOOLS=1 this fails`,
 and fails it under `HOD_REQUIRE_TOOLS=1`), then
-`debug-x86_64` and `debug-aarch64`, the runs of "debug", "In the gate"
-for each target architecture, and `corpus-aarch64` and `corpus-x86_64`,
+`debug-x86_64`, `debug-aarch64` and `debug-i686`, the runs of "debug",
+"In the gate" for each target architecture (`debug-i686` the sessions
+only, WP-354), and `corpus-aarch64` and `corpus-x86_64`,
 L6: `corpus verify --strict` of that architecture's default corpus
 ("corpus", "Where things are"; the other architecture's under its
 emulator) with the list of expected results ("corpus", "Expected
-results"), `-j` of `irdiff`'s default (4), the workspace's hod. It
+results"), `-j` of `irdiff`'s default (4), the workspace's hod, and
+last `corpus-coro-aarch64` and `corpus-coro-x86_64` (WP-353): the same
+for that architecture's coroutine corpus ("corpus", "The hod route"),
+`<build root>/corpus-coro/` and in it the name of the default corpus
+(`corpus`, `corpus-x64`, `corpus-a64`), with its own list
+`docs/status/corpus-coro-expected.tsv`; an absent corpus skips, or fails
+under `HOD_REQUIRE_TOOLS=1`, as for the main corpus
+(`xtask::ci::corpus_gate_inputs`). It
 stops at the first step that fails, printing `ci: <step> FAILED`. Each
 step that runs ends with `ci: <step>: <result> in <wall time>`; the gate
 then prints a table of every selected step, its result (`passed`,
@@ -34,7 +42,8 @@ then prints a table of every selected step, its result (`passed`,
 failed)`, or `not run (full gate only)` under `--quick`) and its wall
 time, and the total, also when a step failed; it ends with `ci: ok` and
 exit status 0 only if every step passed or was skipped. Tests:
-`xtask::ci::tests::the_full_gates_steps`, `the_gates_table`.
+`xtask::ci::tests::the_full_gates_steps`, `the_gates_table`,
+`the_coroutine_corpus_steps_have_their_own_corpus_and_list`.
 
 **`scripts` and `workflows`** (WP-265, `xtask::scripts`; seconds, in the
 quick gate too). `scripts` runs `python3 -I
@@ -99,8 +108,11 @@ links no dylib), and a second failure of the step, fails the gate.
 
 `--step <name>` (repeatable; `fmt`, `scripts`, `workflows`, `clippy`, `test`, `irdiff`,
 `roundtrip`, `bench-aarch64`, `bench-x86_64`, `debug-x86_64`,
-`debug-aarch64`, `corpus-aarch64`, `corpus-x86_64`; WP-251 replaced
-`debug` by the two `debug-<arch>`; the usage of `cargo xtask` names
+`debug-aarch64`, `debug-i686`, `corpus-aarch64`, `corpus-x86_64`,
+`corpus-coro-aarch64`, `corpus-coro-x86_64`; WP-251
+replaced `debug` by the `debug-<arch>` steps, WP-354 added `debug-i686`,
+WP-353 the `corpus-coro-<arch>` steps;
+the usage of `cargo xtask` names
 them all)
 runs only the named steps, in the gate's order
 whatever the order they are named in; without it every step runs. An
@@ -4259,33 +4271,60 @@ line (`^`) after such a line
 (`spec/dwarf.md` §5.7 `return-column`).
 
 On `--target i686` three more classes are checked against the linked
-programs' line tables (`debug::rows`, WP-352; `llvm-dwarfdump
---debug-line`, `llvm-nm -S`, `llvm-objdump -d` of hod's program, and of
-`llc`'s for `entry-row`; `llvm-nm --defined-only` of both for
-`local-label`). A **return row** of a program is a position
-(line, column) at which it has a `call` whose row and whose return
-address's row (the row covering the next instruction's address) are at
-that same position.
+programs' line tables (`debug::rows`, WP-352, WP-354; `llvm-dwarfdump
+--debug-line`, `llvm-nm -S` and `llvm-objdump -d` of both programs;
+`llvm-nm --defined-only` of both for `local-label`). A **return site**
+of a program is a direct `call` (`call 0x? <callee>`) read at its return
+address (the next instruction's): the function holding it, the callee,
+the line of the row covering the call, the file and line of the row
+starting at the return address if one does (the last one there), and
+the file and line of the first row at a higher address after it.
 
-- `permitted: return-row` (`spec/dwarf.md` §5.7 `return-row`): the
-  transcripts have the same number of lines and every differing pair is
-  in a stop after `finish`. lldb (`rows::lldb_only_return_rows`): the
-  stop's `stop reason` is `step out`; its `frame #0:` lines are equal
-  but for line and column, hod's position is one of hod's return rows,
-  and the other differing lines are those up to the next `(lldb) `
-  prompt (the source listing). gdb (`rows::gdb_only_return_rows`): the
-  k-th stop line of `llc`'s transcript (`[Breakpoint N, ][0x? in ]F
-  (args) at file:LINE`, not a backtrace line) is the k-th stopping
-  command's of the script (`run`, `continue`, `step`, `next`, `finish`,
-  `until` and their short forms) and that command is `finish`; the two
-  stop lines are equal but for `0x? in ` and the line, hod's line is
-  the line of one of hod's return rows, and the next pair are the two
-  lines' source lines.
+- `permitted: return-line0` (gdb, `rows::gdb_return_line0`;
+  `spec/dwarf.md` §5.7 `return-line0`). Stops are counted on `llc`'s
+  side by their source lines (`N<tab>text`, one per stop; a script with
+  `list` is refused); the k-th stop is the k-th stopping command's of
+  the script (`run`, `continue`, `step`, `next`, `finish`, `until` and
+  their short forms). Lines are compared in order; at the first line of
+  each differing pair:
+  - **Part 1 (the stop itself).** Both lines are stop lines (`[Breakpoint
+    N, ][0x? in ]F (args) at file:LINE`) of a `finish`, equal but for
+    `0x? in ` and LINE. The callee is the function of `llc`'s last stop
+    line before it; caller and file are the stop's. The calls from the
+    caller to the callee are as many in both programs, paired in address
+    order, and one pair has: in `llc`'s program a row of line 0 starting
+    at the return address, the call in a row of `llc`'s reported line;
+    in hod's program a row of hod's reported line, in that file, starting
+    at the return address. The two lines after them are the source lines
+    of the two reported lines (equal if the lines are). Then the stop
+    line and its source line may differ.
+  - **Part 2 (one step ahead)**, only when part 1's two lines differ and
+    the next stopping command is `next` or `step`: in `llc`'s program
+    the first row after the line-0 row has the file and line of hod's
+    row at the return address (`llc`'s next statement is where hod
+    already is), and `llc`'s report of that command (an optional stop
+    line, then a source line, after the lines both sessions print for
+    the `finish`, which are compared) is hod's `finish` report: the stop
+    line equal to hod's without `0x? in `, the source line equal. Then
+    hod's report of that one command (an optional stop line and a
+    source line), which has no counterpart because hod is one statement
+    ahead, is not compared. Exactly one command is skipped.
+  - Every other line is compared as usual: a session still one step
+    apart after the skipped command fails.
+  The detail is `permitted: return-line0`, or `permitted: return-line0
+  (one step ahead)` when part 2 was applied. Where it occurs today:
+  i386 PIC, whose `llc` reloads the PIC base (`mov 0xc(%esp), %ebx`)
+  right after each call in a row of line 0, so gdb's `finish` reports
+  `0x? in` and the call's line; hod reloads nothing, its return address
+  is the next instruction (WP-354), which starts a row; when nothing of
+  the call's statement follows the call, that row is the next
+  statement's (`key_call.c`, the `finish` out of `consume`), as in
+  `llc`'s own x86-64 code.
 - `permitted: entry-row` (lldb, `rows::lldb_entry_rows`): a pair of
   `Breakpoint N: where = prog`F[ + ?] at file:L:C, ...` lines equal
   but for ` + ?`, where (L, C) is F's entry row (its first
   `prologue_end` row) in BOTH programs; every other differing pair is
-  then permitted by `return-column` or `return-row`, or there is none.
+  then permitted by `return-column`, or there is none.
 - `permitted: local-label` (gdb and lldb, `rows::only_local_labels`,
   checked first): the transcripts have the same number of lines and
   every differing pair is `llc`'s line equal to hod's once each
@@ -4398,10 +4437,14 @@ The quick gate has no step of its own: `cargo test` runs
 `xtask/tests/debug_real.rs`, whose `quick_tier_matches_llc` is the quick
 tier (about 20 s on the development host at load, 120 sessions; the
 result does not depend on time or load). The full gate runs, once per
-target architecture (its steps `debug-x86_64` and `debug-aarch64`,
-"ci"), every debugger test for that target, then `debug verify` of that
-target's corpus (`debug::gate(target)`), and fails on a non-zero exit
-status of either.
+target architecture (its steps `debug-x86_64`, `debug-aarch64` and
+`debug-i686`, "ci"), every debugger test for that target, then `debug
+verify` of that target's corpus (`debug::gate(target)`), and fails on a
+non-zero exit status of either. `debug-i686` (WP-354) runs the sessions
+only (`debug --target i686`, the matrix GNU ld, lld and mold): there is
+no i686 corpus, so `debug::gate` skips `debug verify` for i686
+explicitly, printing `xtask debug: debug verify skipped for i686: no
+i686 corpus`, and the step's result is the sessions'.
 
 ### Library
 

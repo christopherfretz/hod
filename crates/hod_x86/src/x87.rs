@@ -376,17 +376,25 @@ fn int_branch(cx: &FnCx<'_, X86>, inst: Inst<'_>, which: Intrinsic<'_>, args: &[
         return false;
     }
     let Some(bits) = cx.types().int_bits(inst.ty()) else { return false };
-    let all_ones = if bits >= 64 { u64::MAX } else { (1u64 << bits) - 1 };
-    let sign = 1u64 << (bits.clamp(1, 64) - 1);
+    // At 65 to 128 bits the constants are `u128`s (WP-355: `llc` 19 and
+    // 22 branch for `smax` with 2^63 and `smin` with 2^63 - 1 at `i128`,
+    // and for neither with the width's own extremes).
+    let all_ones = if bits >= 128 { u128::MAX } else { (1u128 << bits) - 1 };
+    let sign = 1u128 << (bits.clamp(1, 128) - 1);
     let constant = |v: Value| match v.kind() {
         ValueKind::Const(id) => match cx.module.consts.get(id) {
-            Const::Int { value, .. } => Some(value & all_ones),
+            Const::Int { value, .. } => Some(u128::from(value) & all_ones),
+            Const::WideInt { words, .. } => Some(
+                (u128::from(words.first().copied().unwrap_or(0))
+                    | u128::from(words.get(1).copied().unwrap_or(0)) << 64)
+                    & all_ones,
+            ),
             Const::Null(_) | Const::Zero(_) | Const::Undef(_) | Const::Poison(_) => Some(0),
             _ => None,
         },
         _ => None,
     };
-    let is = |v: Value, k: u64| constant(v) == Some(k);
+    let is = |v: Value, k: u128| constant(v) == Some(k);
     let (data, rest): (&[Value], &[Value]) = match which {
         I::Ctlz | I::Cttz => (args.get(..1).unwrap_or(args), args.get(1..).unwrap_or(&[])),
         _ => (args, &[]),

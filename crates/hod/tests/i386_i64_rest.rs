@@ -153,9 +153,9 @@ fn refusal(body: &str) -> Option<String> {
 /// construct of this package, and nothing panics on them.
 #[test]
 fn wider_than_64_bits_is_refused_by_name() {
+    // `ctpop.i128` and a `switch` on an `i128` compile since WP-355:
+    // `i386_wide_int.rs`.
     let cases = [
-        "define void @f(ptr %p) {\n  %a = load i128, ptr %p\n  \
-         %r = call i128 @llvm.ctpop.i128(i128 %a)\n  store i128 %r, ptr %p\n  ret void\n}",
         "define void @f(ptr %p) {\n  %a = load i65, ptr %p\n  \
          %r = call i65 @llvm.smax.i65(i65 %a, i65 %a)\n  store i65 %r, ptr %p\n  ret void\n}",
         "define void @f(ptr %p) {\n  %a = load i128, ptr %p\n  \
@@ -164,9 +164,6 @@ fn wider_than_64_bits_is_refused_by_name() {
         "define void @f(ptr %p) {\n  %a = load i128, ptr %p\n  \
          %r = call i128 @llvm.uadd.sat.i128(i128 %a, i128 %a)\n  store i128 %r, ptr %p\n  \
          ret void\n}",
-        "define i32 @f(ptr %p) {\nentry:\n  %a = load i128, ptr %p\n  \
-         switch i128 %a, label %d [ i128 18446744073709551616, label %c ]\n\
-         c:\n  ret i32 1\nd:\n  ret i32 0\n}",
         // A `getelementptr` with a wide index compiles since WP-346 (the
         // index truncated to the pointer width): `i386_wide_int.rs`.
     ];

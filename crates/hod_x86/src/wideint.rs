@@ -20,13 +20,13 @@
 //!
 //! # Refused
 //!
-//! `udiv`/`sdiv`/`urem`/`srem`, the shifts, the integer intrinsics (but
-//! the overflow ones), a `switch` on, and an argument or result of such an
-//! integer, and any integer wider than 128 bits: each under its own name
-//! below.
+//! `udiv`/`sdiv`/`urem`/`srem`, the integer intrinsics [`intrinsic`] leaves
+//! out, an argument or result of such an integer, and any integer wider
+//! than 128 bits: each under its own name below. Shifts and `switch`
+//! compile (WP-355); [`SHIFT`] and [`SWITCH`] are no longer reached.
 
 use hod_cg::{CgResult, FnCx, FrameRef, Label};
-use hod_ir::{Const, Inst, IntPredicate, Opcode, TypeId, Value, ValueKind};
+use hod_ir::{Const, Inst, IntPredicate, Intrinsic, Opcode, Switch, TypeId, Value, ValueKind};
 use hod_mc_x64 as mc;
 use hod_mc_x64::{Cond, Mem, Reg, Size};
 
@@ -211,7 +211,7 @@ pub fn binary<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, lhs: Value, rhs: Value
         Opcode::Or => (mc::or_rm, mc::or_rm),
         Opcode::Xor => (mc::xor_rm, mc::xor_rm),
         Opcode::Mul => return mul(cx, inst, lhs, rhs),
-        Opcode::Shl | Opcode::LShr | Opcode::AShr => return unsupported(SHIFT),
+        Opcode::Shl | Opcode::LShr | Opcode::AShr => return shift(cx, inst, lhs, rhs),
         Opcode::UDiv | Opcode::SDiv | Opcode::URem | Opcode::SRem => return unsupported(DIV),
         _ => return unsupported(alu::CAST),
     };
@@ -224,6 +224,366 @@ pub fn binary<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, lhs: Value, rhs: Value
         st(cx, EAX, r, limb);
     }
     Ok(())
+}
+
+// ---- shifts ----
+
+/// The limbs of fill beside the value in a shift's buffer: one more than
+/// the largest limb distance of an in-range amount (3, at 97 to 128 bits),
+/// so that every masked distance reads inside the buffer.
+const PAD: u32 = 4;
+
+/// The amount of a shift by the constant `value`, saturated: `u64::MAX`
+/// for one with a high limb set; `None` when `value` is no constant.
+fn const_amount(cx: &FnCx<'_, X86>, value: Value) -> Option<u64> {
+    let ValueKind::Const(id) = value.kind() else { return None };
+    match cx.module.consts.get(id) {
+        Const::Int { value, .. } => Some(value),
+        Const::WideInt { words, .. } => {
+            Some(if words.iter().skip(1).all(|&w| w == 0) { words[0] } else { u64::MAX })
+        }
+        Const::Null(_) | Const::Zero(_) | Const::Undef(_) | Const::Poison(_) => Some(0),
+        _ => None,
+    }
+}
+
+/// `%r = shl|lshr|ashr iN %lhs, %rhs` (`llc`'s shift through a stack
+/// buffer). The buffer holds the value's `L` limbs, its top limb extended
+/// (zero, or sign for `ashr`), and [`PAD`] limbs of fill (0, or the sign)
+/// below it for `shl`, above it for the right shifts. Result limb `i` is
+/// the double shift (`shld` / `shrd`) of the buffer's limbs `i - q` and
+/// `i - q - 1` (`shl`) or `i + q` and `i + q + 1`, `q = amount / 32`, by
+/// `amount % 32`. A constant amount picks the limbs at compile time (none
+/// at all of the width or more: poison); a variable one is the low limb
+/// in `ecx`, `edx = &buffer -/+ 4 ((ecx >> 5) & 3)`, and `shld` / `shrd
+/// [r + 4 i], eax, cl` (which count modulo 32). The mask keeps every
+/// access inside the buffer for any amount. No branch, no call, no
+/// register but `eax`, `ecx`, `edx`.
+///
+/// # Errors
+/// [`WIDTH`]; what the operands report.
+fn shift<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, lhs: Value, rhs: Value) -> CgResult<()> {
+    let bits = cx.types().int_bits(inst.ty()).unwrap_or(128);
+    let count = limbs(bits)?;
+    let op = inst.opcode();
+    let right = op != Opcode::Shl;
+    let ext = if op == Opcode::AShr { Ext::Sign } else { Ext::Zero };
+    let amount = const_amount(cx, rhs);
+    if amount.is_some_and(|k| k >= u64::from(bits)) {
+        return Ok(());
+    }
+    let a = cx.use_mem(lhs)?;
+    let n = match amount {
+        Some(_) => None,
+        None => Some(cx.use_mem(rhs)?),
+    };
+    let r = cx.def_mem(inst)?;
+    let buf = cx.alloc_slot(u64::from(4 * (count + PAD)), 4)?;
+    let (value, pad) =
+        if right { (buf, buf.offset_by(4 * count)) } else { (buf.offset_by(4 * PAD), buf) };
+    copy(cx, value, a, count - 1);
+    ld_top(cx, ECX, a, bits, ext);
+    st(cx, ECX, value, count - 1);
+    fill(cx, pad, 0, PAD, ext == Ext::Sign);
+    // The buffer's limbs read for result limb `i` at limb distance `q`:
+    // (the one shifted out of, the one shifted in from).
+    let at =
+        |i: u32, q: u32| if right { (i + q, i + q + 1) } else { (PAD + i - q, PAD + i - q - 1) };
+    let Some(n) = n else {
+        let by = amount.unwrap_or(0) as u32;
+        let (dist, s) = (by / 32, (by % 32) as u8);
+        for i in 0..count {
+            let (from, other) = at(i, dist);
+            ld(cx, EAX, buf, from);
+            if s != 0 {
+                ld(cx, EDX, buf, other);
+                put(
+                    cx,
+                    if right {
+                        mc::shrd_rri(Size::D, EAX, EDX, s)
+                    } else {
+                        mc::shld_rri(Size::D, EAX, EDX, s)
+                    },
+                );
+            }
+            st(cx, EAX, r, i);
+        }
+        return Ok(());
+    };
+    ld(cx, ECX, n, 0);
+    put(cx, mc::mov_rr(Size::D, EDX, ECX));
+    put(cx, mc::shr_ri(Size::D, EDX, 5));
+    put(cx, mc::and_ri(Size::D, EDX, 3));
+    put(cx, mc::shl_ri(Size::D, EDX, 2));
+    if !right {
+        put(cx, mc::neg_r(Size::D, EDX));
+    }
+    crate::common::frame_address(cx, EAX, buf);
+    put(cx, mc::add_rr(Size::D, EDX, EAX));
+    for i in 0..count {
+        let (from, other) = at(i, 0);
+        put(cx, mc::mov_rm(Size::D, EAX, Mem::base(EDX, 4 * from as i32)));
+        st(cx, EAX, r, i);
+        put(cx, mc::mov_rm(Size::D, EAX, Mem::base(EDX, 4 * other as i32)));
+        op_m(cx, r, i, |m| {
+            if right { mc::shrd_mrcl(Size::D, m, EAX) } else { mc::shld_mrcl(Size::D, m, EAX) }
+        });
+    }
+    Ok(())
+}
+
+// ---- integer intrinsics ----
+
+/// `%r = call iN @llvm.<which>(...)`, `N` from 65 to 128: `ctpop`,
+/// `ctlz`, `cttz`, `bswap`, `bitreverse`, `abs`, `smax` / `smin` /
+/// `umax` / `umin`. The saturating operations, the funnel and saturating
+/// shifts and `scmp` / `ucmp` are [`INTRINSIC`].
+///
+/// # Errors
+/// [`INTRINSIC`], [`WIDTH`]; what the operands report.
+pub fn intrinsic<'a>(
+    cx: &mut FnCx<'a, X86>,
+    inst: Inst<'a>,
+    which: Intrinsic<'a>,
+    args: &'a [Value],
+) -> CgResult<()> {
+    use Intrinsic as I;
+    let bits = cx.types().int_bits(inst.ty()).unwrap_or(128);
+    let count = limbs(bits)?;
+    match (which, args) {
+        (I::Ctpop | I::Ctlz | I::Cttz, &[x, ..]) => {
+            let a = cx.use_mem(x)?;
+            let r = cx.def_mem(inst)?;
+            match which {
+                I::Ctpop => pop_count(cx, a, bits),
+                I::Ctlz => zeros_count(cx, a, bits, true)?,
+                _ => zeros_count(cx, a, bits, false)?,
+            }
+            st(cx, EAX, r, 0);
+            for limb in 1..count {
+                st_imm(cx, r, limb, 0);
+            }
+            Ok(())
+        }
+        (I::Bswap | I::BitReverse, &[x]) => {
+            let a = cx.use_mem(x)?;
+            let r = cx.def_mem(inst)?;
+            reverse(cx, r, a, bits, which == I::Bswap)
+        }
+        (I::Abs, &[x, ..]) => {
+            let a = cx.use_mem(x)?;
+            let r = cx.def_mem(inst)?;
+            abs(cx, r, a, bits);
+            Ok(())
+        }
+        (I::Smax | I::Smin | I::Umax | I::Umin, &[lhs, rhs]) => {
+            let pred = match which {
+                I::Smax => IntPredicate::Sgt,
+                I::Smin => IntPredicate::Slt,
+                I::Umax => IntPredicate::Ugt,
+                _ => IntPredicate::Ult,
+            };
+            let (a, b) = (cx.use_mem(lhs)?, cx.use_mem(rhs)?);
+            let r = cx.def_mem(inst)?;
+            let cond = compare_slots(cx, pred, bits, a, b);
+            let (other, done): (Label, Label) = (cx.new_label(), cx.new_label());
+            branch_cond(cx, cond.invert(), other)?;
+            copy(cx, r, a, count);
+            branch(cx, done)?;
+            cx.bind(other)?;
+            copy(cx, r, b, count);
+            cx.bind(done)
+        }
+        _ => unsupported(INTRINSIC),
+    }
+}
+
+/// The population count of the `bits`-bit integer at `a` into `eax`:
+/// each limb's (the top one zero-extended) summed in `edx`.
+fn pop_count(cx: &mut FnCx<'_, X86>, a: FrameRef, bits: u32) {
+    let count = bits.div_ceil(32);
+    for limb in 0..count {
+        if limb == count - 1 {
+            ld_top(cx, EAX, a, bits, Ext::Zero);
+        } else {
+            ld(cx, EAX, a, limb);
+        }
+        crate::int::pop32(cx, EAX, ECX);
+        if limb == 0 {
+            put(cx, mc::mov_rr(Size::D, EDX, EAX));
+        } else {
+            put(cx, mc::add_rr(Size::D, EDX, EAX));
+        }
+    }
+    put(cx, mc::mov_rr(Size::D, EAX, EDX));
+}
+
+/// The leading (`leading`) or trailing zeros of the `bits`-bit integer at
+/// `a` into `eax`, `bits` for 0. Leading: from the top limb (zero-extended)
+/// down, the first that is not zero gives `bsr`·`xor 31` plus 32 per limb
+/// above it, less the `32 L - N` bits above the width. Trailing: from limb
+/// 0 up, the top limb with bit `N` set (below 32 bits), `bsf` plus 32 per
+/// limb below it. Branches between the limbs; `ecx` is not written.
+///
+/// # Errors
+/// What the branches report.
+fn zeros_count(cx: &mut FnCx<'_, X86>, a: FrameRef, bits: u32, leading: bool) -> CgResult<()> {
+    let count = bits.div_ceil(32);
+    let top = top_bits(bits);
+    let done = cx.new_label();
+    for step in 0..count {
+        let limb = if leading { count - 1 - step } else { step };
+        if limb == count - 1 {
+            ld_top(cx, EAX, a, bits, Ext::Zero);
+            if !leading && top < 32 {
+                put(cx, mc::or_ri(Size::D, EAX, i64::from(1i32 << top)));
+            }
+        } else {
+            ld(cx, EAX, a, limb);
+        }
+        let next = cx.new_label();
+        put(cx, mc::test_rr(Size::D, EAX, EAX));
+        branch_cond(cx, Cond::E, next)?;
+        if leading {
+            put(cx, mc::bsr_rr(Size::D, EAX, EAX));
+            put(cx, mc::xor_ri(Size::D, EAX, 31));
+            let above = 32 * step;
+            let adjust = i64::from(above) - i64::from(32 * count - bits);
+            if adjust != 0 {
+                put(cx, mc::add_ri(Size::D, EAX, adjust));
+            }
+        } else {
+            put(cx, mc::bsf_rr(Size::D, EAX, EAX));
+            if limb != 0 {
+                put(cx, mc::add_ri(Size::D, EAX, i64::from(32 * limb)));
+            }
+        }
+        branch(cx, done)?;
+        cx.bind(next)?;
+    }
+    put(cx, mc::mov_ri(Size::D, EAX, i64::from(bits)));
+    cx.bind(done)
+}
+
+/// `bswap` (`bytes`) or `bitreverse` of the `bits`-bit integer at `a`
+/// into `r`: limb `L - 1 - i` reversed into limb `i` of a frame area
+/// (the bits above the width land in its low `32 L - N` bits), then the
+/// area shifted right by `32 L - N` (`shrd`), the top limb by `shr`.
+///
+/// # Errors
+/// What the frame reports.
+fn reverse(
+    cx: &mut FnCx<'_, X86>,
+    r: FrameRef,
+    a: FrameRef,
+    bits: u32,
+    bytes: bool,
+) -> CgResult<()> {
+    let count = bits.div_ceil(32);
+    let up = (32 * count - bits) as u8;
+    let t = cx.alloc_slot(u64::from(4 * count), 4)?;
+    for limb in 0..count {
+        ld(cx, EAX, a, count - 1 - limb);
+        if bytes {
+            put(cx, mc::bswap(Size::D, EAX));
+        } else {
+            crate::int::rev32(cx, EAX, ECX);
+        }
+        st(cx, EAX, t, limb);
+    }
+    for limb in 0..count {
+        ld(cx, EAX, t, limb);
+        if up != 0 {
+            if limb + 1 < count {
+                ld(cx, EDX, t, limb + 1);
+                put(cx, mc::shrd_rri(Size::D, EAX, EDX, up));
+            } else {
+                put(cx, mc::shr_ri(Size::D, EAX, up));
+            }
+        }
+        st(cx, EAX, r, limb);
+    }
+    Ok(())
+}
+
+/// `abs` of the `bits`-bit integer at `a` into `r`: `edx` = its sign
+/// (the top limb sign-extended, `sar 31`), each limb `xor edx` into `r`
+/// (the top one extended), then `sub` / `sbb [r + 4 k], edx`.
+fn abs(cx: &mut FnCx<'_, X86>, r: FrameRef, a: FrameRef, bits: u32) {
+    let count = bits.div_ceil(32);
+    ld_top(cx, EDX, a, bits, Ext::Sign);
+    put(cx, mc::mov_rr(Size::D, ECX, EDX));
+    put(cx, mc::sar_ri(Size::D, EDX, 31));
+    for limb in 0..count {
+        if limb == count - 1 {
+            put(cx, mc::mov_rr(Size::D, EAX, ECX));
+        } else {
+            ld(cx, EAX, a, limb);
+        }
+        put(cx, mc::xor_rr(Size::D, EAX, EDX));
+        st(cx, EAX, r, limb);
+    }
+    for limb in 0..count {
+        op_m(cx, r, limb, |m| {
+            if limb == 0 { mc::sub_mr(Size::D, m, EDX) } else { mc::sbb_mr(Size::D, m, EDX) }
+        });
+    }
+}
+
+// ---- switch ----
+
+/// The integer constant `c` as a `u128` (`None` for another constant).
+fn const_u128(c: Const<'_>) -> Option<u128> {
+    match c {
+        Const::Int { value, .. } => Some(u128::from(value)),
+        Const::WideInt { words, .. } => Some(
+            u128::from(words.first().copied().unwrap_or(0))
+                | u128::from(words.get(1).copied().unwrap_or(0)) << 64,
+        ),
+        Const::Null(_) | Const::Zero(_) | Const::Undef(_) | Const::Poison(_) => Some(0),
+        _ => None,
+    }
+}
+
+/// `switch iN %cond, ...`: the top limb zero-extended into `edx` once;
+/// per case `cmp dword [cond + 4 k], imm`·`jne next` for each lower limb,
+/// `cmp edx, imm`·`je case`; then the default. A constant condition
+/// branches to its block.
+///
+/// # Errors
+/// [`WIDTH`]; what the operand and the branches report.
+pub fn switch<'a>(cx: &mut FnCx<'a, X86>, switch: &Switch<'a>) -> CgResult<()> {
+    let bits = cx.types().int_bits(value_ty(cx, switch.cond)).unwrap_or(128);
+    let count = limbs(bits)?;
+    let all = if bits == 128 { u128::MAX } else { (1u128 << bits) - 1 };
+    let case_value =
+        |cx: &FnCx<'a, X86>, id| const_u128(cx.module.consts.get(id)).unwrap_or(0) & all;
+    if let ValueKind::Const(id) = switch.cond.kind()
+        && let Some(c) = const_u128(cx.module.consts.get(id))
+    {
+        let target = switch
+            .cases()
+            .find(|&(case, _)| case_value(cx, case) == c & all)
+            .map_or(switch.default, |(_, block)| block);
+        return crate::control::folded_br(cx, target);
+    }
+    let a = cx.use_mem(switch.cond)?;
+    ld_top(cx, EDX, a, bits, Ext::Zero);
+    for (case, block) in switch.cases() {
+        let value = case_value(cx, case);
+        let next = cx.new_label();
+        for limb in 0..count - 1 {
+            let word = (value >> (32 * limb)) as u32;
+            op_m(cx, a, limb, |m| mc::cmp_mi(Size::D, m, i64::from(word as i32)));
+            branch_cond(cx, Cond::Ne, next)?;
+        }
+        let top = (value >> (32 * (count - 1))) as u32;
+        put(cx, mc::cmp_ri(Size::D, EDX, i64::from(top as i32)));
+        let label = cx.block_label(block);
+        branch_cond(cx, Cond::E, label)?;
+        cx.bind(next)?;
+    }
+    crate::control::br(cx, switch.default)
 }
 
 /// `%r = freeze %arg`: the limbs copied.

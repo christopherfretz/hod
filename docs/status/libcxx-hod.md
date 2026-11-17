@@ -1,5 +1,66 @@
 # libc++ test suite through hod (hybrid and strict)
 
+## At the candidate a68a0d5d (release 1.1.0, RELEASE.md 4.3, 2026-11-17, strict, no `-g`)
+
+The 1.1.0 release candidate `C`, hod `main` at `a68a0d5d` (frozen release
+binary, sha256
+`baf397f0f4cd9b2325884e122d39f2b1de000135486f2b832b1d22334b566077`;
+`--version` prints `hod version 1.0.0`, the number moves after the
+lanes), with kiln 1.2.0 at `K` = `8f93304ee`, LLVM `/usr/lib/llvm-22`
+behind a shim made from the frozen binary. The command is RELEASE.md
+4.3's, kiln's runner with `scripts/libcxx-hod-kiln.sh` as its
+`--compiler`, `HOD_STRICT=1`, `--timeout 20 -j 3 --mem-limit 3072
+--no-fail`, on the lanes' jobserver pool, the suite `llvmorg-22.1.8`.
+
+The control is the one recorded at `K` and reused (kiln + `llc`, no hod
+in it): `.build/libcxx-4/native-k12/control.tsv`, the same control as the
+`cd6ef6bc` and `02fe2d02` sections below. `.build/libcxx-baseline/baseline.tsv`
+(`docs/status/libcxx-baseline.md`) was recorded with kiln 1.0.1 at
+`bd60e1829`, not at `K`, so it is not the control of this run; the
+comparison with it is given below for reference.
+
+| | recorded control at `K` (kiln + `llc`) | **strict at `a68a0d5d`** |
+|---|---|---|
+| date (EST) | 2026-11-15 04:25 to 05:35 | 2026-11-17 06:36:49 to 07:44:11 |
+| total | 9,247 | 9,247 |
+| pass | 8,608 | 8,608 |
+| fail | 4 | 4 |
+| xfail | 46 | 46 |
+| xpass | 2 | 2 |
+| unsupported | 585 (24 driver) | 585 (24 driver) |
+| timeout | 2 | 2 |
+| killed, error | 0, 0 | 0, 0 |
+| wall time, `-j 3` | 4,240.6 s | 4,041.9 s |
+| `oom_kill` (cgroup `memory.events`) | 1 before, 1 after | 0 before, 0 after |
+| modules by hod | - | 7,226 of 7,226; 0 refused, 0 fallback, 0 outcome error |
+
+**Result: strict equals the control, test by test** (`libcxx-hod-report.py`:
+0 changed outcomes). In strict, 7,218 tests have objects, all of them
+built by hod, and 7,185 of those pass; the inputs are 392 bitcode and
+6,834 text modules; hod's time summed over modules is 149.6 s (phases
+152.7 s: parse 41.4, emission 33.6, write 28.6, bodies 22.7, read 17.0).
+The timeouts (`lost_wakeup.pass.cpp`, `offset_range.pass.cpp`), the four
+filesystem failures (`directory_iterator` and
+`recursive_directory_iterator` constructors, `fs.op.remove`,
+`fs.op.remove_all`) and the XPASSes (`rel_ops.depr_in_cxx20.verify.cpp`,
+`variant.hash/hash.depr.verify.cpp`) are the same in both. The run
+shared the host with a full gate, a fuzz run and the i686 libc++ lane.
+
+Against the older `baseline.tsv` (kiln 1.0.1), two outcomes differ:
+`rel_ops.depr_in_cxx20.verify.cpp` (XFAIL there, XPASS here, as in the
+control at `K`: kiln's change, no code is generated for a `verify` test)
+and `atomics.types.operations.wait/lost_wakeup.pass.cpp` (PASS there,
+TIMEOUT here). `lost_wakeup` alone at `-j 1` and 20 s, three times per
+mode (2026-11-17 07:45 to 07:51 EST): TIMEOUT in all six runs, with kiln
+and `llc` and with hod strict; it times out in the control at `K` too.
+
+Raw results: `.build/release-1.1.0/libcxx-a64/` (`strict.{log,tsv}`,
+`strict/`, `report-strict.txt`, `report-strict-vs-baseline-bd60e.txt`,
+`rerun-lw.log`, `lw-*`, `run-strict.sh`, `shim/`). Not covered here: the
+native runners (4.5, the "Native ... runner" sections below are of an
+earlier hosted run, not of `a68a0d5d`); hybrid was not run (strict
+refused nothing).
+
 ## At the candidate cd6ef6bc (WP-233, 2026-11-15, strict, no `-g`)
 
 The 1.0 release candidate, hod `main` at `cd6ef6bc` (release binary,
@@ -163,6 +224,9 @@ The hybrid run sets `HOD_CENSUS=1`, the strict run `HOD_STRICT=1`. The
 baseline took 3176 s.
 
 ## Native AArch64 runner
+
+Of the earlier hosted run below (2026-11-13), not of the 1.1.0
+candidate `a68a0d5d`; no hosted run of `a68a0d5d` was given to this lane.
 
 Run [43465227200](https://github.com/christopherfretz/hod/actions/runs/43465227200)
 of `.github/workflows/sweep.yml` (WP-164; `spec/harness.md` "CI", rule

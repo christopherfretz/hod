@@ -870,7 +870,9 @@ pub enum NamedMetadataKind {
     DependentLibraries,
     /// `!llvm.dbg.cu`: the compile units (debug information, §6).
     DebugCompileUnits,
-    /// `!llvm.ident`, `!llvm.errno.tbaa`: dropped.
+    /// `!llvm.ident`, `!llvm.errno.tbaa`, `!llvm.gcov` (the input of the
+    /// GCOVProfiler IR pass, which code generation does not read;
+    /// WP-353): dropped.
     Dropped,
     /// Any other: unsupported, recorded (against no symbol) as
     /// [`named_metadata_construct`].
@@ -885,7 +887,7 @@ impl NamedMetadataKind {
             b"llvm.linker.options" => NamedMetadataKind::LinkerOptions,
             b"llvm.dependent-libraries" => NamedMetadataKind::DependentLibraries,
             b"llvm.dbg.cu" => NamedMetadataKind::DebugCompileUnits,
-            b"llvm.ident" | b"llvm.errno.tbaa" => NamedMetadataKind::Dropped,
+            b"llvm.ident" | b"llvm.errno.tbaa" | b"llvm.gcov" => NamedMetadataKind::Dropped,
             _ => NamedMetadataKind::Unsupported,
         }
     }

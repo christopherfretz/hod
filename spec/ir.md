@@ -1851,7 +1851,8 @@ same `hod_ir`: value and block names; `; comments`; the `source_filename`;
 optimization attributes (§5.7); instruction flags that only license
 optimizations; instruction metadata other than `!dbg` (`!tbaa`, `!range`,
 `!prof`, `!llvm.loop`, `!nonnull`, `!noundef`, `!align`, `!srcloc`,
-`!annotation`, ...); `!llvm.ident`; use-list orders; module summaries.
+`!annotation`, ...); `!llvm.ident`, `!llvm.errno.tbaa`, `!llvm.gcov`;
+use-list orders; module summaries.
 
 `!llvm.linker.options` and `!llvm.dependent-libraries` are kept: they
 change the object file (§2). So is every module flag (§2.1).
@@ -2692,8 +2693,12 @@ records as `special-global:<name>` is lexical and stays the producer's.
 
 **Named metadata and module flags** (§2.1). `NamedMetadataKind::of(name)`:
 `llvm.module.flags`, `llvm.linker.options`, `llvm.dependent-libraries`,
-`llvm.dbg.cu`; `llvm.ident` and `llvm.errno.tbaa` are dropped; any other
-is recorded against no symbol as `named-metadata:<name>`.
+`llvm.dbg.cu`; `llvm.ident`, `llvm.errno.tbaa` and `llvm.gcov` are
+dropped (`llvm.gcov`, which `clang -coverage` writes, is the input of
+the GCOVProfiler IR pass: `llc` 19 and 22 write byte-identical objects
+with and without it on x86-64, AArch64 and i686, plain and PIC, with and
+without debug information; WP-353); any other is recorded against no
+symbol as `named-metadata:<name>`.
 `module_flag(module, behavior, name, int, text, upgrade)`: the value is
 `Int` when the operand is an integer constant, else `Str` when it is a
 string, else `Other`; a behavior over `u32::MAX` becomes `u32::MAX`

@@ -27,6 +27,18 @@ use crate::strings::StrPool;
 use expr::{DiOp, DiOps, ExprId, ExprTable, order_error};
 use node::{Dec, DiKind, DiNode, DiRecord, DiStr, DiView, Enc, class};
 use std::marker::PhantomData;
+use std::sync::{Arc, OnceLock};
+
+/// [`DebugInfo::function_of`] of every location, as [`DebugInfo::verify`]
+/// found it (WP-349): what the body checks read instead of walking the
+/// chains again. It holds while the table's `edits` is `edits`: a
+/// location or node added later is not in it or changes nothing in it,
+/// and every change in place counts an edit.
+#[derive(Clone, Debug)]
+struct Owners {
+    edits: u32,
+    of: Arc<[DiId]>,
+}
 
 /// A node's fixed part. Eight bytes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -234,6 +246,9 @@ pub struct DebugInfo<L: Layering = NoLayer> {
     /// completed, a reserved location defined): with the counts, what
     /// tells whether forks still read this table (`spec/ir.md` §5.1).
     edits: u32,
+    /// The subprogram of each location, once [`DebugInfo::verify`] has
+    /// passed: a cache, read by [`DebugInfo::owner_of`] only.
+    owners: OnceLock<Owners>,
 }
 
 impl Default for DebugInfo {
@@ -255,6 +270,7 @@ impl Default for DebugInfo {
             atom_index: None,
             units: Vec::new(),
             edits: 0,
+            owners: OnceLock::new(),
         }
     }
 }
@@ -951,6 +967,31 @@ impl<L: Layering> DebugInfo<L> {
         None
     }
 
+    /// [`DebugInfo::function_of`], read from what [`DebugInfo::verify`]
+    /// found when it holds (one array read), else walked.
+    #[inline]
+    pub(crate) fn owner_of(&self, id: LocId) -> Option<DiId> {
+        if let Some(owners) = self.owners.get()
+            && owners.edits == self.edits
+            && let Some(&owner) = owners.of.get(id.index())
+        {
+            return Some(owner);
+        }
+        self.function_of(id)
+    }
+
+    /// What a fork or seed of this table starts with: the owners
+    /// [`DebugInfo::verify`] found, if the table was not edited since
+    /// (the copy counts its own edits from 0).
+    fn carried_owners(&self) -> OnceLock<Owners> {
+        match self.owners.get() {
+            Some(owners) if owners.edits == self.edits => {
+                OnceLock::from(Owners { edits: 0, of: Arc::clone(&owners.of) })
+            }
+            _ => OnceLock::new(),
+        }
+    }
+
     // ---- compile units ----
 
     /// Appends `unit` to the module's compile units: one operand of
@@ -1056,6 +1097,15 @@ impl<L: Layering> DebugInfo<L> {
         {
             return invalid(format!("{unit:?} is listed as a compile unit and is not one"));
         }
+        // `function_of` of each location, from what is known already
+        // (WP-349): every location is defined here (`check_defined`), so
+        // a location's subprogram is its scope's when it is not inlined,
+        // and else that of the location it is inlined at; a chain that
+        // reaches back to an earlier location ends where that one's does
+        // (a broken or circular one has returned already). Consecutive
+        // locations mostly share their scope.
+        let mut owners: Vec<DiId> = Vec::with_capacity(self.locs.len());
+        let mut last: Option<(DiId, Option<DiId>)> = None;
         for index in 0..self.locs.len() {
             let id = LocId::new(index as u32);
             let record = self.locs[index];
@@ -1068,11 +1118,31 @@ impl<L: Layering> DebugInfo<L> {
                     record.scope
                 ));
             }
-            if self.function_of(id).is_none() {
+            let owner = if record.inlined_at == LocId::NONE {
+                match last {
+                    Some((scope, owner)) if scope == record.scope => owner,
+                    _ => {
+                        let owner = self.subprogram_of(record.scope);
+                        last = Some((record.scope, owner));
+                        owner
+                    }
+                }
+            } else if record.inlined_at.index() < index {
+                Some(owners[record.inlined_at.index()])
+            } else {
+                self.function_of(id)
+            };
+            let Some(owner) = owner else {
                 return invalid(format!(
                     "{id:?}: its scopes and inlined-at locations do not end at a subprogram"
                 ));
-            }
+            };
+            owners.push(owner);
+        }
+        if !owners.is_empty() {
+            // Kept for `owner_of`; a stale one (the table edited after
+            // an earlier `verify`) stays and is ignored.
+            let _ = self.owners.set(Owners { edits: self.edits, of: owners.into() });
         }
         for index in 1..self.exprs.len() {
             let id = ExprId::new(index as u32);
@@ -1208,6 +1278,7 @@ impl DebugInfo {
             atom_index: self.atom_index.as_ref().map(InternTable::seed),
             units: self.units.clone(),
             edits: 0,
+            owners: self.carried_owners(),
         }
     }
 
@@ -1267,6 +1338,7 @@ impl DebugInfo<Layered> {
             atom_index: self.atom_index.as_ref().map(InternTable::fork),
             units: self.units.clone(),
             edits: 0,
+            owners: self.carried_owners(),
         }
     }
 
@@ -1400,5 +1472,46 @@ mod tests {
         assert_ne!(other, plain);
         assert!(debug.loc(DiLocation { scope: DiId::new(99), ..at }).is_err());
         debug.verify().unwrap();
+    }
+
+    /// WP-349: the owners `verify` keeps are `function_of`'s, for a
+    /// chain inlined at a later location too; a fork reads them, and an
+    /// edit after `verify` sends `owner_of` back to the walk.
+    #[test]
+    fn owners_kept_by_verify() {
+        let mut debug = <DebugInfo>::default();
+        let f = debug.add_distinct(&DiNode::llvm_default(DiKind::Subprogram)).unwrap();
+        let g = debug.add_distinct(&DiNode::llvm_default(DiKind::Subprogram)).unwrap();
+        let at = |line, scope, inlined_at| DiLocation { line, column: 1, scope, inlined_at };
+        // `early` is inlined at `later`, a location with a higher id.
+        let early = debug.reserve_loc().unwrap();
+        let later = debug.reserve_loc().unwrap();
+        debug.define_loc(early, at(1, g, later)).unwrap();
+        debug.define_loc(later, at(2, f, LocId::NONE)).unwrap();
+        let in_f = debug.loc(at(3, f, LocId::NONE)).unwrap();
+        let in_g = debug.loc(at(4, g, in_f)).unwrap();
+        let deeper = debug.loc(at(5, g, in_g)).unwrap();
+        let own_g = debug.loc(at(6, g, LocId::NONE)).unwrap();
+        debug.verify().unwrap();
+        assert!(debug.owners.get().is_some());
+        let all = [early, later, in_f, in_g, deeper, own_g];
+        for loc in all {
+            assert_eq!(debug.owner_of(loc), debug.function_of(loc), "{loc:?}");
+        }
+        assert_eq!(debug.owner_of(early), Some(f));
+        assert_eq!(debug.owner_of(deeper), Some(f));
+        assert_eq!(debug.owner_of(own_g), Some(g));
+        assert_eq!(debug.owner_of(LocId::NONE), None);
+        let seed = debug.seed();
+        assert!(seed.owners.get().is_some_and(|owners| owners.edits == seed.edits));
+        assert_eq!(seed.owner_of(deeper), Some(f));
+        // An edit in place: the kept owners no longer hold.
+        let node = debug.reserve().unwrap();
+        debug.define_distinct(node, &DiNode::llvm_default(DiKind::Subprogram)).unwrap();
+        assert!(debug.owners.get().is_some_and(|owners| owners.edits != debug.edits));
+        for loc in all {
+            assert_eq!(debug.owner_of(loc), debug.function_of(loc), "{loc:?}");
+        }
+        assert!(debug.seed().owners.get().is_none());
     }
 }

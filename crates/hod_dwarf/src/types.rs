@@ -487,11 +487,19 @@ impl<'a> UnitPlan<'a> {
         work.push(Task::Construct { die, step: 0 });
     }
 
+    /// [`Self::open`], for a DIE whose node `create` decoded: the node
+    /// is kept for the construction (WP-349).
+    fn open_with(&mut self, die: u32, decoded: DiNode<'a>, work: &mut Vec<Task>) {
+        self.open(die, work);
+        self.construct_with(die, self.dies[die as usize].kind, decoded);
+    }
+
     fn create(&mut self, t: DiId, want: Want, work: &mut Vec<Task>) -> Result<(), Error> {
         if self.slot[t.index()] != NONE {
             return Ok(()); // made while its context was
         }
-        match (want, self.debug.node(t)) {
+        let decoded = self.debug.node(t);
+        match (want, decoded) {
             (Want::Type, DiNode::BasicType(b)) => {
                 if b.tag == tag::UNSPECIFIED_TYPE {
                     self.push(t, 0, Kind::BaseType);
@@ -515,7 +523,7 @@ impl<'a> UnitPlan<'a> {
                 self.check_derived(t, &d)?;
                 let parent = self.context(t, d.scope, false)?;
                 let die = self.push(t, parent, Kind::Derived);
-                self.open(die, work);
+                self.open_with(die, decoded, work);
             }
             (Want::Type, DiNode::CompositeType(c)) => {
                 let kind = match c.tag {
@@ -527,14 +535,14 @@ impl<'a> UnitPlan<'a> {
                 self.check_composite(t, kind, &c)?;
                 let parent = self.context(t, c.scope, false)?;
                 let die = self.push(t, parent, kind);
-                self.open(die, work);
+                self.open_with(die, decoded, work);
                 if kind == Kind::Composite {
                     Self::template_tasks(die, c.template_params, work);
                 }
             }
             (Want::Type, DiNode::SubroutineType(_)) => {
                 let die = self.push(t, 0, Kind::Subroutine);
-                self.open(die, work);
+                self.open_with(die, decoded, work);
             }
             (Want::Type, _) => return Err(unsupported(t, "a type of this kind")),
             (Want::StaticMember, DiNode::DerivedType(d)) => {
@@ -553,7 +561,7 @@ impl<'a> UnitPlan<'a> {
                         None => {}
                     }
                 }
-                self.open(die, work);
+                self.open_with(die, decoded, work);
             }
             (Want::Method, DiNode::Subprogram(sp)) => {
                 if has_sp(sp.sp_flags, SpFlags::DEFINITION) {
@@ -576,7 +584,7 @@ impl<'a> UnitPlan<'a> {
                 if sp.sp_flags.0 & 3 != 0 {
                     self.build.virtuals.push((die, sp.containing_type));
                 }
-                self.open(die, work);
+                self.open_with(die, decoded, work);
                 Self::template_tasks(die, sp.template_params, work);
             }
             _ => unreachable!("`ensure` checked the node's kind"),
@@ -776,7 +784,18 @@ impl<'a> UnitPlan<'a> {
         if let Some(&(_, decoded, types)) = self.constructing.iter().rev().find(|e| e.0 == die) {
             return (decoded, types);
         }
-        let decoded = self.debug.node(node);
+        self.construct_with(die, kind, self.debug.node(node))
+    }
+
+    /// WP-349: keeps `decoded`, DIE `die`'s node, for its construction:
+    /// `create` hands over the node it decoded, which is then not decoded
+    /// again at the DIE's first step.
+    fn construct_with(
+        &mut self,
+        die: u32,
+        kind: Kind,
+        decoded: DiNode<'a>,
+    ) -> (DiNode<'a>, &'a [DiId]) {
         let types = match (kind, decoded) {
             (Kind::Method, DiNode::Subprogram(sp)) => {
                 let debug = self.debug;

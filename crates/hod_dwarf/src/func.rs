@@ -603,24 +603,27 @@ impl<'a> UnitPlan<'a> {
             if self.debug.find_kind(v.node) != Some(want) {
                 return Err(bad(v.node, "variable"));
             }
-            let (scope, class, key) = match self.debug.node(v.node) {
-                DiNode::LocalVariable(n) => {
-                    if n.ty.is_none() {
-                        return Err(unsupported(v.node, "debug:variable-without-type"));
-                    }
-                    // WP-087: a named local's alignment is written; a
-                    // parameter's, or an unnamed one's, is not yet.
-                    if n.align != 0 && (n.arg != 0 || n.name.is_empty()) {
-                        return Err(unsupported(v.node, "debug:variable-alignment"));
-                    }
-                    check_row_expr(self.debug, v).map_err(|name| unsupported(v.node, name))?;
-                    let (class, key) =
-                        if n.arg != 0 { (0, u32::from(n.arg)) } else { (1, row as u32) };
-                    (n.scope, class, key)
+            // WP-349: the fields read one at a time, the node not decoded
+            // (the kind was checked above).
+            let (scope, class, key) = if let Some(n) = self.debug.view::<DiLocalVariable>(v.node)
+            {
+                if n.ty().is_none() {
+                    return Err(unsupported(v.node, "debug:variable-without-type"));
                 }
+                // WP-087: a named local's alignment is written; a
+                // parameter's, or an unnamed one's, is not yet.
+                let arg = n.arg();
+                if n.align() != 0 && (arg != 0 || n.name().is_empty()) {
+                    return Err(unsupported(v.node, "debug:variable-alignment"));
+                }
+                check_row_expr(self.debug, v).map_err(|name| unsupported(v.node, name))?;
+                let (class, key) = if arg != 0 { (0, u32::from(arg)) } else { (1, row as u32) };
+                (n.scope(), class, key)
+            } else if let Some(n) = self.debug.view::<DiLabel>(v.node) {
                 // WP-098: every label is written (§6.14).
-                DiNode::Label(n) => (n.scope, 2, row as u32),
-                _ => return Err(bad(v.node, "variable")),
+                (n.scope(), 2, row as u32)
+            } else {
+                return Err(bad(v.node, "variable"));
             };
             let (scope, ia) = match self.debug.location(v.loc) {
                 // WP-098: a variable or label is in its own scope, inlined

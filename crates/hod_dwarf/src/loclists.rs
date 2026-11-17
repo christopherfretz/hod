@@ -623,10 +623,29 @@ fn arglist_width(ops: impl Iterator<Item = DiOp>, args: &[LocalRow]) -> Option<u
 /// WP-314 (`spec/codegen-x86.md` §15): on i386 the DWARF stack is 32
 /// bits wide and `DW_OP_deref_size` reads at most 4 bytes, so a range
 /// that pushes a wider value (a home or a constant), an address read
-/// from a home or a `DIArgList` gets no entry there (`<optimized out>`);
-/// a home itself (the empty expression) and a declared value do.
-fn fits_i386(debug: &hod_ir::DebugInfo, at: ValueLoc, expr: ExprId) -> bool {
+/// from a home gets no entry there (`<optimized out>`); a home itself
+/// (the empty expression) and a declared value do. A `DIArgList` (WP-345,
+/// §6.32) does when each of its values is a home of at most 4 bytes or a
+/// constant of at most 32 bits, it reads no memory, its constants fit 32
+/// bits and its result is at most 32 bits wide: then every entry of its
+/// stack is a 32-bit value, as `llc` computes it for i686.
+fn fits_i386(debug: &hod_ir::DebugInfo, at: ValueLoc, expr: ExprId, args: &[LocalRow]) -> bool {
     match (at, shape(debug, expr)) {
+        (ValueLoc::Args { .. }, Shape::Value) => {
+            let narrow = args.iter().all(|row| match arg_loc(row) {
+                ValueLoc::Frame { size, .. } => size <= 4,
+                ValueLoc::Const { width, .. } => width <= 32,
+                _ => false,
+            });
+            let ops = body(debug, expr).all(|op| match op {
+                DiOp::Deref | DiOp::DerefSize(_) => false,
+                DiOp::Constu(v) | DiOp::PlusUconst(v) => v <= u64::from(u32::MAX),
+                DiOp::Consts(v) => i32::try_from(v as i64).is_ok(),
+                DiOp::Convert(bits, _) => bits <= 32,
+                _ => true,
+            });
+            narrow && ops && arglist_width(body(debug, expr), args).is_some_and(|w| w <= 32)
+        }
         (ValueLoc::Frame { .. }, Shape::Empty) | (ValueLoc::Address { .. }, _) => true,
         (ValueLoc::Frame { size, .. }, Shape::Value) => size <= 4,
         (ValueLoc::Const { width, .. }, Shape::Empty | Shape::Value) => width <= 32,
@@ -702,7 +721,9 @@ impl UnitPlan<'_> {
                 if end <= start || !located(debug, at, expr, arg_rows(vars, r, at), legacy) {
                     continue;
                 }
-                if self.scope_dies.arch == Some(hod_ir::Arch::I386) && !fits_i386(debug, at, expr) {
+                if self.scope_dies.arch == Some(hod_ir::Arch::I386)
+                    && !fits_i386(debug, at, expr, arg_rows(vars, r, at))
+                {
                     continue;
                 }
                 let piece = self.piece(vars, r, at, expr);
@@ -741,7 +762,9 @@ impl UnitPlan<'_> {
             if end <= start || !located(debug, at, expr, arg_rows(vars, r, at), legacy) {
                 continue;
             }
-            if self.scope_dies.arch == Some(hod_ir::Arch::I386) && !fits_i386(debug, at, expr) {
+            if self.scope_dies.arch == Some(hod_ir::Arch::I386)
+                && !fits_i386(debug, at, expr, arg_rows(vars, r, at))
+            {
                 continue;
             }
             let bits = fragment(debug, expr).unwrap_or((0, u64::MAX));
@@ -1203,4 +1226,54 @@ fn padded_uleb4(n: u32) -> Result<[u8; 4], Error> {
         ((n >> 14) & 0x7f) as u8 | 0x80,
         (n >> 21) as u8,
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn arg(at: ValueLoc) -> LocalRow {
+        LocalRow {
+            node: DiId::NONE,
+            loc: LocId::NONE,
+            expr: ExprId::EMPTY,
+            place: LocalPlace::ValueArg(at),
+        }
+    }
+
+    /// WP-345: on i386 a `DIArgList` of 32-bit values has an entry (as
+    /// `llc` writes for `dbg_value_arglist.c`: `q = p + i`, `d = i - j`);
+    /// one that reads memory, holds a wider value or a wider constant,
+    /// or converts to a wider type has none.
+    #[test]
+    fn i386_arglists_of_32_bit_values() {
+        let mut debug = hod_ir::DebugInfo::default();
+        let home = |offset, size| ValueLoc::Frame { offset, size };
+        let args32 = [arg(home(24, 4)), arg(home(12, 4))];
+        let at = ValueLoc::Args { count: 2 };
+        let mut expr = |ops: &[DiOp]| debug.expr(ops).unwrap();
+        let scaled = expr(&[
+            DiOp::Arg(0),
+            DiOp::Arg(1),
+            DiOp::Constu(4),
+            DiOp::Mul,
+            DiOp::Plus,
+            DiOp::StackValue,
+        ]);
+        let minus = expr(&[DiOp::Arg(0), DiOp::Arg(1), DiOp::Minus, DiOp::StackValue]);
+        let wide = expr(&[DiOp::Arg(0), DiOp::Constu(1 << 40), DiOp::Plus, DiOp::StackValue]);
+        let reads = expr(&[DiOp::Arg(0), DiOp::Deref, DiOp::Arg(1), DiOp::Plus, DiOp::StackValue]);
+        let converts = expr(&[DiOp::Arg(0), DiOp::Convert(64, 5), DiOp::StackValue]);
+        assert!(fits_i386(&debug, at, scaled, &args32));
+        assert!(fits_i386(&debug, at, minus, &args32));
+        assert!(!fits_i386(&debug, at, wide, &args32));
+        assert!(!fits_i386(&debug, at, reads, &args32));
+        assert!(!fits_i386(&debug, at, converts, &args32));
+        let narrow_const = [arg(home(24, 4)), arg(ValueLoc::Const { bits: 7, width: 32 })];
+        assert!(fits_i386(&debug, at, minus, &narrow_const));
+        let wide_home = [arg(home(24, 8)), arg(home(12, 4))];
+        assert!(!fits_i386(&debug, at, minus, &wide_home));
+        let wide_const = [arg(home(24, 4)), arg(ValueLoc::Const { bits: 7, width: 64 })];
+        assert!(!fits_i386(&debug, at, minus, &wide_const));
+    }
 }

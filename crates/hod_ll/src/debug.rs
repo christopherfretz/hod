@@ -1415,21 +1415,31 @@ enum Quick {
 }
 
 /// The end of the word (`[A-Za-z0-9_]*`) at `from`, at most `end`.
+/// WP-349: one table read per byte, over a slice (no bounds check per
+/// byte); the scan was 3.8% of a `-g` input's instructions.
+#[inline]
 fn word_end(src: &[u8], from: usize, end: usize) -> usize {
-    let mut at = from;
-    while at < end && (src[at].is_ascii_alphanumeric() || src[at] == b'_') {
-        at += 1;
-    }
-    at
+    let bytes = src.get(from..end.min(src.len())).unwrap_or(&[]);
+    from + bytes.iter().position(|&b| !WORD_BYTE[usize::from(b)]).unwrap_or(bytes.len())
 }
 
-/// The end of the decimal digits at `from`, at most `end`.
-fn digits_end(src: &[u8], from: usize, end: usize) -> usize {
-    let mut at = from;
-    while at < end && src[at].is_ascii_digit() {
-        at += 1;
+/// Whether a byte is in `[A-Za-z0-9_]`.
+static WORD_BYTE: [bool; 256] = {
+    let mut table = [false; 256];
+    let mut b = 0;
+    while b < 256 {
+        let c = b as u8;
+        table[b] = c.is_ascii_alphanumeric() || c == b'_';
+        b += 1;
     }
-    at
+    table
+};
+
+/// The end of the decimal digits at `from`, at most `end`.
+#[inline]
+fn digits_end(src: &[u8], from: usize, end: usize) -> usize {
+    let bytes = src.get(from..end.min(src.len())).unwrap_or(&[]);
+    from + bytes.iter().position(|b| !b.is_ascii_digit()).unwrap_or(bytes.len())
 }
 
 /// `A | B | 7` at `at` read from the bytes, as `Parser::flag_bits` reads
@@ -1592,6 +1602,34 @@ mod tests {
         }
         assert_eq!(required(DiKind::Label), ["scope", "name", "file", "line"]);
         assert!(required(DiKind::Subprogram).is_empty());
+    }
+
+    /// WP-349: `word_end` and `digits_end` stop where the byte-by-byte
+    /// scans stop, for every byte value and every bound.
+    #[test]
+    fn word_and_digit_ends() {
+        let reference = |src: &[u8], from: usize, end: usize, word: bool| {
+            let mut at = from;
+            while at < end
+                && (if word {
+                    src[at].is_ascii_alphanumeric() || src[at] == b'_'
+                } else {
+                    src[at].is_ascii_digit()
+                })
+            {
+                at += 1;
+            }
+            at
+        };
+        for b in 0..=255u8 {
+            let src = [b'a', b'7', b, b'_', b'Z', b' ', b'9'];
+            for from in 0..=src.len() {
+                for end in 0..=src.len() {
+                    assert_eq!(word_end(&src, from, end), reference(&src, from, end, true));
+                    assert_eq!(digits_end(&src, from, end), reference(&src, from, end, false));
+                }
+            }
+        }
     }
 
     /// WP-349: the flag lookup by length finds what `DiFlags::named` and

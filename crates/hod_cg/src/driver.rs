@@ -686,9 +686,11 @@ impl<'a, T: Target> FnCx<'a, T> {
                 && part.kind == PartKind::Value
                 && let Place::Stack(offset) = part.place
             {
-                if self.s.guard.is_on() && self.coro.is_none() {
+                if self.s.guard.is_on() {
                     // WP-333, §5.6.24 rule 10: a protected function
-                    // reads it at entry into a home below the guard.
+                    // reads it at entry into a home below the guard; a
+                    // coroutine body too (WP-343: its arguments are read
+                    // only in the ramp, `spec/xform.md` §3.4).
                     self.enter_guarded_stack_arg(key, ty, class, FrameRef::Incoming(offset))?;
                     continue;
                 }

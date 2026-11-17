@@ -10,9 +10,9 @@
 ; aborts (SIGABRT, "stack smashing detected"). A program that read the
 ; pointer in place would store through 0x4141414141414141 and die of
 ; SIGSEGV instead.
-;@ covers: spec/codegen.md §5.6.24 stack protectors (rule 10, stack-passed arguments)
-; i686's stack protector is another package's; its varargs list is a pointer.
-;@ kept-off(i686): va-list-abi
+;@ covers: spec/ir.md §5.7 attributes (sspstrong, sspreq); spec/codegen.md §5.6.24 stack protectors (rule 10, stack-passed arguments)
+; Written for LP64: `%ld` of an i64, and the va_list's address to vprintf.
+;@ kept-off(i686): lp64-abi
 ;@ exit: signal 6
 ;@ stdout: ints 10987
 ;@ stdout: fps 17.5 3.25

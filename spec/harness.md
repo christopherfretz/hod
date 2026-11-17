@@ -845,6 +845,14 @@ that only i686 is ever named):
 
 | test | condition | class |
 |---|---|---|
+| `tests/ir/coro/byaddr-param-g-19.ll` | i686 | lp64-abi |
+| `tests/ir/coro/byaddr-param-g-22.ll` | i686 | lp64-abi |
+| `tests/ir/coro/kiln-byaddr-param-g-19.ll` | i686 | lp64-abi |
+| `tests/ir/coro/kiln-byaddr-param-g-22.ll` | i686 | lp64-abi |
+| `tests/ir/coro/kiln-transfer-ssp-19.ll` | i686 | lp64-abi |
+| `tests/ir/coro/kiln-transfer-ssp-22.ll` | i686 | lp64-abi |
+| `tests/ir/coro/protected-ramp-19.ll` | i686 | lp64-abi |
+| `tests/ir/coro/protected-ramp-22.ll` | i686 | lp64-abi |
 | `tests/ir/coro/await-bool-19.ll` | i686 | lp64-abi |
 | `tests/ir/coro/await-bool-22.ll` | i686 | lp64-abi |
 | `tests/ir/coro/deep-transfer-19.ll` | i686 | lp64-abi |

@@ -26,7 +26,7 @@
 //! below.
 
 use hod_cg::{CgResult, FnCx, FrameRef, Label};
-use hod_ir::{Const, Inst, IntPredicate, Opcode, TypeId, Value, ValueKind};
+use hod_ir::{Const, Inst, IntPredicate, Opcode, Switch, TypeId, Value, ValueKind};
 use hod_mc_x64 as mc;
 use hod_mc_x64::{Cond, Mem, Reg, Size};
 
@@ -330,6 +330,62 @@ fn shift<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, lhs: Value, rhs: Value) -> 
         });
     }
     Ok(())
+}
+
+// ---- switch ----
+
+/// The integer constant `c` as a `u128` (`None` for another constant).
+fn const_u128(c: Const<'_>) -> Option<u128> {
+    match c {
+        Const::Int { value, .. } => Some(u128::from(value)),
+        Const::WideInt { words, .. } => Some(
+            u128::from(words.first().copied().unwrap_or(0))
+                | u128::from(words.get(1).copied().unwrap_or(0)) << 64,
+        ),
+        Const::Null(_) | Const::Zero(_) | Const::Undef(_) | Const::Poison(_) => Some(0),
+        _ => None,
+    }
+}
+
+/// `switch iN %cond, ...`: the top limb zero-extended into `edx` once;
+/// per case `cmp dword [cond + 4 k], imm`·`jne next` for each lower limb,
+/// `cmp edx, imm`·`je case`; then the default. A constant condition
+/// branches to its block.
+///
+/// # Errors
+/// [`WIDTH`]; what the operand and the branches report.
+pub fn switch<'a>(cx: &mut FnCx<'a, X86>, switch: &Switch<'a>) -> CgResult<()> {
+    let bits = cx.types().int_bits(value_ty(cx, switch.cond)).unwrap_or(128);
+    let count = limbs(bits)?;
+    let all = if bits == 128 { u128::MAX } else { (1u128 << bits) - 1 };
+    let case_value =
+        |cx: &FnCx<'a, X86>, id| const_u128(cx.module.consts.get(id)).unwrap_or(0) & all;
+    if let ValueKind::Const(id) = switch.cond.kind()
+        && let Some(c) = const_u128(cx.module.consts.get(id))
+    {
+        let target = switch
+            .cases()
+            .find(|&(case, _)| case_value(cx, case) == c & all)
+            .map_or(switch.default, |(_, block)| block);
+        return crate::control::folded_br(cx, target);
+    }
+    let a = cx.use_mem(switch.cond)?;
+    ld_top(cx, EDX, a, bits, Ext::Zero);
+    for (case, block) in switch.cases() {
+        let value = case_value(cx, case);
+        let next = cx.new_label();
+        for limb in 0..count - 1 {
+            let word = (value >> (32 * limb)) as u32;
+            op_m(cx, a, limb, |m| mc::cmp_mi(Size::D, m, i64::from(word as i32)));
+            branch_cond(cx, Cond::Ne, next)?;
+        }
+        let top = (value >> (32 * (count - 1))) as u32;
+        put(cx, mc::cmp_ri(Size::D, EDX, i64::from(top as i32)));
+        let label = cx.block_label(block);
+        branch_cond(cx, Cond::E, label)?;
+        cx.bind(next)?;
+    }
+    crate::control::br(cx, switch.default)
 }
 
 /// `%r = freeze %arg`: the limbs copied.

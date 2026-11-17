@@ -1096,6 +1096,87 @@ d{w}:
     s
 }
 
+/// The amounts of the out-of-range shifts: poison, never printed, but the
+/// code must neither fault nor write outside its slots.
+const POISON_AMOUNTS: [u128; 5] = [128, 200, 0xffff_ffff, (1 << 64) | 3, u128::MAX];
+
+/// `@swW(ptr %pv)`: a `switch` on the value at `%pv` (garbage above the
+/// width) over the even-indexed values of `values(w)` (the others reach
+/// the default), each case printing its index; then the value shifted by
+/// every amount of `POISON_AMOUNTS` into a buffer that is not printed.
+fn switch_function(w: u32) -> String {
+    let t = format!("i{w}");
+    let cases: Vec<(usize, u128)> = values(w).into_iter().enumerate().step_by(2).collect();
+    let mut s = format!(
+        "define void @sw{w}(ptr %pv) #0 {{\nentry:\n  %buf = alloca [16 x i8], align 16\n  \
+         %xx = load i128, ptr %pv\n  %x = {}\n  switch {t} %x, label %d [",
+        narrow("%xx", w)
+    );
+    for (k, v) in &cases {
+        write!(s, " {t} {}, label %c{k}", lit(w, *v)).unwrap();
+    }
+    s.push_str(" ]\n");
+    for (k, _) in &cases {
+        writeln!(
+            s,
+            "c{k}:\n  %u{k} = call i32 (ptr, ...) @printf(ptr @fmt1, i32 {k})\n  br label %e"
+        )
+        .unwrap();
+    }
+    s.push_str("d:\n  %ud = call i32 (ptr, ...) @printf(ptr @fmt1, i32 -1)\n  br label %e\ne:\n");
+    for k in 0..POISON_AMOUNTS.len() {
+        for op in ["shl", "lshr", "ashr"] {
+            write!(
+                s,
+                "  %p{op}{k} = getelementptr i128, ptr @pk{w}, i32 {k}\n  \
+                 %q{op}{k} = load i128, ptr %p{op}{k}\n  %n{op}{k} = {}\n  \
+                 %r{op}{k} = {op} {t} %x, %n{op}{k}\n  store {t} %r{op}{k}, ptr %buf\n",
+                narrow(&format!("%q{op}{k}"), w)
+            )
+            .unwrap();
+        }
+    }
+    s.push_str("  ret void\n}\n");
+    s
+}
+
+/// The switch program: `@swW` on every value of `values(w)` and on values
+/// that differ from a case only in a high limb, at each width.
+fn switch_program(cpu: Option<&str>) -> String {
+    let mut s = format!("target triple = \"{}\"\n{SHOW}", i386_support::TRIPLE);
+    let mut main = String::new();
+    for w in REST_WIDTHS {
+        let mut vals = values(w);
+        for extra in [3u128 << 64, (1 << 64) | 1, (1 << 96) | 2, mask(w) ^ (1 << 40)] {
+            vals.push(extra & mask(w));
+        }
+        s.push_str(&garbage_table(&format!("wv{w}"), w, &vals));
+        s.push_str(&garbage_table(&format!("pk{w}"), w, &POISON_AMOUNTS.map(|a| a & mask(w))));
+        s.push_str(&switch_function(w));
+        for k in 0..vals.len() {
+            writeln!(
+                main,
+                "  %a{w}x{k} = getelementptr i128, ptr @wv{w}, i32 {k}\n  \
+                 call void @sw{w}(ptr %a{w}x{k})"
+            )
+            .unwrap();
+        }
+    }
+    write!(s, "define i32 @main() #0 {{\nentry:\n{main}  ret i32 0\n}}\n{}", attributes(cpu))
+        .unwrap();
+    s
+}
+
+/// `switch` at 65 to 128 bits: cases with high limbs set, the default,
+/// conditions with garbage above the width; shifts by out-of-range amounts
+/// run without a fault: equal to llc's.
+#[test]
+fn switch_as_llc() {
+    let runs = check_all("switch", switch_program);
+    assert!(runs > 0, "no run was made");
+    eprintln!("i386 wide switch: {runs} runs equal llc's");
+}
+
 /// `shl`, `lshr`, `ashr` at 65 to 128 bits by constant and variable
 /// amounts at the limb edges, with garbage above the width in both
 /// operands, aliased operands, every consumer: equal to llc's.

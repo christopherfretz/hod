@@ -1186,7 +1186,7 @@ fn funnel<'a>(
 /// [`WIDE`]; what the operand and the branches report.
 pub fn switch<'a>(cx: &mut FnCx<'a, X86>, switch: &Switch<'a>) -> CgResult<()> {
     if wide::wide_bits(cx, value_ty(cx, switch.cond)).is_some() {
-        return unsupported(wide::SWITCH);
+        return wide::switch(cx, switch);
     }
     let bits = bits_of(cx, value_ty(cx, switch.cond))?;
     let all = u64::MAX >> (64 - bits);

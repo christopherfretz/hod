@@ -876,6 +876,7 @@ that only i686 is ever named):
 | `tests/ir/fp_intrinsics.ll` | i686 | llc-crash |
 | `tests/ir/half_fp128.ll` | i686 | runtime-routine |
 | `tests/ir/preserve_cc.ll` | i686 | llc-crash |
+| `tests/ir/stack_protector_stack_args.ll` | i686 | lp64-abi |
 | `tests/ir/tail_wide.ll` | i686 | runtime-routine |
 | `tests/ir/tls.ll` | i686 | lp64-abi |
 | `tests/ir/tls_desc.ll` | i686 | lp64-abi |
@@ -1142,7 +1143,7 @@ target"), a line after the coverage counts them by class, in the order
 the classes first occur among the tests:
 
 ```
-irdiff: kept off i686: 25 tests; lp64-abi: 16; runtime-routine: 4; x87-precision: 1; llc-crash: 2; va-list-abi: 2
+irdiff: kept off i686: 26 tests; lp64-abi: 17; runtime-routine: 4; x87-precision: 1; llc-crash: 2; va-list-abi: 2
 ```
 
 Coverage is per test: how many of the objects hod was asked for it built

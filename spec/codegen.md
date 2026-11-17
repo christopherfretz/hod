@@ -4228,8 +4228,39 @@ are target-neutral (`hod_cg::guard`); each target emits the code
 9. **Intrinsics.** `llvm.stackprotector` and `llvm.stackguard` are not
    written by clang or kiln; `classify` refuses them by name
    (`intrinsic:llvm.stackprotector`, `intrinsic:llvm.stackguard`).
+10. **Stack-passed arguments** (WP-333). An argument the caller passed
+    in its stack-argument area lies above the callee's guard, where an
+    overflow of the guarded block reaches it before the check. `llc` 19
+    and 22 (`-O0`, both targets, measured) load every used non-`byval`
+    stack argument at entry, before the guard store, into a virtual
+    register that lives in a register or a spill slot below the guard
+    from then on (a consequence of SelectionDAG's argument lowering, in
+    every function); a `byval` argument is the address of the caller's
+    copy and is read in place, above the guard. hod, in a protected
+    function that is not a coroutine body: an argument that arrives
+    wholly on the stack in one part (an integer, a pointer, a `float` or
+    `double` beyond the FP registers, an `i128` on the stack, a `Mem`
+    value in one part) is copied at entry, in `enter_arguments`, before
+    rule 6's entry code, into a home of its own (`home_slot`, outside the
+    guarded block, so below the guard) and that home is its location for
+    every later read. A value in several parts already gets a home of
+    its own (§4.8, `enter_mem`), and a mask's lanes are gathered into a
+    register at entry. `byval` stays in place, as with `llc` (copying the
+    caller's copy would cost a frame-sized copy per call, and `llc`
+    gives no stronger guarantee). The `va_start` overflow area is the
+    incoming area as before; the named arguments' copies do not move it.
+    A `musttail` call still writes its arguments into the real incoming
+    area. An unprotected function keeps the incoming location as the
+    home: its bytes do not change. A protected coroutine body (whose
+    values §7.6 places) keeps it too; it is not changed by WP-333 and
+    not yet measured against `llc`. A
+    `#dbg_value` of such an argument now describes the copy
+    (`DW_OP_fbreg` of the home); `llc` describes the incoming slot
+    (`DW_OP_fbreg` above the frame), which holds the same value until
+    an overflow; hod's names the value the program uses. CFI does not
+    change.
 
-Evidence: `spec/landed/codegen/WP-183.md`.
+Evidence: `spec/landed/codegen/WP-183.md`, `spec/landed/codegen/WP-333.md`.
 
 #### 5.6.25 Indirect-branch tracking: `cf-protection-branch` (WP-184)
 

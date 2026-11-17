@@ -117,9 +117,13 @@ names four linkers; a missing wild is a note, never a failure
 wild cannot pass is listed in `hod_testutil::linkers::EXCEPTIONS` or, in
 the debugger layer, reported as XLINK (`docs/VALIDATION.md` "Linker
 matrix"); hod's code generators and object writer take no workaround for
-it. wild is not a condition of 1.0. **Pass:** the gate logs of 1.1 and
-1.2 name bfd, lld and mold, and nothing is skipped for a missing required
-linker.
+it. wild is not a condition of 1.0. Since 1.1 mortar is a fifth linker
+of the 64-bit matrix and is required under `HOD_REQUIRE_TOOLS=1`
+(`linkers::MORTAR_REQUIRED` is true; WP-281, WP-310; its pin is in
+`docs/status/linkers.md`), and the i686 matrix is GNU ld, lld and mold.
+**Pass:** the gate logs of 1.1 and 1.2 name every required linker (bfd,
+lld, mold and, on the 64-bit targets, mortar), and nothing is skipped for
+a missing required linker.
 
 ## 3. Kiln's corpus through hod (L6) and debug information (L7)
 
@@ -275,9 +279,9 @@ said, in so many words, to cut 1.0:
 
 1. `Cargo.toml` (workspace root), `[workspace.package]`:
    `version = "0.0.0"` becomes the release's version. Every crate's
-   manifest (`crates/*/Cargo.toml`, `xtask/Cargo.toml`, 18 in all) says
+   manifest (`crates/*/Cargo.toml`, `xtask/Cargo.toml`, 19 in all) says
    `version.workspace = true` and needs no edit.
-2. `Cargo.lock`: run `cargo update --workspace` (or any build) so the 18
+2. `Cargo.lock`: run `cargo update --workspace` (or any build) so the 19
    workspace entries carry the new version; commit it.
 3. Nothing else pins the number: `hod --version` prints
    `hod version <CARGO_PKG_VERSION>` (`crates/hod_cli/src/driver.rs`), and

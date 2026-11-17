@@ -57,9 +57,8 @@ and `llc` and with hod strict; it times out in the control at `K` too.
 Raw results: `.build/release-1.1.0/libcxx-a64/` (`strict.{log,tsv}`,
 `strict/`, `report-strict.txt`, `report-strict-vs-baseline-bd60e.txt`,
 `rerun-lw.log`, `lw-*`, `run-strict.sh`, `shim/`). Not covered here: the
-native runners (4.5, the "Native ... runner" sections below are of an
-earlier hosted run, not of `a68a0d5d`); hybrid was not run (strict
-refused nothing).
+native runners (4.5: the "Native AArch64 runner" section below, the
+hosted run of `a68a0d5d`); hybrid was not run (strict refused nothing).
 
 ## At the candidate cd6ef6bc (WP-233, 2026-11-15, strict, no `-g`)
 

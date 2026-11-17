@@ -83,15 +83,21 @@ note() { # step, microseconds, status, source, object
 
 if [ "$codegen" = 1 ] && [ "${#srcs[@]}" -gt 0 ]; then
     irflags=()
-    skip=0
+    skip=0 keep=0
     for i in "${!args[@]}"; do
         a="${args[$i]}"
         if [ "$skip" = 1 ]; then skip=0; continue; fi
+        if [ "$keep" = 1 ]; then keep=0; irflags+=("$a"); continue; fi
         is_src=0
         for j in "${src_at[@]}"; do [ "$i" = "$j" ] && is_src=1; done
         [ "$is_src" = 1 ] && continue
         case "$a" in
             -o | -Xlinker | -l | -L | -z | -u | -T) skip=1 ;;
+            # an option's value is kept whatever it looks like (-MT x.c.o)
+            -I | -isystem | -iquote | -idirafter | -include | -imacros | -MF | -MT | -MQ | -Xclang | \
+                -Xpreprocessor | -Xassembler | -mllvm | -D | -U | -isysroot | --sysroot | -target | \
+                -resource-dir | -include-pch | -arch | -F)
+                keep=1; irflags+=("$a") ;;
             -c | -l* | -L* | -Wl,* | -static | -pie | -no-pie | -rdynamic | *.o | *.a | *.so) ;;
             *) irflags+=("$a") ;;
         esac

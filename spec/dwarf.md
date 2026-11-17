@@ -682,7 +682,8 @@ hod emits none (a terminate landing pad left behind by a folded
   or `lea` of `esp`), at the call's location: the stop after `finish`
   is still in the call statement's row, so it may differ from `llc`'s
   (which reserves the area in the prologue; its return address is a
-  reload of the PIC base or the next statement) in line as well as
+  reload of the PIC base in a line 0 row, which lldb's step-out steps
+  past to the next row, or the next statement) in line as well as
   column, and gdb may print `0x? in` on one side only. Permitted when
   hod's program has, at hod's stop position, a `call` whose return
   address is in a row of that same position, read from hod's linked

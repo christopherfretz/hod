@@ -14,6 +14,13 @@
 //!   position, when in both programs that position is F's entry row (its
 //!   first `prologue_end` row): the two prologues differ (`llc` builds a
 //!   leaf without a frame), the breakpoint is at the same statement.
+//! - **local-label**: a value symbolized `0x? <.L…>` in `llc`'s session
+//!   and `0x?` in hod's, when that `.L…` name is a local symbol of
+//!   `llc`'s linked program and no symbol of hod's: on i386 `llc`'s
+//!   object keeps a local `.L.str` for each `R_386_GOTOFF` into a
+//!   merged-string section, hod's relocates against the section symbol
+//!   (both resolve to the same string), and mold keeps
+//!   local `.L` symbols that GNU ld and lld drop.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -29,6 +36,27 @@ pub struct ProgramRows {
     /// Each function's entry row: the position of its first
     /// `prologue_end` row.
     pub entries: BTreeMap<String, (u32, u32)>,
+    /// Every defined symbol's name (`nm --defined-only`), the local ones
+    /// (a lower-case type letter) flagged.
+    pub symbols: BTreeMap<String, bool>,
+}
+
+/// The names `nm --defined-only` lists, each with whether it is local
+/// (its type letter is lower case).
+fn parse_defined(text: &str) -> BTreeMap<String, bool> {
+    let mut out = BTreeMap::new();
+    for line in text.lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(_), Some(kind), Some(name)) = (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let local = kind.chars().all(|c| c.is_ascii_lowercase());
+        // A name defined twice is local only if every definition is.
+        let entry = out.entry(name.to_owned()).or_insert(local);
+        *entry &= local;
+    }
+    out
 }
 
 impl ProgramRows {
@@ -40,11 +68,14 @@ impl ProgramRows {
         let table = lines::tool_output(&tools.dwarfdump, &["--debug-line"], program)?;
         let symbols = lines::tool_output(&tools.nm, &["-S", "--defined-only"], program)?;
         let code = lines::tool_output(&tools.objdump, &["-d", "--no-show-raw-insn"], program)?;
-        Ok(ProgramRows::of(
+        let defined = lines::tool_output(&tools.nm, &["--defined-only"], program)?;
+        let mut out = ProgramRows::of(
             &lines::parse_line_tables(&table),
             &lines::parse_symbols(&symbols),
             &lines::parse_instructions(&code),
-        ))
+        );
+        out.symbols = parse_defined(&defined);
+        Ok(out)
     }
 
     /// The facts of a program's rows, symbols and instructions.
@@ -268,6 +299,45 @@ pub fn lldb_entry_rows(
     merged.lines().eq(b.iter().copied()) || rest(&merged, theirs)
 }
 
+/// `line` without each ` <NAME>` or ` <NAME+?>` whose NAME `drop`
+/// accepts; `None` if nothing was dropped.
+fn without_labels(line: &str, drop: impl Fn(&str) -> bool) -> Option<String> {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    let mut dropped = false;
+    while let Some(at) = rest.find(" <") {
+        let after = &rest[at + 2..];
+        let Some(close) = after.find('>') else { break };
+        let name = after[..close].split('+').next().unwrap_or("");
+        out.push_str(&rest[..at]);
+        if drop(name) {
+            dropped = true;
+        } else {
+            out.push_str(&rest[at..at + 3 + close]);
+        }
+        rest = &after[close + 1..];
+    }
+    out.push_str(rest);
+    dropped.then_some(out)
+}
+
+/// The `local-label` rule (module doc): two masked transcripts of as
+/// many lines whose differing pairs are each `llc`'s line equal to hod's
+/// once every ` <.L…>` symbolization is dropped from it whose name is a
+/// LOCAL symbol of `llc`'s program and no symbol of hod's.
+pub fn only_local_labels(ours: &str, theirs: &str, hod: &ProgramRows, llc: &ProgramRows) -> bool {
+    let (a, b): (Vec<&str>, Vec<&str>) = (ours.lines().collect(), theirs.lines().collect());
+    if a.len() != b.len() || a == b {
+        return false;
+    }
+    let label = |name: &str| {
+        name.starts_with(".L")
+            && llc.symbols.get(name) == Some(&true)
+            && !hod.symbols.contains_key(name)
+    };
+    a.iter().zip(&b).all(|(x, y)| x == y || without_labels(y, label).as_deref() == Some(*x))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,6 +418,27 @@ mod tests {
         // A difference after the next prompt is not permitted.
         let late = format!("{head}    frame #0: 0x? prog`f at a.c:5:3\n-> 5 g();\n(lldb) next\ny");
         assert!(!lldb_only_return_rows(&late, &llc, &p));
+    }
+
+    #[test]
+    fn local_labels_of_llc_only() {
+        let nm = "000009f3 r .L.str\n000009e0 r .LC0\n00001000 T main\n";
+        let llc = ProgramRows { symbols: parse_defined(nm), ..ProgramRows::default() };
+        let hod = ProgramRows {
+            symbols: parse_defined("000009e8 r .LC0\n00001000 T main\n"),
+            ..ProgramRows::default()
+        };
+        assert_eq!(llc.symbols.get(".L.str"), Some(&true));
+        assert_eq!(llc.symbols.get("main"), Some(&false));
+        let ours = "f = {code = 50, what = 0x? \"too big\"}\nend";
+        let theirs = "f = {code = 50, what = 0x? <.L.str> \"too big\"}\nend";
+        assert!(only_local_labels(ours, theirs, &hod, &llc));
+        assert!(only_local_labels(ours, &theirs.replace(".str>", ".str+?>"), &hod, &llc));
+        // A label hod's program has too, a global one, another text.
+        assert!(!only_local_labels(ours, &theirs.replace(".L.str", ".LC0"), &hod, &llc));
+        assert!(!only_local_labels(ours, &theirs.replace(".L.str", "main"), &hod, &llc));
+        assert!(!only_local_labels(ours, &theirs.replace("big", "small"), &hod, &llc));
+        assert!(!only_local_labels(ours, ours, &hod, &llc));
     }
 
     #[test]

@@ -1009,6 +1009,14 @@ impl Run<'_> {
                  -> Option<&'static str> {
                     let tools = i686_tools.as_ref()?;
                     let hod = rows::ProgramRows::read(ours, tools).ok()?;
+                    let llc_program = || {
+                        llc_rows
+                            .get_or_init(|| rows::ProgramRows::read(&reference, tools).ok())
+                            .as_ref()
+                    };
+                    if rows::only_local_labels(masked, theirs, &hod, llc_program()?) {
+                        return Some("local-label");
+                    }
                     if debugger.is_gdb() {
                         return rows::gdb_only_return_rows(masked, theirs, commands, &hod)
                             .then_some("return-row");
@@ -1016,9 +1024,7 @@ impl Run<'_> {
                     if rows::lldb_only_return_rows(masked, theirs, &hod) {
                         return Some("return-row");
                     }
-                    let llc = llc_rows
-                        .get_or_init(|| rows::ProgramRows::read(&reference, tools).ok())
-                        .as_ref()?;
+                    let llc = llc_program()?;
                     rows::lldb_entry_rows(masked, theirs, &hod, llc, |m, t| {
                         permitted::only_return_columns(m, t, &facts)
                             || rows::lldb_only_return_rows(m, t, &hod)
@@ -1054,7 +1060,8 @@ impl Run<'_> {
                                 {
                                     (Outcome::Pass, "permitted: return-column".to_owned())
                                 }
-                                // WP-352, i686: `return-row`, `entry-row`.
+                                // WP-352, i686: `local-label`, `return-row`,
+                                // `entry-row`.
                                 Some(_)
                                     if {
                                         i686_rule.set(i686_rows(

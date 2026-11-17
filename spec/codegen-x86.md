@@ -1701,7 +1701,13 @@ top limb by zero or sign first. In memory `llc` writes exactly the
 store size (`ceil(N / 8)` bytes) with the bits above `N` zero, and its
 `load` relies on that (measured: `icmp slt i65` of a loaded value is
 `movzbl 8(%eax)`); hod's `store` writes the same image, its `load`
-reads the store size.
+reads the store size. The bits above `N` in the last byte of an image `llc` did not write
+are, for `llc`, undefined (LangRef: a load of a type that is not a whole
+number of bytes of memory not written by a store of that type); `llc`'s
+load keeps them in the register under an assumed-zero extension, so
+what a consumer sees depends on the consumer. hod's load copies them
+into the slot, where every consumer ignores them (the high bits rule
+above): the result is the one of the value with those bits zero.
 
 **Registers.** Every lowering works limb by limb in `eax`, `ecx`,
 `edx` (never a value's) and pins no pool register but a `Gpr` operand's
@@ -1767,7 +1773,7 @@ longer reached):
 | `x86:i64:wide:div` | `udiv`, `sdiv`, `urem`, `srem` (libgcc has no `__divti3` on i386; `llc` calls compiler-rt's) |
 | `x86:i64:wide:intrinsic` | an integer intrinsic but the overflow ones (bit counts, `bswap`, `abs`, min / max, saturating, funnel shifts, `scmp` / `ucmp`); an odd width is the classifier's `intrinsic:<name>/int-wide` first |
 | `x86:i64:wide:switch` | a `switch` on such an integer |
-| `x86:i64:wide:abi` | an argument or result by value, a call's (`abi::type_refusal`) |
+| `x86:i64:wide:abi` | a result by value of 65 to 127 bits, a call's (`abi::type_refusal`); an `i128` result is returned in memory as `llc` does (hidden pointer, `eax`, `ret $4`), and a wide argument is the convention's `x86:abi:wide-arg` first |
 | `x86:i64:wide:width` | an integer wider than 128 bits |
 
 Tests: `crates/hod/tests/i386_wide_int.rs`: hand-written `.ll` at 65,
@@ -1775,4 +1781,15 @@ Tests: `crates/hod/tests/i386_wide_int.rs`: hand-written `.ll` at 65,
 limb, the sign bit of the width, the extremes), clang's three overflow
 builtins over every triple of the four C types (clang 19 and 22; CPU
 `i686`, `i586`, `pentium4`), static and PIE, plain and under
-`Stress::ALL`, `llc` 19 and 22, run under `qemu-i386`.
+`Stress::ALL`, `llc` 19 and 22, run under `qemu-i386`. The edges of the
+limb-wise lowering are tests of their own there (`limb_edges_as_llc`):
+a stored value between guard bytes and before a `PROT_NONE` page at
+65, 72, 96, 100, 120 and 128 bits; values with garbage above the width
+(a `trunc` from `i128`) through every compare, the overflow
+intrinsics, the extensions, `mul`, `select`, a `phi`, a `trunc` to
+`i65`; an `add` of a value to itself and swapping `phi`s; a wide
+`getelementptr` index with high limbs set or negative. And
+`multiply_random_as_llc`: `mul`, `smul` / `umul.with.overflow` over
+every pair of the boundary values and 2,048 pairs of a fixed-seed
+generator per width (65, 96, 128), each checked in the program against
+the exact result.

@@ -248,8 +248,8 @@ pub fn parse_capture(args: &[String], options: &mut capture::Options) -> Result<
             "--force" => options.force = true,
             "--retry-skipped" => options.retry_skipped = true,
             "--route" => match value(args, &mut index, arg)? {
-                "llc" => options.hod_route = false,
-                "hod" => options.hod_route = true,
+                "llc" => options.route = capture::Route::Llc,
+                "hod" => options.route = capture::Route::Hod,
                 other => return Err(format!("unknown route '{other}': expected llc or hod")),
             },
             other => return Err(format!("unknown argument '{other}'")),
@@ -634,9 +634,13 @@ mod tests {
         );
         assert_eq!(options.torture, Path::new("/t"));
         assert_eq!((options.limit, options.jobs), (Some(7), 2));
-        assert!(options.force && options.retry_skipped && !options.hod_route);
-        assert!(parse(&["--route", "hod"]).unwrap().hod_route);
-        assert!(!parse(&["--route", "hod", "--route", "llc"]).unwrap().hod_route);
+        assert!(options.force && options.retry_skipped);
+        assert_eq!(options.route, capture::Route::Llc);
+        assert_eq!(parse(&["--route", "hod"]).unwrap().route, capture::Route::Hod);
+        assert_eq!(
+            parse(&["--route", "hod", "--route", "llc"]).unwrap().route,
+            capture::Route::Llc
+        );
         assert!(parse(&["--route", "opt"]).is_err());
         assert_eq!(
             parse(&["--source", "gcc-torture", "--source", "kiln"]).unwrap().sources,

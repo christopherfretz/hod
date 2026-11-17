@@ -97,11 +97,8 @@ pub struct Options {
     pub force: bool,
     /// Try again the tests the last capture skipped.
     pub retry_skipped: bool,
-    /// Capture kiln's hod route (`--route hod`): kiln++ gets
-    /// `-fkiln-backend=hod` and the module kept is what kiln gives hod,
-    /// before `opt` ([`kiln::capture_hod_script`]); its entry is
-    /// `input: pre-opt`.
-    pub hod_route: bool,
+    /// kiln's backend route the capture keeps (`--route`).
+    pub route: Route,
     /// Whether a missing tool of the gate is a failure.
     pub require_tools: bool,
     pub search: Search,
@@ -111,6 +108,18 @@ pub struct Options {
     pub tool_limits: Limits,
     /// Limits of the programs.
     pub run_limits: Limits,
+}
+
+/// kiln's backend route a capture keeps.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Route {
+    /// What kiln gives `llc` (after `opt` where kiln runs it).
+    #[default]
+    Llc,
+    /// kiln's hod route (`--route hod`): kiln++ gets `-fkiln-backend=hod`
+    /// and the module kept is what kiln gives hod, before `opt`
+    /// ([`kiln::capture_hod_script`]); its entry is `input: pre-opt`.
+    Hod,
 }
 
 /// The default of `-j`: this is a shared machine's command.
@@ -133,7 +142,7 @@ impl Options {
             jobs: DEFAULT_JOBS.min(cores),
             force: false,
             retry_skipped: false,
-            hod_route: false,
+            route: Route::Llc,
             require_tools: false,
             search: Search::from_env(),
             // kiln's harness gives its compiler 120 s and 8 GiB.
@@ -704,7 +713,7 @@ impl Group<'_> {
         let pie = !llc_args.iter().any(|arg| arg == "-relocation-model=static");
         let mut modules = Vec::new();
         for (name, call) in calls {
-            if self.options.hod_route {
+            if self.options.route == Route::Hod {
                 // On kiln's hod route, only what kiln gave hod: a module
                 // its fallback gave `llc` was not offered to hod.
                 if !call.hod || kiln::is_bitcode(&call.stdin) {
@@ -729,7 +738,7 @@ impl Group<'_> {
             args: plan.run_args.clone(),
             stdin: plan.stdin.clone(),
             llc_args: kiln::repeated_llc_args(&llc_args),
-            pre_opt: self.options.hod_route,
+            pre_opt: self.options.route == Route::Hod,
         };
         if !matches!(ran.end, End::Exit(_)) {
             // Not an exit: the reason and detail of `expectations`.
@@ -1591,7 +1600,7 @@ pub fn capture(options: &Options) -> Result<CaptureReport, String> {
                             continue;
                         }
                     };
-                    let hod = if options.hod_route {
+                    let hod = if options.route == Route::Hod {
                         let script = work.join("capture-hod");
                         let text = kiln::capture_hod_script(&llvm_dir.join("bin/opt"), &llvm.llc)
                             .map_err(|why| format!("kiln is not captured: {why}"))?;

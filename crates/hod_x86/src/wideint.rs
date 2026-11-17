@@ -251,8 +251,10 @@ fn compare_slots(
     b: FrameRef,
 ) -> Cond {
     let count = bits.div_ceil(32);
-    let signed =
-        matches!(pred, IntPredicate::Sgt | IntPredicate::Sge | IntPredicate::Slt | IntPredicate::Sle);
+    let signed = matches!(
+        pred,
+        IntPredicate::Sgt | IntPredicate::Sge | IntPredicate::Slt | IntPredicate::Sle
+    );
     let ext = if signed { Ext::Sign } else { Ext::Zero };
     if matches!(pred, IntPredicate::Eq | IntPredicate::Ne) {
         ld_top(cx, ECX, a, bits, ext);

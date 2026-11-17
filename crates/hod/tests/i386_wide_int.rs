@@ -401,8 +401,18 @@ fn what_stays_refused() {
     ];
     for (op, name) in cases {
         let ty = op.split_whitespace().find(|w| w.starts_with('i')).unwrap_or("i128");
+        // The intrinsics' declarations (the parser wants them).
+        let declare = match op.split_once('@') {
+            Some((_, rest)) => {
+                let name = rest.split('(').next().unwrap_or_default();
+                let arity = rest.split('(').nth(1).unwrap_or_default().split(',').count();
+                let params = vec![ty; arity].join(", ");
+                format!("declare {ty} @{name}({params})\n")
+            }
+            None => String::new(),
+        };
         let text = format!(
-            "define void @f(ptr %p) {{\n  %a = load {ty}, ptr %p\n  {op}\n  \
+            "{declare}define void @f(ptr %p) {{\n  %a = load {ty}, ptr %p\n  {op}\n  \
              store {ty} %r, ptr %p\n  ret void\n}}"
         );
         let error = refusal(&text, None).unwrap_or_else(|| panic!("compiled:\n{text}"));
@@ -413,9 +423,15 @@ fn what_stays_refused() {
                   c:\n  ret i32 1\nd:\n  ret i32 0\n}";
     let error = refusal(switch, None).expect("a wide switch compiles");
     assert!(error.contains("x86:i64:wide:switch"), "{error}");
-    let abi = "define i128 @f(ptr %p) {\n  %a = load i128, ptr %p\n  ret i128 %a\n}";
+    // An `i128` result is returned in memory as `llc` does (`abi.rs`);
+    // another wide result is refused, as is a wide argument.
+    let abi = "define i96 @f(ptr %p) {\n  %a = load i96, ptr %p\n  ret i96 %a\n}";
     let error = refusal(abi, None).expect("a wide return compiles");
     assert!(error.contains("x86:i64:wide:abi"), "{error}");
+    let arg = "define void @f(i128 %a, ptr %p) {\n  store i128 %a, ptr %p\n  ret void\n}";
+    // The convention refuses an `i128` argument first (`x86:abi:wide-arg`).
+    let error = refusal(arg, None).expect("a wide argument compiles");
+    assert!(error.contains("x86:abi:wide-arg"), "{error}");
     let width = "define void @f(ptr %p) {\n  %a = load i200, ptr %p\n  %r = add i200 %a, %a\n  \
                  store i200 %r, ptr %p\n  ret void\n}";
     let error = refusal(width, None).expect("an i200 add compiles");

@@ -242,9 +242,9 @@ their values).
 | `x86:varargs` | `va_start` outside a variadic function (§12.1) | — |
 | `x86:varargs:va-arg-type` | `va_arg` of an aggregate, a vector, an integer wider than 64 bits (§12.1) | — |
 | `x86:probe-stack` | a function with `"probe-stack"="inline-asm"` (§12.3) | — |
-| `x86:intrinsic` | any other intrinsic (the integer intrinsics of §4.1 and §8 are lowered; the overflow and small intrinsics of §13, `eh.typeid.for` (§14) and the coroutine handle intrinsics of §18 are lowered; still refused: every intrinsic none of them names, including a coroutine body's) | per family |
+| `x86:intrinsic` | any other intrinsic (the integer intrinsics of §4.1 and §8 are lowered; the overflow and small intrinsics of §13, `eh.typeid.for` (§14) and the coroutine handle and body intrinsics of §18 are lowered; still refused: every intrinsic none of them names) | per family |
 | `x86:coro-promise` | `llvm.coro.promise` whose alignment is not a constant power of two of at most 2^30, or whose direction is not a constant (§18) | — |
-| `coro:target` | a module with a coroutine body (`presplitcoroutine`), at the facade before any body is read (§18, `spec/codegen.md` §7.6) | WP-327 follow-up |
+| `x86:coro:asm-base` | inline assembly in a coroutine body that writes `esi`, its frame base (an `{esi}` operand, an `esi` clobber; §18) | — |
 | `x86:call` | a call with operand bundles, `callbr` | — |
 | `x86:blockaddress`, `x86:indirect-branch` | `blockaddress`, `indirectbr` | — |
 | `x86:stack-protector` | a function with a stack guard | — |
@@ -1222,14 +1222,14 @@ result whose lanes move (shuffle, cast, compare, `i1`) is built in a
 slot of its own and copied to its home. Nothing branches or calls: no
 vector construct is an x87 barrier.
 
-## 18. Coroutines (`coro`, WP-327)
+## 18. Coroutines (`coro`, `coro_body`; WP-327, WP-335)
 
 The handle operations are lowered in any function, as LLVM's
 `coro-early` and `coro-cleanup` leave them on i386 (measured with `opt
--passes='default<O0>'` + `llc`, 19 and 22). A coroutine body is not
-compiled yet: a module with `presplitcoroutine` is refused as
-`coro:target` at the facade (`spec/landed/codegen/WP-327.md` says why
-and what remains).
+-passes='default<O0>'` + `llc`, 19 and 22). A coroutine body
+(`presplitcoroutine`, the module a front end writes before LLVM's
+passes) is compiled once, as on the 64-bit targets (`spec/codegen.md`
+§7.6); §18.1 is what is particular to i386.
 
 - **The frame header.** The resume function's address is at offset 0
   and the destroy function's at 4. Each is a `fastcc void(ptr frame)`
@@ -1257,3 +1257,64 @@ and what remains).
 Tests: `crates/hod/tests/i386_coro.rs` (`coro/handles.ll`, static and
 PIE, default CPU and `-mcpu=i686`, three linkers, plain and under
 `Stress::ALL`, against the `opt` + `llc` oracle).
+
+### 18.1 Bodies (`coro_body`, WP-335)
+
+- **The frame base is `esi`**, reserved for the whole function: it is
+  out of the pool and the holdable set (`REG_INFO_CORO`), so a body's
+  general pool is `ebx` and `edi`, and no lowering pins more than two
+  (`MIN_POOL_GPR_32`, WP-331). Under PIC `ebx` is also the GOT pointer
+  of every PLT call (`pic::emit_call` displaces the value it holds), so
+  across such a call `edi` is the one pool register that keeps a value.
+  `esi` is callee-saved in every convention hod writes; the prologue's
+  save, CFI row (CFA − 16) and every exit's restore are the frame's.
+  `FrameRef::Coro(o)` is `[esi + o]`, formed in `common::frame_mem` only.
+- **The header** is two pointers (8 bytes): resume at 0, destroy at 4,
+  the promise at `alignTo(8, align)` (the plan's header follows the
+  data layout's pointer size).
+- **Entry.** The prologue stores 0 to the mode word and the frame word.
+  `coro.begin(id, mem)`: `mov esi, mem`; the stubs' addresses without
+  a relocation in every model (`call .+0` · `pop ecx` · `lea edx, [ecx
+  + stub − end]` · `lea edx, [edx + end − pop]`), stored at 0 and 4;
+  the frame word := `esi`. `F.resume` and `F.destroy` are `fastcc
+  void(ptr)` stubs after the function: the prologue with its rows, `mov
+  esi, ecx`, mode := 1, frame word := `ecx`, `eax` := 0 (resume) or 1
+  (destroy), then `cmp dword [esi + index], k` · `je` per re-entry,
+  `ud2` after the last.
+- **`coro.suspend`:** `mov eax, -1`, the re-entry label, the result
+  from `eax`. `coro.save` stores the index (and 0 to the resume word at
+  the final suspend). The dispatch compares the `i8` low byte (through
+  `cl` when the register has none: `edi`).
+- **Exits.** A ramp that pops (`sret`: `ret $4`) tests the mode word
+  before the teardown: a resumed activation returns with `ret`.
+  `coro.end` not unwinding: a resumed activation leaves by the
+  epilogue; unwinding: it stores 0 to the resume word and the final
+  index. `coro.free` and `coro.frame` are `esi`; `coro.alloc` 1;
+  `coro.size` and `coro.align` the layout's (an `i64` result in its two
+  halves).
+- **Symmetric transfer** (after the handle wrapper returned `h` in
+  `eax`): `mov edx, [eax]` · `mov ecx, eax` · `cmp dword [ebp + mode],
+  0` · `jne exit` · `call edx` (through `pic::emit_call`); `exit` tears
+  the frame down and `jmp edx`.
+- **Barriers (§11).** `coro.suspend` and the three `await.suspend`
+  wrappers are x87 barriers (with `coro.resume` and `coro.destroy`): a
+  resumed activation's machine stack does not hold an 80-bit copy's
+  slot, and `llc` lowers each with a call or a function boundary. A
+  `float` or `double` live across a suspend is a heap value of its own
+  size, so it is rounded there. `llc` can differ: `CoroSplit`
+  rematerialises an arithmetic instruction after the suspend from its
+  spilled operands and computes it again in 80 bits (measured, 19 and
+  22). The IR's rounding is hod's; the excess precision is the oracle's
+  (`spec/harness.md` `x87-precision`).
+- **Exceptions and debug information** are the 64-bit targets': a
+  landing pad runs in the activation that made the call, `esi` restored
+  by the unwinder from the prologue's or the stub's rows; variables'
+  locations go through the frame word (`spec/dwarf.md` §6.16).
+- **Refused:** inline assembly in a body that writes `esi` is
+  `x86:coro:asm-base` (an operand is never given `esi`).
+
+Tests: `crates/hod/tests/i386_coro.rs` (`bodies_run_as_llc_s`: the
+programs `coro/gen.cpp`, `transfer.cpp`, `throws.cpp` by clang 19 and
+22, CPU `generic` and `i686`, static and PIE, plain and stressed;
+`bodies_with_debug_information_verify_and_run`; `what_is_refused`) and
+the `tests/ir/coro` seeds through `irdiff --target i686`.

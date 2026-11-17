@@ -1642,7 +1642,8 @@ field at its type's width (exact). The call is a barrier (`x87::barrier`;
 measured). In an SSE function the same sequence (`llc` stores `st0`).
 On x86-64 and AArch64 `llc -O0` makes the same plain call (the operand
 in `xmm0` / `d0` / on the stack for `x86_fp80`, the pointer in `rdi` /
-`x0`); hod does not lower it there yet (`intrinsic:llvm.modf`).
+`x0`), and hod makes it there too (`spec/codegen.md`, WP-340; what
+stays refused on those targets is `intrinsic:llvm.modf`).
 
 **`llvm.frexp`** of `float`, `double`, `x86_fp80` (WP-341; clang 19
 and 22 write it for `__builtin_frexp*`, libc++'s `frexp`): the same

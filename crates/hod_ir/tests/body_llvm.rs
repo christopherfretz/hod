@@ -666,6 +666,7 @@ const INTRINSICS: &[(&str, &str)] = &[
     ("llvm.powi.f64.i32", "double (double, i32)"),
     ("llvm.ldexp.f64.i32", "double (double, i32)"),
     ("llvm.frexp.f64.i32", "{ double, i32 } (double)"),
+    ("llvm.modf.f64", "{ double, double } (double)"),
     ("llvm.sin.f64", "double (double)"),
     ("llvm.cos.f64", "double (double)"),
     ("llvm.tan.f64", "double (double)"),

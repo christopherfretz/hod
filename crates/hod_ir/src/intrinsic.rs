@@ -143,6 +143,7 @@ intrinsics! {
     Powi = "llvm.powi" [Ret, P(1)],
     Ldexp = "llvm.ldexp" [Ret, P(1)],
     Frexp = "llvm.frexp" [RetField(0), RetField(1)],
+    Modf = "llvm.modf" [P(0)],
     Sin = "llvm.sin" [Ret],
     Cos = "llvm.cos" [Ret],
     Tan = "llvm.tan" [Ret],

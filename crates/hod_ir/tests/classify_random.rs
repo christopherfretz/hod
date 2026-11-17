@@ -957,15 +957,16 @@ fn wild_programs_never_panic() {
 /// for some classes but not `token`, and `type:token` not supported (the
 /// matrix of that day), seed 360 had a body with a `token` parameter (since
 /// WP-179 added a function flag and a string key, and WP-184 one more
-/// flag, and WP-270 two more, which move the generator's draws, seed 2633
-/// is the first that has it). Its
+/// flag, WP-270 two more, and WP-337 one more intrinsic, which move the
+/// generator's draws, seed 4690 is the first where repeated classification
+/// meets `type:token` before the pair). Its
 /// finding is `type:token` (§8.3); the pair `function:parameters/token`
 /// is a finding only once `type:token` is supported. The census and
 /// repeated classification follow that one rule.
 #[test]
 fn a_pair_is_found_only_behind_its_type_row() {
     const PAIR: &str = "function:parameters/token";
-    let seed = 2633;
+    let seed = 4690;
     let arch = ARCHES[(seed % 2) as usize];
     let program = program(seed, arch, false);
     let then = Support::shipped(arch).clone().without("type:token").unwrap();

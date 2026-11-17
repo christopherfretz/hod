@@ -254,6 +254,7 @@ impl Target for X86 {
         frame::base_offset(desc, place)
     }
 
+    #[allow(clippy::too_many_lines, reason = "one dispatch match over the families")]
     fn lower<'a>(&self, cx: &mut FnCx<'a, Self>, inst: Inst<'a>) -> CgResult<()> {
         match cx.fold_action(inst) {
             // An `invoke` the fold turns into a call, or one that loses
@@ -274,6 +275,7 @@ impl Target for X86 {
             InstKind::ExtractValue { agg, offset } if crate::atomic::is_cmpxchg_result(cx, agg) => {
                 crate::atomic::extract(cx, inst, agg, offset)
             }
+            _ if crate::fpclass::owns(cx, inst) => crate::fpclass::lower(cx, inst),
             // I12: after `atomic`'s arms, before x87's; no aggregate's.
             _ if sse_family_owns(cx, inst) => sse_family(cx, inst),
             _ if crate::x87::owns(cx, inst) => crate::x87::lower(cx, inst),

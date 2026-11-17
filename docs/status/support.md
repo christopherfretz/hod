@@ -50,8 +50,8 @@ skipped (`docs/design/0007-avx512.md` §4.4).
 | `landingpad` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 1032 | 374 | 11 | 647 | 782 | 10 | 240 |
-| total | 1360 | 599 | 58 | 703 | 1009 | 61 | 290 |
+| `intrinsic` | 1033 | 374 | 12 | 647 | 782 | 11 | 240 |
+| total | 1361 | 599 | 59 | 703 | 1009 | 62 | 290 |
 
 ## `module`
 
@@ -610,6 +610,7 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.powi` | supported (int, half, float, double, fp128, vector) | supported (int, half, float, double, fp128, x86_fp80, vector) |  |
 | `intrinsic:llvm.ldexp` | supported (int, half, float, double, fp128, vector) | supported (int, half, float, double, fp128, x86_fp80, vector) |  |
 | `intrinsic:llvm.frexp` | supported (int, half, float, double, fp128, aggregate) | supported (int, half, float, double, fp128, x86_fp80, aggregate) |  |
+| `intrinsic:llvm.modf` | not-implemented | not-implemented | unplanned |
 | `intrinsic:llvm.sin` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
 | `intrinsic:llvm.cos` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
 | `intrinsic:llvm.tan` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
@@ -1603,8 +1604,8 @@ classified as x86_64 except for the rows below.
 | `landingpad` | 3 | 3 | 0 | 0 |
 | `operand` | 11 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 |
-| `intrinsic` | 1032 | 782 | 10 | 240 |
-| total | 1360 | 1008 | 65 | 287 |
+| `intrinsic` | 1033 | 783 | 10 | 240 |
+| total | 1361 | 1009 | 65 | 287 |
 
 | construct | x86_64 | i386 | why on i386 |
 |---|---|---|---|
@@ -1618,6 +1619,7 @@ classified as x86_64 except for the rows below.
 | `cc:win64cc` (i386) | supported | not-implemented | i386 `x86:abi:cc` |
 | `attr:inreg` (i386) | not-implemented | supported |  |
 | `attr:nest` (i386) | not-implemented | supported |  |
+| `intrinsic:llvm.modf` (i386) | not-implemented | supported (float, double, x86_fp80, aggregate) |  |
 
 ## Structural rules
 

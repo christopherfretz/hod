@@ -26,6 +26,7 @@ pub mod coro;
 pub mod coro_body;
 pub mod dynstack;
 pub mod eh;
+pub mod fpclass;
 pub mod frame;
 pub mod ibr;
 pub mod int;

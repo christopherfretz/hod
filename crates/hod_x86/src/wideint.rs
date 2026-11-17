@@ -211,7 +211,7 @@ pub fn binary<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, lhs: Value, rhs: Value
         Opcode::Or => (mc::or_rm, mc::or_rm),
         Opcode::Xor => (mc::xor_rm, mc::xor_rm),
         Opcode::Mul => return mul(cx, inst, lhs, rhs),
-        Opcode::Shl | Opcode::LShr | Opcode::AShr => return unsupported(SHIFT),
+        Opcode::Shl | Opcode::LShr | Opcode::AShr => return shift(cx, inst, lhs, rhs),
         Opcode::UDiv | Opcode::SDiv | Opcode::URem | Opcode::SRem => return unsupported(DIV),
         _ => return unsupported(alu::CAST),
     };
@@ -222,6 +222,112 @@ pub fn binary<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, lhs: Value, rhs: Value
         let make = if limb == 0 { first } else { rest };
         op_m(cx, b, limb, |m| make(Size::D, EAX, m));
         st(cx, EAX, r, limb);
+    }
+    Ok(())
+}
+
+// ---- shifts ----
+
+/// The limbs of fill beside the value in a shift's buffer: one more than
+/// the largest limb distance of an in-range amount (3, at 97 to 128 bits),
+/// so that every masked distance reads inside the buffer.
+const PAD: u32 = 4;
+
+/// The amount of a shift by the constant `value`, saturated: `u64::MAX`
+/// for one with a high limb set; `None` when `value` is no constant.
+fn const_amount(cx: &FnCx<'_, X86>, value: Value) -> Option<u64> {
+    let ValueKind::Const(id) = value.kind() else { return None };
+    match cx.module.consts.get(id) {
+        Const::Int { value, .. } => Some(value),
+        Const::WideInt { words, .. } => {
+            Some(if words.iter().skip(1).all(|&w| w == 0) { words[0] } else { u64::MAX })
+        }
+        Const::Null(_) | Const::Zero(_) | Const::Undef(_) | Const::Poison(_) => Some(0),
+        _ => None,
+    }
+}
+
+/// `%r = shl|lshr|ashr iN %lhs, %rhs` (`llc`'s shift through a stack
+/// buffer). The buffer holds the value's `L` limbs, its top limb extended
+/// (zero, or sign for `ashr`), and [`PAD`] limbs of fill (0, or the sign)
+/// below it for `shl`, above it for the right shifts. Result limb `i` is
+/// the double shift (`shld` / `shrd`) of the buffer's limbs `i - q` and
+/// `i - q - 1` (`shl`) or `i + q` and `i + q + 1`, `q = amount / 32`, by
+/// `amount % 32`. A constant amount picks the limbs at compile time (none
+/// at all of the width or more: poison); a variable one is the low limb
+/// in `ecx`, `edx = &buffer -/+ 4 ((ecx >> 5) & 3)`, and `shld` / `shrd
+/// [r + 4 i], eax, cl` (which count modulo 32). The mask keeps every
+/// access inside the buffer for any amount. No branch, no call, no
+/// register but `eax`, `ecx`, `edx`.
+///
+/// # Errors
+/// [`WIDTH`]; what the operands report.
+fn shift<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, lhs: Value, rhs: Value) -> CgResult<()> {
+    let bits = cx.types().int_bits(inst.ty()).unwrap_or(128);
+    let count = limbs(bits)?;
+    let op = inst.opcode();
+    let right = op != Opcode::Shl;
+    let ext = if op == Opcode::AShr { Ext::Sign } else { Ext::Zero };
+    let amount = const_amount(cx, rhs);
+    if amount.is_some_and(|k| k >= u64::from(bits)) {
+        return Ok(());
+    }
+    let a = cx.use_mem(lhs)?;
+    let n = match amount {
+        Some(_) => None,
+        None => Some(cx.use_mem(rhs)?),
+    };
+    let r = cx.def_mem(inst)?;
+    let buf = cx.alloc_slot(u64::from(4 * (count + PAD)), 4)?;
+    let (value, pad) =
+        if right { (buf, buf.offset_by(4 * count)) } else { (buf.offset_by(4 * PAD), buf) };
+    copy(cx, value, a, count - 1);
+    ld_top(cx, ECX, a, bits, ext);
+    st(cx, ECX, value, count - 1);
+    fill(cx, pad, 0, PAD, ext == Ext::Sign);
+    // The buffer's limbs read for result limb `i` at limb distance `q`:
+    // (the one shifted out of, the one shifted in from).
+    let at =
+        |i: u32, q: u32| if right { (i + q, i + q + 1) } else { (PAD + i - q, PAD + i - q - 1) };
+    let Some(n) = n else {
+        let k = amount.unwrap_or(0) as u32;
+        let (q, s) = (k / 32, (k % 32) as u8);
+        for i in 0..count {
+            let (from, other) = at(i, q);
+            ld(cx, EAX, buf, from);
+            if s != 0 {
+                ld(cx, EDX, buf, other);
+                put(
+                    cx,
+                    if right {
+                        mc::shrd_rri(Size::D, EAX, EDX, s)
+                    } else {
+                        mc::shld_rri(Size::D, EAX, EDX, s)
+                    },
+                );
+            }
+            st(cx, EAX, r, i);
+        }
+        return Ok(());
+    };
+    ld(cx, ECX, n, 0);
+    put(cx, mc::mov_rr(Size::D, EDX, ECX));
+    put(cx, mc::shr_ri(Size::D, EDX, 5));
+    put(cx, mc::and_ri(Size::D, EDX, 3));
+    put(cx, mc::shl_ri(Size::D, EDX, 2));
+    if !right {
+        put(cx, mc::neg_r(Size::D, EDX));
+    }
+    crate::common::frame_address(cx, EAX, buf);
+    put(cx, mc::add_rr(Size::D, EDX, EAX));
+    for i in 0..count {
+        let (from, other) = at(i, 0);
+        put(cx, mc::mov_rm(Size::D, EAX, Mem::base(EDX, 4 * from as i32)));
+        st(cx, EAX, r, i);
+        put(cx, mc::mov_rm(Size::D, EAX, Mem::base(EDX, 4 * other as i32)));
+        op_m(cx, r, i, |m| {
+            if right { mc::shrd_mrcl(Size::D, m, EAX) } else { mc::shld_mrcl(Size::D, m, EAX) }
+        });
     }
     Ok(())
 }

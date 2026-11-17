@@ -948,3 +948,160 @@ fn multiply_random_as_llc() {
     assert!(runs > 0, "no run was made");
     eprintln!("i386 wide multiplication: {runs} runs equal llc's");
 }
+
+// ---- shifts, the integer intrinsics, `switch` (WP-355) ----
+
+/// The widths of WP-355's programs: a top limb of 1, 8, 32, 4, 24 and 32
+/// bits, three and four limbs.
+const REST_WIDTHS: [u32; 6] = [65, 72, 96, 100, 120, 128];
+
+/// Runs `text(cpu)` at the three CPUs, static and PIE; the number of runs.
+fn check_all(name: &str, text: impl Fn(Option<&str>) -> String) -> usize {
+    let Some(lane) = lane() else { return 1 };
+    let scratch = Scratch::new(&format!("i386-wide-int-{name}"));
+    let mut runs = 0;
+    for (cpu, features) in CPUS {
+        let source = text(cpu);
+        for pic in [false, true] {
+            let build = Build { pic, features, ..STATIC };
+            let label = format!("{name}-{}", cpu.unwrap_or("generic"));
+            runs += lane.check(&scratch, &label, &Source::Ll(&source), build);
+        }
+    }
+    runs
+}
+
+/// The shift amounts at width `w`: the limb edges below `w`, and `w - 1`.
+fn amounts(w: u32) -> Vec<u32> {
+    let mut v: Vec<u32> = [0, 1, 31, 32, 33, 63, 64, 65, 95, 96, 97, 127, w - 1]
+        .into_iter()
+        .filter(|&k| k < w)
+        .collect();
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
+/// A table `@name` of `iW` values as `i128`s with garbage above the width.
+fn garbage_table(name: &str, w: u32, vals: &[u128]) -> String {
+    let items: Vec<String> = vals
+        .iter()
+        .enumerate()
+        .map(|(k, &v)| format!("i128 {}", lit(128, garbage(w, v, k))))
+        .collect();
+    format!("@{name} = private constant [{} x i128] [{}]\n", vals.len(), items.join(", "))
+}
+
+/// `@shW(ptr %pv, ptr %pk)`: the three shifts of the value at `%pv` by the
+/// amount at `%pk` (both with garbage above the width), each result
+/// stored, extended, compared and added to; then the amount shifted by
+/// itself. `@scW(ptr %pv)`: the value shifted by every constant amount.
+fn shift_functions(w: u32) -> String {
+    let t = format!("i{w}");
+    let mut b = Body { text: String::new(), n: 0 };
+    let xx = b.val("load i128, ptr %pv");
+    let kk = b.val("load i128, ptr %pk");
+    let x = b.val(&narrow(&xx, w));
+    let k = b.val(&narrow(&kk, w));
+    for op in ["shl", "lshr", "ashr"] {
+        let r = b.val(&format!("{op} {t} {x}, {k}"));
+        b.show(w, &r);
+        if w < 128 {
+            let e = b.val(&format!("sext {t} {r} to i128"));
+            b.show(128, &e);
+        }
+        let c = b.val(&format!("icmp slt {t} {r}, 0"));
+        b.flag(&c);
+        let u = b.val(&format!("icmp ugt {t} {r}, {x}"));
+        b.flag(&u);
+        let s = b.val(&format!("add {t} {r}, {x}"));
+        b.show(w, &s);
+        let a = b.val(&format!("{op} {t} {k}, {k}"));
+        b.show(w, &a);
+    }
+    let mut out = format!(
+        "define void @sh{w}(ptr %pv, ptr %pk) #0 {{\n  %buf = alloca [16 x i8], align 16\n  \
+         store i128 0, ptr %buf\n{}  ret void\n}}\n",
+        b.text
+    );
+    let mut b = Body { text: String::new(), n: 0 };
+    let xx = b.val("load i128, ptr %pv");
+    let x = b.val(&narrow(&xx, w));
+    for k in amounts(w) {
+        for op in ["shl", "lshr", "ashr"] {
+            let r = b.val(&format!("{op} {t} {x}, {k}"));
+            b.show(w, &r);
+        }
+    }
+    // A chain: a shifted value shifted again, then compared.
+    let r1 = b.val(&format!("shl {t} {x}, 3"));
+    let r2 = b.val(&format!("ashr {t} {r1}, 35"));
+    let c = b.val(&format!("icmp eq {t} {r2}, {x}"));
+    b.flag(&c);
+    write!(
+        out,
+        "define void @sc{w}(ptr %pv) #0 {{\n  %buf = alloca [16 x i8], align 16\n  \
+         store i128 0, ptr %buf\n{}  ret void\n}}\n",
+        b.text
+    )
+    .unwrap();
+    out
+}
+
+/// The shift program: every value of `values(w)` by every amount of
+/// `amounts(w)`, variable and constant, at each width of `REST_WIDTHS`.
+fn shift_program(cpu: Option<&str>) -> String {
+    let mut s = format!("target triple = \"{}\"\n{SHOW}", i386_support::TRIPLE);
+    let mut main = String::new();
+    for w in REST_WIDTHS {
+        let vals = values(w);
+        let ks: Vec<u128> = amounts(w).into_iter().map(u128::from).collect();
+        let (n, m) = (vals.len(), ks.len());
+        s.push_str(&garbage_table(&format!("sv{w}"), w, &vals));
+        s.push_str(&garbage_table(&format!("sk{w}"), w, &ks));
+        s.push_str(&shift_functions(w));
+        write!(
+            main,
+            "  br label %o{w}
+o{w}:
+  %i{w} = phi i32 [ 0, %{prev} ], [ %i{w}n, %x{w} ]
+  %a{w} = getelementptr i128, ptr @sv{w}, i32 %i{w}
+  call void @sc{w}(ptr %a{w})
+  br label %l{w}
+l{w}:
+  %j{w} = phi i32 [ 0, %o{w} ], [ %j{w}n, %l{w} ]
+  %b{w} = getelementptr i128, ptr @sk{w}, i32 %j{w}
+  call void @sh{w}(ptr %a{w}, ptr %b{w})
+  %j{w}n = add i32 %j{w}, 1
+  %jd{w} = icmp eq i32 %j{w}n, {m}
+  br i1 %jd{w}, label %x{w}, label %l{w}
+x{w}:
+  %i{w}n = add i32 %i{w}, 1
+  %id{w} = icmp eq i32 %i{w}n, {n}
+  br i1 %id{w}, label %d{w}, label %o{w}
+d{w}:
+",
+            prev = match w {
+                65 => "entry".to_string(),
+                _ => format!(
+                    "d{}",
+                    REST_WIDTHS[REST_WIDTHS.iter().position(|&x| x == w).unwrap() - 1]
+                ),
+            },
+        )
+        .unwrap();
+    }
+    write!(s, "define i32 @main() #0 {{\nentry:\n{main}  ret i32 0\n}}\n{}", attributes(cpu))
+        .unwrap();
+    s
+}
+
+/// `shl`, `lshr`, `ashr` at 65 to 128 bits by constant and variable
+/// amounts at the limb edges, with garbage above the width in both
+/// operands, aliased operands, every consumer: equal to llc's.
+#[test]
+fn shifts_as_llc() {
+    let runs = check_all("shift", shift_program);
+    assert!(runs > 0, "no run was made");
+    eprintln!("i386 wide shifts: {runs} runs equal llc's");
+}

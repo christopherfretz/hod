@@ -197,6 +197,17 @@ pub fn ptr_add<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, add: &PtrAdd<'a>) -> 
             offset = offset.wrapping_add(c.wrapping_mul(scale as u32));
         }
     }
+    // WP-352 (`spec/dwarf.md` §5.8): the address of a slot of the
+    // guarded block at constant indices is `llc`'s frame-index
+    // materialization, folded into its user and without a location of
+    // its own; hod's code for it (the reload of the slot's pointer, the
+    // `lea`) gets no row of its own and stays in the row before it.
+    let at = cx.line_loc();
+    let frame_index = guarded_slot(cx, add.base)?
+        && add.indices().all(|(index, _)| const_int(cx, index).is_some());
+    if frame_index {
+        cx.line_switch(hod_ir::LocId::NONE);
+    }
     let rb = cx.use_reg(add.base)?;
     let b = gp(rb);
     for (index, scale) in add.indices() {
@@ -219,7 +230,23 @@ pub fn ptr_add<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, add: &PtrAdd<'a>) -> 
     if offset != 0 {
         put(cx, mc::lea(Size::D, b, Mem::base(b, offset as i32)));
     }
-    cx.finish(inst, rb)
+    cx.finish(inst, rb)?;
+    if frame_index {
+        cx.line_switch(at);
+    }
+    Ok(())
+}
+
+/// Whether `ptr` is a slot of the function's guarded block (WP-324:
+/// reached through its pointer slot).
+fn guarded_slot(cx: &FnCx<'_, X86>, ptr: Value) -> CgResult<bool> {
+    let ValueKind::Slot(slot) = ptr.kind() else { return Ok(false) };
+    Ok(match cx.slot_place(slot)? {
+        SlotPlace::Indirect(pointer) => {
+            cx.stack_guard().pointers().iter().any(|&(p, _)| p == pointer)
+        }
+        SlotPlace::Direct(_) => false,
+    })
 }
 
 #[cfg(test)]

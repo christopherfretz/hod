@@ -519,6 +519,9 @@ impl<'a, T: Target> FnCx<'a, T> {
     /// Where `value` is from the start of `inst`'s code to the end of the
     /// range (module doc).
     fn value_at(&mut self, value: Value, inst: Inst<'a>) -> CgResult<ValueAt> {
+        // The target's pointer width: 4 bytes on i386, 8 on the 64-bit
+        // targets (WP-352).
+        let ptr_bits = self.module.target().data_layout().pointer(0).bits;
         let key = match value.kind() {
             ValueKind::Const(id) => {
                 return Ok(match self.module.consts.get(id) {
@@ -528,7 +531,7 @@ impl<'a, T: Target> FnCx<'a, T> {
                         }
                         _ => ValueAt::None,
                     },
-                    Const::Null(_) => ValueAt::Const { bits: 0, width: 64 },
+                    Const::Null(_) => ValueAt::Const { bits: 0, width: ptr_bits as u8 },
                     _ => ValueAt::None,
                 });
             }
@@ -540,7 +543,8 @@ impl<'a, T: Target> FnCx<'a, T> {
         };
         let size = match self.types().kind(self.body.value_type(self.module, value)) {
             TypeKind::Int(bits @ (8 | 16 | 32 | 64)) => (bits / 8) as u8,
-            TypeKind::Ptr { addr_space: 0 } | TypeKind::Double => 8,
+            TypeKind::Ptr { addr_space: 0 } => (ptr_bits / 8) as u8,
+            TypeKind::Double => 8,
             TypeKind::Float => 4,
             _ => return Ok(ValueAt::None),
         };

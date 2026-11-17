@@ -4,8 +4,9 @@
 //! a `std::coroutine_handle` relies on. The same decisions as x86-64's
 //! (`hod_x64/src/coro.rs`) with 4-byte pointers.
 //!
-//! **Owner: WP-327.** Coroutine bodies are not compiled on i386 yet
-//! (`coro:target`; `spec/landed/codegen/WP-327.md`).
+//! **Owner: WP-327.** Tests: `crates/hod/tests/i386_coro.rs`. Coroutine
+//! bodies are `coro_body` (WP-335); [`owns`] and [`intrinsic`] take its
+//! intrinsics too, so that `call::lower` has one arm for the family.
 //!
 //! - **The frame header**: the resume function's address at offset 0,
 //!   the destroy function's at offset 4. Each is a `fastcc void(ptr
@@ -52,9 +53,16 @@ const MAX_PROMISE: u64 = 1 << 30;
 /// pops nothing).
 pub const NOOP_FN: &[u8] = &[0xc3];
 
-/// Whether `which` is a handle intrinsic of this module.
+/// Whether `which` is a coroutine intrinsic of this module or of
+/// `crate::coro_body` (a body intrinsic, WP-335): `call::lower`'s one
+/// arm for the family.
 #[must_use]
 pub fn owns(which: Intrinsic<'_>) -> bool {
+    is_handle(which) || crate::coro_body::owns(which)
+}
+
+/// Whether `which` is a handle intrinsic.
+fn is_handle(which: Intrinsic<'_>) -> bool {
     matches!(
         which,
         Intrinsic::CoroResume
@@ -68,10 +76,12 @@ pub fn owns(which: Intrinsic<'_>) -> bool {
 /// Whether `which` is a call that `llc` leaves no x87 value across
 /// (`crate::x87`'s barrier rule): `resume` and `destroy` call through
 /// the frame (measured: llc 19 and 22 spill a `double` live across
-/// either to the stack).
+/// either to the stack); the body's suspend points
+/// (`crate::coro_body::is_barrier`, WP-335).
 #[must_use]
 pub fn is_barrier(which: Intrinsic<'_>) -> bool {
     matches!(which, Intrinsic::CoroResume | Intrinsic::CoroDestroy)
+        || crate::coro_body::is_barrier(which)
 }
 
 /// A call (or, for `resume` and `destroy`, an `invoke`) of a handle
@@ -93,6 +103,7 @@ pub fn intrinsic<'a>(
         (Intrinsic::CoroDone, &[frame]) => done(cx, inst, frame),
         (Intrinsic::CoroPromise, &[frame, align, from]) => promise(cx, inst, frame, align, from),
         (Intrinsic::CoroNoop, []) => noop(cx, inst),
+        _ if crate::coro_body::owns(which) => crate::coro_body::intrinsic(cx, inst, which, args),
         _ => cx.bug("a coroutine handle intrinsic with unexpected arguments"),
     }
 }

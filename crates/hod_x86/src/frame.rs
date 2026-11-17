@@ -98,6 +98,8 @@ pub fn begin(cx: &mut FnCx<'_, X86>) -> CgResult<()> {
     put(cx, sub);
     crate::ssp::reserve(cx)?; // WP-324: the low guard, first in the local area
     crate::ssp::copy_arguments(cx)?; // WP-324: stack arguments below the guard
+    // WP-335: a coroutine's mode and frame words.
+    crate::coro_body::enter(cx)?;
     // `spec/abi-x86.md` §5.2: a function that writes its result through
     // a hidden pointer finds it in the first stack argument (`agg`);
     // §6.1: an `inreg sret` pointer is kept for the return, before any
@@ -137,11 +139,13 @@ pub fn end(cx: &mut FnCx<'_, X86>) -> CgResult<()> {
     } else if pop != 0 {
         common::load_gpr(cx, Reg::Rax, FrameRef::Incoming(0), 4);
     }
+    // WP-335: a stub-entered activation of a coroutine pops nothing.
+    let resumed = crate::coro_body::test_mode(cx, pop)?;
     teardown(cx);
     if pop == 0 {
         put(cx, mc::ret());
     } else {
-        put(cx, mc::ret_imm(pop as u16));
+        crate::coro_body::ret_pop(cx, pop as u16, resumed)?;
     }
     // `spec/abi-x86.md` §8.5: a `musttail` exit. The call sequence wrote
     // the stack arguments over the incoming ones and the register

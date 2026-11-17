@@ -23,6 +23,7 @@ pub mod cet;
 pub mod common;
 pub mod control;
 pub mod coro;
+pub mod coro_body;
 pub mod dynstack;
 pub mod eh;
 pub mod frame;

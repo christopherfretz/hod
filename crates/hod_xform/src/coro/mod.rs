@@ -121,7 +121,8 @@ pub struct CoroPlan {
     /// The promise slot (`coro.id`'s second operand), a header field at
     /// `promise_offset`; never in `heap_slots`.
     pub promise: Option<SlotId>,
-    /// `alignTo(16, align(promise))`; 16 without a promise.
+    /// `alignTo(H, align(promise))`; `H` without a promise. `H`, the
+    /// header, is two pointers: 16, and 8 on i386 (WP-335).
     pub promise_offset: u32,
     /// The frame's alignment: 16, or more for a frame resident aligned
     /// above it (then the body calls `coro.align`).

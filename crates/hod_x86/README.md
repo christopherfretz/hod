@@ -53,6 +53,8 @@ refusal table of `spec/codegen-x86.md` §7) belong to WP-293's owner of
 | `cet.rs` | **WP-324** | `endbr32` at entries, branch targets and after `returns_twice` calls; the `nocf_check` indirect call refused (`spec/codegen-x86.md` §19.3) | — | `frame::begin` (entry), `Target::branch_target`, `Target::emit_call`, `call::check` | `x86:cf-protection` (new: `x86:nocf-check-indirect-call`) |
 | `ssp.rs` | **WP-324** | stack protectors: guard at `gs:[0x14]`, entry code, checks, `__stack_chk_fail` (`spec/codegen-x86.md` §19.2) | — | `Target::enter_guard`, `FnState::ssp`, hooks in `frame::begin`/`end`, `control::ret`'s `ret_copy` flag | `x86:stack-protector` |
 
+| `coro.rs`, `coro_body.rs` | **WP-327**, **WP-335** | coroutine handle operations in any function; bodies with `esi` as the frame base (stubs, dispatch, suspend, symmetric transfer, the body intrinsics; `spec/codegen-x86.md` §18) | — | `call::lower`'s coroutine arm (`coro::owns` takes both), `x87::barrier`'s, `frame::begin`/`end`, `common::frame_mem`, `asm::decide` | `coro:target` on i386 (adds `x86:coro-promise`, `x86:coro:asm-base`) |
+
 Debug information (I10, WP-314) is `hod_dwarf`'s at address size 4
 (`spec/codegen-x86.md` §15); the crate's part is `target.rs`'s
 `emit_call` reporting where a call returns. `hod_dwarf` refuses

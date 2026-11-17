@@ -6987,6 +6987,9 @@ nothing else is left out for it.
   and whose size is a multiple of 8 (MT-10: it then ends with a whole
   unit), else a new section of that name after every other (so a section
   of another shape stays `llc`'s byte for byte, and hod never pads it).
+  A container that has a relocation section or is a member of a COMDAT
+  group is of another shape too (mortar drops such a container whole):
+  hod leaves it untouched and its unit goes into the new section.
   The unit is appended once every variable is placed: kiln's units come
   first and their bytes are unchanged (H-2). (mortar's MT-10 reads a container as a sequence of
   units and fixes no order between producers; this is hod's.)

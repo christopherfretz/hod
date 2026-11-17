@@ -301,6 +301,57 @@ fn kilns_unit_comes_first_unchanged_and_hods_follows() {
 fn a_container_of_odd_size_is_left_alone() {
     let text = "@m = private constant [6 x i8] c\"ab\\00\\FF\\C3(\", section \".mason.meta\", \
                 align 8, !exclude !{}\n";
+    left_alone(text, |target, object, _, kiln| {
+        let data = &object[kiln.offset as usize..][..kiln.size as usize];
+        assert_eq!(data, b"ab\0\xff\xc3(", "{}: the constant's bytes alone", target.name());
+    });
+}
+
+/// A `.mason.meta` with a relocation section is one mortar drops whole:
+/// hod leaves it as `llc` writes it and puts its unit in a second section
+/// of that name.
+#[test]
+fn a_container_with_a_relocation_is_left_alone() {
+    let text = "@x = global i32 0\n\
+                @m = private constant [2 x ptr] [ptr @x, ptr @x], section \".mason.meta\", \
+                align 8, !exclude !{}\n";
+    left_alone(text, |target, _, all, kiln| {
+        let who = target.name();
+        let index = all.iter().position(|s| std::ptr::eq(s, kiln)).unwrap();
+        let pointer = if target == Target::I686 { 4 } else { 8 };
+        assert_eq!(kiln.size, 2 * pointer, "{who}: the constant's bytes alone");
+        let relocated =
+            all.iter().any(|s| matches!(s.sh_type, SHT_RELA | SHT_REL) && s.info as usize == index);
+        assert!(relocated, "{who}: the container keeps its relocation section");
+    });
+}
+
+/// A `.mason.meta` in a COMDAT group is one mortar drops whole: hod leaves
+/// it as `llc` writes it and puts its unit in a second section of that
+/// name, in no group.
+#[test]
+fn a_container_in_a_group_is_left_alone() {
+    let text = "$m = comdat any\n\
+                @m = linkonce_odr constant [8 x i8] c\"abcdefgh\", section \".mason.meta\", \
+                comdat, align 8, !exclude !{}\n";
+    left_alone(text, |target, object, all, kiln| {
+        let who = target.name();
+        let index = u32::try_from(all.iter().position(|s| std::ptr::eq(s, kiln)).unwrap())
+            .unwrap()
+            .to_le_bytes();
+        let data = &object[kiln.offset as usize..][..kiln.size as usize];
+        assert_eq!(data, b"abcdefgh", "{who}: the constant's bytes alone");
+        let grouped = all.iter().filter(|s| s.sh_type == SHT_GROUP).any(|g| {
+            object[g.offset as usize + 4..][..g.size as usize - 4].chunks(4).any(|m| m == index)
+        });
+        assert!(grouped, "{who}: the container stays in its group");
+    });
+}
+
+/// Compiles `text` for every target and checks that the object has two
+/// `.mason.meta` sections: the module's first (checked by `check`), then
+/// hod's, holding hod's unit alone, in no group and without relocations.
+fn left_alone(text: &str, check: impl Fn(Target, &[u8], &[Section], &Section)) {
     for target in TARGETS {
         let who = target.name();
         let options = Options {
@@ -316,12 +367,22 @@ fn a_container_of_odd_size_is_left_alone() {
         )
         .unwrap_or_else(|e| panic!("hod: {e}"));
         let all = sections(&object);
-        let metas: Vec<&Section> = all.iter().filter(|s| s.name == b".mason.meta").collect();
+        let metas: Vec<usize> = (0..all.len()).filter(|&i| all[i].name == b".mason.meta").collect();
         let [kiln, hod] = metas[..] else { panic!("{who}: two sections, found {}", metas.len()) };
-        let data = |s: &Section| object[s.offset as usize..][..s.size as usize].to_vec();
-        assert_eq!(data(kiln), b"ab\0\xff\xc3(", "{who}: the constant's bytes alone");
-        assert_eq!((hod.flags, hod.align), (SHF_EXCLUDE, 8), "{who}");
-        let units = units(&data(hod));
+        check(target, &object, &all, &all[kiln]);
+        let section = &all[hod];
+        assert_eq!((section.flags, section.align), (SHF_EXCLUDE, 8), "{who}");
+        let hod_index = u32::try_from(hod).unwrap().to_le_bytes();
+        for other in &all {
+            if matches!(other.sh_type, SHT_RELA | SHT_REL) {
+                assert_ne!(other.info as usize, hod, "{who}: a relocation section for hod's");
+            }
+            if other.sh_type == SHT_GROUP {
+                let members = &object[other.offset as usize + 4..][..other.size as usize - 4];
+                assert!(!members.chunks(4).any(|m| m == hod_index), "{who}: hod's in a group");
+            }
+        }
+        let units = units(&object[section.offset as usize..][..section.size as usize]);
         let [unit] = &units[..] else { panic!("{who}: one unit") };
         check_hod_unit(unit, Model::Static, who);
     }

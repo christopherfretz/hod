@@ -577,6 +577,13 @@ to the pool per compile: reading takes and holds the tokens, code
 generation takes its share of them and hands the rest back at once, and
 everything held is given back when the compile ends, also when it fails.
 
+The `hod` binary holds no lock on its standard streams for the run: its
+`stdin`, `stdout` and `stderr` are the unlocked handles, each read or
+write locking for itself. A write from any other thread (a worker's
+diagnostic) then never waits for the end of the run, which itself waits
+for that thread (WP-334, test `other_threads_can_write_while_the_driver_runs`
+in `crates/hod_cli/src/main.rs`).
+
 ## Options
 
 The grammar is `llc`'s:

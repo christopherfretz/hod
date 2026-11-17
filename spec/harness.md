@@ -4131,6 +4131,20 @@ links them, and every session is remote:
   `Thread <pid>.<tid>` (`Thread ?.?`);
 - IR tests (`.ll`) are SKIP: their modules are written for the host.
 
+**i686** (WP-329): `--target i686` runs the same way under `qemu-i386`
+(`-L /usr/i686-linux-gnu`, the CPU of `Target::I686`), gdb as
+`gdb-multiarch` and lldb-19 by `gdb-remote` (both hold on i386). The
+linkers are GNU ld, lld and mold: wild and mortar do not link the
+lane's dynamic PIE programs (`hod_testutil::linkers::EXCEPTIONS` case
+`elf-i386`; a note, and an error when asked for by `--linker`). kiln++
+refuses `--target=i686-*`: its units are SKIP, with a note. A unit hod
+declines with `debug:split-dwarf-i386` or `debug:dwarf-4-i386`
+(`sessions::KEPT_OFF_I686`) is SKIP with the detail `kept off on i686:
+<name>`, and the summary counts them (`debug: of the SKIPs, kept off on
+i686: ...`); any other refusal is a FAIL, as on every target. `debug
+verify --target i686` is refused (no i686 corpus). The full gate has no
+`debug-i686` step yet (`spec/landed/harness/WP-329.md`).
+
 What `qemu-user`'s gdb stub cannot do, and so no remote session asks
 (`cross::STUB_LIMITS`; a test says so with `skip(remote, ...)`):
 thread-local variables (no `qGetTLSAddr`: gdb prints `Remote target

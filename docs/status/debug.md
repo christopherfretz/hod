@@ -207,3 +207,12 @@ expected failures (clang 22's key instructions) are gone.
   the gate.
 - The corpus holds only 14 `-g` modules: the line clause is met there
   and not on real sources, so the `-g` set is the measure that matters.
+
+## i686 (WP-329)
+
+`cargo xtask debug --target i686 -j 4` on the AArch64 host, 2026-11-16,
+hod at WP-329's head (qemu-i386's gdb stub; gdb-multiarch 16.3,
+lldb-19; GNU ld, lld, mold): 445 results, 354 PASS, 34 FAIL, 57 SKIP
+(22 of them kept off: 20 `debug:dwarf-4-i386`, 2
+`debug:split-dwarf-i386`), 738 sessions, 110 s wall. Not in the gate
+yet: the FAILs are listed in `spec/landed/harness/WP-329.md`.

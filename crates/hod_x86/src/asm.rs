@@ -61,10 +61,12 @@ pub const FRAME_REGISTER: &str = "x86:inline-asm:frame-register";
 /// More operands than registers: six general registers, fewer with
 /// explicit registers and clobbers, four for `q`/`Q`.
 pub const REGISTERS: &str = "x86:inline-asm:registers";
-/// An operand of a type no general register holds: floating point (the
-/// x87 values are I9's), a vector, an aggregate, an integer of other than
-/// 1, 8, 16, 32 bits (64 only with `A`), tied operands of different
-/// sizes.
+/// An operand of a type no general register holds: a floating-point or
+/// 64-bit output or tied operand in a register (64 only with `A`), an
+/// integer of other than 1, 8, 16, 32, 64 bits in a register, a memory
+/// input of other than an integer of at most 64 bits, `float`, `double`,
+/// `x86_fp80` (`i128`, `half`, `fp128`, a vector, an aggregate), an
+/// indirect 64-bit register input, tied operands of different sizes.
 pub const OPERAND_TYPE: &str = "x86:inline-asm:operand-type";
 /// The x87 stack constraints `t`, `u`, `f` and the `st` registers as
 /// operands.
@@ -154,6 +156,10 @@ enum Place {
     Reg(PReg),
     /// `edx:eax`, a 64-bit value.
     Pair,
+    /// A 64-bit input in two general registers, its low half in the
+    /// first (WP-347): `llc` gives an `i64` `r`/`q` operand the next two
+    /// free registers of the order and prints the low one.
+    Halves(PReg, PReg),
     /// Memory whose address is in this general register.
     Mem(PReg),
     /// A constant.
@@ -368,6 +374,24 @@ fn gpr_bytes(cx: &FnCx<'_, X86>, ty: TypeId) -> Option<u8> {
     }
 }
 
+/// Whether a register operand `op` of type `ty` is a direct `i64` input,
+/// placed in two registers ([`Place::Halves`]).
+fn in_halves(cx: &FnCx<'_, X86>, op: &Op, ty: TypeId) -> bool {
+    op.kind == Kind::Input && !op.indirect && matches!(cx.types().kind(ty), TypeKind::Int(64))
+}
+
+/// Whether a direct memory input of class `Mem` and type `ty` is copied
+/// to a slot of its own whose address the template sees, as `llc` copies
+/// it to a stack object (WP-347): an integer of 33 to 64 bits, `float`,
+/// `double`, `x86_fp80`.
+fn copied_to_memory(cx: &FnCx<'_, X86>, ty: TypeId) -> bool {
+    match cx.types().kind(ty) {
+        TypeKind::Int(bits) => bits <= 64,
+        TypeKind::Float | TypeKind::Double | TypeKind::X86Fp80 => true,
+        _ => false,
+    }
+}
+
 fn takes_memory(op: &Op, alt: Alt, tied_by: bool) -> bool {
     let output = op.kind == Kind::Output;
     let register = alt.codes & (R | ABCD | XX) != 0;
@@ -491,13 +515,25 @@ fn decide(cx: &FnCx<'_, X86>, inst: Inst<'_>, ops: &Ops) -> CgResult<Plan> {
         let Some(register) = *want else { continue };
         let alt = ops.list[i].alt(chosen);
         let mask = if register { gpr_mask(alt.codes) } else { gpr_mask(R) };
-        let r = GPR_ORDER
-            .iter()
-            .map(|&n| PReg::new(n))
-            .find(|&r| (mask >> r.index()) & 1 != 0 && !has(taken, r));
-        let Some(r) = r else { return unsupported(REGISTERS) };
-        taken |= 1 << r.index();
-        plan.places[i] = Some(if register { Place::Reg(r) } else { Place::Mem(r) });
+        let mut next = || {
+            let r = GPR_ORDER
+                .iter()
+                .map(|&n| PReg::new(n))
+                .find(|&r| (mask >> r.index()) & 1 != 0 && !has(taken, r));
+            if let Some(r) = r {
+                taken |= 1 << r.index();
+            }
+            r
+        };
+        let Some(r) = next() else { return unsupported(REGISTERS) };
+        plan.places[i] = Some(if !register {
+            Place::Mem(r)
+        } else if in_halves(cx, &ops.list[i], plan.tys[i]) {
+            let Some(high) = next() else { return unsupported(REGISTERS) };
+            Place::Halves(r, high)
+        } else {
+            Place::Reg(r)
+        });
     }
     for (i, op) in ops.ops().iter().enumerate() {
         let alt = op.alt(chosen);
@@ -536,11 +572,14 @@ fn decide(cx: &FnCx<'_, X86>, inst: Inst<'_>, ops: &Ops) -> CgResult<Plan> {
                 }
                 plan.written |= (1 << reg::EAX.index()) | (1 << reg::EDX.index());
             }
+            Some(Place::Halves(low, high)) => {
+                plan.written |= (1 << low.index()) | (1 << high.index());
+            }
             Some(Place::Mem(r)) => {
                 plan.written |= 1 << r.index();
                 if !op.indirect && op.kind == Kind::Input && plan.unread & (1 << i) == 0 {
                     let value = args[usize::from(op.arg.expect("an input has an operand"))];
-                    if cx.class_of(value) != Class::Gpr {
+                    if cx.class_of(value) != Class::Gpr && !copied_to_memory(cx, ty) {
                         return unsupported(OPERAND_TYPE);
                     }
                 }
@@ -634,6 +673,8 @@ fn substitute(
             Some(Place::Reg(p)) => Arg::Gp(p.index(), gpr_bytes(cx, plan.tys[i]).unwrap_or(4)),
             // `X86AsmPrinter` prints an `A` operand as its first register.
             Some(Place::Pair) => Arg::Gp(0, 4),
+            // `llc` prints a two-register operand as its low register.
+            Some(Place::Halves(low, _)) => Arg::Gp(low.index(), 4),
             Some(Place::Mem(p)) => Arg::Mem(p.index()),
             Some(Place::Imm(v)) => Arg::Imm(v),
             Some(Place::Flag(_)) | None => return Err(Refusal(reason::other::TEMPLATE)),
@@ -667,8 +708,10 @@ fn emit<'a>(
     for i in 0..ops.len {
         let op = ops.list[i];
         let Some(a) = op.arg else { continue };
-        if !matches!(plan.places[i], Some(Place::Reg(_) | Place::Mem(_) | Place::Pair))
-            || plan.unread & (1 << i) != 0
+        if !matches!(
+            plan.places[i],
+            Some(Place::Reg(_) | Place::Mem(_) | Place::Pair | Place::Halves(..))
+        ) || plan.unread & (1 << i) != 0
         {
             continue;
         }
@@ -677,17 +720,33 @@ fn emit<'a>(
             plan.slots[i] = slot;
             continue;
         }
-        let slot = cx.alloc_slot(8, 4)?;
-        match cx.class_of(value) {
+        let class = cx.class_of(value);
+        // A memory input of class `Mem` (WP-347): a copy of its bytes.
+        let copy = class == Class::Mem
+            && !op.indirect
+            && matches!(plan.places[i], Some(Place::Mem(_)))
+            && copied_to_memory(cx, plan.tys[i]);
+        let slot_bytes = if copy { cx.types().alloc_size_of(plan.tys[i]).max(8) } else { 8 };
+        let slot = cx.alloc_slot(slot_bytes, 4)?;
+        match class {
             Class::Gpr => {
                 let r = cx.use_reg(value)?;
                 store_gpr(cx, gp(r), slot, 4);
                 cx.free_temp(r);
             }
-            // A 64-bit `A` input: its 8 bytes.
-            Class::Mem if plan.places[i] == Some(Place::Pair) && !op.indirect => {
+            // A 64-bit `A` or two-register input: its 8 bytes.
+            Class::Mem
+                if matches!(plan.places[i], Some(Place::Pair | Place::Halves(..)))
+                    && !op.indirect =>
+            {
                 let m = cx.use_mem(value)?;
                 copy_frame(cx, slot, m, 8);
+            }
+            Class::Mem if copy => {
+                let m = cx.use_mem(value)?;
+                let bytes = u32::try_from(cx.types().alloc_size_of(plan.tys[i]))
+                    .map_err(|_| CgError::unsupported(OPERAND_TYPE))?;
+                copy_frame(cx, slot, m, bytes);
             }
             _ => return unsupported(OPERAND_TYPE),
         }
@@ -761,6 +820,10 @@ fn emit<'a>(
                 } else {
                     load_gpr(cx, crate::common::EAX, slot, bytes);
                 }
+            }
+            Some(Place::Halves(low, high)) => {
+                load_gpr(cx, gp(low), slot, 4);
+                load_gpr(cx, gp(high), slot.offset_by(4), 4);
             }
             Some(Place::Mem(r)) if op.indirect => load_gpr(cx, gp(r), slot, 4),
             Some(Place::Mem(r)) => frame_address(cx, gp(r), slot),

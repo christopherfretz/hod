@@ -1440,7 +1440,7 @@ impl<'m> ModuleEmitter<'m> {
         let section = match found {
             Found::Old(section)
                 if self.obj.section_align(section) >= mason::ALIGN
-                    && self.obj.section_size(section) % mason::ALIGN == 0
+                    && self.obj.section_size(section).is_multiple_of(mason::ALIGN)
                     && self.obj.relocation_count(section) == 0
                     && self.obj.section_group(section).is_none() =>
             {

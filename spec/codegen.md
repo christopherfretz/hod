@@ -4260,7 +4260,7 @@ are target-neutral (`hod_cg::guard`); each target emits the code
     from then on (a consequence of SelectionDAG's argument lowering, in
     every function); a `byval` argument is the address of the caller's
     copy and is read in place, above the guard. hod, in a protected
-    function that is not a coroutine body: an argument that arrives
+    function (a coroutine body too, below), on all three targets: an argument that arrives
     wholly on the stack in one part (an integer, a pointer, a `float` or
     `double` beyond the FP registers, an `i128` on the stack, a `Mem`
     value in one part) is copied at entry, in `enter_arguments`, before
@@ -4274,16 +4274,46 @@ are target-neutral (`hod_cg::guard`); each target emits the code
     incoming area as before; the named arguments' copies do not move it.
     A `musttail` call still writes its arguments into the real incoming
     area. An unprotected function keeps the incoming location as the
-    home: its bytes do not change. A protected coroutine body (whose
-    values §7.6 places) keeps it too; it is not changed by WP-333 and
-    not yet measured against `llc`. A
+    home: its bytes do not change. A protected coroutine body is no
+    exception (WP-343): its arguments are read only in the ramp (an
+    argument used after resumption is `coro:argument-across-suspend`,
+    `spec/xform.md` §3.4), whose machine frame holds the copies, so a
+    stack-passed argument the ramp reads after writing a buffer (a
+    pointer it stores through, a callee-destroyed parameter after
+    `coro.end`) is read from below the guard, as `llc`'s split ramp
+    reads it. On i386 the copy is a second one: `hod_x86`'s
+    `ssp::copy_arguments` has already copied the whole incoming area
+    below the guard (`spec/codegen-x86.md` §19.2) and every access of
+    those bytes goes to that copy, so the home is a copy of a copy,
+    redundant but harmless (both below the guard); i386's coroutine
+    ramps now match its other protected functions. A
     `#dbg_value` of such an argument now describes the copy
     (`DW_OP_fbreg` of the home); `llc` describes the incoming slot
     (`DW_OP_fbreg` above the frame), which holds the same value until
     an overflow; hod's names the value the program uses. CFI does not
     change.
+11. **Coroutine bodies** (WP-343; `llc` 19 and 22 after `opt
+    -passes='default<O0>'`, `-O0`, both targets, measured). CoroSplit's
+    ramp, resume, destroy and cleanup functions keep the body's
+    attribute and are protected as any function: the guard is written
+    in each one's prologue and checked before each of its returns (a
+    suspend's return, the final return), never on unwinding. Under
+    `sspstrong` and `ssp` each of the four has a guard as soon as the
+    body has a buffer on the machine stack (it is cloned into each).
+    A slot whose scope holds a suspend is in the heap frame and no
+    guard watches it; a buffer whose scope holds none (clang writes
+    lifetime markers in a coroutine at `-O0` too) stays on the machine
+    stack. hod: one body; the plan (`spec/xform.md` §3.3) puts the same
+    slots of the measured programs in the heap; the machine-stack slots that escape are the
+    guarded block; the ramp's entry code and each stub write the guard
+    (rule 6), every exit sequence checks it (rule 7), the stack-passed
+    arguments are copied below it (rule 10). An overflow of a
+    machine-stack buffer in the ramp or in a resumed activation ends in
+    `__stack_chk_fail` after the output `llc`'s build prints; one of a
+    heap-frame buffer is caught by neither build.
 
-Evidence: `spec/landed/codegen/WP-183.md`, `spec/landed/codegen/WP-333.md`.
+Evidence: `spec/landed/codegen/WP-183.md`, `spec/landed/codegen/WP-333.md`,
+`spec/landed/codegen/WP-343.md`.
 
 #### 5.6.25 Indirect-branch tracking: `cf-protection-branch` (WP-184)
 

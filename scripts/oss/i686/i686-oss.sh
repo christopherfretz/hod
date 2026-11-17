@@ -30,6 +30,17 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${CARGO_TARGET_DIR:?i686-oss: source scripts/env.sh first}"
 BROOT="${HOD_BUILD_ROOT:-$(dirname "$CARGO_TARGET_DIR")}"
 ROOT="${HOD_I686_OSS_ROOT:-$CARGO_TARGET_DIR/oss-i686}"
+# Run from a copy of the lane taken now (removed at exit): editing the
+# scripts while a build runs never changes the running one.
+if [ -z "${HOD_I686_SNAP:-}" ]; then
+  snap="$ROOT/.lane-$$"
+  mkdir -p "$snap" && cp -p "$HERE/i686-cc" "$HERE/i686-oss.sh" "$HERE/i686-report.py" "$snap/" &&
+    ln -s i686-cc "$snap/i686-c++" || exit 2
+  HOD_I686_SNAP=1 bash "$snap/i686-oss.sh" "$@"
+  st=$?
+  find "$snap" -mindepth 1 -delete; rmdir "$snap"
+  exit "$st"
+fi
 SRCS="${HOD_OSS_SRC:-$BROOT/oss/src}"
 P="${1:-}" MODE="${2:-}"
 shift 2 2>/dev/null || { sed -n 2p "$0" | sed 's/^# //' >&2; exit 2; }
@@ -42,7 +53,11 @@ for a in "$@"; do
 done
 case "$MODE" in control | hybrid | strict) ;; *) echo "i686-oss: mode must be control, hybrid or strict" >&2; exit 2 ;; esac
 case "$P" in
-  zlib) SRC="$SRCS/zlib" KIND=cmake CONF=(-DZLIB_BUILD_TESTING=ON) ;;
+  # zlib: infcover is built with -coverage, and the container has no
+  # i686 libclang_rt.profile.a: the flag is dropped (infcover runs as a
+  # plain test; zlib_coverage-summary, gcov's report, is left out).
+  zlib) SRC="$SRCS/zlib" KIND=cmake CONF=(-DZLIB_BUILD_TESTING=ON)
+        export HOD_I686_DROP_FLAGS="-coverage --coverage" ;;
   zstd) SRC="$SRCS/zstd/build/cmake" KIND=cmake
         CONF=(-DZSTD_BUILD_TESTS=ON -DZSTD_FUZZER_FLAGS=-T60s -DZSTD_ZSTREAM_FLAGS=-T60s -DZSTD_FULLBENCH_FLAGS=-i1) ;;
   bzip2) SRC="${HOD_I686_BZIP2_SRC:-$BROOT/oss3/src/cmake/Utilities/cmbzip2}" KIND=make CONF=() ;;
@@ -102,7 +117,7 @@ fi
 
 # Tests: one line per test in logs/tests.tsv (name, PASS or FAIL).
 ctest_tsv() { # ctest's per-test lines to name<TAB>PASS|FAIL
-  sed -nE 's/^ *[0-9]+\/[0-9]+ Test +#[0-9]+: ([^ ]+) \.*[ ]+(\*\*\*)?([A-Za-z]+).*/\1\t\3/p' "$1" |
+  sed -nE 's/^ *[0-9]+\/[0-9]+ Test +#[0-9]+: ([^ ]+) \.*[ ]*(\*\*\*)?([A-Za-z]+).*/\1\t\3/p' "$1" |
     awk -F'\t' '{ print $1 "\t" ($2 == "Passed" ? "PASS" : "FAIL") }'
 }
 check() { # name, command...: one named test of the lane's own
@@ -116,7 +131,7 @@ if [ -n "$TEST" ] && [ ! -e "$T/test.ok" ]; then
   export TMPDIR="$tmp"
   case "$P" in
     zlib)
-      (cd "$B" && timeout 1800 ctest -j1 --timeout 600 --output-on-failure -E 'install|find_package|add_subdirectory') >> "$L/test.log" 2>&1
+      (cd "$B" && timeout 1800 ctest -j1 --timeout 600 --output-on-failure -E 'install|find_package|add_subdirectory|coverage-summary') >> "$L/test.log" 2>&1
       { ctest_tsv "$L/test.log"
         for lvl in -1 -6 -9 -h -r -f; do
           check "minigzip$lvl" sh -c "'$B/test/minigzip' $lvl -c < '$B/libz.a' > '$tmp/z.gz' && '$B/test/minigzip' -d -c < '$tmp/z.gz' | cmp - '$B/libz.a'"

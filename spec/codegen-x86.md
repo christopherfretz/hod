@@ -211,7 +211,7 @@ their values).
 | `x86:float:i64-cast` | a conversion between a floating type and an integer of 33 to 63 or more than 64 bits (§11; `fptoui` to `i64` is lowered since the i386 join C) | — |
 | `x86:float:intrinsic` | a floating-point intrinsic §11 does not lower | — |
 | `x86:float:cast` | a cast of a floating value not in §11 (no verified IR reaches it since the i386 join E lowers `bitcast`) | — |
-| `x86:float:fp80-cast` | a `bitcast` between `x86_fp80` and `i80` | — |
+| `x86:float:fp80-cast` | no verified IR reaches it: a `bitcast` between `x86_fp80` and `i80` is lowered since WP-337 (section F) | WP-337 |
 | `x86:vector` | a vector `ptradd` (§17) | I12 |
 | `x86:vector:no-sse2` | a vector in a function without SSE2 (§17) | — |
 | `x86:vector:wide` | a vector of more than 16 bytes passed or returned | — |
@@ -689,8 +689,9 @@ holds the value rounded to its type, so a cast takes the bits of the
 rounded value, never the 80-bit copy (`llc` at `generic`: `fstps
 (%esp); movl (%esp), %eax` of a product); a cast to a floating type has
 no 80-bit copy, and no bits pass through the x87 stack (a signalling
-NaN pattern is kept). Not a barrier. `x86_fp80` from or to `i80`:
-`x86:float:fp80-cast`; a vector on either side: the vector's refusal.
+NaN pattern is kept). Not a barrier. `x86_fp80` from or to `i80`: the
+10 bytes (WP-337, section F); a vector on either side: the vector's
+refusal.
 
 **libm.** `frem` is `fmodf`/`fmod`/`fmodl`; `sin`, `cos`, `tan`, `asin`,
 `acos`, `atan`, `atan2`, `sinh`, `cosh`, `tanh`, `exp`, `exp2`, `exp10`,
@@ -1257,3 +1258,76 @@ and what remains).
 Tests: `crates/hod/tests/i386_coro.rs` (`coro/handles.ll`, static and
 PIE, default CPU and `-mcpu=i686`, three linkers, plain and under
 `Stress::ALL`, against the `opt` + `llc` oracle).
+
+## F. Floating-point classes and `modf` (`fpclass`, WP-337)
+
+The supervisor numbers this section at the merge.
+
+**`llvm.is.fpclass`** of a scalar `float`, `double` or `x86_fp80`, in a
+function with or without SSE / SSE2: integer tests of the operand's
+home. A `float` / `double` home holds the value rounded to its type, so
+the class is the rounded value's, never the 80-bit copy's (§11): this
+is a rounding point, as in `llc`, which stores the value at its type and
+tests the bits (for the masks "NaN" and "not NaN" it compares the value
+with itself, which rounding does not change). The class's index in the
+mask (`LangRef`'s bits: 0 signalling NaN, 1 quiet NaN, 2 negative
+infinity, ..., 9 positive infinity) is computed in `ecx` (a `double`'s
+low word folded into bit 0 of the high word's magnitude, which no bound
+uses), then `bt` of the mask in `edx`, `setb`; the result is the only
+pool register. Measured with `llc` 19 and 22 over all 1024 masks at CPU
+`generic` and `i686`, with an operand that is a product of the block:
+`llc` never branches, so `is.fpclass` is no barrier (§11), and the run
+continues across it.
+
+*`x86_fp80` encodings only the x87 has* (measured, all 1024 masks):
+- an unnormal (a non-zero exponent without the integer bit, a pseudo-zero
+  included), a pseudo-infinity, a pseudo-NaN (the maximum exponent
+  without the integer bit): true exactly when the mask has both NaN
+  classes or is everything but one NaN class (`llc` 19 and 22 alike);
+- a pseudo-denormal (exponent 0, integer bit set): `llc` 22 compares
+  the value for the masks 3, 7, 99, 243, 508, 515, 780, 924, 1016, 1020
+  (a pseudo-denormal is then a normal number of its sign); for the
+  other masks it tests bits: true when the mask has both NaN classes or
+  all four zero and subnormal classes, with the test inverted first
+  when its complement is one class, one class of one sign, the finite
+  classes (of one sign), zero or NaN, subnormal or zero, subnormal or
+  zero or NaN (`invertFPClassTestIfSimpler`). hod does what `llc` 22
+  does. `llc` 19 compares only 3, 99, 924, 1020 and differs from 22 at
+  the masks 7, 243, 515 and 780 for a pseudo-denormal. (x86-64 decided
+  otherwise: `spec/codegen.md` §5.6.12 counts a pseudo-denormal as a
+  subnormal, as `fxam` does, for every mask; on i386 the two differ at
+  459 of the 1024 masks, measured.)
+
+A vector operand keeps the classifier's `intrinsic:llvm.is.fpclass/vector`;
+`half` keeps its refusal. The mask is an `immarg`; a non-constant one
+would be `x86:intrinsic`.
+
+**`llvm.modf`** of `float`, `double`, `x86_fp80` (LLVM 20 and later;
+clang 22 writes it for `modf`, `modff`, `modfl` on every target, kiln
+calls the routines): `modff` / `modf` / `modfl` (`llc` 22, measured)
+with the operand at its width in the outgoing area and the address of
+the result's second field (the integral part) after it, through
+`pic::emit_call`; the fractional part is popped from `st0` to the first
+field at its type's width (exact). The call is a barrier (`x87::barrier`;
+`llc` 22 does not fold it, and spills a product of the block across it,
+measured). In an SSE function the same sequence (`llc` stores `st0`).
+On x86-64 and AArch64 `llc -O0` makes the same plain call (the operand
+in `xmm0` / `d0` / on the stack for `x86_fp80`, the pointer in `rdi` /
+`x0`); hod does not lower it there yet (`intrinsic:llvm.modf`).
+
+**`bitcast` between `x86_fp80` and `i80`**: the 10 bytes copied
+between the homes (the `i80`'s is a slot of its size; its bytes above
+80 bits are unspecified). `icmp` of an `i80` with the constant 0, every
+predicate, reads two facts of the 10 bytes: negative (bit 79) and zero
+(clang's `signbit` of a `long double` is `icmp slt i80 %b, 0`). Every
+other operation on an `i80` (shifts, `trunc`, `and`, loads, stores, a
+compare with another value) stays `x86:i64:wide`.
+
+**Not lowered:** `x86:atomic:libatomic` stays: `llc` 19 and 22 call
+`__atomic_compare_exchange` (size 8) for a `cmpxchg i64` at `align 4`
+on every CPU (`generic`, `pentium`, `i686`), never an inline `lock
+cmpxchg8b`; hod's tests link no libatomic.
+
+Tests: `crates/hod/tests/i386_fpclass.rs` (static and PIE, plain and
+under `Stress::ALL`, CPU `generic`, `i686` and `pentium4` through
+`target-cpu`; `llc` 19 and 22 but where named).

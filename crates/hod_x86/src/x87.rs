@@ -1138,8 +1138,8 @@ fn cast<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, arg: Value) -> CgResult<()> 
 /// measured, 19 and 22). The result of a cast to a floating type has no
 /// 80-bit copy (its users load its home), and no bits pass through the
 /// stack, so a signalling NaN pattern is kept. Not a barrier (no branch,
-/// no call in `llc`). `x86_fp80` from or to `i80`:
-/// [`FP80_CAST`]; a vector on either side: its family's refusal.
+/// no call in `llc`). `x86_fp80` from or to `i80`: the 10 bytes
+/// (WP-337); a vector on either side: its family's refusal.
 fn bitcast<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, arg: Value, from: TypeId) -> CgResult<()> {
     let to = inst.ty();
     let (fp_ty, other) = if is_fp(cx, from) { (from, to) } else { (to, from) };
@@ -1161,11 +1161,10 @@ fn bitcast<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, arg: Value, from: TypeId)
             Ok(())
         }
         // The `i64` side is §8's slot of two words, low first: the
-        // `double`'s memory image.
-        (Fp::F64, Some(64)) => copy_of(cx, inst, arg, fp),
-        // WP-337: the `i80` side is a slot whose first 10 bytes are the
-        // image (`crate::fpclass`'s compares read them).
-        (Fp::F80, Some(80)) => copy_of(cx, inst, arg, fp),
+        // `double`'s memory image. WP-337: the `i80` side is a slot whose
+        // first 10 bytes are the image (`crate::fpclass`'s compares read
+        // them).
+        (Fp::F64, Some(64)) | (Fp::F80, Some(80)) => copy_of(cx, inst, arg, fp),
         (Fp::F80, _) => unsupported(FP80_CAST),
         _ => unsupported(CAST),
     }

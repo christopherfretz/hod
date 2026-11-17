@@ -244,6 +244,7 @@ impl Target for X86 {
         frame::base_offset(desc, place)
     }
 
+    #[allow(clippy::too_many_lines, reason = "one dispatch match over the families")]
     fn lower<'a>(&self, cx: &mut FnCx<'a, Self>, inst: Inst<'a>) -> CgResult<()> {
         match cx.fold_action(inst) {
             // An `invoke` the fold turns into a call, or one that loses

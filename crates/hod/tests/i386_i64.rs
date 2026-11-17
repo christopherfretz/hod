@@ -109,11 +109,12 @@ fn i64_programs_run_as_llc_s() {
     eprintln!("i386 i64: {programs} programs, {runs} runs (llc, hod, stress each) equal llc's");
 }
 
-/// An integer wider than 64 bits is refused by name.
+/// An `i128` division is refused by name (WP-346 lowers the rest of
+/// `i128`, `i386_wide_int.rs`).
 #[test]
 fn i128_is_refused_by_name() {
     let text = "target triple = \"i686-unknown-linux-gnu\"\n\
-                define void @f(ptr %p) {\n  %a = load i128, ptr %p\n  %b = add i128 %a, %a\n  \
+                define void @f(ptr %p) {\n  %a = load i128, ptr %p\n  %b = udiv i128 %a, %a\n  \
                 store i128 %b, ptr %p\n  ret void\n}\n";
     let options = Options {
         output_kind: OutputKind::Object,
@@ -121,5 +122,5 @@ fn i128_is_refused_by_name() {
         ..Options::default()
     };
     let error = hod::compile(text.as_bytes(), &options).unwrap_err().to_string();
-    assert!(error.contains("x86:i64:wide"), "{error}");
+    assert!(error.contains("x86:i64:wide:div"), "{error}");
 }

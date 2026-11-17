@@ -40,6 +40,7 @@ pub mod tls;
 pub mod va;
 pub mod vecscalar;
 pub mod vector;
+pub mod wideint;
 pub mod x87;
 
 use std::fmt;

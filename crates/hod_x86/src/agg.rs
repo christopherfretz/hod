@@ -156,11 +156,11 @@ fn pointer(cx: &mut FnCx<'_, X86>, ptr: Value) -> CgResult<Reg> {
 }
 
 /// Refuses a type no field lowering here moves: a vector, `half`,
-/// `bfloat`, `fp128`, an integer wider than 64 bits (anywhere inside).
+/// `bfloat`, `fp128`, an integer wider than 128 bits (anywhere inside).
 fn check_type(cx: &FnCx<'_, X86>, ty: TypeId) -> CgResult<()> {
     let types = cx.types();
     match types.kind(ty) {
-        TypeKind::Int(bits) if bits <= 64 => Ok(()),
+        TypeKind::Int(bits) if bits <= 128 => Ok(()),
         TypeKind::Ptr { .. } | TypeKind::Float | TypeKind::Double | TypeKind::X86Fp80 => Ok(()),
         TypeKind::Array { elem, .. } => check_type(cx, elem),
         TypeKind::Struct { fields, .. } => {
@@ -308,6 +308,8 @@ pub fn insert_value<'a>(
     let Some(src) = src else { return Ok(()) };
     let to = r.offset_by(offset);
     match crate::int::wide_bits(cx, ty) {
+        // WP-346: limb by limb, the top one zero-extended.
+        Some(bits) if bits > 64 => crate::wideint::store_frame(cx, to, src, bits),
         // The low word, then the high one zero-extended from the width.
         Some(bits) => {
             load_gpr(cx, ECX, src, 4);
@@ -453,8 +455,9 @@ enum Op {
 /// 22 neither, measured at every width with and without `cmov`).
 ///
 /// # Errors
-/// `x86:vector` for vector operands, `x86:i64:wide` above 64 bits; what
-/// the operands report.
+/// `x86:vector` for vector operands; above 64 bits (`wideint.rs`, WP-346)
+/// `x86:i64:wide:mul` for `mul`, `x86:i64:wide:width` above 128; what the
+/// operands report.
 pub fn overflow<'a>(
     cx: &mut FnCx<'a, X86>,
     inst: Inst<'a>,
@@ -464,7 +467,7 @@ pub fn overflow<'a>(
     let &[a, b] = args else { return cx.bug("an overflow intrinsic without two operands") };
     let ty = value_ty(cx, a);
     let bits = match cx.types().kind(ty) {
-        TypeKind::Int(bits) if bits <= 64 => bits,
+        TypeKind::Int(bits) if bits <= 128 => bits,
         _ => return unsupported(crate::abi::type_refusal(cx.types(), ty)),
     };
     let Some(&flag_at) = cx.types().field_offsets(inst.ty()).and_then(|o| o.get(1)) else {
@@ -482,6 +485,10 @@ pub fn overflow<'a>(
     };
     if bits <= 32 {
         overflow_narrow(cx, inst, op, signed, bits, flag_at, a, b)
+    } else if bits > 64 && op == Op::Mul {
+        crate::wideint::mul_overflow(cx, inst, signed, bits, flag_at, a, b)
+    } else if bits > 64 {
+        crate::wideint::overflow(cx, inst, op == Op::Add, signed, bits, flag_at, a, b)
     } else if op == Op::Mul {
         mul_overflow_wide(cx, inst, signed, bits, flag_at, a, b)
     } else {

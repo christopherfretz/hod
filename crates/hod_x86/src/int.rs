@@ -21,7 +21,8 @@
 //!
 //! # Wider than 64 bits
 //!
-//! Refused as [`WIDE`]; nothing below generalizes to more words for free.
+//! 65 to 128 bits: `wideint.rs` (§22, WP-346); every entry point here
+//! hands such a value over first.
 //!
 //! # Division
 //!
@@ -44,6 +45,7 @@ use crate::common::{
     sym_address, unsupported, value_ty,
 };
 use crate::target::X86;
+use crate::wideint as wide;
 
 /// An encoder of `op r32, m32`.
 type RegMem = fn(Size, Reg, Mem) -> mc::Inst;
@@ -149,6 +151,9 @@ fn const_u64(cx: &FnCx<'_, X86>, value: Value) -> Option<u64> {
 /// # Errors
 /// [`WIDE`]; [`crate::common::CONSTANT`] for another constant.
 pub fn materialize_mem(cx: &mut FnCx<'_, X86>, dst: FrameRef, value: Value) -> CgResult<()> {
+    if wide::wide_bits(cx, value_ty(cx, value)).is_some() {
+        return wide::materialize_mem(cx, dst, value);
+    }
     bits_of(cx, value_ty(cx, value))?;
     if let Some(v) = const_u64(cx, value) {
         st_imm(cx, dst, 0, v as u32);
@@ -176,6 +181,9 @@ pub fn materialize_mem(cx: &mut FnCx<'_, X86>, dst: FrameRef, value: Value) -> C
 /// # Errors
 /// [`WIDE`]; what the operands report.
 pub fn binary<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, lhs: Value, rhs: Value) -> CgResult<()> {
+    if wide::wide_bits(cx, inst.ty()).is_some() {
+        return wide::binary(cx, inst, lhs, rhs);
+    }
     let bits = bits_of(cx, inst.ty())?;
     let op = inst.opcode();
     match op {
@@ -377,6 +385,9 @@ fn divide<'a>(
 /// # Errors
 /// [`WIDE`]; what the operand reports.
 pub fn freeze<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, arg: Value) -> CgResult<()> {
+    if wide::wide_bits(cx, inst.ty()).is_some() {
+        return wide::freeze(cx, inst, arg);
+    }
     bits_of(cx, inst.ty())?;
     let a = cx.use_mem(arg)?;
     let r = cx.def_mem(inst)?;
@@ -454,6 +465,9 @@ pub fn icmp<'a>(
         // A vector compare never reaches here; a wide `i1` does not exist.
         return unsupported(CAST);
     }
+    if wide::wide_bits(cx, value_ty(cx, lhs)).is_some() {
+        return wide::icmp(cx, inst, pred, lhs, rhs);
+    }
     let rd = cx.def_reg(inst)?;
     let cond = compare(cx, pred, lhs, rhs)?;
     let r = gp(rd);
@@ -476,6 +490,9 @@ pub fn select<'a>(
     if_true: Value,
     if_false: Value,
 ) -> CgResult<()> {
+    if wide::wide_bits(cx, inst.ty()).is_some() {
+        return wide::select(cx, inst, cond, if_true, if_false);
+    }
     bits_of(cx, inst.ty())?;
     let (t, f) = (cx.use_mem(if_true)?, cx.use_mem(if_false)?);
     let r = cx.def_mem(inst)?;
@@ -518,6 +535,9 @@ pub fn cast<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, arg: Value) -> CgResult<
         Opcode::AddrSpaceCast => return unsupported(alu::ADDRSPACECAST),
         _ => return unsupported(CAST),
     };
+    if wide::wide_bits(cx, from_ty).is_some() || wide::wide_bits(cx, inst.ty()).is_some() {
+        return wide::cast(cx, inst, arg, ext);
+    }
     let from_wide = wide_bits(cx, from_ty).is_some();
     let to_wide = wide_bits(cx, inst.ty()).is_some();
     let from_bits = if from_wide { bits_of(cx, from_ty)? } else { crate::common::width(cx, arg) };
@@ -634,7 +654,13 @@ pub fn intrinsic<'a>(
 ) -> CgResult<()> {
     use Intrinsic as I;
     if let (I::Scmp | I::Ucmp, &[a, b]) = (which, args) {
+        if wide::wide_bits(cx, value_ty(cx, a)).is_some() {
+            return unsupported(wide::INTRINSIC);
+        }
         return three_way(cx, inst, which == I::Scmp, a, b);
+    }
+    if wide::wide_bits(cx, inst.ty()).is_some() {
+        return unsupported(wide::INTRINSIC);
     }
     let bits = bits_of(cx, inst.ty())?;
     match (which, args) {
@@ -1159,6 +1185,9 @@ fn funnel<'a>(
 /// # Errors
 /// [`WIDE`]; what the operand and the branches report.
 pub fn switch<'a>(cx: &mut FnCx<'a, X86>, switch: &Switch<'a>) -> CgResult<()> {
+    if wide::wide_bits(cx, value_ty(cx, switch.cond)).is_some() {
+        return unsupported(wide::SWITCH);
+    }
     let bits = bits_of(cx, value_ty(cx, switch.cond))?;
     let all = u64::MAX >> (64 - bits);
     let case_value = |cx: &FnCx<'a, X86>, id| match cx.module.consts.get(id) {
@@ -1196,7 +1225,12 @@ pub fn index_ok(cx: &FnCx<'_, X86>, index: Value) -> CgResult<bool> {
     if !is_wide(cx, index) {
         return Ok(false);
     }
-    bits_of(cx, value_ty(cx, index)).map(|_| true)
+    match cx.types().int_bits(value_ty(cx, index)) {
+        // The low limb, as for 33 to 64 bits.
+        Some(65..=128) => Ok(true),
+        Some(129..) => unsupported(wide::WIDTH),
+        _ => bits_of(cx, value_ty(cx, index)).map(|_| true),
+    }
 }
 
 /// A `ptradd` index into `r`: a wide one's low word (the index truncated
@@ -1217,7 +1251,7 @@ pub fn put_index(cx: &mut FnCx<'_, X86>, index: Value, r: hod_cg::PReg) -> CgRes
 
 /// The address of `ptr` in a register: a pool register for a value, `eax`
 /// for a stack slot's or a symbol's address.
-fn pointer(cx: &mut FnCx<'_, X86>, ptr: Value) -> CgResult<Reg> {
+pub(crate) fn pointer(cx: &mut FnCx<'_, X86>, ptr: Value) -> CgResult<Reg> {
     match ptr.kind() {
         ValueKind::Slot(slot) => {
             slot_address(cx, EAX, slot)?;
@@ -1254,6 +1288,9 @@ fn check(mem: MemFlags) -> CgResult<()> {
 /// [`WIDE`], `x86:atomic`; what the operands report.
 pub fn load<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, ptr: Value, mem: MemFlags) -> CgResult<()> {
     check(mem)?;
+    if wide::wide_bits(cx, inst.ty()).is_some() {
+        return wide::load(cx, inst, ptr);
+    }
     let bytes = store_bytes(cx, inst.ty())?;
     let p = pointer(cx, ptr)?;
     let r = cx.def_mem(inst)?;
@@ -1278,6 +1315,9 @@ pub fn store<'a>(
 ) -> CgResult<()> {
     check(mem)?;
     let ty = value_ty(cx, value);
+    if wide::wide_bits(cx, ty).is_some() {
+        return wide::store(cx, value, ptr);
+    }
     let bits = bits_of(cx, ty)?;
     let bytes = store_bytes(cx, ty)?;
     let v = cx.use_mem(value)?;

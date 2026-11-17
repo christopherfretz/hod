@@ -216,6 +216,29 @@ fn llc_object(dir: &Scratch, text: &str, pic: bool, name: &str) -> Option<PathBu
     Some(object)
 }
 
+/// One rule for `llvm.is.fpclass` of the 80-bit odd encodings on x86-64
+/// and i386 (WP-340, `spec/codegen.md` §5.6.12): `llc` 22's, mask by
+/// mask, for a pseudo-denormal of either sign and for the other odd
+/// encodings. (Each back end's code is checked against `llc` 22 by
+/// execution: `hod_x64/tests/leftovers2.rs`, `i386_fpclass.rs`.)
+#[test]
+fn one_pseudo_denormal_rule_on_both_x86_targets() {
+    for mask in 0..1024u32 {
+        for negative in [false, true] {
+            assert_eq!(
+                hod_x64::x87::pseudo_denormal_in(u64::from(mask), negative),
+                hod_x86::fpclass::pseudo_denormal_in(mask, negative),
+                "mask {mask:#x}, negative {negative}"
+            );
+        }
+        assert_eq!(
+            hod_x64::x87::invalid_in(u64::from(mask)),
+            hod_x86::fpclass::invalid_in(mask),
+            "mask {mask:#x}"
+        );
+    }
+}
+
 /// The forms not lowered are refused by the classifier's row: on x86-64
 /// `half` (`llc` 22 cannot select it) and `fp128` (`llc` calls
 /// `modff128`); `bfloat` and vectors on both targets.

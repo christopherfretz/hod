@@ -905,14 +905,63 @@ fn x87_to_bfloat_agrees_with_llc_22() {
 
 // ---- 9. `llvm.is.fpclass` of a pseudo-denormal ----
 
-/// §5.6.12: a pseudo-denormal (exponent 0, integer bit set) is a
-/// subnormal for `llvm.is.fpclass`, as `fxam` reports it, with every
-/// one of the 1024 masks. `llc` 19 and 22 put it in no class (false for
-/// every single class) but answer true for some unions by their
-/// expansion (19: `0x7`, `0xf3`, `0x203`; 22: `0x30c`), which no class
-/// gives; hod is checked against the rule, not against them.
+/// The class of an `x86_fp80` operand of [`fpclass_operands`].
+#[derive(Clone, Copy)]
+enum Fp80Class {
+    /// An ordinary class: its bit in the test mask (0 signalling NaN ..
+    /// 9 positive infinity).
+    Bit(u32),
+    /// A pseudo-denormal, negative or not.
+    PseudoDenormal(bool),
+    /// An unnormal, a pseudo-zero, a pseudo-infinity or a pseudo-NaN.
+    Invalid,
+}
+
+/// Operands (significand, sign and exponent) of every class and both
+/// signs, the odd encodings included.
+fn fpclass_operands() -> Vec<([u64; 2], Fp80Class)> {
+    use Fp80Class::{Bit, Invalid, PseudoDenormal};
+    const J: u64 = 1 << 63;
+    vec![
+        ([0, 0], Bit(6)),
+        ([0, 0x8000], Bit(5)),
+        ([1, 0], Bit(7)),
+        ([J - 1, 0x8000], Bit(4)),
+        ([J, 1], Bit(8)),
+        ([J, 0x3fff], Bit(8)),
+        ([J | 5, 0xbfff], Bit(3)),
+        ([u64::MAX, 0x7ffe], Bit(8)),
+        ([J, 0x7fff], Bit(9)),
+        ([J, 0xffff], Bit(2)),
+        ([J | 1 << 62, 0x7fff], Bit(1)),
+        ([u64::MAX, 0xffff], Bit(1)),
+        ([J | 1, 0x7fff], Bit(0)),
+        ([J | ((1 << 62) - 1), 0xffff], Bit(0)),
+        ([J, 0], PseudoDenormal(false)),
+        ([J | 5, 0], PseudoDenormal(false)),
+        ([J, 0x8000], PseudoDenormal(true)),
+        ([u64::MAX, 0x8000], PseudoDenormal(true)),
+        ([1 << 62, 0x3fff], Invalid),
+        ([0, 0x4000], Invalid),
+        ([1, 0xc000], Invalid),
+        ([0, 0x7fff], Invalid),
+        ([0, 0xffff], Invalid),
+        ([1 << 62, 0x7fff], Invalid),
+        ([1, 0xffff], Invalid),
+    ]
+}
+
+/// §5.6.12 (WP-340): `llvm.is.fpclass` of an `x86_fp80`, all 1024 masks
+/// against operands of every class and both signs (the odd encodings
+/// included), equal to `llc` 22 run on the same module, plain and
+/// stressed. Independently of `llc`: an operand of an ordinary class
+/// answers its class's bit of the mask (as before WP-340: ordinary values
+/// do not change), a pseudo-denormal [`hod_x64::x87::pseudo_denormal_in`]
+/// (`llc` 22's answer; LLVM 19 differs at four masks, so `llc` 19 is not
+/// run), the other odd encodings [`hod_x64::x87::invalid_in`].
 #[test]
-fn is_fpclass_of_a_pseudo_denormal_is_subnormal() {
+fn is_fpclass_of_every_fp80_class_as_llc_22() {
+    let values = fpclass_operands();
     let mut text = String::from("declare i1 @llvm.is.fpclass.f80(x86_fp80, i32)\n");
     let mut c = String::from("#include <stdio.h>\n#include <stdint.h>\n");
     let mut table = String::new();
@@ -927,26 +976,64 @@ fn is_fpclass_of_a_pseudo_denormal_is_subnormal() {
         writeln!(c, "int c{mask}(uint64_t, uint64_t);").unwrap();
         write!(table, "c{mask},").unwrap();
     }
+    let mut operands = String::new();
+    for ([m, se], _) in &values {
+        write!(operands, "{{{m:#x}ull, {se:#x}}}, ").unwrap();
+    }
     write!(
         c,
         "static int (*const fs[])(uint64_t, uint64_t) = {{{table}}};\n\
-         static const uint64_t vs[4][2] = {{{{1ull << 63, 0}}, {{(1ull << 63) | 1, 0}}, \
-         {{0xc000000000000000ull, 0x8000}}, {{~0ull, 0x8000}}}};\n\
-         int main(void) {{\n  int wrong = 0;\n  for (int k = 0; k < 1024; k++)\n    \
-         for (int i = 0; i < 4; i++) {{\n      int want = (k >> (vs[i][1] ? 4 : 7)) & 1;\n      \
-         if (fs[k](vs[i][0], vs[i][1]) != want) {{ printf(\"mask %#x value %d\\n\", k, i); \
-         wrong++; }}\n    }}\n  printf(\"%d wrong\\n\", wrong);\n  return wrong != 0;\n}}\n"
+         static const uint64_t vs[][2] = {{{operands}}};\n\
+         int main(void) {{\n  for (int k = 0; k < 1024; k++) {{\n    \
+         for (unsigned i = 0; i < sizeof vs / sizeof vs[0]; i++)\n      \
+         putchar('0' + fs[k](vs[i][0], vs[i][1]));\n    putchar('\\n');\n  }}\n  \
+         return 0;\n}}\n"
     )
     .unwrap();
+    // The answers the rule gives, one line per mask.
+    let model: String = (0..1024u64)
+        .map(|k| {
+            let line: String = values
+                .iter()
+                .map(|&(_, class)| {
+                    let yes = match class {
+                        Fp80Class::Bit(i) => k >> i & 1 == 1,
+                        Fp80Class::PseudoDenormal(negative) => {
+                            hod_x64::x87::pseudo_denormal_in(k, negative)
+                        }
+                        Fp80Class::Invalid => hod_x64::x87::invalid_in(k),
+                    };
+                    if yes { '1' } else { '0' }
+                })
+                .collect();
+            line + "\n"
+        })
+        .collect();
     let scratch = hod_testutil::Scratch::new("x64-fpclass-pd");
     let Some(toolchain) = linking::Toolchain::x86_64(&scratch) else { return };
     let driver = toolchain.compile_c(&scratch, "fpclass-driver", &c, &[]);
-    for (name, stress) in [("plain", Stress::default()), ("stress", Stress::ALL)] {
-        let object = hod_object(&scratch, &format!("fpclass-{name}"), &text, stress);
+    let mut objects = vec![
+        ("plain", hod_object(&scratch, "fpclass-plain", &text, Stress::default())),
+        ("stress", hod_object(&scratch, "fpclass-stress", &text, Stress::ALL)),
+    ];
+    let full = format!("{}{text}", ll_header());
+    if let Some(object) = float_gen::llc(&scratch, 22, "fpclass-llc22", &full) {
+        objects.push(("llc 22", object));
+    }
+    for (name, object) in &objects {
         let linker = &toolchain.linkers[0];
-        let program = scratch.join(format!("fpclass-{name}"));
-        let ran = toolchain.link_and_run(linker, &[], &[&driver, &object], &program);
-        assert!(ran.success(), "{name}: {}{}", ran.stdout_text(), ran.stderr_text());
-        assert_eq!(ran.stdout_text(), "0 wrong\n", "{name}");
+        let program = scratch.join(format!("fpclass-{}", name.replace(' ', "")));
+        let ran = toolchain.link_and_run(linker, &[], &[&driver, object], &program);
+        assert!(ran.success(), "{name}: {}", ran.stderr_text());
+        let out = ran.stdout_text();
+        let wrong: Vec<String> = out
+            .lines()
+            .zip(model.lines())
+            .enumerate()
+            .filter(|(_, (got, want))| got != want)
+            .map(|(k, (got, want))| format!("mask {k:#x}: got {got} want {want}"))
+            .collect();
+        assert!(wrong.is_empty(), "{name} against the rule:\n{}", wrong.join("\n"));
+        assert_eq!(out.lines().count(), 1024, "{name}");
     }
 }

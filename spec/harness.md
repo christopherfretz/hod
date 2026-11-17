@@ -4191,7 +4191,37 @@ number of lines, and every differing pair of lines is in a stop whose
 `rax` keeps the call's location where `llc` coalesced it, WP-136) being
 that of a `call` or `invoke` at that line in the IR, or the source caret
 line (`^`) after such a line
-(`spec/dwarf.md` §5.7 `return-column`). A `pre-opt: checks` test's
+(`spec/dwarf.md` §5.7 `return-column`).
+
+On `--target i686` two more classes are checked against the linked
+programs' line tables (`debug::rows`, WP-352; `llvm-dwarfdump
+--debug-line`, `llvm-nm -S`, `llvm-objdump -d` of hod's program, and of
+`llc`'s for `entry-row`). A **return row** of a program is a position
+(line, column) at which it has a `call` whose row and whose return
+address's row (the row covering the next instruction's address) are at
+that same position.
+
+- `permitted: return-row` (`spec/dwarf.md` §5.7 `return-row`): the
+  transcripts have the same number of lines and every differing pair is
+  in a stop after `finish`. lldb (`rows::lldb_only_return_rows`): the
+  stop's `stop reason` is `step out`; its `frame #0:` lines are equal
+  but for line and column, hod's position is one of hod's return rows,
+  and the other differing lines are those up to the next `(lldb) `
+  prompt (the source listing). gdb (`rows::gdb_only_return_rows`): the
+  k-th stop line of `llc`'s transcript (`[Breakpoint N, ][0x? in ]F
+  (args) at file:LINE`, not a backtrace line) is the k-th stopping
+  command's of the script (`run`, `continue`, `step`, `next`, `finish`,
+  `until` and their short forms) and that command is `finish`; the two
+  stop lines are equal but for `0x? in ` and the line, hod's line is
+  the line of one of hod's return rows, and the next pair are the two
+  lines' source lines.
+- `permitted: entry-row` (lldb, `rows::lldb_entry_rows`): a pair of
+  `Breakpoint N: where = prog`F[ + ?] at file:L:C, ...` lines equal
+  but for ` + ?`, where (L, C) is F's entry row (its first
+  `prologue_end` row) in BOTH programs; every other differing pair is
+  then permitted by `return-column` or `return-row`, or there is none.
+
+A `pre-opt: checks` test's
 sessions are judged by its checks (above). Nothing else is permitted.
 
 ### Linker exceptions

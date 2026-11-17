@@ -677,6 +677,23 @@ hod emits none (a terminate landing pad left behind by a folded
   `invoke` at that line in the IR, with lldb's source caret moving with
   it; nothing else in the transcript may differ. Matching `llc` would
   mean modelling its register allocator.
+- `return-row` (sessions, i686 only, WP-352): on i386 hod's return
+  address is the release of the call's outgoing argument area (`add`
+  or `lea` of `esp`), at the call's location: the stop after `finish`
+  is still in the call statement's row, so it may differ from `llc`'s
+  (which reserves the area in the prologue; its return address is a
+  reload of the PIC base or the next statement) in line as well as
+  column, and gdb may print `0x? in` on one side only. Permitted when
+  hod's program has, at hod's stop position, a `call` whose return
+  address is in a row of that same position, read from hod's linked
+  program (`spec/harness.md` "Permitted differences of sessions"). A
+  later stop that differs because of it (a `next` from the call's line
+  instead of the next statement's) is not permitted.
+- `entry-row` (lldb sessions, i686 only, WP-352): `breakpoint set
+  --name F` stops at F's first `prologue_end` row; when `llc` builds F
+  without a frame that row is at F's first byte and lldb names it `F`,
+  hod's after its prologue, `F + ?`. Permitted when the position is F's
+  first `prologue_end` row in both programs.
 - Columns of a line `llc` and hod both have (`cargo xtask debug columns`,
   `spec/harness.md` "debug", "Columns") are compared but do not fail the
   run: `llc`'s instruction selection folds instructions into others (a

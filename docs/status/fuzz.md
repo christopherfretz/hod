@@ -1,5 +1,60 @@
 # Random programs (L10): the budget
 
+## At the candidate a68a0d5d (2026-11-17)
+
+The budget's run on the 1.1 release candidate: **62 of 62 slices, 0
+refused, 0 errors, 0 findings.**
+
+Inputs:
+- hod: the frozen release binary of `a68a0d5d` (`hod-a68a0d5d`, sha256
+  `baf397f0f4cd9b2325884e122d39f2b1de000135486f2b832b1d22334b566077`);
+  `--strict`
+- the harness: `xtask` of `a68a0d5d` as a binary, frozen for the whole
+  run, sha256
+  `fda0931367bdc517875fbde07b6093583c8cb2139cc91070c5d5c6d870adac40`
+- `cargo xtask fuzz --budget --seed 300001 -j 4 --hod hod-a68a0d5d`:
+  62 slices, seeds 300001 to 326250 (26,250 seeds, none of them run
+  before: the 1.0 candidate had 200001 to 226250; the next candidate
+  starts at 400001), with the harness's set-asides `ub-float-cast`,
+  `selector-split`, `llc19-int128-last-register` (WP-249) and
+  `dead-store` (WP-266)
+- the same tools, oracle, emulator and time limit as the first run
+  below; the machine shared with the release's other lanes
+- wall time 2026-11-17 06:34 to 10:17 EST, exit status 0; the slices'
+  own minutes add up to 223
+
+| target | LLVM | seeds | agree | refused | skipped | error | finding | set apart | minutes | programs/min |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| x86_64 | 22 | 10500 | 9490 | 0 | 1010 | 0 | 0 | 0 | 92 | 114.4 |
+| x86_64 | 19 | 2625 | 2335 | 0 | 262 | 0 | 0 | 28 | 24 | 111.1 |
+| aarch64 | 22 | 10500 | 9505 | 0 | 995 | 0 | 0 | 0 | 83 | 126.1 |
+| aarch64 | 19 | 2625 | 2370 | 0 | 255 | 0 | 0 | 0 | 25 | 106.2 |
+| all | | 26250 | 23700 | 0 | 2522 | 0 | 0 | 28 | 223 | 117.5 |
+
+Skipped: `both-timed-out` 2195, `ub-float-cast` 183 (csmith's undefined
+float-to-integer conversion, class 1 below), `oracle-timed-out` 139,
+`csmith-failed` 4, `nothing-to-split` 1.
+
+Set apart, none of them hod's wrong code, each with the evidence the
+harness requires (`spec/harness.md` "Set apart (seeds)"):
+- 28 seeds `llc19-int128-last-register` (x86-64, LLVM 19, `abi`: 18 in
+  the whole-module slice 325376 to 325875, 10 in the mixed slice 326001
+  to 326125): class 3 below, gcc and `llc` 22 printing exactly hod's
+  output;
+- debug pairs (`debug-lines`, rows the oracle's selector does not keep;
+  the seed itself agrees): 9 `selector-split` (seeds 310054, 310130,
+  310133 and 310491, AArch64 LLVM 22 default debug; seeds 320711,
+  320778, 320783, 320889 and 320899, x86-64 LLVM 22 default debug:
+  FastISel and GlobalISel keep hod's row, SelectionDAG drops it;
+  `llc`'s own configurations differing, class 2 below) and 1
+  `dead-store` (seed 320965, x86-64 LLVM 22 default debug: FastISel
+  keeps hod's row, SelectionDAG has none, GlobalISel fell back for the
+  function).
+
+Evidence: the run's log and table
+(`.build/release-1.1.0/fuzz-budget.log`,
+`.build/release-1.1.0/fuzz/budget.md` on the reference machine).
+
 ## At the candidate cd6ef6bc (2026-11-15)
 
 The budget's run on the 1.0 release candidate: **62 of 62 slices, 0

@@ -1,15 +1,34 @@
 # libc++ test suite on x86-64 through hod (hybrid)
 
-## At the candidate cd6ef6bc (WP-233, 2026-11-15, strict, no `-g`)
+## At the candidate a68a0d5d (release 1.1.0, 2026-11-17, strict, no `-g`)
 
-The 1.0 release candidate, hod `main` at `cd6ef6bc` (release binary,
-sha256 `80138ec1411506d5b4048f1eac49e8b377f9eeedb21e70ae43e3c81ab094929c`),
-with kiln 1.2.0 at `8f93304ee`, strict (no fallback) under `qemu-x86_64`
-in 20 shards, 2026-11-15 15:57 to 18:41 EST, compared shard by shard with
-the same recorded control as the `02fe2d02` section below (same command
-and settings).
+The 1.1.0 release candidate, hod `main` at `a68a0d5d` (release binary,
+frozen copy, sha256
+`baf397f0f4cd9b2325884e122d39f2b1de000135486f2b832b1d22334b566077`),
+with kiln 1.2.0 at `8f93304ee`, LLVM `/usr/lib/llvm-22` behind the shim,
+target `x86_64-unknown-linux-gnu`, strict (no fallback). Every test binary
+ran under `qemu-x86_64` on the AArch64 host, in 20 shards, 2026-11-17
+09:11:00 to 11:20:21 EST. The control is the recorded x86-64 control of
+the WP-233 measurement below (kiln + `llc` at `8f93304ee`, the same
+shards and settings, run 2026-11-14 23:34 to 2026-11-15 04:19). kiln's
+pin has not moved since, so the control was reused, not re-run. Its 20
+per-shard files were merged into one and compared with strict, test by
+test (`RELEASE.md` 4.4).
 
-| | recorded control (kiln + `llc`) | **strict at `cd6ef6bc`** |
+```
+# for K in 1..20, one after another, from the worktree of a68a0d5d
+HOD_SHIM=<shim of the frozen hod> HOD_JOBS=4 HOD_JOBSERVER_FIFO=/run/hod/lanes.fifo \
+  bash scripts/libcxx-hod-x64.sh strict $X --shard K/20
+bash scripts/libcxx-hod-x64.sh merge $X strict
+python3 -I scripts/libcxx-hod-report.py $X/strict $X/strict.tsv <the merged control>
+```
+
+The settings match the control's: `--timeout 160 --run-timeout-long 1920
+--mem-limit 3072 --no-fail`, `-j 4`, no `-g`. The one difference is that
+the runner here drew its jobs from the lanes' pool, while the control ran
+off any pool.
+
+| | recorded control (kiln + `llc`) | **strict at `a68a0d5d`** |
 |---|---|---|
 | total | 9,247 | 9,247 |
 | pass | 8,607 | **8,608** |
@@ -18,49 +37,30 @@ and settings).
 | xpass | 3 | 3 |
 | unsupported | 585 | 585 |
 | timeout | 2 | 1 |
-| wall time, `-j 4` (sum of 20 shards) | 8,328 s | 9,516 s |
-| `oom_kill` | 1 before and after every shard | the same |
-| modules by hod | - | 7,226 of 7,226, 0 fallback (hod 287.7 s summed over modules) |
+| shards with exit 0 | 20 of 20 | 20 of 20 |
+| wall time, `-j 4` (sum of 20 shards) | 8,328.3 s | 7,748.9 s |
+| `oom_kill` | 1 before and after every shard | 0 before and after every shard |
+| modules by hod | - | 7,226 of 7,226; 0 refused, 0 fallback |
 
-**Result: strict equals the control**, with the same counts as at
-`02fe2d02`. The one changed outcome is again the control's compile
-timeout on `std/containers/unord/unord.multimap/local_iterators.pass.cpp`.
-The ten `std/strings/basic.string` tests that the intermediate candidate
-`e98267c0` refused (`intrinsic:const-fold-nounwind-invoke`: `at`,
-`index`, `shrink_to_fit.explicit_instantiation`, `iter_alloc`,
-`size_char_alloc`, `string_erase/iter`, `iter_iter`, `pop_back`,
-`size_size`, `string.accessors/data`) all pass at `cd6ef6bc`.
+**Result: strict equals the control, test by test.** Only one test
+changed outcome: the control's compile timeout on
+`std/containers/unord/unord.multimap/local_iterators.pass.cpp`, which is
+PASS in strict. It is the same change seen at `02fe2d02` and `cd6ef6bc`,
+and it passed alone in both modes in WP-233; it was not rerun this time.
+The failures, the three XPASSes and the timeout `offset_range.pass.cpp`
+are the same tests in both modes, as listed in the WP-233 section below.
+In strict, 7,218 tests have objects, all of them built by hod, and 7,185
+of those pass. The inputs are 392 bitcode and 6,834 text modules. hod's
+time summed over modules is 227.4 s. There was no hod panic, internal
+error, hod timeout or link failure.
 
-## At the candidate 02fe2d02 (WP-233, 2026-11-15, strict, no `-g`)
+Raw results: `.build/release-1.1.0/libcxx-x64/plain/` (`strict.tsv`,
+`report-strict.txt`, the shard logs, the merged log directory) and
+`.build/release-1.1.0/libcxx-x64/control-plain.tsv` (the merged control).
 
-The 1.0 release candidate, hod `main` at `02fe2d02` (release binary,
-sha256 `5c1e181de7f62e3a644a11b536495429674c76bb0be6203c5bf85a8c19c3633d`),
-with kiln 1.2.0 at `8f93304ee`, strict (no fallback) under `qemu-x86_64`
-in 20 shards, 2026-11-15 08:32 to 11:11 EST. Each shard was compared with
-the recorded control of the WP-233 measurement below (the same kiln, the
-same shards, command and settings: `-j 4` off the shared pool,
-`--timeout 160 --run-timeout-long 1920`, `HOD_DEBUG_FLAGS=`).
-
-| | recorded control (kiln + `llc`) | **strict at `02fe2d02`** |
-|---|---|---|
-| total | 9,247 | 9,247 |
-| pass | 8,607 | **8,608** |
-| fail | 5 | 5 |
-| xfail | 45 | 45 |
-| xpass | 3 | 3 |
-| unsupported | 585 | 585 |
-| timeout | 2 | 1 |
-| wall time, `-j 4` (sum of 20 shards) | 8,328 s | 9,276 s |
-| `oom_kill` | 1 before and after every shard | the same |
-| modules by hod | - | 7,226 of 7,226, 0 fallback (hod 291.6 s summed over modules) |
-
-**Result: strict equals the control.** The one changed outcome is the
-control's compile timeout on
-`std/containers/unord/unord.multimap/local_iterators.pass.cpp` (PASS in
-strict; alone it passes in both modes, see below). The failures (the four
-filesystem tests and `copy_file_procfs.pass.cpp`), the timeout
-`offset_range.pass.cpp` and the three XPASSes are the same tests as in the
-control.
+The earlier candidates `cd6ef6bc` (1.0.0, 2026-11-15, strict 9,516 s,
+hod 287.7 s) and `02fe2d02` gave the same counts against the same
+control. Their sections are in this page's git history.
 
 ## WP-233 measurement (2026-11-14/15, strict and control, no `-g`)
 
@@ -115,7 +115,7 @@ strict. Alone at `-j 1`, twice in each mode, it passes in both modes
 
 The control's per-shard results are kept as the recorded x86-64 control on
 kiln `8f93304ee`, for the release candidate's strict run to be compared
-against.
+against: `.build/libcxx-4/x64/shard/control-K-of-20.tsv`, K = 1 to 20.
 
 ## Earlier measurement (WP-135)
 
@@ -288,7 +288,11 @@ python3 -I $W/scripts/libcxx-hod-report.py $L/hybrid $L/hybrid.tsv \
 # runner with --compiler $W/scripts/libcxx-x64-kiln.sh and no HOD_X64_KILN
 ```
 
-`strict` instead of `hybrid` makes a strict run. The script's contract is
+`strict` instead of `hybrid` makes a strict run. The release lane (4.4)
+runs `strict` in 20 shards (`--shard K/20`) with `HOD_JOBS=4` and
+`HOD_SHIM` set to the shim of the frozen hod. It is compared with the
+recorded control of the WP-233 section, test by test, as in the section
+of the candidate `a68a0d5d` above. The script's contract is
 `spec/harness.md` "libc++ on x86-64 under qemu", "hod in place of `llc`".
 A shard that died is rerun whole after deleting its `.tsv`, `.log` and
 directory.

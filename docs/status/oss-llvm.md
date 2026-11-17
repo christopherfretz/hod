@@ -10,6 +10,26 @@ offered to it by kiln; **strict build**: the build again with no fallback
 allowed; **tests against control**: the project's tests in both trees.
 The record of each row is the package named.
 
+## At the 1.1.0 candidate (`docs/RELEASE.md` row 5.4)
+
+Candidate: hod `a68a0d5d`, the frozen binary
+`.build/release-1.1.0/hod-a68a0d5d` (sha256
+`baf397f0f4cd9b2325884e122d39f2b1de000135486f2b832b1d22334b566077`,
+checked before the run); kiln `8f93304ee` (1.2.0). Measured 2026-11-17,
+strict only. kiln's pin and LLVM's revision are unchanged since 1.0.0, so
+the control (kiln `8f93304ee` + `llc`) is the one recorded at 1.0.0: its
+per-test lists (`.build/oss/llvm-llc/logs`, `.build/oss/llvm-x64-llc/logs`)
+are compared, not rebuilt. Run directory: `.build/release-1.1.0/oss-llvm`
+(scripts and logs of the run); the hod tree's reports:
+`.build/oss/llvm-hod/logs` (1.0.0's moved to `logs-hod-cd6ef6bc`).
+
+| project | flavour | TUs | built by hod | fell back | strict build | tests against control |
+|---|---|---:|---:|---|---|---|
+| LLVM 19.1.7 + Clang 19.1.7, native (at the candidate) | -O0, assertions, AArch64+X86 back ends, static, aarch64 Linux host, `LLVM_ENABLE_PROJECTS=clang`; kiln 8f93304ee (1.2.0), hod a68a0d5d | 3623 | 3622 | 0 declined; 0 not offered; 1 TU rejected by kiln 1.2.0's front end (`DWARFLinkerImpl.cpp:54`, "use of undeclared identifier 'LinkContext'", the kiln regression; also in the llc control) | fresh tree, configured with clang, 2026-11-17 09:11 to 09:45 EST: 3623 object jobs: 3622 `hod`, 0 declined, 0 hod failures, 1 kiln front-end failure; 76 executable links in the strict stage and the 67 unit-test binaries (strict too), as at 1.0.0 | against the kiln 8f93304ee + llc control: unit tests 68 binaries (67 run, `DWARFLinkerParallelTests` missing in both trees; 8004 pass, 0 fail in both), LLVM lit 35 slices (36338 tests, 30233 pass, 159 fail in both), clang lit 12 slices (12460 tests, 9972 pass, 12 fail in both): identical per test |
+| LLVM 19.1.7 for x86-64, cross-built | -O0, assertions, X86+AArch64, static, run under qemu-x86_64 | | | | measured before the candidate: the 1.0.0 row below (hod cd6ef6bc) stands; the strict build at a68a0d5d was started 2026-11-17 13:38 EST and is not judged on this page | not run at the candidate (tests under qemu) |
+
+## Earlier rows
+
 | project | flavour | TUs | built by hod | fell back | strict build | tests against control |
 |---|---|---:|---:|---|---|---|
 | LLVM 19.1.7 + Clang 19.1.7, native (WP-222, at the candidate) | -O0, assertions, AArch64+X86 back ends, static, aarch64 Linux host, `LLVM_ENABLE_PROJECTS=clang`; kiln 8f93304ee (1.2.0), hod cd6ef6bc | 3623 | 3622 | 0 declined; 0 not offered (`EntryExitInstrumenter.cpp`, `CodeGenFunction.cpp` now by hod); 1 TU rejected by kiln 1.2.0's front end (`DWARFLinkerImpl.cpp`, the kiln regression; also in the llc control) | strict tree, every target cleaned first: 3623 object jobs: 3622 `hod`, 0 declined, 1 kiln front-end failure; 78 links | against a kiln 8f93304ee + llc control: unit tests 68 binaries (8004 pass in both), LLVM lit 35 slices (36338 tests, 30233 pass, 159 fail in both), clang lit 12 slices (12460 tests, 9972 pass, 12 fail in both): identical per test |

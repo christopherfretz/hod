@@ -50,7 +50,7 @@ mod tests {
             });
             // Received at once when nothing holds the streams; the bound
             // only turns a deadlock into a failure.
-            let result = wrote.recv_timeout(Duration::from_secs(60));
+            let result = wrote.recv_timeout(Duration::from_mins(1));
             assert!(result.is_ok(), "a write from another thread waited for the driver");
             writer.join().unwrap();
         });

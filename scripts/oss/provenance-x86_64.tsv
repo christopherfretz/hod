@@ -9,10 +9,21 @@
 hod	hod-715150d4	e7b8796d
 hod	hod-8ec6b21e	9e25d3f1
 hod	hod-f59b4cc6	56a4695f
-# re2: the hosted real-projects run 43779000922 of exactly cd6ef6bc, native
-# on GitHub's x86_64 runner (hod cd6ef6bc built by the job, binary `hod`;
-# kiln 8f93304ee, the re2 row below)
-hod	hod	cd6ef6bc (hosted run 43779000922)
+# The hosted real-projects run 44078914310 of exactly a68a0d5d, native on
+# GitHub's x86_64 runner (hod a68a0d5d built by the job, binary `hod`; kiln
+# 8f93304ee): 14 of its 15 projects are this page's rows (abseil's row is
+# the lane's, see its note). Their reports carry no kiln commit; the rows
+# below name it for every tree of those not named further down
+hod	hod	a68a0d5d (hosted run 44078914310)
+kiln	fmt	*	*	8f93304ee
+kiln	googletest	*	*	8f93304ee
+kiln	protobuf	*	*	8f93304ee
+kiln	spdlog	*	*	8f93304ee
+kiln	yaml_cpp	*	*	8f93304ee
+kiln	glog	*	*	8f93304ee
+kiln	leveldb	*	*	8f93304ee
+kiln	cli11	*	*	8f93304ee
+kiln	doctest	*	*	8f93304ee
 # frozen copies of the release candidates under other names: the third set's
 # copy of cd6ef6bc (WP-211) and the fifth set's copy of e98267c0 (WP-253)
 hod	hod-rc3-cd6ef6bc	cd6ef6bc
@@ -55,4 +66,5 @@ note	A test that runs an x86-64 program itself rather than through ctest (a deat
 note	glog -O0: `logging` is a thread race of the test under qemu, failing and passing in the control and in strict alike (the lane's A/B runs); not a miscompile.
 note	zlib (the one stated exception of the lane rows, docs/RELEASE.md section 5): one of 37 objects, `infcover.c`, is compiled with `--coverage`, and kiln never offers such a translation unit to hod (skip reason `coverage`: the gcov instrumentation runs in kiln's LLVM pipeline), so 36 of 37 objects are hod's and the strict build is marked `failed`; the owner's decision of 2026-11-15: not hod's fault, does not block 1.0 (BACKLOG WP-279). `infcover` links in neither build (LLVM's profile runtime is absent on the lane host): 7 of 8 links. Both flavours measured at cd6ef6bc against fresh kiln 8f93304ee controls (WP-278), serial ctest: 5 of 6 tests, the control's. The `-O0 -g` difference seen at e98267c0 is a race in zlib's own tests: `zlib_example` and `zlib_static_example` write the same `foo.gz`; under `ctest -j2` it fails 27 to 36 of 40 runs in the control and in strict alike, serially 0 of 20 (WP-278).
 note	ctre has no ctest tests: its build (the compile-time tests) is the measurement.
-note	re2's rows (hod cell `cd6ef6bc (hosted run 43779000922)`) are from the hosted real-projects run 43779000922 of exactly cd6ef6bc: built and tested natively on GitHub's x86_64 runner, hod cd6ef6bc built by the job, kiln 8f93304ee, every tree (control, hybrid, strict). Every other row of this page is cross-built on the AArch64 lane host with its tests run under qemu-x86_64.
+note	fmt, googletest, re2, benchmark, protobuf, spdlog, catch2, nlohmann_json, yaml_cpp, glog, leveldb, cli11, doctest, simdjson (hod cell `a68a0d5d (hosted run 44078914310)`): every tree of these rows (control, hybrid, strict) is from the hosted real-projects run 44078914310 of exactly a68a0d5d: built and tested natively on GitHub's x86_64 runner, hod a68a0d5d built by the job, kiln 8f93304ee. Every other row of this page is cross-built on the AArch64 lane host with its tests run under qemu-x86_64.
+note	abseil: the row is the lane's (cross-built, tests under qemu-x86_64, the strict build at a68a0d5d), where the control and the strict build fail the same one test, `absl_symbolize_test`. The hosted run 44078914310 of a68a0d5d also built and tested abseil natively on an x86_64 runner, both flavours: the control passes 231 of 232 (`absl_raw_hash_set_test` fails), hod's hybrid and strict builds 230 of 232, the same test and `absl_symbolize_test`. That one difference from the control is the listed entry of `docs/status/oss-expected.tsv`: a call to an always_inline function is compiled out of line, so the symbolizer names `inline_func` and not its caller (`spec/cli.md` "Always-inline"). A row is not made of the two hosts' trees together.

@@ -43,8 +43,8 @@ fn bodies_compiled(arch: Arch) -> bool {
     match arch {
         Arch::Aarch64 => hod_a64::A64::CORO_BODIES,
         Arch::X86_64 => hod_x64::X64::CORO_BODIES,
-        // No 32-bit code generator yet (WP-286).
-        Arch::I386 => false,
+        // WP-335.
+        Arch::I386 => hod_x86::X86::CORO_BODIES,
     }
 }
 

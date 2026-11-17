@@ -47,11 +47,14 @@ pub struct X86 {
     cpu: Option<&'static str>,
     /// The features of the function being compiled (`for_function`).
     features: Option<X86Features>,
+    /// WP-335: the function is a coroutine body, `esi` its frame base
+    /// (`crate::coro_body`), set by `for_function`.
+    pub coro: bool,
 }
 
 /// The target without `-mcpu`.
 #[allow(non_upper_case_globals, reason = "the value of the former unit struct, kept by name")]
-pub const X86: X86 = X86 { cpu: None, features: None };
+pub const X86: X86 = X86 { cpu: None, features: None, coro: false };
 
 impl X86 {
     /// The target for a compile with `-mcpu` `cpu`: a name of
@@ -62,7 +65,7 @@ impl X86 {
         let known = cpu.and_then(|cpu| {
             hod_ir::I386_CPUS.iter().find(|&&(name, _)| name == cpu).map(|&(name, _)| name)
         });
-        X86 { cpu: known, features: None }
+        X86 { cpu: known, features: None, coro: false }
     }
 
     /// The `-mcpu` CPU, if any.
@@ -94,6 +97,8 @@ pub struct FnState {
     pub x87: crate::x87::Copies,
     /// The 80-bit values of SSE call results (I12).
     pub sse: crate::sse::Views,
+    /// The coroutine stubs' labels (WP-335).
+    pub coro: crate::coro_body::CoroState,
 }
 
 /// The registers: pool and holdable `ebx`, `esi`, `edi` (and `xmm0`..
@@ -201,9 +206,12 @@ impl Target for X86 {
     const STACK_ALIGN: u32 = 16;
     /// WP-327: `ret` (`crate::coro`).
     const NOOP_CORO_FN: &'static [u8] = crate::coro::NOOP_FN;
+    /// WP-335: `crate::coro_body`.
+    const CORO_BODIES: bool = true;
 
     fn reg_info(&self) -> &RegInfo {
-        &REG_INFO
+        // WP-335: a coroutine's frame base `esi` is not in its pool.
+        crate::coro_body::reg_info(self.coro)
     }
 
     #[inline]
@@ -227,7 +235,9 @@ impl Target for X86 {
         let attrs = module.fn_attrs(attrs);
         let text = |what| attrs.string(what).and_then(|s| std::str::from_utf8(s).ok());
         let features = feature_set(text(FnStr::TargetCpu), text(FnStr::TargetFeatures), self.cpu);
-        Some(X86 { cpu: self.cpu, features: Some(features) })
+        // WP-335: a coroutine body keeps `esi` as its frame base.
+        let coro = attrs.has(hod_ir::FnAttrs::PRESPLIT_COROUTINE);
+        Some(X86 { cpu: self.cpu, features: Some(features), coro })
     }
 
     fn begin_function(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()> {
@@ -479,6 +489,24 @@ impl Target for X86 {
 
     fn patch_branch(code: &mut [u8], at: u32, kind: FixupKind, displacement: i64) -> bool {
         common::patch_branch(code, at, kind, displacement)
+    }
+
+    fn coro_stubs(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()> {
+        crate::coro_body::stubs(cx)
+    }
+
+    fn coro_dispatch(
+        &self,
+        cx: &mut FnCx<'_, Self>,
+        cond: PReg,
+        resume: Label,
+        destroy: Label,
+    ) -> CgResult<()> {
+        crate::coro_body::dispatch(cx, cond, resume, destroy)
+    }
+
+    fn coro_transfer(&self, cx: &mut FnCx<'_, Self>, exit: Label) -> CgResult<()> {
+        crate::coro_body::transfer(cx, exit)
     }
 }
 

@@ -479,7 +479,7 @@ fn decide(cx: &FnCx<'_, X86>, inst: Inst<'_>, ops: &Ops) -> CgResult<Plan> {
         }
     }
     // Registers placed explicitly, in a pair, or clobbered are not chosen.
-    let mut taken = ops.clobbers;
+    let mut taken = ops.clobbers | crate::coro_body::asm_reserved(cx);
     for place in plan.places[..ops.len].iter().flatten() {
         match place {
             Place::Reg(r) => taken |= 1 << r.index(),
@@ -557,6 +557,7 @@ fn decide(cx: &FnCx<'_, X86>, inst: Inst<'_>, ops: &Ops) -> CgResult<Plan> {
     if has(plan.written, reg::ESP) || has(plan.written, reg::EBP) {
         return unsupported(FRAME_REGISTER);
     }
+    crate::coro_body::check_asm(cx, plan.written)?;
     Ok(plan)
 }
 

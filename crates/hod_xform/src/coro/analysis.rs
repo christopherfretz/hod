@@ -976,13 +976,16 @@ pub(super) fn analyze(module: &Module, body: &Body) -> Result<Option<Analysis>, 
 
     // ---- the frame ----
     let mut frame_align: u64 = 16;
+    // The header: two pointers (16 bytes; 8 on i386, WP-335: LLVM's
+    // `{ptr, ptr, i8}` field 2 is where the promise is aligned from).
+    let header = 2 * types.alloc_size_of(TypeId::PTR);
     let promise_offset = match promise {
         Some(slot) => {
             let align = body.slots()[slot.index()].align();
             frame_align = frame_align.max(align);
-            16u64.next_multiple_of(align)
+            header.next_multiple_of(align)
         }
-        None => 16,
+        None => header,
     };
     for slot in heap_slots.iter() {
         frame_align = frame_align.max(body.slots()[slot.index()].align());
@@ -1041,7 +1044,7 @@ fn check_invariants(plan: &CoroPlan, classes: &[SlotClass]) {
         assert!(plan.heap_values.contains(*value), "a begin copy of a stack value");
     }
     assert!(plan.frame_align >= 16 && plan.frame_align.is_power_of_two(), "frame alignment");
-    assert!(plan.promise_offset >= 16, "the promise overlaps the header");
+    assert!(plan.promise_offset >= 8, "the promise overlaps the header");
     for (index, s) in plan.suspends.iter().enumerate() {
         assert_eq!(s.index as usize, index, "suspends out of index order");
         assert!(!s.is_final || index + 1 == plan.suspends.len(), "the final suspend is not last");

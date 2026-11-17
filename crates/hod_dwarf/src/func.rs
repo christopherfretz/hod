@@ -605,8 +605,7 @@ impl<'a> UnitPlan<'a> {
             }
             // WP-349: the fields read one at a time, the node not decoded
             // (the kind was checked above).
-            let (scope, class, key) = if let Some(n) = self.debug.view::<DiLocalVariable>(v.node)
-            {
+            let (scope, class, key) = if let Some(n) = self.debug.view::<DiLocalVariable>(v.node) {
                 if n.ty().is_none() {
                     return Err(unsupported(v.node, "debug:variable-without-type"));
                 }

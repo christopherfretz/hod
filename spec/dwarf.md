@@ -1220,6 +1220,7 @@ reports a `debug:*` name as itself and §6.5's unnamed shapes as
 | `debug:expression` | any other op that is not a plain DWARF op |
 | `debug:variable-without-type` | as named |
 | `debug:variable-twice` | a variable recorded twice in one instance of its scope, except slot after slot, which is located by the first (WP-195, §6.25), or by its fragments, and value records beside a slot, which are not used (WP-230, §6.32), and a stored address declared again with the same expression, which is located by the first (WP-236, §6.36) |
+| `debug:coro-passed-expression` | a coroutine parameter passed by address whose ramp or frame-copy record has an expression one location cannot carry (`hod_cg` `coro_debug`, WP-342, §6.16) |
 | `debug:variable-alignment` | an `alignas` parameter, or an unnamed one; an `alignas` variable of an abstract instance (§6.9). A named local's `alignment` is written since WP-087 (family 88, in bytes, after `name`) |
 | `debug:label-attribute` | no longer refused: every label is written since WP-098 (§6.14) |
 | `debug:object-pointer` | two `this` parameters |
@@ -2338,6 +2339,7 @@ stubs the frame's address):
 | declared twice, on a machine-stack slot and on a heap slot (clang's parameter and its frame copy) | one DIE, the copied form above; the second declaration is dropped |
 | a parameter on a machine-stack slot whose frame copy is declared as an artificial variable of the same name and scope on a heap slot (kiln) | both DIEs the copied form, with the parameter's slot and the copy's heap offset: the body's `n` is the copy ([dcl.fct.def.coroutine]), and gdb reads a parameter through the variable of its name |
 | a parameter on a machine-stack slot only (`!coro.outside.frame`) | `fbreg mode, deref, bra Z, fbreg s, skip 1, Z: lit0`: the slot in the ramp, address 0 in a resumed activation (the debugger says it cannot read it, rather than showing bytes the ramp never wrote there) |
+| a parameter passed by address (a `byval` argument's home, or a slot holding the address of the caller's copy declared with `DIExpression(DW_OP_deref)`, AArch64's large aggregate) whose copy is declared on a heap slot, as the same variable (clang) or as an artificial variable of its name and scope (kiln) (WP-342) | `fbreg mode, deref, bra R, fbreg s, deref, skip E, R: fbreg word, deref, plus_uconst o, E:`: the caller's copy in the ramp, the heap copy in a resumed activation; one DIE (clang: the second declaration is dropped) or both (kiln), the expression empty |
 | any other machine-stack slot or home | §6.4 (`fbreg`), valid in the activation that wrote it, as any `-O0` local |
 
 The word, not `x19`, is the base: it is 0 before `coro.begin`, so the
@@ -2374,9 +2376,31 @@ resumer (hod's suspend path is in line-0 rows and the debuggers step
 through it to the caller). The line comparison is not run on these
 tests: the clones' functions are not hod's.
 
+**A parameter passed by address** (WP-342). clang passes a large
+aggregate `byval` on x86-64 and i386 and as the address of the
+caller's copy on AArch64, declares it at that place (the argument, or
+the slot it is stored to, under `DW_OP_deref`), and declares it again at
+the coroutine's copy, a heap slot `memcpy`'d after `coro.begin`; kiln
+declares the copy as an artificial variable `p`. `CoroSplit`'s ramp
+spills the incoming address to a `.debug` slot and reads the caller's
+copy through it for the whole ramp (`fbreg s, deref`); its resume,
+destroy and cleanup clones read the heap copy (`fbreg word, deref,
+plus_uconst o`). hod's one expression branches on the mode word to the
+same two places, so it holds in the ramp before the copy is made as
+after, and shows the body's changes to the copy once resumed. Before
+WP-342 the x86-64 and i386 shape was `debug:variable-twice`, and on
+AArch64 the two rows were merged as a `coro.begin` copy with the
+argument's `DW_OP_deref`, which read the heap copy's first word as an
+address in a resumed activation.
+
 **Refusals.** `coro:debug-info` (WP-106) is lifted. The generic
 refusals of §6.4 still apply (a variable whose frame place the frame
 base does not reach is `debug:frame-place`).
+`debug:coro-passed-expression` (WP-342): a parameter passed by address
+whose ramp record has an expression other than the address's own
+`DW_OP_deref`, or whose frame copy's record has any expression (a
+fragment): the two places would need different expressions, and the
+DIE has one. No front end writes it.
 
 **Hooks** (one call each): `FnCx::coro_vars` in `finish_vars`
 (`crates/hod_cg/src/driver.rs`); `coro_ready` into the function's record

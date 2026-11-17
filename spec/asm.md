@@ -1552,9 +1552,12 @@ prologue. Printing: §10 `print_operand` with 32-bit views; `b` of
 `x86:inline-asm` is gone. What stays refused: `x86:inline-asm:registers`
 (more operands than registers: six, fewer with explicit registers and
 clobbers, four for `q`/`Q`; never a shared register),
-`:frame-register` (`esp`, `ebp`), `:operand-type` (floating point,
-vectors, aggregates, integers other than 1/8/16/32 bits, 64 only with
-`A`), `:x87` (`t`, `u`, `f`, `{st}`: I9), `:vector` (`x`, `v`, `y`,
+`:frame-register` (`esp`, `ebp`), `:operand-type` (vectors, aggregates,
+integers of other widths than 1/8/16/32/64 bits, and of 64-bit and
+floating-point operands what `spec/codegen-x86.md` §10 lists after
+WP-347: a 64-bit INPUT is `A`'s pair, two registers for a register
+letter or a copy in memory; a floating-point input is a copy in
+memory; register outputs of either stay refused), `:x87` (`t`, `u`, `f`, `{st}`: I9), `:vector` (`x`, `v`, `y`,
 `Y..`: I12), `:symbol` (`s`, `Ws`, `i` of an address), `:intel`,
 `:goto` (`callbr`), `:call` (`invoke`, bundles), `:alternatives`; and the
 `asm:*` and `x86-mode:*` names above. Several direct outputs make a

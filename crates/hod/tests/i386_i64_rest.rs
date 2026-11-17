@@ -167,10 +167,8 @@ fn wider_than_64_bits_is_refused_by_name() {
         "define i32 @f(ptr %p) {\nentry:\n  %a = load i128, ptr %p\n  \
          switch i128 %a, label %d [ i128 18446744073709551616, label %c ]\n\
          c:\n  ret i32 1\nd:\n  ret i32 0\n}",
-        "define ptr @f(ptr %p) {\n  %a = load i128, ptr %p\n  \
-         %q = getelementptr i32, ptr %p, i128 %a\n  ret ptr %q\n}",
-        "define ptr @f(ptr %p) {\n  %a = load i96, ptr %p\n  \
-         %q = getelementptr i8, ptr %p, i96 %a\n  ret ptr %q\n}",
+        // A `getelementptr` with a wide index compiles since WP-346 (the
+        // index truncated to the pointer width): `i386_wide_int.rs`.
     ];
     for case in cases {
         let error = refusal(case).unwrap_or_else(|| panic!("compiled:\n{case}"));

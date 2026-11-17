@@ -203,7 +203,8 @@ their values).
 | name | what | removed by |
 |---|---|---|
 | `x86:i64` | not reachable since WP-315 (§13.4): every integer of 33 to 64 bits is taken by §8, `abi.rs` or §13 | I6, WP-306, WP-315 |
-| `x86:i64:wide` | an integer wider than 64 bits (§8), also as a `switch` condition, a `ptradd` index and the result of an integer intrinsic of §8 | — |
+| `x86:i64:wide` | not reachable since WP-346: an integer of 65 to 128 bits is §22's, each operation it leaves out has a name of its own | WP-346 |
+| `x86:i64:wide:shift`, `x86:i64:wide:div`, `x86:i64:wide:intrinsic`, `x86:i64:wide:switch`, `x86:i64:wide:abi`, `x86:i64:wide:width` | an integer of 65 to 128 bits as a shift, a division, an integer intrinsic (but the overflow ones), a `switch` condition, an argument or result; an integer wider than 128 bits (§22) | — |
 | `x86:float` | a floating-point value in a register where §11 takes none (arguments and results are I6's since the join) | — |
 | `x86:float:half` | a `half` value in a function without SSE2; a `half` parameter or result of `fastcc` or `inreg` (§16) | — |
 | `x86:float:half:intrinsic` | an intrinsic on `half` (§16) | — |
@@ -268,7 +269,7 @@ for `lshr`, `udiv`, `urem`, an unsigned or equality compare, `zext`, a
 Lowerings work in `eax`, `ecx`, `edx` only and read every operand word
 before writing the result's slot; the glue copies a slot through `ecx`
 and writes a constant with immediate stores (a `ptrtoint` constant
-through `ecx`). Wider than 64 bits is refused as `x86:i64:wide`.
+through `ecx`). Wider than 64 bits: §22.
 
 - `add`/`sub`: `add`/`adc` (`sub`/`sbb`) of the halves; `and`, `or`,
   `xor` half by half; `freeze`, `bitcast` between integers, `trunc` to
@@ -354,14 +355,14 @@ through `ecx`). Wider than 64 bits is refused as `x86:i64:wide`.
     shifted right by `64 - N`. No libgcc call (`llc` calls `__umoddi3`
     for a variable amount of a width that is no power of two; the result
     is the same).
-  - Wider than 64 bits: `x86:i64:wide` (an odd width above 64 is refused
+  - Wider than 64 bits: `x86:i64:wide:intrinsic` (§22; an odd width above 64 is refused
     before, by the shared classifier, as `intrinsic:<name>/int-wide`).
 - `scmp`, `ucmp` of operands of 33 to 64 bits (i386 join C;
   `int::three_way`), a result of 2 to 64 bits: `a > b` by the order
   compare above and `setcc`, kept on the stack (`push`), then `a < b`
   likewise; the result is their difference (1, 0, -1), its high word
   sign-extended for a result wider than 32 bits. No branch. Operands or
-  a result wider than 64 bits: `x86:i64:wide`.
+  a result wider than 64 bits: `x86:i64:wide:intrinsic` (§22).
 
 Since WP-315 an integer of 33 to 63 bits passed or returned by value and
 the `*.with.overflow` intrinsics of every width are lowered (§13).
@@ -527,6 +528,44 @@ that compute the GOT pointer again (§9.2: it is never kept).
 Module-level assembly with code or data is `hod_asm`'s 32-bit module
 assembler (`spec/asm.md` §23, WP-307); text of symbol directives only is
 written as on the other targets.
+
+**Operands wider than a register (WP-347).** clang writes C's `"r,m"`
+as `r|m` and an in-out `"+r,m"`/`"+m,r"` as an indirect output
+(`=*r|m`, `=*m|r`) with a tied input. The alternative is `llc`'s by
+weight (`code_weight`): an integer takes the first alternative, any
+other type (a pointer, `float`, `double`, `x86_fp80`) the memory one.
+Measured with `llc` 19 and 22 (`-O0 -global-isel=0 -fast-isel=0`) on
+clang 19 and 22's `--target=i686-linux-gnu -O0` modules:
+
+| operand | `r\|m` input | `+r,m` / `+m,r` |
+|---|---|---|
+| `int`, `i32` | register | memory (the variable) |
+| `long long`, an 8-byte struct (`i64`) | two registers | memory |
+| pointer, `float`, `double`, `long double` | memory: a copy | memory |
+
+- A direct `i64` input in a register (`r`, `q`, the `r` of `r|m`, a
+  constant too) is two registers, the next two free of the order, low
+  half in the first; the operand prints as the low register (`%eax`,
+  `${0:k}`, `${0:w}` of it): `Place::Halves`. Both are written.
+- A direct memory input of class `Mem` (an integer of 33 to 64 bits,
+  `float`, `double`, `x86_fp80`) is a copy of its home in a slot of its
+  own (its alloc size, at least 8 bytes) whose address is in a register
+  (§22.4 of `spec/asm.md`: hod's memory operand prints as `(%reg)`,
+  `llc`'s as the frame object, `-8(%ebp)`).
+- In-outs in memory already worked (the variable's address; the value is
+  read and written by the template in place).
+
+Still refused, `x86:inline-asm:operand-type`: a 64-bit or floating-point
+register OUTPUT, direct or tied (`=r`, `=r,0`; `llc` takes two
+registers); a `float`/`double` with `r` only; an integer of 33 to 63
+bits in a register; an indirect 64-bit register input (`*r`, which `llc`
+rejects too); a memory input of another type of class `Mem` (an
+integer of 65 to 128 bits, §22, refused here; `half`, `fp128` and
+vectors, refused earlier today under their own names). More registers than six (four `i64`, three with `ebx`
+clobbered) is `x86:inline-asm:registers` (`llc` takes `ebp`). A
+template's x87 mnemonics (`fldl %0`) are `asm:mnemonic/<name>`. Tests:
+`crates/hod/tests/i386_asm_wide.rs`. Record:
+`spec/landed/codegen/WP-347.md`.
 
 ## 11. Floating point on the x87 (`x87`, WP-300, design 0008 I9)
 
@@ -1666,8 +1705,8 @@ between the homes (the `i80`'s is a slot of its size; its bytes above
 80 bits are unspecified). `icmp` of an `i80` with the constant 0, every
 predicate, reads two facts of the 10 bytes: negative (bit 79) and zero
 (clang's `signbit` of a `long double` is `icmp slt i80 %b, 0`). Every
-other operation on an `i80` (shifts, `trunc`, `and`, loads, stores, a
-compare with another value) stays `x86:i64:wide`.
+other operation on an `i80` is §22's since WP-346 (an integer of three
+limbs; a shift is `x86:i64:wide:shift`).
 
 **Not lowered:** `x86:atomic:libatomic` stays: `llc` 19 and 22 call
 `__atomic_compare_exchange` (size 8) for a `cmpxchg i64` at `align 4`
@@ -1677,3 +1716,118 @@ cmpxchg8b`; hod's tests link no libatomic.
 Tests: `crates/hod/tests/i386_fpclass.rs`, `i386_frexp.rs` (static and PIE, plain and
 under `Stress::ALL`, CPU `generic`, `i686` and `pentium4` through
 `target-cpu`; `llc` 19 and 22 but where named).
+
+## 22. Integers of 65 to 128 bits (`wideint`, WP-346)
+
+**Where they come from.** i386 has no `__int128`; clang 19 and 22
+(`--target=i686-linux-gnu -O0`) write wide integers for the overflow
+builtins with mixed signedness or widths. Over every triple of `int`,
+`unsigned`, `long long`, `unsigned long long` (two operands, result)
+of `__builtin_{add,sub,mul}_overflow` they write `i33` (already §13)
+and `i65`, and on them only: `zext` / `sext` from `i32` / `i64` to
+`i65`, `llvm.{sadd,ssub,smul}.with.overflow.i65`, `extractvalue`,
+`trunc i65` to `i64` / `i32`, `icmp ne i65`. `_BitInt(N)` and bit-field
+or aggregate coercions reach the rest of this section.
+
+**Representation.** An integer of `N` bits, `65 <= N <= 128`, is of
+class `Mem`; its home is a frame slot of its alloc size holding `L =
+ceil(N / 32)` 32-bit limbs, little-endian. The bits above `N` in the
+top limb are **unspecified** (as §8): `add`, `sub`, `mul`, the bitwise
+operations and `trunc` leave garbage there; a consumer that depends on
+them (a compare, an extension, `store`, the overflow test) extends the
+top limb by zero or sign first. In memory `llc` writes exactly the
+store size (`ceil(N / 8)` bytes) with the bits above `N` zero, and its
+`load` relies on that (measured: `icmp slt i65` of a loaded value is
+`movzbl 8(%eax)`); hod's `store` writes the same image, its `load`
+reads the store size. The bits above `N` in the last byte of an image `llc` did not write
+are, for `llc`, undefined (LangRef: a load of a type that is not a whole
+number of bytes of memory not written by a store of that type); `llc`'s
+load keeps them in the register under an assumed-zero extension, so
+what a consumer sees depends on the consumer. hod's load copies them
+into the slot, where every consumer ignores them (the high bits rule
+above): the result is the one of the value with those bits zero.
+
+**Registers.** Every lowering works limb by limb in `eax`, `ecx`,
+`edx` (never a value's) and pins no pool register but a `Gpr` operand's
+or result's, or a pointer's. A carry travels in `CF` between limbs:
+between two `adc` / `sbb` only `mov` loads and stores run, which keep
+the flags; a top limb's extension (which writes them) runs before the
+chain.
+
+**Operations.**
+- `add` / `sub`: `add` / `sub` of limb 0, `adc` / `sbb` of the others,
+  each through `eax`. `and`, `or`, `xor`: limb by limb.
+- `mul`: the low `L` limbs of the product: the operands copied into a
+  frame area of their own, one `mul` per pair of limbs `(i, j)` with
+  `i + j < L`, its `edx:eax` added into the product limbs `i + j` and
+  `i + j + 1` with the carry rippled (`adc [p + k], 0`) to the top.
+- `icmp`: equality `xor`s each limb pair, `or`s them into `ecx`; an
+  order compare extends both top limbs into `ecx` / `edx`, then `cmp`
+  of limb 0 and `sbb` of the middle limbs through `eax`, `sbb ecx,
+  edx` (operands swapped for `>` and `<=`, so only `CF` / `SF` / `OF`
+  are read).
+- `select`: the condition tested, a copy of the chosen arm on each side
+  of a branch (a constant condition copies one). `freeze`, `phi`: a
+  copy.
+- `zext` / `sext` / `trunc` / `bitcast` / `ptrtoint` / `inttoptr`
+  between 1..32, 33..64 and wide: a narrower result takes the low
+  limbs; a wider one the source's limbs, its top limb extended from its
+  width, then limbs of its sign (`sar 31`) or zero.
+- A constant: one immediate store per limb (`ptrtoint` of a symbol
+  through `ecx`, the other limbs zero).
+- `ptradd` / `getelementptr` index: the low limb (the index truncated
+  to 32 bits, as `llc`).
+- `insertvalue` of such a field writes its store size, the bits above
+  `N` zero; `extractvalue` copies the store size.
+- `llvm.{s,u}{add,sub}.with.overflow.iN`: both top limbs extended (sign
+  for `s`, zero for `u`) into `ecx` / `edx`, the `add`/`adc`
+  (`sub`/`sbb`) chain, `adc ecx, edx` (`sbb`) last. At `N = 32 L` (96,
+  128) the flag is `OF` (signed) or `CF` (unsigned) of the last limb.
+  Below, the exact result fits `32 L` bits (`N + 1 <= 32 L`): the
+  `N`-bit operation overflowed when the top limb is not its own sign
+  extension from `N - 32 (L - 1)` bits (signed) or has a bit set at or
+  above them (unsigned; a borrow sets them all). This is `llc`'s rule:
+  it promotes `i65` to three limbs, adds, and compares the result with
+  its own `sext_inreg` from 65 bits.
+- `llvm.{s,u}mul.with.overflow.iN`: the exact product over `2 L` limbs
+  (the `mul` above with the operands extended by sign for `s`, by zero
+  for `u`; `|a b| <= 2^(2N - 2)` fits); overflow when it is not its own
+  sign extension from `N` bits (`s`) or has a bit at `N` or above
+  (`u`). No call: `llc` 19 and 22 call nothing either (measured on
+  `smul.with.overflow.i65`).
+- The overflow result `{iN, i1}`: the integer zero-extended with its
+  store size, the flag as a byte at its field offset.
+
+None of these is an x87 barrier: `llc` lowers none of them with a
+branch, a call or a loop but `select`, which §8 already lowers the
+same way.
+
+**Refused**, each under its own name (plain `x86:i64:wide` is no
+longer reached):
+
+| name | what |
+|---|---|
+| `x86:i64:wide:shift` | `shl`, `lshr`, `ashr` |
+| `x86:i64:wide:div` | `udiv`, `sdiv`, `urem`, `srem` (libgcc has no `__divti3` on i386; `llc` calls compiler-rt's) |
+| `x86:i64:wide:intrinsic` | an integer intrinsic but the overflow ones (bit counts, `bswap`, `abs`, min / max, saturating, funnel shifts, `scmp` / `ucmp`); an odd width is the classifier's `intrinsic:<name>/int-wide` first |
+| `x86:i64:wide:switch` | a `switch` on such an integer |
+| `x86:i64:wide:abi` | a result by value of 65 to 127 bits, a call's (`abi::type_refusal`); an `i128` result is returned in memory as `llc` does (hidden pointer, `eax`, `ret $4`), and a wide argument is the convention's `x86:abi:wide-arg` first |
+| `x86:i64:wide:width` | an integer wider than 128 bits |
+
+Tests: `crates/hod/tests/i386_wide_int.rs`: hand-written `.ll` at 65,
+96 and 128 bits over every pair of boundary values (carries across each
+limb, the sign bit of the width, the extremes), clang's three overflow
+builtins over every triple of the four C types (clang 19 and 22; CPU
+`i686`, `i586`, `pentium4`), static and PIE, plain and under
+`Stress::ALL`, `llc` 19 and 22, run under `qemu-i386`. The edges of the
+limb-wise lowering are tests of their own there (`limb_edges_as_llc`):
+a stored value between guard bytes and before a `PROT_NONE` page at
+65, 72, 96, 100, 120 and 128 bits; values with garbage above the width
+(a `trunc` from `i128`) through every compare, the overflow
+intrinsics, the extensions, `mul`, `select`, a `phi`, a `trunc` to
+`i65`; an `add` of a value to itself and swapping `phi`s; a wide
+`getelementptr` index with high limbs set or negative. And
+`multiply_random_as_llc`: `mul`, `smul` / `umul.with.overflow` over
+every pair of the boundary values and 2,048 pairs of a fixed-seed
+generator per width (65, 96, 128), each checked in the program against
+the exact result.

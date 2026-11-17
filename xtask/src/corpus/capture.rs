@@ -97,6 +97,11 @@ pub struct Options {
     pub force: bool,
     /// Try again the tests the last capture skipped.
     pub retry_skipped: bool,
+    /// Capture kiln's hod route (`--route hod`): kiln++ gets
+    /// `-fkiln-backend=hod` and the module kept is what kiln gives hod,
+    /// before `opt` ([`kiln::capture_hod_script`]); its entry is
+    /// `input: pre-opt`.
+    pub hod_route: bool,
     /// Whether a missing tool of the gate is a failure.
     pub require_tools: bool,
     pub search: Search,
@@ -128,6 +133,7 @@ impl Options {
             jobs: DEFAULT_JOBS.min(cores),
             force: false,
             retry_skipped: false,
+            hod_route: false,
             require_tools: false,
             search: Search::from_env(),
             // kiln's harness gives its compiler 120 s and 8 GiB.
@@ -366,6 +372,9 @@ enum Producer {
         /// The capture directory: an LLVM directory whose `llc` records.
         llvm_dir: PathBuf,
         cache: PathBuf,
+        /// With `--route hod`: the script kiln++ runs as hod
+        /// ([`kiln::capture_hod_script`]).
+        hod: Option<PathBuf>,
     },
     Torture {
         clang: PathBuf,
@@ -467,7 +476,7 @@ impl Group<'_> {
         calls: &Path,
         job: &Path,
     ) -> Result<Output, Unfit> {
-        let Producer::Kiln { kiln, root, cache, .. } = &self.producer else {
+        let Producer::Kiln { kiln, root, cache, hod, .. } = &self.producer else {
             return Err(Unfit::new("capture-broken", "the group's producer is not kiln"));
         };
         let configure = |command: &mut std::process::Command| {
@@ -478,7 +487,11 @@ impl Group<'_> {
                 .env("XDG_CACHE_HOME", cache)
                 .env("HOD_CORPUS_CAPTURE", calls)
                 .env("LC_ALL", "C")
-                .env_remove("KILN_LLVM_DIR");
+                .env_remove("KILN_LLVM_DIR")
+                .env_remove("KILN_HOD");
+            if let Some(hod) = hod {
+                command.env("KILN_HOD", hod);
+            }
         };
         process::run(kiln, configure, b"", self.options.compile_limits)
             .map_err(|what| Unfit::new("capture-broken", what))
@@ -489,10 +502,13 @@ impl Group<'_> {
     /// directory kiln ran in, which is this machine's; it is written as
     /// `.` instead. Then `-o <output>`.
     fn kiln_args(&self, args: &[String], output: &Path) -> Vec<std::ffi::OsString> {
-        let Producer::Kiln { root, llvm_dir, .. } = &self.producer else { return Vec::new() };
+        let Producer::Kiln { root, llvm_dir, hod, .. } = &self.producer else { return Vec::new() };
         let (source, before) = args.split_last().expect("the source is an argument");
         let mut all = vec![tools::prefixed("--llvm-dir=", llvm_dir)];
         all.extend(before.iter().map(Into::into));
+        if hod.is_some() {
+            all.push("-fkiln-backend=hod".into());
+        }
         let mut map = tools::prefixed("-fdebug-prefix-map=", root);
         map.push("=.");
         all.push(map);
@@ -688,6 +704,16 @@ impl Group<'_> {
         let pie = !llc_args.iter().any(|arg| arg == "-relocation-model=static");
         let mut modules = Vec::new();
         for (name, call) in calls {
+            if self.options.hod_route {
+                // On kiln's hod route, only what kiln gave hod: a module
+                // its fallback gave `llc` was not offered to hod.
+                if !call.hod || kiln::is_bitcode(&call.stdin) {
+                    let detail = "kiln++ gave the module to llc, not to hod (route hod)";
+                    return Err(Unfit::new("hod-route-declined", detail));
+                }
+                modules.push(Module { name, text: call.stdin, delivered: Delivered::PreOpt });
+                continue;
+            }
             modules.push(self.module_of_call(name, call.stdin, test, &plan, job)?);
         }
 
@@ -703,6 +729,7 @@ impl Group<'_> {
             args: plan.run_args.clone(),
             stdin: plan.stdin.clone(),
             llc_args: kiln::repeated_llc_args(&llc_args),
+            pre_opt: self.options.hod_route,
         };
         if !matches!(ran.end, End::Exit(_)) {
             // Not an exit: the reason and detail of `expectations`.
@@ -812,6 +839,7 @@ impl Group<'_> {
             args: Vec::new(),
             stdin: Vec::new(),
             llc_args: Vec::new(),
+            pre_opt: false,
         };
         let expect = entry::expectations(&recipe, &ran)?;
         if ran.end != End::Exit(0) {
@@ -1563,6 +1591,15 @@ pub fn capture(options: &Options) -> Result<CaptureReport, String> {
                             continue;
                         }
                     };
+                    let hod = if options.hod_route {
+                        let script = work.join("capture-hod");
+                        let text = kiln::capture_hod_script(&llvm_dir.join("bin/opt"), &llvm.llc)
+                            .map_err(|why| format!("kiln is not captured: {why}"))?;
+                        write_file(&script, text.as_bytes(), 0o755)?;
+                        Some(script)
+                    } else {
+                        None
+                    };
                     let root = work.join("kiln-root");
                     let cache = work.join("cache");
                     for dir in [&root, &cache] {
@@ -1578,7 +1615,11 @@ pub fn capture(options: &Options) -> Result<CaptureReport, String> {
                     let kiln = std::path::absolute(&options.kiln)
                         .map_err(|e| io("resolve", &options.kiln, &e))?;
                     let version = version_line(&kiln, "");
-                    (Producer::Kiln { kiln, root, llvm_dir, cache }, version, kiln_tests(&suite)?)
+                    (
+                        Producer::Kiln { kiln, root, llvm_dir, cache, hod },
+                        version,
+                        kiln_tests(&suite)?,
+                    )
                 } else {
                     let Some(clang) = options.search.versioned("clang", major) else {
                         missing(

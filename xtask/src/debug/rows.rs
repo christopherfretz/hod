@@ -9,8 +9,8 @@
 //!   position: the stop is then the return address, still in the call
 //!   statement's row (on i386 the instruction there releases the
 //!   outgoing argument area, which `llc` reserves in the prologue).
-//! - **entry-row**: lldb's `Breakpoint N: where = prog`F + ? at ...` of
-//!   one program against `prog`F at ...` of the other, at the same
+//! - **entry-row**: lldb's breakpoint at `F + ?` of one program against
+//!   one at `F` of the other, at the same
 //!   position, when in both programs that position is F's entry row (its
 //!   first `prologue_end` row): the two prologues differ (`llc` builds a
 //!   leaf without a frame), the breakpoint is at the same statement.
@@ -211,8 +211,9 @@ pub fn lldb_only_return_rows(ours: &str, theirs: &str, hod: &ProgramRows) -> boo
     true
 }
 
-/// lldb's breakpoint line: `Breakpoint N: where = prog`F[ + ?] at
-/// file:L:C, address = 0x?`: the line without ` + ?`, F, L and C.
+/// lldb's breakpoint line (`Breakpoint N: where = prog`, a backtick,
+/// `F[ + ?] at file:L:C, address = 0x?`): the line without ` + ?`, F,
+/// L and C.
 fn breakpoint_where(line: &str) -> Option<(String, &str, u32, u32)> {
     let rest = line.strip_prefix("Breakpoint ")?;
     let (_, place) = rest.split_once(": where = ")?;

@@ -10,35 +10,55 @@ is `llc -O0 -fast-isel=0 -relocation-model=pic` for x86-64
 
 | | |
 |---|---|
-| date | 2026-11-15 16:07 to 16:13 EST (WP-257c, the candidate: "At the candidate" below); the sections after it 2026-11-15 (WP-244); WP-136's sections 2026-11-13 |
-| hod | "At the candidate": `C` = `cd6ef6bc`, its frozen release binary `hod-cd6ef6bc` (sha256 `80138ec1411506d5b4048f1eac49e8b377f9eeedb21e70ae43e3c81ab094929c`, `hod version 0.0.0`); the sections after it: `e7e473af` (wave 25: `main` at `56a4695f` with kiln's pin at 1.2.0, wild and WP-238 part 1), release build; WP-136's sections: branch `wp/136-x64-debug` (on `main` at `73865eb`), debug build |
+| date | 2026-11-17 11:35 to 11:40 EST (the 1.1.0 release lane, the candidate: "At the candidate" and "i686 at the candidate" below); the sections after them 2026-11-15 (WP-244); WP-136's sections 2026-11-13 |
+| hod | "At the candidate": `C` = `a68a0d5d`, its frozen release binary `hod-a68a0d5d` (sha256 `baf397f0f4cd9b2325884e122d39f2b1de000135486f2b832b1d22334b566077`, `hod version 1.0.0`: the version number moves after the lanes); the sections after it: `e7e473af` (wave 25: `main` at `56a4695f` with kiln's pin at 1.2.0, wild and WP-238 part 1), release build; WP-136's sections: branch `wp/136-x64-debug` (on `main` at `73865eb`), debug build |
 | kiln | 1.2.0 at `8f93304ee`; corpus-x64 captured with it |
 | LLVM | 22.1.8 and 19.1.7 (`llc`, `llvm-dwarfdump`, clang), Debian packages |
 | debuggers | gdb-multiarch 16.3; lldb 19.1.7 (`gdb-remote`); `lldb-22` is not installed |
-| emulator | `qemu-x86_64` 10.0.13 user mode, its gdb stub on a port the system chose |
-| linkers | GNU ld 2.44, lld 22.1.8, mold 2.37.1, wild 0.11.0 |
+| emulator | `qemu-x86_64` 10.0.13 user mode, its gdb stub on a port the system chose; `qemu-i386` for i686 |
+| linkers | GNU ld 2.44, lld 22.1.8, mold 2.37.1, wild 0.11.0; mortar (the fifth linker of `debug run` since 1.0.0, "At the candidate" only); i686: GNU ld, lld, mold |
 | host | aarch64 Linux (the sessions are remote) |
 
 ## At the candidate
 
-`C` = `cd6ef6bc`, kiln `K` = `8f93304ee`, the frozen binary above, every
-command with `HOD_REQUIRE_TOOLS=1 -j 3 --hod hod-cd6ef6bc`, 2026-11-15
-16:07 to 16:13 EST (WP-257c). The sections after this one are WP-244's
-at `e7e473af`.
+`C` = `a68a0d5d` (the 1.1.0 candidate), kiln `K` = `8f93304ee`, the
+frozen binary above, every command run by the frozen harness binary
+`xtask-a68a0d5d` (`cargo xtask` of `C`) with `HOD_REQUIRE_TOOLS=1 -j 3
+--hod hod-a68a0d5d` on the AArch64 host, 2026-11-17 11:35 to 11:39 EST.
+The sections after "i686 at the candidate" are WP-244's at `e7e473af`.
 
 | command | result | exit | wall |
 |---|---|---|---|
-| `cargo xtask debug run --target x86_64` | 937 results: 896 PASS, 8 XFAIL, 33 SKIP (what the stub cannot do, below), 0 FAIL, 0 XPASS, 0 ERROR; 1712 sessions; lines: same 1761, hod only 1 (`selector-split` 1), `llc` only 18 (P1 18), **0 unclassified** | 0 | 4:13 |
-| `cargo xtask debug verify --target x86_64 .build/corpus-x64` | 18 `-g` modules: 18 built, 18 clean, 0 declined, 0 hod failures | 0 | 0:14 |
-| `cargo xtask debug trees .build/corpus-x64` | 18 `-g` modules: 16 same (1722 DIEs), 2 permitted (`lifetime-markers-O2-g-fpic-run.cpp`, LLVM 22 and 19: `unit range lists, no frame pointer, value records`, an `-O2` unit, classified by WP-260), 0 differ, 0 declined, 0 failed | 0 | 0:15 |
+| `cargo xtask debug run --target x86_64` | 58 tests, 1199 results: 1150 PASS, 10 XFAIL (`key_call.c`, 2 per linker), 39 SKIP (30 what the stub cannot do, below: `tls.c`, `tls_static.c`, `dwarf4_tls.c`, 10 each; 9 not run on x86-64: `call_sites.c` 2, `sret_entry.c` 2, `local_static.ll` 2, `local_type_no_code.ll` 2, `hardening_a64.cpp` 1), 0 FAIL, 0 XPASS, 0 ERROR; 2200 sessions; linkers GNU ld, lld, mold, wild, mortar (238 results each); lines: same 1761, hod only 1 (`selector-split` 1), `llc` only 18 (P1 18), **0 unclassified** | 0 | 3:37 |
+| `cargo xtask debug verify --target x86_64 .build/corpus-x64` | 18 `-g` modules: 18 built, 18 clean, 0 declined, 0 hod failures, 0 skipped | 0 | 0:13 |
+| `cargo xtask debug trees .build/corpus-x64` | 18 `-g` modules: 16 same (1722 DIEs), 2 permitted (`lifetime-markers-O2-g-fpic-run.cpp`, LLVM 22 and 19: `unit range lists, no frame pointer, value records`, an `-O2` unit, WP-260), 0 differ, 0 declined, 0 failed | 0 | 0:09 |
 
-At the previous candidate `e98267c0` (WP-257b, `hod-e98267c0`, 15:09 to
-15:15 EST) every count above was the same. At the candidate before it,
-`02fe2d02` (WP-257, 06:21 to 06:29 EST), the
-same `debug run` and `debug verify` counts; `debug trees` had the `-O2`
-unit's 2 as differences, exit 1 (before WP-260).
+Against 1.0.0's candidate `cd6ef6bc` (`hod-cd6ef6bc`, WP-257c, 2026-11-15):
+`debug run --target x86_64` then had 937 results (896 PASS, 8 XFAIL, 33
+SKIP) and 1712 sessions over four linkers; the growth is mortar as a
+fifth linker (238 results: 2 more XFAIL of `key_call.c`, 6 more SKIP of
+the stub's) and the test added since, `coro_byval.cpp` (30 results, all
+PASS); no new kind of non-PASS result. The lines counts are equal. `debug
+verify` and `debug trees` have the same counts.
 
 L6 strict with `-g` on x86-64: part of 3.2 (`docs/status/release.md`).
+
+## i686 at the candidate
+
+`cargo xtask debug run --target i686` (qemu-i386's gdb stub; new since
+1.0.0, the gate step `debug-i686` since WP-354), the same
+binary and options, 2026-11-17 11:39 to 11:40 EST:
+
+| command | result | exit | wall |
+|---|---|---|---|
+| `cargo xtask debug run --target i686` | 58 tests, 488 results: 429 PASS, 59 SKIP, 0 FAIL, 0 XFAIL, 0 XPASS, 0 ERROR; 834 sessions; linkers GNU ld, lld, mold (147 results each); front ends clang 19 (217), clang 22 (253), IR (4), kiln (14, all SKIP: `no kiln`); lines: same 1047, hod only 2 (P3 1, `selector-split` 1), `llc` only 16 (P1 16), **0 unclassified** | 0 | 1:19 |
+
+The 59 SKIPs: 23 kept off on i686 (20 `debug:dwarf-4-i386`, 2
+`debug:split-dwarf-i386`, 1 `x86:probe-stack`), 14 `no kiln`, 12 what
+the stub cannot do (`qGetTLSAddr`), 6 not run on i686, 4 IR tests not run
+on i686. WP-329's first measurement (2026-11-16, before the fixes) had
+34 FAIL: `debug.md` "i686 (WP-329)". No `-g` corpus for i686 exists, so
+there is no `debug verify` or `debug trees` row.
 
 ## Sessions: `cargo xtask debug --target x86_64`
 

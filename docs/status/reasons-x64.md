@@ -34,8 +34,8 @@ From `cargo xtask corpus verify --target x86_64` (hybrid: a module hod declines 
 
 | LLVM | tests | built by hod | results | PASS | FAIL | ERROR | other | PASS of hod's |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 22 | 3251 | 3250 | 13004 | 13000 | 4 | 0 | 0 | 12996 of 13000 |
-| 19 | 3213 | 3212 | 12852 | 12848 | 4 | 0 | 0 | 12844 of 12848 |
+| 22 | 3251 | 3250 | 16255 | 16250 | 5 | 0 | 0 | 16245 of 16250 |
+| 19 | 3213 | 3212 | 16065 | 16060 | 5 | 0 | 0 | 16055 of 16060 |
 
 Every result that is not a PASS (at most 40):
 
@@ -43,10 +43,12 @@ Every result that is not a PASS (at most 40):
 - LLVM 22 FAIL `gcc-torture/llvm22/builtins/strncmp.c.ll` [lld], built by hod: the program of hod's object ended with signal 6, llc's with exit status 0
 - LLVM 22 FAIL `gcc-torture/llvm22/builtins/strncmp.c.ll` [mold], built by hod: the program of hod's object ended with signal 6, llc's with exit status 0
 - LLVM 22 FAIL `gcc-torture/llvm22/builtins/strncmp.c.ll` [wild], built by hod: the program of hod's object ended with signal 6, llc's with exit status 0
+- LLVM 22 FAIL `gcc-torture/llvm22/builtins/strncmp.c.ll` [mortar], built by hod: the program of hod's object ended with signal 6, llc's with exit status 0
 - LLVM 19 FAIL `gcc-torture/llvm19/builtins/strncmp.c.ll` [bfd], built by hod: the program of hod's object ended with signal 6, llc's with exit status 0
 - LLVM 19 FAIL `gcc-torture/llvm19/builtins/strncmp.c.ll` [lld], built by hod: the program of hod's object ended with signal 6, llc's with exit status 0
 - LLVM 19 FAIL `gcc-torture/llvm19/builtins/strncmp.c.ll` [mold], built by hod: the program of hod's object ended with signal 6, llc's with exit status 0
 - LLVM 19 FAIL `gcc-torture/llvm19/builtins/strncmp.c.ll` [wild], built by hod: the program of hod's object ended with signal 6, llc's with exit status 0
+- LLVM 19 FAIL `gcc-torture/llvm19/builtins/strncmp.c.ll` [mortar], built by hod: the program of hod's object ended with signal 6, llc's with exit status 0
 
 ## The routes agree
 
@@ -70,13 +72,13 @@ Coverage-log field 7 (from the process's start to the decline) of the first-refu
 
 | LLVM | route | median | p99 | worst | share of `llc`: median | p99 | worst |
 |---|---|---:|---:|---:|---:|---:|---:|
-| 22 | text | 17361 | 42269 | 305939 | 26.9% | 63.1% | 143.7% |
-| 22 | bitcode, native | 16457 | 36710 | 451669 | 25.9% | 54.9% | 896.5% |
-| 22 | bitcode, `llvm-dis` | 67440 | 125070 | 682531 | 107.2% | 186.4% | 343.5% |
-| 22 | `llc -O0` | 61835 | 123735 | 3289292 | | | |
-| 22 | the `convert` of the `llvm-dis` route | 51600 | 100823 | 431404 | | | |
-| 19 | text | 17350 | 46050 | 304498 | 26.4% | 65.7% | 159.4% |
-| 19 | bitcode, native | 16470 | 50002 | 173260 | 24.9% | 58.8% | 227.8% |
-| 19 | bitcode, `llvm-dis` | 69811 | 155383 | 779878 | 105.8% | 193.0% | 445.9% |
-| 19 | `llc -O0` | 62761 | 150808 | 2942114 | | | |
-| 19 | the `convert` of the `llvm-dis` route | 54526 | 123409 | 514901 | | | |
+| 22 | text | 15718 | 49536 | 293614 | 88.0% | 268.5% | 753.6% |
+| 22 | bitcode, native | 15231 | 47284 | 142742 | 85.2% | 247.9% | 599.8% |
+| 22 | bitcode, `llvm-dis` | 20307 | 51786 | 557258 | 112.8% | 283.2% | 764.6% |
+| 22 | `llc -O0` | 17501 | 39270 | 3019876 | | | |
+| 22 | the `convert` of the `llvm-dis` route | 10456 | 23012 | 345992 | | | |
+| 19 | text | 16685 | 63258 | 487245 | 86.5% | 260.6% | 2745.2% |
+| 19 | bitcode, native | 16338 | 54693 | 254327 | 84.9% | 280.7% | 1469.2% |
+| 19 | bitcode, `llvm-dis` | 22561 | 71125 | 752793 | 116.4% | 333.7% | 989.0% |
+| 19 | `llc -O0` | 17871 | 50533 | 2992668 | | | |
+| 19 | the `convert` of the `llvm-dis` route | 12033 | 36434 | 455757 | | | |

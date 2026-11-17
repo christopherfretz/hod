@@ -1017,17 +1017,17 @@ impl Run<'_> {
                     if rows::only_local_labels(masked, theirs, &hod, llc_program()?) {
                         return Some("local-label");
                     }
-                    if debugger.is_gdb() {
-                        return rows::gdb_only_return_rows(masked, theirs, commands, &hod)
-                            .then_some("return-row");
-                    }
-                    if rows::lldb_only_return_rows(masked, theirs, &hod) {
-                        return Some("return-row");
-                    }
                     let llc = llc_program()?;
+                    if debugger.is_gdb() {
+                        // WP-354: part 2 is named in the detail.
+                        return rows::gdb_return_line0(masked, theirs, commands, &hod, llc).map(
+                            |ahead| {
+                                if ahead { "return-line0 (one step ahead)" } else { "return-line0" }
+                            },
+                        );
+                    }
                     rows::lldb_entry_rows(masked, theirs, &hod, llc, |m, t| {
                         permitted::only_return_columns(m, t, &facts)
-                            || rows::lldb_only_return_rows(m, t, &hod)
                     })
                     .then_some("entry-row")
                 };
@@ -1060,8 +1060,8 @@ impl Run<'_> {
                                 {
                                     (Outcome::Pass, "permitted: return-column".to_owned())
                                 }
-                                // WP-352, i686: `local-label`, `return-row`,
-                                // `entry-row`.
+                                // WP-352, WP-354, i686: `local-label`,
+                                // `return-line0`, `entry-row`.
                                 Some(_)
                                     if {
                                         i686_rule.set(i686_rows(

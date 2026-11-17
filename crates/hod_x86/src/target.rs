@@ -448,7 +448,7 @@ impl Target for X86 {
     }
 
     fn adjust_sp(&self, cx: &mut FnCx<'_, Self>, delta: i64) {
-        frame::adjust_sp(cx, delta);
+        frame::call_area(cx, delta); // WP-354
     }
 
     fn extend_arg(&self, cx: &mut FnCx<'_, Self>, reg: PReg, ty: TypeId, attrs: ParamAttrs) {

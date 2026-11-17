@@ -18,13 +18,18 @@ Goals:
 - **Debuggable output.** DWARF that gdb and lldb consume, and objects that
   GNU ld, lld, mold and wild link.
 
-Status: 1.0.0. hod compiles what kiln emits at `-O0`, with or without `-g`,
-for x86-64 and AArch64 Linux (ELF), and its objects link with GNU ld, lld
-and mold. For this release the libc++ test suite, LLVM and Clang, and a set
-of open-source C and C++ projects (24 built natively on AArch64, 34 built
-for x86-64) were built with every translation unit that reaches a back end
-compiled by hod and none handed back to LLVM, and their tests gave the
-results of kiln's LLVM back end.
+Status: 1.1.0. hod compiles what kiln emits at `-O0`, with or without `-g`,
+for x86-64 and AArch64 Linux (ELF), and its objects link with GNU ld, lld,
+mold and mortar. For this release the libc++ test suite, LLVM and Clang,
+and a set of open-source C and C++ projects (24 built natively on AArch64,
+34 built for x86-64) were built with every translation unit that reaches a
+back end compiled by hod and none handed back to LLVM, and their tests gave
+the results of kiln's LLVM back end. New in 1.1.0: a third target, 32-bit
+x86 Linux (`i686-unknown-linux-gnu`), measured from LLVM IR with clang as
+the front end, since kiln has no i686 target yet (the libc++ test suite
+built for i686 gives the results of LLVM's back end); `hod::compile_object`
+in the embedding API; and about a fifth fewer instructions executed per
+object than 1.0.0.
 [`docs/status/release.md`](docs/status/release.md) is the checklist: each
 condition, its evidence, the commit it was measured at, and the stated
 exceptions. What hod accepts is in

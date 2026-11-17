@@ -14,7 +14,7 @@ dependencies = [
 
 [[package]]
 name = "hod"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "hod_a64",
  "hod_bc",
@@ -32,7 +32,7 @@ dependencies = [
 
 [[package]]
 name = "hod_a64"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "hod_asm",
  "hod_cg",
@@ -47,7 +47,7 @@ dependencies = [
 
 [[package]]
 name = "hod_asm"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "hod_mc_a64",
  "hod_mc_x64",
@@ -56,7 +56,7 @@ dependencies = [
 
 [[package]]
 name = "hod_bc"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "hod_ir",
  "hod_ll",
@@ -65,7 +65,7 @@ dependencies = [
 
 [[package]]
 name = "hod_cg"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "hod_asm",
  "hod_dwarf",
@@ -80,7 +80,7 @@ dependencies = [
 
 [[package]]
 name = "hod_cli"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "hod",
  "hod_ir",
@@ -91,7 +91,7 @@ dependencies = [
 
 [[package]]
 name = "hod_dwarf"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "hod_ir",
  "hod_ll",
@@ -101,7 +101,7 @@ dependencies = [
 
 [[package]]
 name = "hod_eh"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "hod_obj",
  "hod_testutil",
@@ -109,7 +109,7 @@ dependencies = [
 
 [[package]]
 name = "hod_interp"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "hod_ir",
  "hod_ll",
@@ -118,14 +118,14 @@ dependencies = [
 
 [[package]]
 name = "hod_ir"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "hod_testutil",
 ]
 
 [[package]]
 name = "hod_ll"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "hod_interp",
  "hod_ir",
@@ -134,32 +134,32 @@ dependencies = [
 
 [[package]]
 name = "hod_mc_a64"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "hod_testutil",
 ]
 
 [[package]]
 name = "hod_mc_x64"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "hod_testutil",
 ]
 
 [[package]]
 name = "hod_obj"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "hod_testutil",
 ]
 
 [[package]]
 name = "hod_testutil"
-version = "1.0.0"
+version = "1.1.0"
 
 [[package]]
 name = "hod_x64"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "hod_asm",
  "hod_cg",
@@ -173,7 +173,7 @@ dependencies = [
 
 [[package]]
 name = "hod_x86"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "hod_asm",
  "hod_cg",
@@ -186,7 +186,7 @@ dependencies = [
 
 [[package]]
 name = "hod_xform"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "hod_bc",
  "hod_ir",
@@ -237,7 +237,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "hod",
  "hod_interp",

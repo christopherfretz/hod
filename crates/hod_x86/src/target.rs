@@ -17,9 +17,12 @@ use hod_cg::{
     CallEmit, CgError, CgResult, Class, FixupKind, FnCx, FrameDesc, FrameRef, Label, PReg, RegInfo,
     RegSet, Target,
 };
-use hod_ir::{Inst, InstKind, Opcode, ParamAttrs, TypeId, TypeTable, Value};
+use hod_ir::{
+    Body, FnStr, Inst, InstKind, Module, Opcode, ParamAttrs, SymbolKind, TypeId, TypeTable, Value,
+    X86Features,
+};
 use hod_mc_x64 as mc;
-use hod_mc_x64::Size;
+use hod_mc_x64::{Size, Xmm};
 
 use crate::common::{self, gp, put, unsupported};
 use crate::reg::{EAX, EBX, ECX, EDI, EDX, ESI, xmm};
@@ -32,8 +35,6 @@ pub const VECTOR: &str = "x86:vector";
 pub const AGGREGATE: &str = "x86:aggregate";
 /// A funclet pad (Windows exception handling).
 pub const FUNCLET: &str = "x86:funclet";
-/// A function with a stack protector: hod has no i386 guard.
-pub const STACK_PROTECTOR: &str = "x86:stack-protector";
 
 /// The i686 Linux target (i386 System V psABI, every relocation model).
 /// `cpu` is the command line's `-mcpu`, the CPU of a function without a
@@ -42,11 +43,16 @@ pub const STACK_PROTECTOR: &str = "x86:stack-protector";
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct X86 {
     cpu: Option<&'static str>,
+    /// The features of the function being compiled (`for_function`).
+    features: Option<X86Features>,
+    /// WP-335: the function is a coroutine body, `esi` its frame base
+    /// (`crate::coro_body`), set by `for_function`.
+    pub coro: bool,
 }
 
 /// The target without `-mcpu`.
 #[allow(non_upper_case_globals, reason = "the value of the former unit struct, kept by name")]
-pub const X86: X86 = X86 { cpu: None };
+pub const X86: X86 = X86 { cpu: None, features: None, coro: false };
 
 impl X86 {
     /// The target for a compile with `-mcpu` `cpu`: a name of
@@ -57,7 +63,7 @@ impl X86 {
         let known = cpu.and_then(|cpu| {
             hod_ir::I386_CPUS.iter().find(|&&(name, _)| name == cpu).map(|&(name, _)| name)
         });
-        X86 { cpu: known }
+        X86 { cpu: known, features: None, coro: false }
     }
 
     /// The `-mcpu` CPU, if any.
@@ -65,6 +71,19 @@ impl X86 {
     pub const fn cpu(&self) -> Option<&'static str> {
         self.cpu
     }
+
+    /// The feature set of the function being compiled (its `target-cpu`
+    /// and `target-features`, `-mcpu` as the fallback); of `-mcpu` alone
+    /// outside a function.
+    #[must_use]
+    pub fn features(&self) -> X86Features {
+        self.features.unwrap_or_else(|| feature_set(None, None, self.cpu))
+    }
+}
+
+/// `X86Features::of_function`, an unknown name as no feature.
+fn feature_set(cpu: Option<&str>, features: Option<&str>, mcpu: Option<&str>) -> X86Features {
+    X86Features::of_function(cpu, features, mcpu, &[]).unwrap_or(X86Features::NONE)
 }
 
 /// What the target remembers about the function being compiled.
@@ -74,6 +93,12 @@ pub struct FnState {
     pub frame: frame::FrameState,
     /// The 80-bit copies of `float`/`double` results (I9).
     pub x87: crate::x87::Copies,
+    /// The 80-bit values of SSE call results (I12).
+    pub sse: crate::sse::Views,
+    /// The stack guard (WP-324).
+    pub ssp: crate::ssp::GuardState,
+    /// The coroutine stubs' labels (WP-335).
+    pub coro: crate::coro_body::CoroState,
 }
 
 /// The registers: pool and holdable `ebx`, `esi`, `edi` (and `xmm0`..
@@ -104,6 +129,24 @@ pub fn refusal_of(cx: &FnCx<'_, X86>, ty: TypeId) -> CgError {
 /// operand `value`) is no `Gpr` value.
 fn refuse<R>(cx: &FnCx<'_, X86>, ty: TypeId) -> CgResult<R> {
     Err(refusal_of(cx, ty))
+}
+
+/// Whether `vector::owns` or `sse::owns` takes `inst` (WP-317, §16 and
+/// §17; [`sse_family`] asks `vector` first : a vector `fcmp`/`bitcast` is not scalar).
+/// `Target::lower` asks after `atomic`'s arms (an ordered access of a
+/// `float` or a vector is `atomic`'s) and before `x87`'s and `agg`'s;
+/// neither owner claims `extractvalue`/`insertvalue` or an aggregate.
+fn sse_family_owns(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
+    crate::vector::owns(cx, inst) || crate::sse::owns(cx, inst)
+}
+
+/// Lowers an instruction [`sse_family_owns`] takes.
+fn sse_family<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>) -> CgResult<()> {
+    if crate::vector::owns(cx, inst) {
+        crate::vector::lower(cx, inst)
+    } else {
+        crate::sse::lower(cx, inst)
+    }
 }
 
 /// `extractvalue`: of the `{ ptr, i32 }` landing-pad value (`eh`, §14),
@@ -161,9 +204,14 @@ impl Target for X86 {
     /// `nop`, as `llc` pads i386 code.
     const PAD_BYTE: u8 = 0x90;
     const STACK_ALIGN: u32 = 16;
+    /// WP-327: `ret` (`crate::coro`).
+    const NOOP_CORO_FN: &'static [u8] = crate::coro::NOOP_FN;
+    /// WP-335: `crate::coro_body`.
+    const CORO_BODIES: bool = true;
 
     fn reg_info(&self) -> &RegInfo {
-        &REG_INFO
+        // WP-335: a coroutine's frame base `esi` is not in its pool.
+        crate::coro_body::reg_info(self.coro)
     }
 
     #[inline]
@@ -177,7 +225,19 @@ impl Target for X86 {
         sig: &Sig<'_>,
         out: &mut Assignment,
     ) -> Result<(), AbiUnsupported> {
-        abi::assign(types, sig, out)
+        abi::assign_for(types, sig, out, self.features())
+    }
+
+    fn for_function(&self, module: &Module, body: &Body) -> Option<Self> {
+        let SymbolKind::Function { attrs, .. } = module.symbol(body.symbol()).kind() else {
+            return None;
+        };
+        let attrs = module.fn_attrs(attrs);
+        let text = |what| attrs.string(what).and_then(|s| std::str::from_utf8(s).ok());
+        let features = feature_set(text(FnStr::TargetCpu), text(FnStr::TargetFeatures), self.cpu);
+        // WP-335: a coroutine body keeps `esi` as its frame base.
+        let coro = attrs.has(hod_ir::FnAttrs::PRESPLIT_COROUTINE);
+        Some(X86 { cpu: self.cpu, features: Some(features), coro })
     }
 
     fn begin_function(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()> {
@@ -194,6 +254,7 @@ impl Target for X86 {
         frame::base_offset(desc, place)
     }
 
+    #[allow(clippy::too_many_lines, reason = "one dispatch match over the families")]
     fn lower<'a>(&self, cx: &mut FnCx<'a, Self>, inst: Inst<'a>) -> CgResult<()> {
         match cx.fold_action(inst) {
             // An `invoke` the fold turns into a call, or one that loses
@@ -214,6 +275,9 @@ impl Target for X86 {
             InstKind::ExtractValue { agg, offset } if crate::atomic::is_cmpxchg_result(cx, agg) => {
                 crate::atomic::extract(cx, inst, agg, offset)
             }
+            _ if crate::fpclass::owns(cx, inst) => crate::fpclass::lower(cx, inst),
+            // I12: after `atomic`'s arms, before x87's; no aggregate's.
+            _ if sse_family_owns(cx, inst) => sse_family(cx, inst),
             _ if crate::x87::owns(cx, inst) => crate::x87::lower(cx, inst),
             _ if crate::agg::owns(cx, inst) => crate::agg::lower(cx, inst),
             InstKind::Binary { lhs, rhs } if gpr => alu::binary(cx, inst, lhs, rhs),
@@ -285,7 +349,7 @@ impl Target for X86 {
                 control::cond_br(cx, cond, if_true, if_false)
             }
             InstKind::Switch(switch) => control::switch(cx, &switch),
-            InstKind::IndirectBr { .. } => unsupported(control::INDIRECT_BRANCH),
+            InstKind::IndirectBr { addr, .. } => crate::ibr::indirect_br(cx, inst, addr),
             InstKind::Ret { value } => control::ret(cx, inst, value),
             InstKind::Unreachable => control::unreachable(cx),
             InstKind::Fence { .. } | InstKind::CmpXchg { .. } | InstKind::AtomicRmw { .. } => {
@@ -303,6 +367,10 @@ impl Target for X86 {
         if reg == abi::ST0 {
             return crate::x87::load_ret(cx, src, bytes);
         }
+        if !crate::reg::is_gpr(reg) {
+            let x = Xmm::ALL[usize::from(reg.index() - xmm(0).index())];
+            return crate::sse::load_xmm(cx, x, src, bytes);
+        }
         // Only general registers hold values of this package.
         common::load_gpr(cx, gp(reg), src, bytes);
     }
@@ -311,12 +379,20 @@ impl Target for X86 {
         if reg == abi::ST0 {
             return crate::x87::store_call_result(cx, dst, bytes);
         }
+        if !crate::reg::is_gpr(reg) {
+            let x = Xmm::ALL[usize::from(reg.index() - xmm(0).index())];
+            return crate::sse::store_xmm(cx, x, dst, bytes);
+        }
         common::store_gpr(cx, gp(reg), dst, bytes);
     }
 
     fn copy(&self, cx: &mut FnCx<'_, Self>, dst: FrameRef, src: FrameRef, bytes: u32) {
         if dst == src || bytes == 0 {
             return;
+        }
+        if let FrameRef::Incoming(_) = dst {
+            // WP-324: a `musttail` call's arguments go to the real area.
+            return crate::ssp::raw_incoming(cx, |cx| common::copy_frame(cx, dst, src, bytes));
         }
         common::copy_frame(cx, dst, src, bytes);
     }
@@ -357,6 +433,12 @@ impl Target for X86 {
         if crate::agg::is_aggregate(cx, common::value_ty(cx, value)) {
             return crate::agg::materialize_mem(cx, dst, value);
         }
+        if cx.types().is_vector(common::value_ty(cx, value)) {
+            return crate::vector::materialize_mem(cx, dst, value);
+        }
+        if crate::sse::is_sse_or_half(cx, common::value_ty(cx, value)) {
+            return crate::sse::materialize_mem(cx, dst, value);
+        }
         // Floating point; any other type is refused by its family there.
         crate::x87::materialize_mem(cx, dst, value)
     }
@@ -386,7 +468,23 @@ impl Target for X86 {
     }
 
     fn emit_call(&self, cx: &mut FnCx<'_, Self>, call: &CallEmit) -> CgResult<()> {
-        crate::pic::emit_call(cx, call.target, call.callee_pop)
+        // WP-314: the call returns right after its instruction, before
+        // `esp` is moved back over a popped hidden pointer
+        // (`spec/dwarf.md` §6.19, as on the other targets).
+        crate::pic::emit_call(cx, call.target, 0)?;
+        cx.call_returns_here(call.target, crate::reg::dwarf);
+        // WP-324: `endbr32` right after the call instruction, before the
+        // stack adjustment, as `llc`'s IBT pass places it.
+        crate::cet::after_call(cx, call.target);
+        if call.callee_pop != 0 {
+            frame::adjust_sp(cx, -i64::from(call.callee_pop));
+        }
+        Ok(())
+    }
+
+    fn branch_target(&self, cx: &mut FnCx<'_, Self>, _at: hod_cg::BranchTarget) -> CgResult<()> {
+        crate::cet::landing(cx); // WP-324
+        Ok(())
     }
 
     fn dynamic_slot(
@@ -399,12 +497,30 @@ impl Target for X86 {
         crate::dynstack::dynamic_slot(cx, ptr, size, align)
     }
 
-    fn enter_guard(&self, _cx: &mut FnCx<'_, Self>) -> CgResult<()> {
-        unsupported(STACK_PROTECTOR)
+    fn enter_guard(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()> {
+        crate::ssp::enter(cx)
     }
 
     fn patch_branch(code: &mut [u8], at: u32, kind: FixupKind, displacement: i64) -> bool {
         common::patch_branch(code, at, kind, displacement)
+    }
+
+    fn coro_stubs(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()> {
+        crate::coro_body::stubs(cx)
+    }
+
+    fn coro_dispatch(
+        &self,
+        cx: &mut FnCx<'_, Self>,
+        cond: PReg,
+        resume: Label,
+        destroy: Label,
+    ) -> CgResult<()> {
+        crate::coro_body::dispatch(cx, cond, resume, destroy)
+    }
+
+    fn coro_transfer(&self, cx: &mut FnCx<'_, Self>, exit: Label) -> CgResult<()> {
+        crate::coro_body::transfer(cx, exit)
     }
 }
 

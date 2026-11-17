@@ -222,7 +222,7 @@ fn fcmp_predicates_run_as_llc_s() {
 }
 
 /// The shapes of `shapes-*.ll`, in order (the driver prints one line each).
-const SHAPES: [&str; 45] = [
+const SHAPES: [&str; 46] = [
     "single",
     "twice",
     "twice_sep",
@@ -268,6 +268,7 @@ const SHAPES: [&str; 45] = [
     "memset_big",
     "fold_const",
     "frem_const_between",
+    "bitcast_between",
 ];
 
 /// The shapes where `llc`'s own result depends on its register
@@ -467,9 +468,10 @@ fn integer_intrinsic_shapes_run_as_llc_s() {
 }
 
 /// A `float` operation of clang's default i686 CPU (`pentium4`, SSE2) is
-/// `llc`'s in `xmm` registers: refused by name.
+/// `llc`'s in `xmm` registers: since WP-317 lowered by `sse.rs`
+/// (`tests/i386_sse.rs` runs it).
 #[test]
-fn float_under_sse_is_refused() {
+fn float_under_sse_compiles() {
     let text = format!(
         "target triple = \"{TRIPLE}\"\n\
          define void @f(ptr %p) #0 {{\n  %x = load float, ptr %p\n  %y = fadd float %x, %x\n\
@@ -481,8 +483,7 @@ fn float_under_sse_is_refused() {
         triple: Some(TRIPLE.into()),
         ..Options::default()
     };
-    let err = hod::compile(text.as_bytes(), &options).expect_err("SSE float must be refused");
-    assert!(err.to_string().contains("x86:float:sse"), "{err}");
+    hod::compile(text.as_bytes(), &options).expect("SSE float compiles");
     // The same without SSE compiles.
     let plain = text.replace("\"target-cpu\"=\"pentium4\"", "");
     hod::compile(plain.as_bytes(), &options).expect("x87 float compiles");

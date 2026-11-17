@@ -204,6 +204,7 @@ pub const CONSTRUCTORS: &[(&str, &[&str])] = &[
     ("ud1_eax", &["ud1"]),
     ("int3", &["int3"]),
     ("endbr64", &["endbr64"]),
+    ("endbr32", &["endbr32"]),
     ("nop", &["nop"]),
     // sse: a family row's cases name the precision's mnemonic.
     ("movs_rr", &["movs*"]),

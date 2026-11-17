@@ -26,8 +26,8 @@ use crate::record::Chunk;
 const FUNCTION: &[u8] = b"__NoopCoro_ResumeDestroy";
 /// The frame's name as `llc` names a private symbol (it has no symbol).
 const FRAME: &[u8] = b".LNoopCoro.Frame.Const";
-/// The frame: two pointers.
-const FRAME_SIZE: u64 = 16;
+/// The frame: two pointers (of the target's address size: 16 bytes, 8
+/// on i386, WP-327), aligned to 8 on every target (`llc` 19 and 22).
 const FRAME_ALIGN: u64 = 8;
 
 /// The state of the noop frame in one object.
@@ -99,8 +99,9 @@ impl ModuleEmitter<'_> {
             ));
         }
         let arch = self.arch();
-        let Some(abs) = arch.abs(8) else {
-            return Err(CgError::internal("no 8-byte absolute relocation"));
+        let word = arch.address_bytes();
+        let Some(abs) = arch.abs(word) else {
+            return Err(CgError::internal("no absolute relocation of an address"));
         };
         // The function.
         let align = arch.text_align().max(4);
@@ -131,9 +132,9 @@ impl ModuleEmitter<'_> {
         let data = self.noop_section(kind, self.options.data_sections, FRAME, FRAME_ALIGN)?;
         self.obj.raise_section_align(data, FRAME_ALIGN);
         let offset = self.obj.align_to(data, FRAME_ALIGN, 0);
-        self.obj.append_zeros(data, FRAME_SIZE);
+        self.obj.append_zeros(data, 2 * u64::from(word));
         let function = self.obj.section_symbol(text);
-        for field in [0, 8] {
+        for field in [0, u64::from(word)] {
             self.obj.add_relocation(data, offset + field, abs, function, at as i64);
         }
         self.noop.placed = Some((data, offset));

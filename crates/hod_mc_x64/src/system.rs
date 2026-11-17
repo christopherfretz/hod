@@ -52,6 +52,15 @@ pub const fn endbr64() -> Inst {
     inst
 }
 
+/// `ENDBR32` (`F3 0F 1E FB`): the 32-bit mode's indirect-branch target
+/// under CET IBT; a `nop` elsewhere.
+#[inline]
+pub const fn endbr32() -> Inst {
+    let mut inst = plain(Op::two(0x1e).rep(0xf3));
+    inst.push(0xfb);
+    inst
+}
+
 /// The recommended `NOP` of each length: Intel SDM Vol. 2B, "NOP", table
 /// 4-12 for 1 to 9 bytes; above that, `66 2E` and then further `66`
 /// prefixes on the 9-byte form, as LLVM pads.

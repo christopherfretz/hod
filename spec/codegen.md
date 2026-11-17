@@ -1102,6 +1102,12 @@ them there, and has the saturating arithmetic, `scmp`/`ucmp`, the
   `frexp` call the routines of §7.3 "Runtime routines by type and
   target" (`sinf`/`sin`/`sinl`, `__powisf2`, ...); `frexp` with the
   address of a 4-byte slot, its `{T, i32}` result a `Mem`-class value.
+  `modf` (WP-340, LLVM 20 and later) calls `modff` / `modf` / `modfl`
+  (`fp128`) with the address of a slot of the routine's type for the
+  integral part; the `{T, T}` result gets the fractional part (the
+  routine's result) then the integral part, as `llc` 22. `half` goes
+  through `modff`, both parts narrowed (exact); `bfloat` and vectors
+  are refused by the classifier (`intrinsic:llvm.modf` of the type).
   `half` goes through the `float` function. An exponent narrower than 32
   bits is sign-extended; a wider `ldexp` exponent is clamped to the
   `int` range (`llc` truncates it); a wider `powi` exponent is refused
@@ -2886,7 +2892,12 @@ above it (no `roundss`, no `cvttps2udq`, no AVX, no x87: `x86_fp80` is
   `mulsd`, exact for two `half`s, then `addsd`, rounding as `llc`'s call
   of `fma` does), `fp128` calls the `...f128` functions; `powi`,
   `ldexp` (an `i64` exponent clamped to `int`), `frexp` and the libm
-  intrinsics are calls. Refused: `x64:fp-intrinsic` (a non-constant
+  intrinsics are calls. `modf` (WP-340, LLVM 20 and later) of `float`
+  and `double` calls `modff` / `modf` with the address of a frame slot
+  for the integral part, the result's fields then written (fractional
+  part first), as `llc` 22; `half` (`llc` 22 cannot select it), `fp128`
+  (`llc` calls `modff128`), `bfloat` and vectors are refused by the
+  classifier (`intrinsic:llvm.modf` of the type). Refused: `x64:fp-intrinsic` (a non-constant
   `is.fpclass` mask, a `powi` exponent wider than 32 bits),
   `x64:intrinsic-fp128` (`fptosi.sat`/`fptoui.sat` of `fp128`),
   `x64:intrinsic-wide` (an integer result wider than 64 bits).
@@ -3453,20 +3464,32 @@ only around a truncating store (below).
   `fminimum_numl`/`fmaximum_numl`, `powl`, the transcendental
   functions, `lroundl`/`llroundl` (the result in `rax`), `ldexpl` (the
   `i32` in `edi`), `frexpl` (the exponent's address, in the area, in
-  `rdi`); `powi` calls `__powixf2`. Refused: `x64:x87-intrinsic` (a
+  `rdi`), `modfl` (WP-340: the address of the result's second field,
+  the integral part, in `rdi`; the fractional part popped from `st0` to
+  the first, as `llc` 22); `powi` calls `__powixf2`. Refused: `x64:x87-intrinsic` (a
   non-constant `is.fpclass` mask, a `powi`/`ldexp` exponent other than
   `i32`, an integer result wider than 64 bits, an intrinsic with no
   routine).
-- **`is.fpclass` of the encodings only the x87 has.** A pseudo-denormal
-  (exponent 0, integer bit set) is a subnormal of its sign for every
-  mask, as `fxam` classifies it (denormal: C3 C2 C0 = 1 1 0) and as the
-  x87 loads it. `llc` is not followed: 19 and 22 put it in no class
-  (false for each single class) yet answer true for some unions by
-  their expansion, differing on four (19: `0x7`, `0xf3`, `0x203`; 22:
-  `0x30c`), which no class gives (WP-147). An
-  unnormal, a pseudo-zero, a pseudo-infinity or a pseudo-NaN is in the
-  test when the test has both NaN classes, or is all classes but one NaN
-  class (`x87::invalid_in`): `llc` 19 and 22 agree on all 1024 masks.
+- **`is.fpclass` of the encodings only the x87 has** (WP-340: one rule
+  on x86-64 and i386, `llc` 22's, mask by mask). A pseudo-denormal
+  (exponent 0, integer bit set) is in the test as `llc` 22 expands it
+  (`x87::pseudo_denormal_in`, the same function as i386's
+  `fpclass::pseudo_denormal_in`, `spec/codegen-x86.md` section F): for
+  the masks `llc` 22 tests by an x87 compare of the value (3, 7, 99,
+  243, 508, 515, 780, 924, 1016, 1020) as the normal number it loads
+  as; otherwise as a NaN when the test has both NaN classes and as zero
+  or subnormal when it has all four of those classes, a test that `llc`
+  inverts (`invertFPClassTestIfSimpler`: one class, one class of one
+  sign, the finite classes, ...) answering the negation of its
+  complement's. No single class holds for it. LLVM 19 compares fewer
+  masks and differs at 7, 243, 515 and 780: this part is tested against
+  `llc` 22 only (`hod_x64/tests/leftovers2.rs`, all 1024 masks against
+  operands of every class, both signs). Before WP-340 x86-64 answered
+  "subnormal" for every mask (as `fxam`), 459 masks apart. An unnormal,
+  a pseudo-zero, a pseudo-infinity or a pseudo-NaN is in the test when
+  the test has both NaN classes, or is all classes but one NaN class
+  (`x87::invalid_in`): `llc` 19 and 22 agree on all 1024 masks. The
+  ordinary classes answer their bit of the mask, unchanged by WP-340.
 
 A lowering here writes, besides its operands' slots, `rax`, `rcx`,
 `rdx`, `r10`, `r11` and the flags (the libcalls: every caller-saved
@@ -4228,8 +4251,39 @@ are target-neutral (`hod_cg::guard`); each target emits the code
 9. **Intrinsics.** `llvm.stackprotector` and `llvm.stackguard` are not
    written by clang or kiln; `classify` refuses them by name
    (`intrinsic:llvm.stackprotector`, `intrinsic:llvm.stackguard`).
+10. **Stack-passed arguments** (WP-333). An argument the caller passed
+    in its stack-argument area lies above the callee's guard, where an
+    overflow of the guarded block reaches it before the check. `llc` 19
+    and 22 (`-O0`, both targets, measured) load every used non-`byval`
+    stack argument at entry, before the guard store, into a virtual
+    register that lives in a register or a spill slot below the guard
+    from then on (a consequence of SelectionDAG's argument lowering, in
+    every function); a `byval` argument is the address of the caller's
+    copy and is read in place, above the guard. hod, in a protected
+    function that is not a coroutine body: an argument that arrives
+    wholly on the stack in one part (an integer, a pointer, a `float` or
+    `double` beyond the FP registers, an `i128` on the stack, a `Mem`
+    value in one part) is copied at entry, in `enter_arguments`, before
+    rule 6's entry code, into a home of its own (`home_slot`, outside the
+    guarded block, so below the guard) and that home is its location for
+    every later read. A value in several parts already gets a home of
+    its own (§4.8, `enter_mem`), and a mask's lanes are gathered into a
+    register at entry. `byval` stays in place, as with `llc` (copying the
+    caller's copy would cost a frame-sized copy per call, and `llc`
+    gives no stronger guarantee). The `va_start` overflow area is the
+    incoming area as before; the named arguments' copies do not move it.
+    A `musttail` call still writes its arguments into the real incoming
+    area. An unprotected function keeps the incoming location as the
+    home: its bytes do not change. A protected coroutine body (whose
+    values §7.6 places) keeps it too; it is not changed by WP-333 and
+    not yet measured against `llc`. A
+    `#dbg_value` of such an argument now describes the copy
+    (`DW_OP_fbreg` of the home); `llc` describes the incoming slot
+    (`DW_OP_fbreg` above the frame), which holds the same value until
+    an overflow; hod's names the value the program uses. CFI does not
+    change.
 
-Evidence: `spec/landed/codegen/WP-183.md`.
+Evidence: `spec/landed/codegen/WP-183.md`, `spec/landed/codegen/WP-333.md`.
 
 #### 5.6.25 Indirect-branch tracking: `cf-protection-branch` (WP-184)
 
@@ -6964,6 +7018,58 @@ The oracle is `crates/hod_cg/tests/emit_llc.rs` (snippet `exclude`, LLVM
 header fields and the bytes of `crates/hod_cg/tests/data/exclude/mason_meta.ll`
 through the session from text and from bitcode, and links it with bfd,
 lld and mold (the section is not in the program, which runs).
+
+#### 9.7.5 hod's own `.mason.meta` unit (WP-332, `emit/mason.rs`)
+
+Every object hod writes, on every target (x86-64, AArch64, i386), holds
+one unit of hod's own in the section `.mason.meta`, the container of the
+mortar linker's metadata (github.com/christopherfretz/mortar,
+`spec/meta.md` MT-10, MT-11, MT-12, MT-26; its request H-3, `spec/odr.md`
+§11). `llc` writes no such unit: this paragraph is the rule that permits
+that difference from `llc`, and the only one it permits. Every
+comparison of hod's objects with `llc`'s leaves out exactly hod's unit
+(producer 2, ending the section) in the section named `.mason.meta` of
+type `SHT_PROGBITS` whose flags are exactly `SHF_EXCLUDE`, and that
+section itself when the unit is all it holds (`hod_testutil::mason`);
+nothing else is left out for it.
+
+- The section: `SHT_PROGBITS`, `sh_flags` exactly `SHF_EXCLUDE`,
+  `sh_addralign` 8, in no group, no relocation section, never
+  `SHF_GNU_RETAIN`. It is the section §9.7.4 made for excluded variables
+  named `.mason.meta` with no group and not in `llvm.used` (kiln's
+  container, H-1) when the module has one whose alignment is at least 8
+  and whose size is a multiple of 8 (MT-10: it then ends with a whole
+  unit), else a new section of that name after every other (so a section
+  of another shape stays `llc`'s byte for byte, and hod never pads it).
+  A container that has a relocation section or is a member of a COMDAT
+  group is of another shape too (mortar drops such a container whole):
+  hod leaves it untouched and its unit goes into the new section.
+  The unit is appended once every variable is placed: kiln's units come
+  first and their bytes are unchanged (H-2). (mortar's MT-10 reads a container as a sequence of
+  units and fixes no order between producers; this is hod's.)
+- The unit, 88 bytes, every integer little-endian in both ELF classes
+  (MT-10): the header (`MASN`, major 1, minor 0, `unit_size` 88,
+  `header_size` 32, `block_count` 1, `strtab_offset` 64, `strtab_size`
+  the exact length of the string table, `producer` 2, `flags` 0); one
+  block (MT-11: kind 1, version 1, `block_size` 32, `row_size` 16,
+  `row_count` 1); one row (MT-26: name, value, flags 0, reserved 0); the
+  string table (MT-12) `"\0reloc-model\0<value>\0"`; zero bytes to 88.
+- The value is the relocation model code generation used,
+  `hod_cg::model_used` (`access.rs`), the one function every
+  "shared object or not" decision of §7.4 reads: `static` for
+  `-relocation-model=static` (the default) and `dynamic-no-pic`; `pie`
+  for `pic` with a `PIE Level` (the module's own definitions bind
+  locally); `pic` for `pic` without one (a default-visibility
+  definition is reached through the GOT and PLT unless the IR marks it
+  `dso_local`, and then through its local alias). The model is one per
+  module; no option turns the unit off; its bytes hold no time, path or
+  host.
+
+Linkers drop the section (`SHF_EXCLUDE`). Tests: `emit/mason.rs` (the
+bytes for each value); `crates/hod/tests/mason_reloc.rs` (every target
+and model through the session, with and without kiln's container, the
+header fields, determinism, and a program linked by every linker
+present runs and holds no `.mason.meta`).
 
 ## 10. Errors and limits
 

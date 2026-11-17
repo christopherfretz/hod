@@ -241,10 +241,20 @@ fn values_beyond_32_bits_are_refused() {
 }
 
 #[test]
-fn property_notes_are_refused_and_arrays_are_word_aligned() {
+fn property_notes_are_word_padded_and_arrays_are_word_aligned() {
     let mut obj = Object::for_machine(Machine::I386);
     assert!(matches!(elf::add_gnu_property_note(&mut obj, 3), Err(Error::NotInElf32 { .. })));
-    assert!(matches!(elf::add_gnu_properties(&mut obj, &[]), Err(Error::NotInElf32 { .. })));
+    // WP-324: the property list at ELF32's 4-byte padding and alignment,
+    // `llc`'s 28 bytes for one x86 feature word (IBT | SHSTK).
+    let word = 3u32.to_le_bytes();
+    let note =
+        elf::add_gnu_properties(&mut obj, &[(elf::GNU_PROPERTY_X86_FEATURE_1_AND, &word)]).unwrap();
+    assert_eq!(obj.section_align(note), 4);
+    let llc: [u8; 28] = [
+        4, 0, 0, 0, 12, 0, 0, 0, 5, 0, 0, 0, b'G', b'N', b'U', 0, 2, 0, 0, 0xc0, 4, 0, 0, 0, 3, 0,
+        0, 0,
+    ];
+    assert_eq!(elf::gnu_properties_padded(&[(elf::GNU_PROPERTY_X86_FEATURE_1_AND, &word)], 4), llc);
     let init = elf::add_init_array(&mut obj, 101).unwrap();
     assert_eq!(obj.section_align(init), 4);
     assert_eq!(obj.machine(), Machine::I386);

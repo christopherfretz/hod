@@ -145,6 +145,245 @@ fn debug_information_round_trips_with_the_same_dwarf() {
     eprintln!("debug round trips: {checked}");
 }
 
+/// `text` with every specialized node's fields in a spelling other than
+/// the one LLVM's writer prints: with `first`, a blank after the node's
+/// `(`, so that no field of it is read from the bytes; otherwise a blank
+/// after its first `, ` outside a string, so that the token path takes
+/// over in the middle of the node.
+fn respelled(text: &[u8], first: bool) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len() + text.len() / 8);
+    let mut inside = false;
+    let mut string = false;
+    for (at, &byte) in text.iter().enumerate() {
+        out.push(byte);
+        match byte {
+            b'"' if inside => string = !string,
+            b'(' if !inside => {
+                let word = text[..at]
+                    .iter()
+                    .rev()
+                    .take_while(|b| b.is_ascii_alphanumeric() || **b == b'_')
+                    .count();
+                if word > 2
+                    && text[..at - word].ends_with(b"!")
+                    && text[at - word..].starts_with(b"DI")
+                {
+                    inside = true;
+                    if first {
+                        out.push(b' ');
+                    }
+                }
+            }
+            b',' if inside && !string && text.get(at + 1) == Some(&b' ') => {
+                inside = false;
+                if !first {
+                    out.push(b' ');
+                }
+            }
+            b')' if inside && !string => inside = false,
+            _ => {}
+        }
+    }
+    out
+}
+
+/// WP-328: the fields read from the bytes in LLVM's spelling are the
+/// fields the token path reads in another spelling: the module prints the
+/// same, the unsupported constructs are the same.
+#[test]
+fn debug_fields_read_from_the_bytes_are_the_tokens_reading() {
+    let mut texts = vec![("kiln_types.ll".to_owned(), data("debug/kiln_types.ll"))];
+    if let Some(llvm) = Llvm::find(22) {
+        for source in ["debug_types.cpp", "debug_c.c"] {
+            texts.push((source.to_owned(), llvm.clang(source, Arch::Aarch64, &["-g"])));
+        }
+    }
+    for (name, text) in texts {
+        let (module, bodies, unsupported) = read(&text).expect(&name);
+        let printed = print(&module, &bodies, 22).expect(&name);
+        for first in [true, false] {
+            let other = respelled(&text, first);
+            assert_ne!(other, text, "{name}");
+            let (module, bodies, refused) = read(&other).expect(&name);
+            assert_eq!(refused, unsupported, "{name} first={first}");
+            assert_eq!(print(&module, &bodies, 22).expect(&name), printed, "{name} first={first}");
+        }
+    }
+}
+
+/// WP-328: nodes in spellings the byte path must leave to the token path
+/// (or read as it does), each judged alike when the token path reads the
+/// whole node (a blank after the `(` and after each `!{`): the same
+/// print and refusals, or the same error on the same line (its column
+/// moves by the blanks).
+const BYTE_PATH_SPELLINGS: &[&str] = &[
+    // DILocation.
+    "!5 = !DILocation(line: 4294967296, column: 1, scope: !1)",
+    "!5 = !DILocation(line: 99999999999999999999, scope: !1)",
+    "!5 = !DILocation(line: -1, scope: !1)",
+    "!5 = !DILocation(line: 1a, scope: !1)",
+    "!5 = !DILocation(line: 1, column: 70000, scope: !1)",
+    "!5 = !DILocation(line: 1, scope: !99)",
+    "!5 = !DILocation(line: 1, scope: null)",
+    "!5 = !DILocation(line: 1, scope: !1,)",
+    "!5 = !DILocation(line: 1, scope: !1, )",
+    "!5 = !DILocation(line: 1, scope: !1, inlinedAt: !99)",
+    "!5 = !DILocation(line: 1, scope: !1, inlinedAt: null)",
+    "!5 = !DILocation(line: 1, scope: !1, inlinedAt: !2)",
+    "!5 = !DILocation(inlinedAt: !6, line: 1, scope: !1)\n!6 = !DILocation(line: 2, scope: !1)",
+    "!5 = !DILocation(line: 1, line: 2, scope: !1)",
+    "!5 = !DILocation(line: 1, scope: !1, scope: !1)",
+    "!5 = !DILocation(line: 1,  scope: !1)",
+    "!5 = !DILocation(line: 1,\tscope: !1)",
+    "!5 = !DILocation(line: 1, ; c\n scope: !1)",
+    "!5 = !DILocation(line:1, scope: !1)",
+    "!5 = !DILocation(line: 1,scope: !1)",
+    "!5 = !DILocation(line: 1, scope: ! 1)",
+    "!5 = !DILocation(line: 0, column: 0, scope: !1)",
+    "!5 = !DILocation(line: 1, scope: !1, atomGroup: 1, atomRank: 1)",
+    "!5 = !DILocation(line: 1, bogus: 1, scope: !1)",
+    "!5 = !DILocation(line: 1)",
+    // Integers.
+    "!5 = !DIBasicType(name: \"i\", size: 18446744073709551616)",
+    "!5 = !DIBasicType(name: \"i\", size: 18446744073709551615)",
+    "!5 = !DIBasicType(name: \"i\", size: -1)",
+    "!5 = !DIBasicType(name: \"i\", size: -0)",
+    "!5 = !DIBasicType(name: \"i\", size: -9223372036854775809)",
+    "!5 = !DIBasicType(name: \"i\", size: -)",
+    "!5 = !DIBasicType(name: \"i\", size: 8x)",
+    "!5 = !DIBasicType(name: \"i\", size: 0x8)",
+    "!5 = !DIBasicType(name: \"i\", size: 008)",
+    "!5 = !DIBasicType(name: \"i\", size: !0)",
+    "!5 = !DIBasicType(name: \"i\", size: null)",
+    "!5 = !DIBasicType(name: \"i\", size: true)",
+    "!5 = !DIBasicType(name: 3)",
+    "!5 = !DIEnumerator(name: \"e\", value: 18446744073709551616)",
+    "!5 = !DIEnumerator(name: \"e\", value: -5)",
+    "!5 = !DIEnumerator(name: \"e\", value: 5, isUnsigned: true)",
+    // Separators, blanks, comments, repeats, names.
+    "!5 = !DIBasicType(name: \"i\", size: 8,)",
+    "!5 = !DIBasicType(name: \"i\", size: 8, )",
+    "!5 = !DIBasicType(name: \"i\", size: 8 )",
+    "!5 = !DIBasicType(name: \"i\",size: 8)",
+    "!5 = !DIBasicType(name: \"i\" , size: 8)",
+    "!5 = !DIBasicType(name: \"i\",  size: 8)",
+    "!5 = !DIBasicType(name:\"i\", size: 8)",
+    "!5 = !DIBasicType(name: \"i\", ; c\n size: 8)",
+    "!5 = !DIBasicType(name: \"i\", size: 8) ; c",
+    "!5 = !DIBasicType(name: \"i\", size: 8, size: 8)",
+    "!5 = !DIBasicType(name: \"i\", size: 8, name: \"j\")",
+    "!5 = !DIBasicType(name: \"i\", bogus: 1)",
+    "!5 = !DIBasicType(name: \"i\", Size: 8)",
+    "!5 = !DIBasicType(name: \"i\", _size: 8)",
+    "!5 = !DIBasicType(name: \"i\", size.x: 8)",
+    // Strings and words.
+    "!5 = !DIBasicType(name: \"i\\41\", size: 8)",
+    "!5 = !DIBasicType(name: \"a,b) c\", size: 8)",
+    "!5 = !DIBasicType(name: \"i\":, size: 8)",
+    "!5 = !DIBasicType(name: null, size: 8)",
+    "!5 = !DIBasicType(name: \"i\", size: 8, encoding: DW_ATE_signed)",
+    "!5 = !DIBasicType(name: \"i\", size: 8, encoding: DW_ATE_bogus)",
+    "!5 = !DIBasicType(name: \"i\", size: 8, encoding: DW_ATE_signed.x)",
+    "!5 = !DIBasicType(name: \"i\", size: 8, encoding: 5)",
+    "!5 = !DIBasicType(name: \"i\", size: 8, encoding: bogus)",
+    // Present with the default value.
+    "!5 = !DIBasicType(name: \"\", size: 0, align: 0, encoding: 0, flags: 0)",
+    "!5 = !DIDerivedType(tag: DW_TAG_member, name: \"\", scope: null, baseType: null, size: 0, offset: 0, flags: 0, extraData: null)",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: null, templateParams: null, identifier: \"\")",
+    // References.
+    "!5 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !99, size: 64)",
+    "!5 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: 5, size: 64)",
+    "!5 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !2, size: 64)",
+    "!5 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !4294967296, size: 64)",
+    "!5 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !1x, size: 64)",
+    "!5 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !\"s\", size: 64)",
+    // Flags.
+    "!5 = !DIDerivedType(tag: DW_TAG_member, name: \"m\", baseType: !3, flags: DIFlagPublic | DIFlagArtificial)",
+    "!5 = !DIDerivedType(tag: DW_TAG_member, name: \"m\", baseType: !3, flags: 3 | DIFlagPublic)",
+    "!5 = !DIDerivedType(tag: DW_TAG_member, name: \"m\", baseType: !3, flags: DIFlagPublic |DIFlagArtificial)",
+    "!5 = !DIDerivedType(tag: DW_TAG_member, name: \"m\", baseType: !3, flags: DIFlagPublic | )",
+    "!5 = !DIDerivedType(tag: DW_TAG_member, name: \"m\", baseType: !3, flags: DIFlagBogus)",
+    "!5 = !DIDerivedType(tag: DW_TAG_member, name: \"m\", baseType: !3, flags: 3x)",
+    "!5 = !DIDerivedType(tag: DW_TAG_member, name: \"m\", baseType: !3, flags: DISPFlagLocalToUnit)",
+    "!5 = !DISubprogram(name: \"g\", scope: !0, file: !0, line: 2, spFlags: DISPFlagLocalToUnit | DISPFlagOptimized)",
+    "!5 = !DISubprogram(name: \"g\", scope: !0, file: !0, line: 2, spFlags: DIFlagPublic)",
+    // Lists.
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !2)",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !0)",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !99)",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !{!3})",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: \"x\")",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: 5)",
+    // Tuple elements (the respelling also puts a blank after each `!{`).
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !10)\n!10 = !{!3, null, !3}",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !10)\n!10 = !{!3,  null}",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !10)\n!10 = !{!3,null}",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !10)\n!10 = !{!3 , null}",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !10)\n!10 = !{!3,}",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !10)\n!10 = !{!3, }",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !10)\n!10 = !{!3, ; c\n null}",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !10)\n!10 = !{!3, !99}",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !10)\n!10 = !{!3, !4294967296}",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !10)\n!10 = !{!3, !3x}",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !10)\n!10 = !{!3, nullx}",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !10)\n!10 = !{!3, ! 3}",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !10)\n!10 = !{!3, i32 7}",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !10)\n!10 = !{!3, !\"s\", !{!3}}",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !10)\n!10 = !{!0, !11}\n!11 = !{!3, null}",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !{!3,  null, !3})",
+    "!5 = !DICompositeType(tag: DW_TAG_structure_type, name: \"s\", elements: !{!3, !99})",
+    "!5 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !10, size: 64)\n!10 = !{!3, !3, null}",
+];
+
+#[test]
+fn byte_path_spellings_are_judged_as_the_tokens_judge_them() {
+    let prelude = concat!(
+        "!0 = !DIFile(filename: \"a.c\", directory: \"/\")\n",
+        "!1 = distinct !DISubprogram(name: \"f\", scope: !0, file: !0, line: 1, ",
+        "type: !9, spFlags: DISPFlagDefinition, unit: !4)\n",
+        "!2 = !{!3}\n",
+        "!3 = !DIBasicType(name: \"int\", size: 32, encoding: DW_ATE_signed)\n",
+        "!4 = distinct !DICompileUnit(language: DW_LANG_C99, file: !0, ",
+        "emissionKind: FullDebug, retainedTypes: !6)\n",
+        "!7 = !DILocation(line: 1, scope: !1)\n",
+        "!8 = !{i32 2, !\"Debug Info Version\", i32 3}\n",
+        "!9 = !DISubroutineType(types: !{null})\n",
+        "!llvm.dbg.cu = !{!4}\n",
+        "!llvm.module.flags = !{!8}\n",
+    );
+    let (mut read_both, mut failed_both) = (0, 0);
+    for case in BYTE_PATH_SPELLINGS {
+        // The node `!5` is used: by the body if it is a location, by the
+        // unit's retained types otherwise.
+        let (used, retained) =
+            if case.contains("DILocation") { ("!5", "!{}") } else { ("!7", "!{!5}") };
+        let text = format!(
+            "{}define void @f() !dbg !1 {{\n  ret void, !dbg {used}\n}}\n{prelude}!6 = {retained}\n{case}\n",
+            header(Arch::Aarch64, 22)
+        );
+        let other = respelled(text.replace("!{", "!{ ").as_bytes(), true);
+        assert_ne!(other, text.as_bytes(), "{case}");
+        match (read(text.as_bytes()), read(&other)) {
+            (Ok((module, bodies, unsupported)), Ok((other, other_bodies, refused))) => {
+                read_both += 1;
+                assert_eq!(refused, unsupported, "{case}");
+                let printed = print(&module, &bodies, 22).map_err(|e| e.to_string());
+                let again = print(&other, &other_bodies, 22).map_err(|e| e.to_string());
+                assert_eq!(printed, again, "{case}");
+            }
+            (Err(error), Err(again)) => {
+                failed_both += 1;
+                let what = (error.kind, error.message.as_str(), error.line);
+                assert_eq!(what, (again.kind, again.message.as_str(), again.line), "{case}");
+                assert!(again.column.abs_diff(error.column) <= 3, "{case}: {error} / {again}");
+            }
+            (one, other) => panic!("{case}: {:?} against {:?}", one.err(), other.err()),
+        }
+    }
+    // Not every case an error of the prelude's: both verdicts are met.
+    assert!(read_both > 30 && failed_both > 30, "read {read_both}, failed {failed_both}");
+}
+
 /// §11.9: an assign record is read, and the printer refuses it by name:
 /// the `DIAssignID` that ties it to its stores is not kept.
 #[test]

@@ -16,6 +16,7 @@ mod asm;
 mod copy;
 mod data;
 mod lines;
+mod mason;
 mod module_asm;
 mod noop;
 mod section;
@@ -79,12 +80,6 @@ pub mod unsupported {
     /// An `!llvm.linker.options` entry that is not a pair of strings,
     /// which ELF `llc` refuses ("invalid llvm.linker.options").
     pub const LINKER_OPTION: &str = "module:linker-option-not-a-pair";
-    /// WP-293: a 32-bit x86 module with debug information (design 0008,
-    /// package I10).
-    pub const X86_DEBUG_INFO: &str = "x86:debug-info";
-    /// WP-293: a 32-bit x86 module with `cf-protection-branch` or
-    /// `cf-protection-return` (no `endbr32`, no ELF32 property note).
-    pub const X86_CF_PROTECTION: &str = "x86:cf-protection";
     /// A compile unit with a node the DIE writer does not write yet
     /// (`spec/dwarf.md` §6.5).
     pub const DEBUG_DIE: &str = "debug:die-unsupported";
@@ -420,12 +415,8 @@ impl<'m> ModuleEmitter<'m> {
             return Err(CgError::unsupported(unsupported::LINKER_OPTION));
         }
         emitter.declare()?;
-        emitter.debug = match machine.arch() {
-            Some(arch) => DebugLines::new(module, arch, emitter.options.split_dwarf)?,
-            // WP-293: no DWARF for i386 until design 0008's I10.
-            None if module.debug.compile_units().is_empty() => None,
-            None => return Err(CgError::unsupported(unsupported::X86_DEBUG_INFO)),
-        };
+        // WP-314: every machine, i386 too (`spec/codegen-x86.md` §15).
+        emitter.debug = DebugLines::new(module, machine, emitter.options.split_dwarf)?;
         // `.text` exists in every object `llc` writes.
         let text = emitter.arch().text_align();
         let mut name = std::mem::take(&mut emitter.name);
@@ -471,9 +462,14 @@ impl<'m> ModuleEmitter<'m> {
         let bits = self.module.props.branch_protection.bits();
         let on = |bit: u8, feature: u32| if bits & bit != 0 { feature } else { 0 };
         let Some(arch) = self.obj.machine().arch() else {
-            // WP-293: no `endbr32`, no ELF32 property note (WP-284).
-            if bits != 0 {
-                return Err(CgError::unsupported(unsupported::X86_CF_PROTECTION));
+            // WP-324: i386, the same property as x86-64's (the target
+            // marks indirect-branch targets with `endbr32`), padded to 4.
+            let features = on(Bp::CET_IBT, elf::GNU_PROPERTY_X86_FEATURE_1_IBT)
+                | on(Bp::CET_SHSTK, elf::GNU_PROPERTY_X86_FEATURE_1_SHSTK);
+            if features != 0 {
+                let word = features.to_le_bytes();
+                let properties = [(elf::GNU_PROPERTY_X86_FEATURE_1_AND, &word[..])];
+                elf::add_gnu_properties(&mut self.obj, &properties).map_err(obj_err)?;
             }
             return Ok(());
         };
@@ -1148,6 +1144,7 @@ impl<'m> ModuleEmitter<'m> {
         self.debug_tables()?;
         self.define()?;
         self.module_asm_symbols()?;
+        self.mason_unit()?;
         // WP-061: last, once every section is complete.
         self.obj.compress_debug_sections(self.options.debug_compression).map_err(|error| {
             match error {
@@ -1418,6 +1415,49 @@ impl<'m> ModuleEmitter<'m> {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// hod's own `.mason.meta` unit (§9.7.5, WP-332), after every
+    /// variable is placed: in the section an excluded variable of that
+    /// name already made (kiln's container: its unit first, its bytes
+    /// unchanged) when that section is aligned to 8 and its size is a
+    /// multiple of 8 (MT-10: then it ends with a whole unit) and it has
+    /// no relocation and no group (a container with either is one mortar
+    /// drops whole), else in a new section of its own, so that a section
+    /// kiln made stays `llc`'s byte for byte; `SHT_PROGBITS`, flags
+    /// exactly `SHF_EXCLUDE`, alignment 8, no group, no relocation.
+    fn mason_unit(&mut self) -> CgResult<()> {
+        let unit = mason::unit(crate::access::model_used(self.module, &self.options));
+        let found = self.sections.explicit(
+            mason::SECTION,
+            Kind::Exclude,
+            false,
+            false,
+            NO_GROUP,
+            mason::ALIGN,
+        );
+        let section = match found {
+            Found::Old(section)
+                if self.obj.section_align(section) >= mason::ALIGN
+                    && self.obj.section_size(section).is_multiple_of(mason::ALIGN)
+                    && self.obj.relocation_count(section) == 0
+                    && self.obj.section_group(section).is_none() =>
+            {
+                section
+            }
+            Found::Old(section) => {
+                let kind = self.obj.section_kind(section);
+                self.obj.add_section(mason::SECTION, kind, 1).map_err(obj_err)?
+            }
+            Found::New(new, pending) => {
+                let section = self.obj.add_section(mason::SECTION, new.kind, 1).map_err(obj_err)?;
+                self.sections.created(mason::SECTION, &pending, section, None);
+                section
+            }
+        };
+        self.obj.raise_section_align(section, mason::ALIGN);
+        self.obj.append(section, &unit);
         Ok(())
     }
 

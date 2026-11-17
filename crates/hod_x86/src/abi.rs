@@ -18,6 +18,7 @@ use hod_cg::abi::{AbiUnsupported, Assignment, Part, PartKind, Place, RetMemory, 
 use hod_cg::{CgResult, FnCx, FrameRef, PReg};
 use hod_ir::{
     CallConv, CallSite, ParamAttrs, ParamMem, TailKind, TypeId, TypeKind, TypeTable, ValueKind,
+    X86Features,
 };
 use hod_mc_x64 as mc;
 use hod_mc_x64::X87Size;
@@ -134,7 +135,7 @@ pub fn check_call(cx: &FnCx<'_, X86>, site: &CallSite<'_>) -> CgResult<()> {
         variadic,
     };
     let mut asg = Assignment::default();
-    if assign(types, &sig, &mut asg).is_err() {
+    if assign_for(types, &sig, &mut asg, cx.target.features()).is_err() {
         return Ok(());
     }
     let uses = |reg| asg.args.iter().any(|p| p.place == Place::Reg(reg));
@@ -190,6 +191,29 @@ fn odd(attrs: ParamAttrs) -> bool {
         || attrs.has(ParamAttrs::SWIFT_ASYNC)
         || matches!(attrs.mem(), ParamMem::InAlloca | ParamMem::Preallocated)
         || attrs.stack_align().is_some()
+}
+
+/// A vector at the boundary without SSE (WP-338): the number of its
+/// leaves, the distance between them in its image, and the leaf (an
+/// `i64` lane is two words). `<N x i1>`: [`crate::vecscalar::ABI`].
+fn vector_lanes(types: &TypeTable, ty: TypeId) -> Result<(u32, u32, Leaf), &'static str> {
+    let TypeKind::Vector { elem, len } = types.kind(ty) else {
+        return Err(crate::vector::SCALABLE);
+    };
+    let (parts, leaf) = match types.kind(elem) {
+        TypeKind::Int(1) => return Err(crate::vecscalar::ABI),
+        TypeKind::Int(bits @ (8 | 16 | 32)) => (1, Leaf::Int(bits / 8)),
+        TypeKind::Int(64) => (2, Leaf::Int(4)),
+        TypeKind::Ptr { addr_space: 0 } => (1, Leaf::Int(4)),
+        TypeKind::Float => (1, Leaf::Fp { size: 4, slot: 4 }),
+        TypeKind::Double => (1, Leaf::Fp { size: 8, slot: 8 }),
+        _ => return Err(crate::vector::ELEMENT),
+    };
+    if len > crate::vector::MAX_LANES {
+        return Err(crate::vector::LENGTH);
+    }
+    let (Leaf::Int(stride) | Leaf::Fp { size: stride, .. }) = leaf;
+    Ok((len * parts, stride, leaf))
 }
 
 /// One leaf of a value at the boundary.
@@ -330,8 +354,22 @@ pub fn assign(
     sig: &Sig<'_>,
     out: &mut Assignment,
 ) -> Result<(), AbiUnsupported> {
+    assign_for(types, sig, out, X86Features::NONE)
+}
+
+/// [`assign`] in a function of the feature set `features` (which places
+/// a `half`: `sse::half_place`).
+///
+/// # Errors
+/// As [`assign`].
+pub fn assign_for(
+    types: &TypeTable,
+    sig: &Sig<'_>,
+    out: &mut Assignment,
+    features: X86Features,
+) -> Result<(), AbiUnsupported> {
     out.clear();
-    match assign_into(types, sig, out) {
+    match assign_into(types, sig, out, features) {
         Ok(()) => {
             out.callee_pop = callee_pop(out);
             Ok(())
@@ -346,15 +384,21 @@ pub fn assign(
 /// The body of [`assign`]: the arguments in order (§3), after the
 /// result (§5).
 #[allow(clippy::too_many_lines, reason = "one walk over the parameters, rule by rule")]
-fn assign_into(types: &TypeTable, sig: &Sig<'_>, out: &mut Assignment) -> Result<(), &'static str> {
+fn assign_into(
+    types: &TypeTable,
+    sig: &Sig<'_>,
+    out: &mut Assignment,
+    features: X86Features,
+) -> Result<(), &'static str> {
     let conv = match sig.cc {
         CallConv::C | CallConv::COLD => Conv::C,
         CallConv::FAST if !sig.variadic => Conv::Fast,
         _ => return Err(CC),
     };
-    let mut at = assign_ret(types, sig, conv, out)?;
+    let mut at = assign_ret(types, sig, conv, out, features)?;
     let mut regs =
         Regs { list: if conv == Conv::Fast { &FASTCC } else { &INREG }, next: 0, taken: 0 };
+    let mut xmm = 0;
     for (index, &ty) in sig.params.iter().enumerate() {
         if index == sig.fixed as usize {
             out.va.stack_offset = at;
@@ -406,6 +450,44 @@ fn assign_into(types: &TypeTable, sig: &Sig<'_>, out: &mut Assignment) -> Result
                 size: 4,
                 place: Place::Reg(reg),
             });
+            continue;
+        }
+        if types.is_vector(ty) && !features.has(X86Features::SSE) {
+            // Without SSE each lane is an argument of its own (WP-338).
+            let (n, stride, leaf) = vector_lanes(types, ty)?;
+            if inreg {
+                return Err(crate::vecscalar::ABI);
+            }
+            if conv == Conv::Fast && matches!(leaf, Leaf::Fp { .. }) {
+                return Err(CC);
+            }
+            let (size, slot) = match leaf {
+                Leaf::Int(size) => (size, 4),
+                Leaf::Fp { size, slot } => (size, slot),
+            };
+            for k in 0..n {
+                let offset = k * stride;
+                let place = if let Some(reg) = (conv == Conv::Fast).then(|| regs.take()).flatten() {
+                    Place::Reg(reg)
+                } else {
+                    at = at.checked_add(slot).ok_or(hod_cg::abi::SIZE_LIMIT)?;
+                    Place::Stack(at - slot)
+                };
+                push_part(out, Part { arg, kind: PartKind::Value, offset, size, place });
+            }
+            continue;
+        }
+        if types.is_vector(ty) {
+            let (place, size) =
+                crate::sse::vector_place(types, ty, features, sig.variadic, &mut xmm, &mut at)?;
+            out.args.push(Part { arg, kind: PartKind::Value, offset: 0, size, place });
+            continue;
+        }
+        if matches!(types.kind(ty), TypeKind::Half) {
+            crate::sse::half_place(features, inreg || conv == Conv::Fast, false)?;
+            at = at.checked_add(4).ok_or(hod_cg::abi::SIZE_LIMIT)?;
+            let place = Place::Stack(at - 4);
+            out.args.push(Part { arg, kind: PartKind::Value, offset: 0, size: 2, place });
             continue;
         }
         if matches!(types.kind(ty), TypeKind::Int(128) | TypeKind::Fp128) {
@@ -460,6 +542,7 @@ fn assign_ret(
     sig: &Sig<'_>,
     conv: Conv,
     out: &mut Assignment,
+    features: X86Features,
 ) -> Result<u32, &'static str> {
     if sig.ret == TypeId::VOID {
         return Ok(0);
@@ -471,6 +554,52 @@ fn assign_ret(
         || !matches!(attrs.mem(), ParamMem::None | ParamMem::ElementType)
     {
         return Err(ATTR);
+    }
+    if types.is_vector(sig.ret) && !features.has(X86Features::SSE) {
+        // Without SSE the lanes are returned as an aggregate's leaves:
+        // three words, one x87 value, else in memory (WP-338).
+        let (n, stride, leaf) = vector_lanes(types, sig.ret)?;
+        let fp = matches!(leaf, Leaf::Fp { .. });
+        if fp && conv == Conv::Fast {
+            return Err(CC);
+        }
+        if (fp && n > 2) || (!fp && n as usize > RET.len()) {
+            if conv == Conv::Fast {
+                return Err(CC);
+            }
+            out.ret_memory = Some(RetMemory { address: Place::Stack(0), returned_in: Some(EAX) });
+            return Ok(4);
+        }
+        if fp && n == 2 {
+            return Err(X87_PAIR);
+        }
+        let (size, _) = match leaf {
+            Leaf::Int(size) => (size, 4),
+            Leaf::Fp { size, slot } => (size, slot),
+        };
+        for (k, &word) in (0..n).zip(RET.iter()) {
+            let place = Place::Reg(if fp { ST0 } else { word });
+            out.ret.push(Part { arg: 0, kind: PartKind::Value, offset: k * stride, size, place });
+        }
+        return Ok(0);
+    }
+    if types.is_vector(sig.ret) {
+        let (place, size) =
+            crate::sse::vector_place(types, sig.ret, features, false, &mut 0, &mut 0)?;
+        out.ret.push(Part { arg: 0, kind: PartKind::Value, offset: 0, size, place });
+        return Ok(0);
+    }
+    if matches!(types.kind(sig.ret), TypeKind::Half) {
+        if let Some(reg) = crate::sse::half_place(features, conv == Conv::Fast, true)? {
+            out.ret.push(Part {
+                arg: 0,
+                kind: PartKind::Value,
+                offset: 0,
+                size: 2,
+                place: Place::Reg(reg),
+            });
+        }
+        return Ok(0);
     }
     let mut leaves = Leaves::new();
     let in_memory = match types.kind(sig.ret) {

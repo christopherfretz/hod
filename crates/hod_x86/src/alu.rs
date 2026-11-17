@@ -259,24 +259,39 @@ pub fn compare(
     lhs: Value,
     rhs: Value,
 ) -> CgResult<Cond> {
+    Ok(compare_in(cx, pred, lhs, rhs)?.0)
+}
+
+/// [`compare`], also giving the register the left operand was placed
+/// in: the operand is dead after the compare, and a result may take it.
+fn compare_in(
+    cx: &mut FnCx<'_, X86>,
+    pred: IntPredicate,
+    lhs: Value,
+    rhs: Value,
+) -> CgResult<(Cond, PReg)> {
     let bits = width(cx, lhs);
     let signed = matches!(
         pred,
         IntPredicate::Sgt | IntPredicate::Sge | IntPredicate::Slt | IntPredicate::Sle
     );
     let ext = if signed { Ext::Sign } else { Ext::Zero };
-    let a = gp(operand(cx, lhs, bits, ext)?);
+    let ra = operand(cx, lhs, bits, ext)?;
+    let a = gp(ra);
     if let Some(c) = const_int(cx, rhs) {
         put(cx, mc::cmp_ri(Size::D, a, i64::from(ext_const(c, bits, ext) as i32)));
     } else {
         let b = if rhs == lhs { a } else { gp(operand(cx, rhs, bits, ext)?) };
         put(cx, mc::cmp_rr(Size::D, a, b));
     }
-    Ok(cond_of(pred))
+    Ok((cond_of(pred), ra))
 }
 
 /// `%r = icmp <pred> %lhs, %rhs`: `cmp`, `setcc` (into `cl` when the
-/// result's register has no low byte), `movzx`.
+/// result's register has no low byte), `movzx`. The result takes the
+/// left operand's register (dead once compared: `FnCx::use_reg`), so the
+/// lowering pins two pool registers, not three (the two-register rule,
+/// `spec/codegen-x86.md` §2).
 ///
 /// # Errors
 /// What placing the operands reports.
@@ -287,8 +302,7 @@ pub fn icmp<'a>(
     lhs: Value,
     rhs: Value,
 ) -> CgResult<()> {
-    let rd = cx.def_reg(inst)?;
-    let cond = compare(cx, pred, lhs, rhs)?;
+    let (cond, rd) = compare_in(cx, pred, lhs, rhs)?;
     let r = gp(rd);
     let byte = if has_byte(r) { r } else { ECX };
     put(cx, mc::setcc_r(cond, byte));

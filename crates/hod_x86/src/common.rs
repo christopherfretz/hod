@@ -144,14 +144,17 @@ fn frame_mem(place: FrameRef) -> (Mem, bool) {
         }
         FrameRef::Incoming(n) => (Mem::base(EBP, INCOMING_BASE.wrapping_add(n as i32)), false),
         FrameRef::Outgoing(n) => (Mem::base(ESP, n as i32), false),
-        // Coroutine bodies are refused (`CORO_BODIES` is false).
-        FrameRef::Coro(_) => (Mem::base(EBP, 0), false),
+        // A coroutine's heap frame (WP-335, `spec/codegen-x86.md` §18):
+        // `[esi + o]`.
+        FrameRef::Coro(o) => (crate::coro_body::heap_mem(o), false),
     }
 }
 
 /// Emits the instruction `make` builds over the operand of `place`.
 pub fn frame_inst(cx: &mut FnCx<'_, X86>, place: FrameRef, make: impl FnOnce(Mem) -> Inst) {
+    let place = crate::ssp::incoming(cx, place); // WP-324: the arguments' copy
     let (mem, local) = frame_mem(place);
+    crate::coro_body::access(cx, place);
     let inst = make(mem);
     let at = cx.offset();
     put(cx, inst);
@@ -362,7 +365,7 @@ pub fn materialize_const(cx: &mut FnCx<'_, X86>, rd: Reg, id: ConstId) -> CgResu
         Const::Addr { sym, addend } => sym_address(cx, rd, sym, addend)?,
         Const::IntOfAddr { addr, .. } => return materialize_const(cx, rd, addr),
         Const::DsoLocalEquivalent(sym) | Const::NoCfi(sym) => sym_address(cx, rd, sym, 0)?,
-        Const::BlockAddr { .. } => return unsupported(crate::control::BLOCKADDRESS),
+        Const::BlockAddr { func, block } => crate::ibr::block_address(cx, rd, func, block)?,
         _ => return unsupported(CONSTANT),
     }
     Ok(())

@@ -588,10 +588,51 @@ impl<'a, T: Target> FnCx<'a, T> {
         Ok(())
     }
 
+    /// WP-333, §5.6.24 rule 10: an argument passed wholly on the stack to
+    /// a protected function is copied at entry from `from`, its incoming
+    /// location above the guard, into a home of its own, which like every
+    /// slot outside the guarded block lies below the guard; every later
+    /// read, and its variable's location, is that home.
+    fn enter_guarded_stack_arg(
+        &mut self,
+        key: Key,
+        ty: TypeId,
+        class: Class,
+        from: FrameRef,
+    ) -> CgResult<()> {
+        let t = self.target;
+        let home = self.home_slot(class, ty, false)?;
+        let width = self.home_bytes(class, ty);
+        if class == Class::Mem {
+            let bytes = self.types().alloc_size_of(ty);
+            let Ok(bytes) = u32::try_from(bytes) else {
+                return self.bug("a stack argument larger than 4 GiB");
+            };
+            t.copy(self, home, from, bytes);
+            self.clear_odd_leaves(ty, home);
+        } else {
+            let scratch = self.scratch_reg(class);
+            t.load(self, scratch, from, width);
+            t.store(self, scratch, home, width);
+        }
+        let state = ValState {
+            loc: Loc::Frame(home),
+            kind: Kind::Home,
+            class,
+            width: width as u8,
+            incoming: crate::loc::NO_SLOT,
+        };
+        if let Some(entry) = self.state_mut(key) {
+            *entry = state;
+        }
+        Ok(())
+    }
+
     /// §4.8: the entry code for the arguments. An argument that arrived
     /// in a register rests there if it is a register value, and is
     /// stored to its home otherwise; one that arrived on the stack has
-    /// its incoming location as its home. A `Mem`-class home then has
+    /// its incoming location as its home (in a protected function, a
+    /// copy below the guard, §5.6.24 rule 10). A `Mem`-class home then has
     /// the bits above its odd-width leaves cleared (§2.2).
     fn enter_arguments(&mut self) -> CgResult<()> {
         let t = self.target;
@@ -645,6 +686,12 @@ impl<'a, T: Target> FnCx<'a, T> {
                 && part.kind == PartKind::Value
                 && let Place::Stack(offset) = part.place
             {
+                if self.s.guard.is_on() && self.coro.is_none() {
+                    // WP-333, §5.6.24 rule 10: a protected function
+                    // reads it at entry into a home below the guard.
+                    self.enter_guarded_stack_arg(key, ty, class, FrameRef::Incoming(offset))?;
+                    continue;
+                }
                 let width = if class == Class::Mem { 0 } else { part.size.min(255) as u8 };
                 if class == Class::Mem {
                     self.clear_odd_leaves(ty, FrameRef::Incoming(offset));

@@ -51,6 +51,46 @@ pub enum CallAccess {
     Plt,
 }
 
+/// The relocation model code generation uses for a module (§7.4,
+/// §9.7.5): the option and the module's `PIE Level` together. Every
+/// decision that depends on "a shared object or not" reads it here, and
+/// the `reloc-model` row of hod's `.mason.meta` unit (§9.7.5) is this
+/// value, so the row cannot disagree with the code.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum ModelUsed {
+    /// Not position independent (`static`, `dynamic-no-pic`).
+    Static,
+    /// Position independent, linked into a program: `pic` with a
+    /// `PIE Level`; the module's own definitions bind locally.
+    Pie,
+    /// Position independent, possibly a shared object: `pic` without a
+    /// `PIE Level`; the module's own default-visibility definitions may
+    /// be preempted.
+    Pic,
+}
+
+impl ModelUsed {
+    /// The value of the `reloc-model` row (`static`, `pie`, `pic`).
+    pub const fn name(self) -> &'static [u8] {
+        match self {
+            ModelUsed::Static => b"static",
+            ModelUsed::Pie => b"pie",
+            ModelUsed::Pic => b"pic",
+        }
+    }
+}
+
+/// The relocation model in force for `module` under `options`.
+pub fn model_used(module: &Module, options: &Options) -> ModelUsed {
+    if !options.reloc_model.is_pic() {
+        ModelUsed::Static
+    } else if module.props.pie != PicLevel::None {
+        ModelUsed::Pie
+    } else {
+        ModelUsed::Pic
+    }
+}
+
 /// How code addresses `sym` (§7.4).
 pub fn sym_access(module: &Module, options: &Options, sym: SymId) -> Access {
     let symbol = module.symbol(sym);
@@ -82,7 +122,7 @@ pub fn call_access(module: &Module, sym: SymId) -> CallAccess {
 /// `TargetMachine::getTLSModel`: the model the output kind implies,
 /// unless the symbol asks for a more specific one.
 fn tls_access(module: &Module, options: Options, dso_local: bool, asked: TlsModel) -> TlsAccess {
-    let shared_library = options.reloc_model.is_pic() && module.props.pie == PicLevel::None;
+    let shared_library = model_used(module, &options) == ModelUsed::Pic;
     let implied = match (shared_library, dso_local) {
         (true, true) => TlsAccess::LocalDynamic,
         (true, false) => TlsAccess::GeneralDynamic,
@@ -105,7 +145,7 @@ fn tls_access(module: &Module, options: Options, dso_local: bool, asked: TlsMode
 /// the linker knows, so a direct reference to its global symbol would be
 /// refused. Module emission makes the alias (§9.7).
 pub fn prefers_local_alias(module: &Module, options: Options, sym: SymId) -> bool {
-    if !options.reloc_model.is_pic() || module.props.pie != PicLevel::None {
+    if model_used(module, &options) != ModelUsed::Pic {
         return false;
     }
     let symbol = module.symbol(sym);

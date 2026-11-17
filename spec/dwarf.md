@@ -45,7 +45,8 @@ What `llc -O0 -g` writes for a DWARF 5 Linux object, and therefore hod:
 
 All have type `SHT_PROGBITS`, alignment 1, and none is `SHF_ALLOC`. The
 format is 32-bit DWARF (`DW_FORM_sec_offset` and string offsets are 4
-bytes); address size 8 on both targets.
+bytes); address size 8 (4 on i386, `spec/codegen-x86.md` §15: every
+8-byte address and `ABS64` above is then 4 bytes and `R_386_32`).
 
 Not written, with the reason:
 
@@ -296,7 +297,7 @@ per file its name, then its source.
 ### 4.1 Header
 
 DWARF 5 §6.2.4, in this order: `unit_length` (4), `version` 5 (2),
-`address_size` 8, `segment_selector_size` 0, `header_length` (4),
+`address_size` 8 (4 on i386), `segment_selector_size` 0, `header_length` (4),
 `minimum_instruction_length`, `maximum_operations_per_instruction` 1,
 `default_is_stmt` 1, `line_base` −5, `line_range` 14, `opcode_base` 13,
 `standard_opcode_lengths` `0 1 1 1 1 0 0 0 1 0 0 1`; then the directory
@@ -319,14 +320,14 @@ offset.
 
 ### 4.2 The per-target table
 
-| | AArch64 | x86-64 |
-|---|---|---|
-| `minimum_instruction_length` | 1 | 1 |
-| address size | 8 | 8 |
-| string-offset relocation | `R_AARCH64_ABS32` | `R_X86_64_32` |
-| address relocation | `R_AARCH64_ABS64` | `R_X86_64_64` |
+| | AArch64 | x86-64 | i386 (WP-314) |
+|---|---|---|---|
+| `minimum_instruction_length` | 1 | 1 | 1 |
+| address size | 8 | 8 | 4 |
+| string-offset relocation | `R_AARCH64_ABS32` | `R_X86_64_32` | `R_386_32` |
+| address relocation | `R_AARCH64_ABS64` | `R_X86_64_64` | `R_386_32` |
 
-`line_base`, `line_range` and `opcode_base` are the same on both (§4.1).
+`line_base`, `line_range` and `opcode_base` are the same on all (§4.1).
 AArch64 keeps a minimum instruction length of 1, as `llc` does, although
 instructions are 4 bytes: address advances are in bytes, and a special
 opcode then covers 17 bytes (4 instructions) of advance. A length of 4
@@ -1229,7 +1230,7 @@ refusals. `LineTablesOnly` and `DebugDirectivesOnly` units are §6.10 (WP-061).
 
 ### 6.5 What the core writes (implemented)
 
-- **The unit header**: `DW_UT_compile`, version 5, address size 8, 32-bit
+- **The unit header**: `DW_UT_compile`, version 5, address size 8 (4 on i386), 32-bit
   `abbrev_offset` against `.debug_abbrev`.
 - **The compile unit DIE**, as `llc -O0` writes it:
   - `producer`, `language`, `name` and `comp_dir` (from the unit's

@@ -755,6 +755,7 @@ pub fn intrinsic<'a>(
             libcall(cx, RuntimeFn::Ldexpl, &[x], Extra::Int(n), Some(r))
         }
         (I::Frexp, &[x]) => frexp(cx, inst, x),
+        (I::Modf, &[x]) => modf(cx, inst, x),
         _ => unsupported(INTRINSIC),
     }
 }
@@ -863,7 +864,8 @@ fn saturate<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, signed: bool, x: Value) 
 /// `llvm.is.fpclass` of an `x86_fp80`: the class's index in the test
 /// mask (0 signalling NaN .. 9 positive infinity) computed from the
 /// image into `edx`, then `bt` of the mask. A pseudo-denormal (exponent
-/// 0, integer bit set) is a subnormal, as the x87 loads it. The other
+/// 0, integer bit set) gets index 11 (positive) or 12 (negative), whose
+/// bits are [`pseudo_denormal_in`]: `llc` 22's answer (WP-340). The other
 /// encodings only the x87 has (an unnormal, a pseudo-zero, a
 /// pseudo-infinity, a pseudo-NaN: a non-zero exponent without the integer
 /// bit) get index 10, whose bit is [`invalid_in`]: what `llc` 19 and 22
@@ -874,8 +876,8 @@ fn fp_class<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, x: Value, mask: Value) -
     let a = cx.use_mem(x)?;
     let rd = cx.def_reg(inst)?;
     let d = gp(rd);
-    let labels: [_; 6] = std::array::from_fn(|_| cx.new_label());
-    let [zero_exp, max_exp, invalid, signed, done, inf] = labels;
+    let labels: [_; 7] = std::array::from_fn(|_| cx.new_label());
+    let [zero_exp, max_exp, invalid, signed, done, inf, pseudo] = labels;
     frame_inst(cx, a, |m| mc::mov_rm(Size::Q, R11, m));
     frame_inst(cx, a.offset_by(8), |m| mc::movzx_rm(Size::D, RAX, Size::W, m));
     put(cx, mc::mov_rr(Size::D, RCX, RAX));
@@ -889,7 +891,9 @@ fn fp_class<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, x: Value, mask: Value) -
     mov_imm(cx, RDX, 8, 32);
     branch(cx, signed)?;
     cx.bind(zero_exp)?;
-    // Zero, a denormal, or a pseudo-denormal (the integer bit set).
+    // A pseudo-denormal (the integer bit set), else zero or a denormal.
+    put(cx, mc::bt_ri(Size::Q, R11, 63));
+    branch_cond(cx, Cond::B, pseudo)?;
     mov_imm(cx, RDX, 6, 32);
     put(cx, mc::test_rr(Size::Q, R11, R11));
     branch_cond(cx, Cond::E, signed)?;
@@ -908,6 +912,13 @@ fn fp_class<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, x: Value, mask: Value) -
     put(cx, mc::shr_ri(Size::Q, RDX, 62));
     put(cx, mc::and_ri(Size::D, RDX, 1));
     branch(cx, done)?;
+    cx.bind(pseudo)?;
+    // 11, or 12 when negative.
+    mov_imm(cx, RDX, 11, 32);
+    put(cx, mc::test_ri(Size::D, RAX, 0x8000));
+    branch_cond(cx, Cond::E, done)?;
+    mov_imm(cx, RDX, 12, 32);
+    branch(cx, done)?;
     cx.bind(invalid)?;
     mov_imm(cx, RDX, 10, 32);
     branch(cx, done)?;
@@ -921,7 +932,10 @@ fn fp_class<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, x: Value, mask: Value) -
     put(cx, mc::neg_r(Size::D, RDX));
     put(cx, mc::add_ri(Size::D, RDX, 11));
     cx.bind(done)?;
-    let bits = (test & 0x3ff) | u64::from(invalid_in(test)) << 10;
+    let bits = (test & 0x3ff)
+        | u64::from(invalid_in(test)) << 10
+        | u64::from(pseudo_denormal_in(test, false)) << 11
+        | u64::from(pseudo_denormal_in(test, true)) << 12;
     mov_imm(cx, R10, bits, 32);
     put(cx, mc::bt_rr(Size::D, R10, RDX));
     put(cx, mc::setcc_r(Cond::B, d));
@@ -937,6 +951,38 @@ fn fp_class<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, x: Value, mask: Value) -
 pub const fn invalid_in(test: u64) -> bool {
     let test = test & 0x3ff;
     test & 3 == 3 || test == 0x3fd || test == 0x3fe
+}
+
+/// The masks `llc` 22 tests with an x87 compare of the value rather than
+/// integer tests of its bits (measured over all 1024; `llc` 19 has only
+/// 3, 99, 924, 1020). The same as i386's (`hod_x86::fpclass`, WP-337).
+const COMPARED: [u64; 10] = [3, 7, 99, 243, 508, 515, 780, 924, 1016, 1020];
+
+/// The tests `llc` expands as the negation of their complement
+/// (`invertFPClassTestIfSimpler`): one class, one class of one sign,
+/// the finite classes (of one sign), zero or NaN, subnormal or zero,
+/// subnormal or zero or NaN.
+const INVERTED: [u64; 21] = [
+    0x003, 0x001, 0x002, 0x204, 0x200, 0x004, 0x108, 0x100, 0x008, 0x090, 0x080, 0x010, 0x060,
+    0x040, 0x020, 0x1f8, 0x1c0, 0x038, 0x063, 0x0f0, 0x0f3,
+];
+
+/// Whether `llvm.is.fpclass` with `test` holds for an `x86_fp80`
+/// pseudo-denormal (exponent 0, integer bit set) of sign `negative`, as
+/// `llc` 22 lowers it on x86-64 and i386 (WP-337, WP-340; measured over
+/// all 1024 masks): a compared mask ([`COMPARED`]) sees its value, a
+/// normal number; the integer tests count it as a NaN when the test has
+/// both NaN classes and as zero-or-subnormal when it has all four of
+/// those classes, the test inverted as [`INVERTED`] says. `llc` 19
+/// compares fewer masks: it differs at 7, 243, 515 and 780.
+pub fn pseudo_denormal_in(test: u64, negative: bool) -> bool {
+    let test = test & 0x3ff;
+    if COMPARED.contains(&test) {
+        return test & if negative { 0x008 } else { 0x100 } != 0;
+    }
+    let inverted = INVERTED.contains(&(!test & 0x3ff));
+    let t = if inverted { !test & 0x3ff } else { test };
+    (t & 3 == 3 || t & 0xf0 == 0xf0) != inverted
 }
 
 /// The value of an integer constant operand.
@@ -966,6 +1012,24 @@ fn frexp<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, x: Value) -> CgResult<()> {
     libcall(cx, RuntimeFn::Frexpl, &[x], Extra::Ptr(exp_at), Some(r))
 }
 
+/// `modf x` into its `{ x86_fp80, x86_fp80 }` result (WP-340): `modfl`
+/// with the address of the result's second field (the integral part) in
+/// `rdi`, then the fractional part popped from `st0` to the first field,
+/// as `llc` 22.
+fn modf<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, x: Value) -> CgResult<()> {
+    let ty = inst.ty();
+    let pair = cx
+        .types()
+        .struct_fields(ty)
+        .is_some_and(|fs| fs.len() == 2 && fs.iter().all(|&f| is_x86_fp80(cx, f)));
+    if !pair {
+        return unsupported(INTRINSIC);
+    }
+    let second = cx.types().field_offset(ty, 1) as u32;
+    let r = cx.def_mem(inst)?;
+    libcall(cx, RuntimeFn::Modfl, &[x], Extra::Out(second), Some(r))
+}
+
 /// What [`libcall`] passes besides the `x86_fp80` arguments.
 #[derive(Clone, Copy)]
 enum Extra {
@@ -977,6 +1041,9 @@ enum Extra {
     /// first 4 are copied to the result at this offset after the call
     /// (`frexpl`'s exponent).
     Ptr(u32),
+    /// The address of the result at this offset in `rdi` (`modfl`'s
+    /// integral part, written by the routine).
+    Out(u32),
 }
 
 /// Calls `func`, a `long double` routine of libm, with the `x86_fp80`
@@ -1007,8 +1074,13 @@ fn libcall(
     for (i, &place) in places[..xs.len()].iter().enumerate() {
         copy_frame(cx, FrameRef::Outgoing(16 * i as u32), place, BYTES);
     }
-    if matches!(extra, Extra::Ptr(_)) {
-        put(cx, mc::lea(Size::Q, RDI, sp(ptr_at as i32)));
+    match (extra, out) {
+        (Extra::Ptr(_), _) => put(cx, mc::lea(Size::Q, RDI, sp(ptr_at as i32))),
+        (Extra::Out(field), Some(out)) => {
+            frame_inst(cx, out.offset_by(field), |m| mc::lea(Size::Q, RDI, m));
+        }
+        (Extra::Out(_), None) => return cx.bug("an out-parameter of no result"),
+        (Extra::None | Extra::Int(_), _) => {}
     }
     let at = cx.offset();
     crate::frame::emit_call(cx, CallTarget::Sym(SymRef::Runtime(func)), false, 0)?;

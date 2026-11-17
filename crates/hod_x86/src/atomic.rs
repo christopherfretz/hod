@@ -21,7 +21,11 @@
 //! - **load**: `fild qword [p]` · `fistp qword [result]`, as `llc` writes
 //!   it without SSE2 (an aligned 8-byte x87 access is single-copy
 //!   atomic; the 64-bit integer survives the round trip exactly). With
-//!   SSE2 `llc` uses `movq`; hod keeps the x87 pair (I12 may change it).
+//!   SSE2 `llc` uses `movq`; hod keeps the x87 pair: one 8-byte access
+//!   either way, and the same value for every pattern (`fild` of a
+//!   64-bit integer is exact, `fistp` of an integral value is exact in
+//!   every rounding mode; `tests/i386_join_e.rs`
+//!   `eight_byte_atomics_keep_every_bit_pattern`).
 //! - **store**: `fild qword [value]` · `fistp qword [p]`, then the fence
 //!   of a `seq_cst` store.
 //! - **`atomicrmw`**, **`cmpxchg`**: `lock cmpxchg8b [p]` (loop): the old
@@ -201,14 +205,15 @@ pub fn store<'a>(
         }
         return Ok(());
     }
+    // The pointer first: placing it may call (a TLS address) and write
+    // the scratch registers; the value goes straight into `ecx` after.
+    let p = pointer(cx, ptr)?;
     if s.gpr {
-        let v = gp(cx.use_reg(value)?);
-        put(cx, mc::mov_rr(Size::D, ECX, v));
+        cx.put(value, crate::reg::ECX)?;
     } else {
         let v = cx.use_mem(value)?;
         load_gpr(cx, ECX, v, 4);
     }
-    let p = pointer(cx, ptr)?;
     let size = s.size();
     if seq_cst {
         put(cx, mc::xchg_mr(size, Mem::base(p, 0), ECX));
@@ -285,9 +290,13 @@ pub fn rmw<'a>(
         return Ok(());
     }
     let size = s.size();
-    let v = gp(cx.use_reg(value)?);
-    put(cx, mc::mov_rr(Size::D, EDX, v));
-    let p = pointer(cx, ptr)?;
+    // The pointer first (placing it may write the scratch registers), the
+    // operand straight into `edx`; the result takes the pointer's
+    // register, dead after the sequence: one pool register
+    // (`spec/codegen-x86.md` §2).
+    let rp = cx.use_reg(ptr)?;
+    let p = gp(rp);
+    cx.put(value, crate::reg::EDX)?;
     let at = Mem::base(p, 0);
     match op {
         RmwOp::Xchg => {
@@ -311,9 +320,8 @@ pub fn rmw<'a>(
             branch_cond(cx, Cond::Ne, again)?;
         }
     }
-    let rd = cx.def_reg(inst)?;
-    from_eax(cx, gp(rd), size);
-    cx.finish(inst, rd)
+    from_eax(cx, p, size);
+    cx.finish(inst, rp)
 }
 
 /// `atomicrmw fadd`/`fsub` of `float` (4 bytes) or `double` (8 bytes),
@@ -503,18 +511,20 @@ pub fn cmpxchg<'a>(
         store_gpr(cx, ECX, dst.offset_by(flag), 1);
         return Ok(());
     }
+    // Two pool registers at most (`spec/codegen-x86.md` §2): the pointer,
+    // the expected value; the replacement straight into `ecx` (placing
+    // it may call, a TLS address, so it comes before `eax` is written).
+    let p = pointer(cx, ptr)?;
     if s.gpr {
         let e = gp(cx.use_reg(expected)?);
+        cx.put(replacement, crate::reg::ECX)?;
         put(cx, mc::mov_rr(Size::D, EAX, e));
-        let r = if replacement == expected { e } else { gp(cx.use_reg(replacement)?) };
-        put(cx, mc::mov_rr(Size::D, ECX, r));
     } else {
         let e = cx.use_mem(expected)?;
         load_gpr(cx, EAX, e, 4);
         let r = cx.use_mem(replacement)?;
         load_gpr(cx, ECX, r, 4);
     }
-    let p = pointer(cx, ptr)?;
     locked(cx, mc::cmpxchg_mr(s.size(), Mem::base(p, 0), ECX));
     put(cx, mc::setcc_r(Cond::E, EDX));
     let dst = cx.def_mem(inst)?;

@@ -379,8 +379,10 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
                 scratch.strs.clear();
             }
             Handle::Loc(id) => {
-                let (loc, atom, distinct) =
-                    self.location_body(node.span, node.distinct, scratch)?;
+                let (loc, atom, distinct) = match self.quick_location(node.span, scratch)? {
+                    Some(loc) => (loc, DiAtom::NONE, node.distinct),
+                    None => self.location_body(node.span, node.distinct, scratch)?,
+                };
                 let debug = &mut self.module.debug;
                 let result = debug.define_loc_in_atom(id, loc, atom, distinct);
                 ir(node.span.start, result)?;
@@ -401,13 +403,16 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
     fn define_tuples_in(&mut self, scratch: &mut DebugScratch, fed: bool) -> PResult<()> {
         while let Some((id, span)) = scratch.tuples.pop() {
             let mark = scratch.lists.len();
-            if fed {
-                self.lx.seek(span.start as usize);
+            let pos = self.quick_elements(span, scratch)?;
+            if pos >= span.end {
+                // Read from the bytes: the lexer is not used.
+            } else if fed {
+                self.lx.seek(pos as usize);
                 self.bump();
             } else {
-                self.goto(span.start);
+                self.goto(pos);
             }
-            while self.tok.start < span.end {
+            while pos < span.end && self.tok.start < span.end {
                 let element = self.list_element(scratch)?.unwrap_or(DiId::NONE);
                 scratch.lists.push(element);
                 if self.tok.start < span.end {
@@ -563,7 +568,11 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
 
     /// Pushes the elements of the tuple whose inside is `span`.
     fn list_span(&mut self, span: Span, scratch: &mut DebugScratch) -> PResult<()> {
-        self.goto(span.start);
+        let pos = self.quick_elements(span, scratch)?;
+        if pos >= span.end {
+            return Ok(());
+        }
+        self.goto(pos);
         while self.tok.start < span.end {
             let element = self.list_element(scratch)?.unwrap_or(DiId::NONE);
             scratch.lists.push(element);
@@ -572,6 +581,44 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
             }
         }
         Ok(())
+    }
+
+    /// The elements of the tuple whose inside is `span` that are `!N` or
+    /// `null` as LLVM's writer prints them (joined by `, `), read from
+    /// the bytes (WP-328) and pushed; where the first other spelling
+    /// starts (`span.end` if none), from which the tokens read them. An
+    /// element is read only once the separator after it is known.
+    fn quick_elements(&mut self, span: Span, scratch: &mut DebugScratch) -> PResult<u32> {
+        let src = self.src;
+        let end = span.end as usize;
+        let mut pos = span.start as usize;
+        while pos < end {
+            let (element, after) = match src[pos] {
+                b'!' => {
+                    let digits = digits_end(src, pos + 1, end);
+                    let Some(id) = crate::index::parse_u32(&src[pos + 1..digits]) else {
+                        break;
+                    };
+                    (Some((pos, id)), digits)
+                }
+                b'n' if src.get(pos..pos + 4) == Some(b"null") => (None, pos + 4),
+                _ => break,
+            };
+            let next = if after == end {
+                end
+            } else if src.get(after..after + 2) == Some(b", ") && after + 2 < end {
+                after + 2
+            } else {
+                break;
+            };
+            let element = match element {
+                Some((at, id)) => self.numbered_node(at as u32, id, scratch)?,
+                None => DiId::NONE,
+            };
+            scratch.lists.push(element);
+            pos = next;
+        }
+        Ok(pos.min(end) as u32)
     }
 
     /// An expression a field names: in place, or a numbered one.
@@ -720,8 +767,24 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
         // Where the next field is looked for first: LLVM writes them in
         // the record's order.
         let mut hint = 0;
-        self.goto(span.start);
-        while self.tok.start < span.end {
+        // The fields LLVM's writer prints are read from the bytes
+        // (`quick_field`) while they come in its spelling; the first one
+        // that does not, and every one after it, through the tokens.
+        let end = span.end as usize;
+        let mut pos = span.start as usize;
+        while pos < end {
+            let Some((index, value, next)) =
+                self.quick_field(kind, pos, end, hint, met, scratch)?
+            else {
+                self.goto(pos as u32);
+                break;
+            };
+            met |= 1 << index;
+            hint = index + 1;
+            scratch.fields.push((Key::At(index as u8), value));
+            pos = next;
+        }
+        while pos < end && self.tok.start < span.end {
             let (field, at) = self.field_name()?;
             let index = kind.field_index(field, hint);
             let again = match index {
@@ -799,6 +862,215 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
             }
             _ => self.syntax("expected a field name"),
         }
+    }
+
+    /// One field of a node of `kind` read from the bytes at `pos`, without
+    /// the lexer (WP-328): `name: value` as LLVM's writer prints it,
+    /// followed by `,` or by the node's `)` at `end`. The field, its value
+    /// and where the next field starts; `None`, before anything is read
+    /// into the module or the scratch storage, for any other spelling,
+    /// for a field outside the record or met before, and for a value
+    /// whose reading the token path must judge: that path then reads the
+    /// field from `pos`, with its diagnostics.
+    #[allow(clippy::too_many_lines)] // Measured: split in two, -g inputs lost 23 M (WP-328).
+    fn quick_field(
+        &mut self,
+        kind: DiKind,
+        pos: usize,
+        end: usize,
+        hint: usize,
+        met: u64,
+        scratch: &mut DebugScratch,
+    ) -> PResult<Option<(usize, Val, usize)>> {
+        let src = self.src;
+        let name_end = word_end(src, pos, end);
+        if name_end == pos
+            || !src[pos].is_ascii_alphabetic()
+            || src.get(name_end..name_end + 2) != Some(b": ")
+        {
+            return Ok(None);
+        }
+        let field = &src[pos..name_end];
+        let Some(index) = kind.field_index(field, hint) else {
+            return Ok(None);
+        };
+        if met & (1 << index) != 0 {
+            return Ok(None);
+        }
+        let shape = kind.field_shape_at(index);
+        // The value: its form, and the byte after it.
+        let at = name_end + 2;
+        let (form, after) = match shape {
+            Some(DiShape::Flags | DiShape::SpFlags) => {
+                let Some((bits, after)) = quick_flags(src, at, end, shape == Some(DiShape::Flags))
+                else {
+                    return Ok(None);
+                };
+                (Quick::Bits(bits), after)
+            }
+            Some(DiShape::Expr | DiShape::Bound) => return Ok(None),
+            _ => match src.get(at) {
+                Some(b'"') => {
+                    let inner = &src[at + 1..end];
+                    let Some(close) = inner.iter().position(|&b| b == b'"' || b == b'\\') else {
+                        return Ok(None);
+                    };
+                    if inner[close] != b'"' {
+                        return Ok(None);
+                    }
+                    (Quick::Str(at + 1, at + 1 + close), at + close + 2)
+                }
+                Some(b'!') => {
+                    let digits = digits_end(src, at + 1, end);
+                    if digits == at + 1 {
+                        return Ok(None);
+                    }
+                    (Quick::Ref(at + 1, digits), digits)
+                }
+                Some(b'-' | b'0'..=b'9') => {
+                    let first = if src[at] == b'-' { at + 1 } else { at };
+                    let digits = digits_end(src, first, end);
+                    if digits == first {
+                        return Ok(None);
+                    }
+                    (Quick::Int(at, digits), digits)
+                }
+                Some(&b) if b.is_ascii_alphabetic() || b == b'_' => {
+                    let word = word_end(src, at, end);
+                    (Quick::Word(at, word), word)
+                }
+                _ => return Ok(None),
+            },
+        };
+        let next = if after == end {
+            end
+        } else if src.get(after..after + 2) == Some(b", ") && after + 2 < end {
+            // `, ` and the next field: a trailing comma, another blank
+            // or a comment is the token path's to judge.
+            after + 2
+        } else {
+            return Ok(None);
+        };
+        // As `field_value` reads the same tokens; what it would refuse,
+        // record or read in another way is left to it.
+        let value = match (shape, form) {
+            (_, Quick::Bits(bits)) => Val::UInt(bits),
+            (Some(DiShape::List), Quick::Word(start, word)) if &src[start..word] == b"null" => {
+                let mark = scratch.lists.len() as u32;
+                Val::List(mark, mark)
+            }
+            (Some(DiShape::List), Quick::Ref(start, digits)) => {
+                let Some(id) = crate::index::parse_u32(&src[start..digits]) else {
+                    return Ok(None);
+                };
+                let Some(position) = self.md.position(id) else {
+                    return Ok(None);
+                };
+                let node = self.md.nodes()[position];
+                if node.kind != MdKind::Tuple {
+                    return Ok(None);
+                }
+                let mark = scratch.lists.len() as u32;
+                self.list_span(node.span, scratch)?;
+                Val::List(mark, scratch.lists.len() as u32)
+            }
+            (Some(DiShape::List), _) | (Some(DiShape::Node), Quick::Int(..)) => return Ok(None),
+            (_, Quick::Str(start, close)) => Val::Src(start as u32, close as u32),
+            (_, Quick::Int(start, digits)) => {
+                let text = &src[start..digits];
+                if let Some(negative) = text.strip_prefix(b"-") {
+                    match parse_u64(negative) {
+                        Some(magnitude) if magnitude <= 1 << 63 => {
+                            Val::Int((magnitude as i64).wrapping_neg())
+                        }
+                        _ => return Ok(None),
+                    }
+                } else {
+                    match parse_u64(text) {
+                        Some(value) => Val::UInt(value),
+                        None => return Ok(None),
+                    }
+                }
+            }
+            (_, Quick::Word(start, word)) => match &src[start..word] {
+                b"true" => Val::Bool(true),
+                b"false" => Val::Bool(false),
+                b"null" => Val::Node(None),
+                text => match named_code(shape, field, text) {
+                    Some(code) => Val::UInt(code),
+                    None => return Ok(None),
+                },
+            },
+            (_, Quick::Ref(start, digits)) => {
+                let Some(id) = crate::index::parse_u32(&src[start..digits]) else {
+                    return Ok(None);
+                };
+                Val::Node(Some(self.numbered_node(at as u32, id, scratch)?))
+            }
+        };
+        Ok(Some((index, value, next)))
+    }
+
+    /// `!DILocation(line: N, column: N, scope: !N[, inlinedAt: !N])` read
+    /// from the bytes of its inside, `span`, without the lexer (WP-328).
+    /// `None`, before anything is read into the module, for any other
+    /// spelling or a value [`Parser::location_body`] must judge.
+    fn quick_location(
+        &mut self,
+        span: Span,
+        scratch: &mut DebugScratch,
+    ) -> PResult<Option<DiLocation>> {
+        let src = self.src;
+        let (mut pos, end) = (span.start as usize, span.end as usize);
+        let mut line = None;
+        let mut column = None;
+        let mut scope = None;
+        let mut inlined = None;
+        while pos < end {
+            let name_end = word_end(src, pos, end);
+            if src.get(name_end..name_end + 2) != Some(b": ") {
+                return Ok(None);
+            }
+            let at = name_end + 2;
+            let reference = src.get(at) == Some(&b'!');
+            let first = at + usize::from(reference);
+            let digits = digits_end(src, first, end);
+            let Some(value) = crate::index::parse_u32(&src[first..digits]) else {
+                return Ok(None);
+            };
+            let slot = match (&src[pos..name_end], reference) {
+                (b"line", false) => &mut line,
+                (b"column", false) if u16::try_from(value).is_ok() => &mut column,
+                (b"scope", true) => &mut scope,
+                (b"inlinedAt", true) if scope.is_some() && self.has_md_node(value) => &mut inlined,
+                _ => return Ok(None),
+            };
+            if slot.is_some() {
+                return Ok(None);
+            }
+            *slot = Some((first as u32 - 1, value));
+            pos = if digits == end {
+                end
+            } else if src.get(digits..digits + 2) == Some(b", ") && digits + 2 < end {
+                digits + 2
+            } else {
+                return Ok(None);
+            };
+        }
+        let Some((at, scope)) = scope else {
+            return Ok(None);
+        };
+        let scope = self.numbered_node(at, scope, scratch)?;
+        let inlined_at = match inlined {
+            Some((at, id)) => self.loc_of(at, MdRef::Node(id))?.unwrap_or(LocId::NONE),
+            None => LocId::NONE,
+        };
+        Ok(Some(DiLocation {
+            line: line.map_or(0, |(_, line)| line),
+            column: column.map_or(0, |(_, column)| column as u16),
+            scope,
+            inlined_at,
+        }))
     }
 
     /// Steps over a field's value. True if it is a default (`0`,
@@ -1125,6 +1397,63 @@ fn named_code(shape: Option<DiShape>, field: &[u8], text: &[u8]) -> Option<u64> 
         _ => None,
     };
     code.map(u64::from)
+}
+
+/// The form of a value `quick_field` read: byte offsets into the source.
+#[derive(Clone, Copy)]
+enum Quick {
+    /// `"…"` without an escape: the inside.
+    Str(usize, usize),
+    /// `!N`: the digits.
+    Ref(usize, usize),
+    /// `N` or `-N`.
+    Int(usize, usize),
+    /// A word.
+    Word(usize, usize),
+    /// A set of flags, read.
+    Bits(u64),
+}
+
+/// The end of the word (`[A-Za-z0-9_]*`) at `from`, at most `end`.
+fn word_end(src: &[u8], from: usize, end: usize) -> usize {
+    let mut at = from;
+    while at < end && (src[at].is_ascii_alphanumeric() || src[at] == b'_') {
+        at += 1;
+    }
+    at
+}
+
+/// The end of the decimal digits at `from`, at most `end`.
+fn digits_end(src: &[u8], from: usize, end: usize) -> usize {
+    let mut at = from;
+    while at < end && src[at].is_ascii_digit() {
+        at += 1;
+    }
+    at
+}
+
+/// `A | B | 7` at `at` read from the bytes, as `Parser::flag_bits` reads
+/// the tokens: `DIFlag*` names (`di`) or `DISPFlag*` names, and numbers,
+/// joined by ` | `. The bits and the byte after them; `None` for anything
+/// else (that parser then judges it).
+fn quick_flags(src: &[u8], mut at: usize, end: usize, di: bool) -> Option<(u64, usize)> {
+    let mut bits = 0u64;
+    loop {
+        let word = word_end(src, at, end);
+        let text = src.get(at..word).filter(|text| !text.is_empty())?;
+        bits |= if text[0].is_ascii_digit() {
+            parse_u64(text)?
+        } else if di {
+            u64::from(DiFlags::named(text)?.0)
+        } else {
+            u64::from(SpFlags::named(text)?.0)
+        };
+        if src.get(word..word + 3) == Some(b" | ") && word + 3 < end {
+            at = word + 3;
+        } else {
+            return Some((bits, word));
+        }
+    }
 }
 
 /// The `'static` name of a mapped field LLVM calls `field` that is not

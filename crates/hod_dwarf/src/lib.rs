@@ -103,8 +103,8 @@ pub use line::{
 };
 pub use policy::{FunctionLines, SourceLoc, Stmt, Transition, function_rows};
 pub use target::{
-    AARCH64, LINE_BASE, LINE_RANGE, LineTarget, OPCODE_BASE, STANDARD_OPCODE_LENGTHS, X86_64,
-    for_arch,
+    AARCH64, I386, LINE_BASE, LINE_RANGE, LineTarget, OPCODE_BASE, STANDARD_OPCODE_LENGTHS, X86_64,
+    for_arch, for_machine,
 };
 
 /// Why a table was not written (`spec/dwarf.md` §4.6, §6.6). The object

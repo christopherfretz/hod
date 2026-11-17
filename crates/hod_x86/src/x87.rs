@@ -61,9 +61,11 @@ pub const SSE: &str = "x86:float:sse";
 pub const I64_CAST: &str = "x86:float:i64-cast";
 /// A floating-point intrinsic this package does not lower.
 pub const INTRINSIC: &str = "x86:float:intrinsic";
-/// A cast between floating types that is no `fpext`/`fptrunc` (a
-/// `bitcast` of a floating value).
+/// A cast of a floating value that §11 does not lower (no IR that the
+/// verifier accepts reaches it since the i386 join E lowers `bitcast`).
 pub const CAST: &str = "x86:float:cast";
+/// A `bitcast` between `x86_fp80` and `i80`.
+pub const FP80_CAST: &str = "x86:float:fp80-cast";
 
 /// One of the three x87 types.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -223,6 +225,10 @@ pub struct Copies {
 /// What allocating the copy's slot reports.
 pub fn call_result(cx: &mut FnCx<'_, X86>, inst: Inst<'_>, on: bool) -> CgResult<()> {
     cx.state.x87.call = None;
+    // A result of an SSE type: `sse` keeps its 80-bit value (I12).
+    if crate::sse::call_result(cx, inst, on)? {
+        return Ok(());
+    }
     let wide = matches!(cx.types().kind(inst.ty()), TypeKind::Float | TypeKind::Double);
     if on && wide && !inst.uses().is_unused() {
         cx.state.x87.call = copy_slot(cx, inst)?.map(|slot| (inst.id().raw(), slot));
@@ -233,6 +239,7 @@ pub fn call_result(cx: &mut FnCx<'_, X86>, inst: Inst<'_>, on: bool) -> CgResult
 /// The glue store of `st0` to `dst` (`Target::store`): first the 80-bit
 /// copy of the call result being stored, if [`call_result`] took a slot.
 pub fn store_call_result(cx: &mut FnCx<'_, X86>, dst: FrameRef, bytes: u32) {
+    crate::sse::store_call_copy(cx);
     if let Some((raw, slot)) = cx.state.x87.call.take() {
         let inst = cx.body.inst(InstId::new(raw));
         store_copy(cx, inst, slot);
@@ -245,7 +252,12 @@ pub fn store_call_result(cx: &mut FnCx<'_, X86>, dst: FrameRef, bytes: u32) {
 /// (measured: `fdivrp; retl`), so the glue load ([`load_ret`]) takes
 /// its copy. `on` false ends the bracket.
 pub fn ret_copy(cx: &mut FnCx<'_, X86>, inst: Inst<'_>, value: Value, on: bool) {
-    cx.state.x87.ret = if on { copy_for(cx, value, inst.id()) } else { None };
+    // A view of an SSE call result returns its 80-bit value (I12).
+    cx.state.x87.ret = if on {
+        crate::sse::ret_view(cx, value, inst).or_else(|| copy_for(cx, value, inst.id()))
+    } else {
+        None
+    };
 }
 
 /// The glue load of `src` into `st0` (`Target::load`): the copy that
@@ -287,6 +299,12 @@ fn barrier(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
                 ValueKind::Asm(id) => asm_barrier(cx.module.asm(id).constraints),
                 _ => true,
             },
+            (Some(which), _) if crate::coro::is_barrier(which) => true,
+            // `modf` is a libm call, never folded by `llc` 22 (WP-337).
+            (Some(Intrinsic::Modf), _) => true,
+            // `frexp` is a libm call unless `llc` 19 and 22 fold it: an
+            // operand that is a constant or folded (WP-341).
+            (Some(Intrinsic::Frexp), args) => !operands_folded(cx, inst, args, FOLD_DEPTH),
             (Some(Intrinsic::Memcpy | Intrinsic::Memmove | Intrinsic::Memset), _) => {
                 crate::bytes::site_calls_libc(cx, &site)
             }
@@ -632,7 +650,8 @@ fn above(cx: &mut FnCx<'_, X86>, n: u32) {
 /// Pushes operand `v` (of type `fp`) of instruction `user`: its 80-bit
 /// copy if `user` is in its run, else its home. Whether it was the copy.
 fn push(cx: &mut FnCx<'_, X86>, v: Value, fp: Fp, user: Inst<'_>) -> CgResult<bool> {
-    if let Some(slot) = copy_for(cx, v, user.id()) {
+    // An `fpext` of an SSE call result is its 80-bit value (§16).
+    if let Some(slot) = crate::sse::ret_view(cx, v, user).or_else(|| copy_for(cx, v, user.id())) {
         fld(cx, Fp::F80, slot);
         return Ok(true);
     }
@@ -1094,6 +1113,10 @@ fn cast<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, arg: Value) -> CgResult<()> 
     match inst.opcode() {
         Opcode::FPExt | Opcode::FPTrunc if is_fp(cx, from) && is_fp(cx, inst.ty()) => {
             let (a, b) = (fp_of(cx, from)?, fp_of(cx, inst.ty())?);
+            if crate::sse::x87_cast_source(cx, inst, arg)? {
+                // A view of an SSE call result (§16).
+                return result(cx, inst, b, false);
+            }
             if let Some(x) = undone(cx, inst, arg) {
                 // `fptrunc (fpext x)` back to `x`'s type in one block is
                 // `x` (`llc`'s DAG folds it).
@@ -1106,6 +1129,46 @@ fn cast<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, arg: Value) -> CgResult<()> 
         }
         Opcode::SIToFP | Opcode::UIToFP => from_int(cx, inst, arg),
         Opcode::FPToSI | Opcode::FPToUI => to_int(cx, inst, arg),
+        Opcode::BitCast => bitcast(cx, inst, arg, from),
+        _ => unsupported(CAST),
+    }
+}
+
+/// `bitcast` between `float` and `i32` or `double` and `i64` (§11): the
+/// same bytes through the homes. A floating home holds the value rounded
+/// to its type, never the 80-bit copy: a bitcast takes the type's bits
+/// (`llc` at `generic`: `fstps (%esp); movl (%esp), %eax` of a product,
+/// measured, 19 and 22). The result of a cast to a floating type has no
+/// 80-bit copy (its users load its home), and no bits pass through the
+/// stack, so a signalling NaN pattern is kept. Not a barrier (no branch,
+/// no call in `llc`). `x86_fp80` from or to `i80`: the 10 bytes
+/// (WP-337); a vector on either side: its family's refusal.
+fn bitcast<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, arg: Value, from: TypeId) -> CgResult<()> {
+    let to = inst.ty();
+    let (fp_ty, other) = if is_fp(cx, from) { (from, to) } else { (to, from) };
+    if matches!(cx.types().kind(other), TypeKind::Vector { .. }) {
+        return Err(crate::target::refusal_of(cx, other));
+    }
+    let fp = fp_of(cx, fp_ty)?;
+    match (fp, cx.types().int_bits(other)) {
+        (Fp::F32, Some(32)) if is_fp(cx, from) => {
+            let src = cx.use_mem(arg)?;
+            let rd = cx.def_reg(inst)?;
+            frame_inst(cx, src, |m| mc::mov_rm(Size::D, gp(rd), m));
+            cx.finish(inst, rd)
+        }
+        (Fp::F32, Some(32)) => {
+            let r = cx.use_reg(arg)?;
+            let dst = cx.def_mem(inst)?;
+            frame_inst(cx, dst, |m| mc::mov_mr(Size::D, m, gp(r)));
+            Ok(())
+        }
+        // The `i64` side is §8's slot of two words, low first: the
+        // `double`'s memory image. WP-337: the `i80` side is a slot whose
+        // first 10 bytes are the image (`crate::fpclass`'s compares read
+        // them).
+        (Fp::F64, Some(64)) | (Fp::F80, Some(80)) => copy_of(cx, inst, arg, fp),
+        (Fp::F80, _) => unsupported(FP80_CAST),
         _ => unsupported(CAST),
     }
 }
@@ -1160,8 +1223,9 @@ fn from_int<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, arg: Value) -> CgResult<
 /// `sitofp`/`uitofp` of an `i64` (§8's slot, low word first): `fild
 /// qword` of the slot, exact at 80 bits; unsigned, `2^64` added when the
 /// high bit is set (as `llc`: `fadd` of a `float` chosen by the sign,
-/// here `0x5F800000` or 0 built in `ecx` without a branch). The result
-/// keeps its 80-bit copy for its run.
+/// here `0x5F800000` or 0 built in `ecx` without a branch). A signed
+/// result keeps its 80-bit copy for its run; an unsigned one is rounded
+/// (as `llc`).
 fn from_i64<'a>(
     cx: &mut FnCx<'a, X86>,
     inst: Inst<'a>,
@@ -1181,7 +1245,9 @@ fn from_i64<'a>(
         put(cx, mc::faddp(St::St1));
         above(cx, 16);
     }
-    result(cx, inst, fp, true)
+    // Unsigned, `llc` rounds the sum to the type at once (`fstps`/`flds`,
+    // `fstpl`/`fldl`; measured, 19 and 22): no 80-bit copy.
+    result(cx, inst, fp, signed)
 }
 
 /// `fptosi` to an `i64`: as [`to_int`], `fistp qword` into the result's

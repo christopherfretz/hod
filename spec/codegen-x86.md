@@ -36,11 +36,47 @@ writes them. hod emits no `endbr32`, never `syscall`, and no `cmov`.
 
 `RegInfo`: pool = holdable = `ebx`, `esi`, `edi` (and `xmm0`..`xmm5`);
 scratch `ecx`, `edx`, `xmm6`, `xmm7`; landing-pad data `eax`, `edx`;
-`gpr_bytes` 4. `hod_cg`'s pool minimum is 3 general registers for a
-4-byte target (`MIN_POOL_GPR_32`, `RegInfo::min_pool_gpr`), and the
-`min_pool` stress mode uses it. `esi`, `edi`, `ebp`, `esp` have no
-low-byte register in 32-bit mode: a byte store or a `setcc` of a value in
-`esi`/`edi` goes through `ecx`/`edx`.
+`gpr_bytes` 4. `hod_cg`'s pool minimum is 2 general registers for a
+4-byte target (`MIN_POOL_GPR_32`, `RegInfo::min_pool_gpr`, WP-331), and
+the `min_pool` stress mode uses it (the two lowest: `ebx`, `esi`).
+`esi`, `edi`, `ebp`, `esp` have no low-byte register in 32-bit mode: a
+byte store or a `setcc` of a value in `esi`/`edi` goes through
+`ecx`/`edx`.
+
+**The two-register rule (WP-331).** No lowering pins more than two
+general pool registers at once (operands, temporaries and the result
+together), on every path: a coroutine body reserves `esi` as its heap
+frame's base (§18), which leaves `ebx`, `edi`. One code path serves the
+three-register and the two-register function. What a lowering uses
+instead of a third pool register:
+
+- the scratch registers `eax`, `ecx`, `edx`: an operand that is only
+  read into a fixed register goes there with `FnCx::put` (nothing is
+  pinned), and a result may be produced in one and moved or stored;
+- the operand's register: a register operand dies at its use, so the
+  result takes it (`FnCx::use_reg`, `FnCx::finish`);
+- memory: every value has a frame slot (`cmp r, [slot]` needs one
+  register).
+
+Placing an operand may call (a TLS address) and write `eax`, `ecx`,
+`edx`: an operand that goes into a scratch register is put there after
+every operand that is placed in a pool register. The sites WP-331
+changed: `alu::icmp` (the result takes the left operand's register),
+`atomic::rmw` (the operand into `edx`, the result in the pointer's
+register), `atomic::cmpxchg` (the replacement into `ecx`), `atomic::store`
+(the value into `ecx`), `bytes::copy` / `bytes::set` (the length into
+`ecx`), `bits::funnel` (a variable amount into `ecx` / `edx`).
+
+**The borrowing rule.** A lowering whose instruction names a pool
+register (`rep movs`: `esi`, `edi`; `rep stos`: `edi`; `cmpxchg8b` and a
+PIC call: `ebx`) borrows it one of two ways, and no other: `ebx` is
+taken from the pool for the instruction (`FnCx::take_reg`, which
+displaces its value; `ebx` is never the coroutine base), and `esi` /
+`edi` are pushed before the sequence and popped after it, with no frame
+access between the first pop and the last (`bytes.rs`: the only frame
+operand of the sequence, a wide length's slot, is read before the
+pops). A
+coroutine's `esi` is therefore intact at every frame access.
 
 ## 3. Frame
 
@@ -80,8 +116,9 @@ byte), `movzx`. `select`: always a branch (`test al, 1`; `je`; `mov`).
 
 The integer intrinsics with a result of 1 to 32 bits (wider: §8), in
 the first operand's register; each operand is asked for once (a repeated
-operand shares its register), so at most three pool registers are
-pinned; the work registers are `eax`, `ecx`, `edx`. Every `cmov` of
+operand shares its register; a funnel shift's variable amount goes
+straight into `ecx` / `edx`), so at most two pool registers are pinned
+(§2); the work registers are `eax`, `ecx`, `edx`. Every `cmov` of
 `hod_x64`'s shape is a branch, on every CPU. `popcnt`, `lzcnt`, `tzcnt`
 are never used (hod's feature model has `popcnt` but no `lzcnt`/`bmi`,
 and the back end reads no feature yet): the generic sequences below
@@ -168,17 +205,30 @@ their values).
 | `x86:i64` | not reachable since WP-315 (§13.4): every integer of 33 to 64 bits is taken by §8, `abi.rs` or §13 | I6, WP-306, WP-315 |
 | `x86:i64:wide` | an integer wider than 64 bits (§8), also as a `switch` condition, a `ptradd` index and the result of an integer intrinsic of §8 | — |
 | `x86:float` | a floating-point value in a register where §11 takes none (arguments and results are I6's since the join) | — |
-| `x86:float:half`, `x86:float:bfloat`, `x86:float:fp128` | a value of those types | — |
-| `x86:float:sse` | a `float` operation with SSE, a `double` one with SSE2 (`llc` uses `xmm`) | I12 |
+| `x86:float:half` | a `half` value in a function without SSE2; a `half` parameter or result of `fastcc` or `inreg` (§16) | — |
+| `x86:float:half:intrinsic` | an intrinsic on `half` (§16) | — |
+| `x86:float:bfloat`, `x86:float:fp128` | a value of those types | — |
 | `x86:float:i64-cast` | a conversion between a floating type and an integer of 33 to 63 or more than 64 bits (§11; `fptoui` to `i64` is lowered since the i386 join C) | — |
 | `x86:float:intrinsic` | a floating-point intrinsic §11 does not lower | — |
-| `x86:float:cast` | a `bitcast` of a floating value, another cast not in §11 | — |
-| `x86:vector` | a vector value, a vector `ptradd`, the element operations | I12 |
+| `x86:float:cast` | a cast of a floating value not in §11 (no verified IR reaches it since the i386 join E lowers `bitcast`) | — |
+| `x86:float:fp80-cast` | no verified IR reaches it: a `bitcast` between `x86_fp80` and `i80` is lowered since WP-337 (§21) | WP-337 |
+| `x86:vector` | a vector `ptradd` (§17) | I12 |
+| `x86:vector:no-sse2` | a vector in a function with SSE but without SSE2 (§17; without any SSE: §20) | WP-338 (no SSE) |
+| `x86:vector:no-sse2:excess-precision`, `:fold` | a floating lane `llc` holds at 80 bits or folds (§20) | — |
+| `x86:vector:no-sse2:cast`, `:select`, `:reduce`, `:abi` | without SSE: casts of floating lanes; `select` and `min`/`max` reductions without `cmov`; `i1`/`inreg` vectors and `fastcc` memory results at the boundary (§20) | — |
+| `x86:vector:wide` | a vector of more than 16 bytes passed or returned | — |
+| `x86:vector:abi` | a vector of `i1`, of one lane or of odd-width integers passed or returned | — |
+| `x86:vector:element` | lanes of `half`, `bfloat`, `fp128`, `x86_fp80`, odd-width integers | — |
+| `x86:vector:scalable` / `:length` | a scalable vector; more than 256 lanes | — |
+| `x86:vector:i64-op` | `i64` lanes: an operation other than `add`, `sub`, bitwise, compares, moves | — |
+| `x86:vector:frem` / `:cast` | `frem`; casts with unsigned 32-bit or 64-bit lanes and floating point | — |
+| `x86:vector:intrinsic` | an intrinsic on vectors other than the integer and `i1` reductions | — |
 | `x86:aggregate` | since WP-315 (§13.2) only an aggregate argument of more than 16 leaves (`abi.rs`'s `MAX_LEAVES`) and an aggregate without a layout | — |
 | `x86:frame-depth` | `llvm.frameaddress`/`returnaddress` deeper than 256 frames (§13.5) | — |
 | `x86:eh:landingpad`, `x86:eh:landingpad-clause`, `x86:eh:resume`, `x86:eh:typeid` | a `landingpad` or `resume` of a type other than `{ ptr, i32 }`; a clause that is not a symbol, `null` or an array of them; `llvm.eh.typeid.for` of a non-symbol (§14; `x86:eh` itself removed by WP-314) | — |
-| `x86:debug-info` | a module with debug information (`hod_cg`'s emitter) | I10 |
-| `x86:cf-protection` | `cf-protection-*` module flags (`hod_cg`'s `.note.gnu.property`) | — |
+| `debug:dwarf-4-i386` | a DWARF 4 unit (`Dwarf Version` 4 or less) on i386 (`hod_dwarf` `split.rs`, §15; `x86:debug-info` removed by WP-314) | — (needs `dwarf4.rs` at address size 4: the unit header's address size, `.debug_ranges` and `.debug_loc` with 4-byte address pairs, `DW_OP_addr` with a 4-byte operand and `R_386_32`) |
+| `debug:split-dwarf-i386` | split DWARF (`-gsplit-dwarf`) on i386 (`hod_dwarf` `split.rs`, §15) | — (needs `split.rs` at address size 4: the skeleton's and the `.dwo` unit's headers, the object's `.debug_addr` of 4-byte entries, and the `.dwo` output path through the driver) |
+| `x86:nocf-check-indirect-call` | an indirect `nocf_check` call in a module with `cf-protection-branch` (needs `notrack`; §19.3; `x86:cf-protection` removed by WP-324) | — |
 | `x86:atomic:no-cx8` | an 8-byte atomic operation on a CPU without `cmpxchg8b` (§12.2) | — |
 | `x86:atomic:libatomic` | an atomic access of another size than 1, 2, 4, 8 bytes or below its natural alignment (§12.2) | — |
 | `x86:atomic:float-op` | `atomicrmw` `fmax`, `fmin` and the other floating operations; `fadd` and `fsub` are lowered since join D (§12.2) | — |
@@ -194,10 +244,11 @@ their values).
 | `x86:varargs` | `va_start` outside a variadic function (§12.1) | — |
 | `x86:varargs:va-arg-type` | `va_arg` of an aggregate, a vector, an integer wider than 64 bits (§12.1) | — |
 | `x86:probe-stack` | a function with `"probe-stack"="inline-asm"` (§12.3) | — |
-| `x86:intrinsic` | any other intrinsic (the integer intrinsics of §4.1 and §8 are lowered; the overflow and small intrinsics of §13 and `eh.typeid.for` (§14) are lowered; still refused: every intrinsic none of them names) | per family |
+| `x86:intrinsic` | any other intrinsic (the integer intrinsics of §4.1 and §8 are lowered; the overflow and small intrinsics of §13, `eh.typeid.for` (§14), the coroutine handle and body intrinsics of §18 and `eh.unwind.init` (§19.4) are lowered; still refused: every intrinsic none of them names) | per family |
+| `x86:coro-promise` | `llvm.coro.promise` whose alignment is not a constant power of two of at most 2^30, or whose direction is not a constant (§18) | — |
+| `x86:coro:asm-base` | inline assembly in a coroutine body that writes `esi`, its frame base (an `{esi}` operand, an `esi` clobber; §18) | — |
 | `x86:call` | a call with operand bundles, `callbr` | — |
-| `x86:blockaddress`, `x86:indirect-branch` | `blockaddress`, `indirectbr` | — |
-| `x86:stack-protector` | a function with a stack guard | — |
+| `x86:blockaddress` | a `blockaddress` of another function's block in code (§19.1; `x86:indirect-branch` removed by WP-324) | — |
 | `x86:addrspacecast`, `x86:int-cast` | those casts | — |
 | `x86:constant` | a constant expression or other constant reaching a register | — |
 | `x86:funclet` | a funclet pad | — |
@@ -481,8 +532,8 @@ written as on the other targets.
 
 **Types and homes.** `float`, `double` and `x86_fp80` are class `Mem`:
 a home in the frame of 4, 8 or 12 bytes (`x86_fp80`'s image is the low
-10). A function whose CPU has SSE (`float`) or SSE2 (`double`) is
-refused `x86:float:sse` (`llc` computes in `xmm`); the CPU is the
+10). In a function whose CPU has SSE (`float`) or SSE2 (`double`)
+those types are §16's (`llc` computes in `xmm`); the CPU is the
 function's `target-cpu`/`target-features`, else the tool's `-mcpu`/
 `-mattr` (`generic` without them; `X86::with_cpu`, as `llc` takes its
 options for a function without the attributes).
@@ -629,7 +680,19 @@ a mask), `fistp qword` under the truncating control word, the flag
 exactly below `2^64`; a NaN, `+inf`, values from `2^64` give 0; negative
 values below -1 give what `fistp` gives (`0x8000000000000000` when out
 of range). A conversion between a floating type and an integer of 33 to
-63 or more than 64 bits is `x86:float:i64-cast`.
+63 or more than 64 bits is `x86:float:i64-cast`. `uitofp` of an `i64`
+is rounded to its type at once (`llc`: `fstps`/`flds`, measured 19 and
+22): no 80-bit copy; `sitofp` of an `i64` keeps one.
+
+**`bitcast`** (i386 join E) between `float` and `i32`, `double` and
+`i64` (§8's slot): the same bytes through the homes. The floating home
+holds the value rounded to its type, so a cast takes the bits of the
+rounded value, never the 80-bit copy (`llc` at `generic`: `fstps
+(%esp); movl (%esp), %eax` of a product); a cast to a floating type has
+no 80-bit copy, and no bits pass through the x87 stack (a signalling
+NaN pattern is kept). Not a barrier. `x86_fp80` from or to `i80`: the
+10 bytes (WP-337, §21); a vector on either side: the vector's
+refusal.
 
 **libm.** `frem` is `fmodf`/`fmod`/`fmodl`; `sin`, `cos`, `tan`, `asin`,
 `acos`, `atan`, `atan2`, `sinh`, `cosh`, `tanh`, `exp`, `exp2`, `exp10`,
@@ -930,3 +993,687 @@ removed in front of the back end. `eh.typeid.for` is §14's.
   through the relocations. Which pad is not compared: where several
   `invoke`s unwind to one IR pad, `llc` has one landing address and hod
   one per `invoke`.
+
+## 15. Debug information (WP-314, design 0008 I10)
+
+hod writes `spec/dwarf.md`'s DWARF 5 sections on i386 as on the 64-bit
+targets, at address size 4: the unit headers, `.debug_addr`, the
+`.debug_rnglists` and `.debug_loclists` headers and every address are 4
+bytes, each relocated by `R_386_32` (`hod_dwarf::target::I386`, chosen
+by the object's `Machine`). The frame base is `DW_OP_reg5 EBP`; a
+variable or a parameter is described in its home (`DW_OP_fbreg`, the
+parameters in hod's slots, `spec/dwarf.md` §6.17), a `byval` argument
+through the pointer hod saved. A thread-local variable is
+`DW_OP_const4u` with `R_386_TLS_LDO_32`, then
+`DW_OP_GNU_push_tls_address`, as `llc` writes it.
+
+- **Lines.** `spec/dwarf.md` §5 unchanged. The one epilogue is at the
+  function's end (`spec/codegen.md` §4), so after a landing pad laid out
+  last its row is a statement (`spec/dwarf.md` §5.2, §5.4) where `llc`'s epilogue row,
+  in the `ret`'s block, is not.
+- **Location lists** (IR at `-O1`, `#dbg_value` records). The DWARF
+  stack is 32 bits wide: a range whose value expression pushes a value
+  wider than 4 bytes (an `i64`, a `double`), an address read from a
+  home, or a `DIArgList` gets no entry (`<optimized out>`); a home with
+  the empty expression is a memory location of any size; a 4-byte home
+  with a value expression is read with `DW_OP_deref_size 4`
+  (`loclists.rs` `fits_i386`). `llc` writes 64-bit stack values there,
+  which gdb prints truncated (WP-314's record).
+- **Call sites.** `emit_call` reports the return address right after
+  the `call`, before `esp` is moved back over a popped `sret` pointer
+  (`spec/dwarf.md` §6.19).
+- **Unwind tables.** `.debug_frame` and `.eh_frame` as in §14.
+- **Refused** (§7): `debug:dwarf-4-i386`, `debug:split-dwarf-i386`.
+- **Tests** (`crates/hod/tests/i386_debug.rs`, programs in
+  `tests/data/i386/debug/`): `vals.c`, `tlsg.c`, `eh.cpp` by clang 19 and
+  22 at `-O0 -g`, static and PIC: hod's objects verify, their unwind
+  tables decode, the DIE trees equal `llc`'s under §6.4 and §6.17, the
+  epilogue rows follow the rule above and the other statement rows
+  equal `llc`'s. `opt.c` at `-O1`: verifies, has location lists, call
+  sites as many as `llc`'s, each after a `call`. The seed
+  `tests/ir/debug_info_locals.ll` runs in irdiff's i686 column. The
+  debugger sessions (gdb-multiarch under `qemu-i386 -g`) are in WP-314's
+  record; the debug lane has no i686 column yet (`xtask/src/debug.rs`
+  `NO_I686_LANE`).
+
+## 16. Scalar SSE (`sse`, WP-317, design 0008 I12)
+
+**Which values.** In a function whose CPU has SSE, `float` is an SSE
+type; with SSE2, `double` too (the CPU as §11 decides it: the
+function's `target-cpu`/`target-features`, else `-mcpu`).
+`sse::owns` is the one decision point: an instruction with an SSE value
+as its result or an operand (`fcmp`, a store, a cast, an intrinsic) is
+lowered by `sse`; every other floating instruction by `x87` as §11
+says, unchanged. `x86_fp80` is always §11's; at SSE without SSE2
+(`pentium3`) so is `double`.
+
+**Homes, ABI, glue.** SSE values are class `Mem` as on the x87 (4 or 8
+bytes): arguments on the stack, `phi`s, and `float`/`double` returns
+and call results through `st0` are §11's glue. This departs from
+design 0008's `Fpr` row on purpose: hod does not aim at fast code, a
+value in memory needs no `xmm` glue for arguments, returns, `phi`s or
+spills (the x87 path already has all of it), and `class_of` has only
+the types, not the function's features. A call result of an SSE type
+is stored by `fstp` at its type's width, which every SSE use reads;
+an `fpext`, `fptrunc` or `ret` may read its 80-bit value instead
+("The 80-bit value of a call result" below). A return loads the home
+(`fld`), as `llc` writes `movsd` to a stack slot and `fldl`.
+
+**Operations.** The first operand is loaded into `xmm6`
+(`movss`/`movsd`), the operation takes the second from its home, the
+result is stored to its home: every result is rounded to its type at
+once, as `llc`'s, so no SSE value has an 80-bit copy. `fadd`, `fsub`,
+`fmul`, `fdiv` (`adds`...), `sqrt` (`sqrts`), `fmuladd` (`muls` then
+`adds`: two roundings, as `llc` at these CPUs), `minnum`/`maxnum` as
+`llc`: `b` where `a` is a NaN, else `mins b, a` (`b < a ? b : a`;
+`maxs` `b > a ? b : a`). `fneg`, `fabs`, `copysign` change the sign bit
+of the copy in memory (bit-exact as `llc`'s masks). Loads and stores
+through `xmm6`; `freeze` and a `select` of a constant condition copy;
+`select` takes the address of the chosen home by `cmov` (every SSE CPU
+has it) and copies through `xmm6`. `fcmp`: `ucomis` with §11's operand
+order and flag reading. Constants are written into the home by `mov`
+immediates (§11; no constant pool, no relocation under PIC).
+
+**Conversions.** `fpext`/`fptrunc` (between `float`, `double`,
+`x86_fp80`, at least one an SSE type): `fld` of the operand's 80-bit
+value for this use (below), or its §11 copy (at SSE without SSE2 a
+computed `double`, an x87 value that `llc` rounds to `float`
+directly), else its home, and `fstp` to the result's home (one
+rounding). `sitofp` of at most 32 bits: `cvtsi2s` of the
+extended value; `uitofp` of an `i32`: `fild` of 64 bits with a zero
+high word and `fstp` (one rounding, as `llc`'s `2^52` sequence).
+`fptosi` to at most 32 bits: `cvtts2si` (a narrower result is its low
+bits); `fptoui` to `i32` as `llc`: `x - 2^31` and `x` truncated, the
+first masked by the sign of the second, or-ed. 64-bit integers, as
+`llc` on the x87 from the home: `sitofp` = `fild`, `fstp`; `uitofp` to
+`float` = `fild`, `fadd` of 0 or `2^64` at 80 bits, `fstp`; `uitofp`
+to `double` = high word times `2^32` plus the low word, both exact,
+`addsd` (one rounding, as `llc`'s `2^52`/`2^84` sequence); `fptosi`/
+`fptoui` to `i64` = §11's control-word sequence on the home's value.
+`bitcast` between an SSE type and the integer of its width is a copy.
+Integers of 33 to 63 or more than 64 bits: `x86:float:i64-cast`.
+
+**Calls.** `frem` and the libm intrinsics are calls of `fmodf`/`fmod`,
+`floorf`/`floor`, ... (`fma` too) through `pic::emit_call`, arguments
+copied to the outgoing area at their width, the result stored from
+`st0` at its type's width. Barriers (§11) are unchanged: no new
+construct of this section is lowered by `llc` with a branch or a call
+that §11 does not already list (`frem` and the libm intrinsics are
+calls there for every type).
+
+**The 80-bit value of a call result** (measured, `llc` 19 and 22
+identical, `-O0`, `pentium4` and `pentium3`). `llc` takes a call result
+of an SSE type out of `st0` as an exact `fp_round` of the 80-bit
+register `x`, and the DAG of the call's block folds that node into
+some uses. A *view* is a value `llc` still has as `x`: the call result;
+an `fpext` of a view; an `fptrunc` of an `fpext` of a view `w` back to
+`w`'s type. A view reaches the uses in the call's block up to an
+`atomicrmw` that `AtomicExpand` turns into a loop (an `and`/`or`/`xor`
+whose result is used, any operation wider than 32 bits, the floating
+operations, `nand`, `min`/`max` and the rest; `xchg`, `add`, `sub` of
+at most 32 bits, an unused `and`/`or`/`xor` and `cmpxchg` stay one
+instruction), and across everything else: calls, libm calls, `memcpy`,
+a `select` that `llc` lowers with a branch (`llc` spills `x` at 80
+bits, `fstpt`/`fldt`). Within the reach:
+- `fpext` of a view to `U`: `x` rounded to `U` (`x` for `x86_fp80`);
+- `fptrunc` of a view: `x` rounded to the result type once;
+  `fptrunc (fpext w)` of a view `w` to `w`'s type is `w`; to another
+  type it is `x` rounded to `w`'s type and converted, unless every use
+  of the result is a store (then `x` rounded once: `llc` folds the
+  store);
+- `ret` of a view returns `x` itself.
+Every other use (arithmetic, `fcmp`, `store`, an argument, `freeze`,
+`fneg`, a use in another block or past the reach) reads the home, the
+value rounded to its type. hod (`sse::Views`): at the call
+(`x87::call_result`) a result of an SSE type that an `fpext`, `fptrunc`
+or `ret` in its reach reads gets a 12-byte slot, stored at 80 bits
+before the glue store (`x87::store_call_result`); `fp_cast` and
+`x87::ret_copy` read the slot for a view; `x87` keeps no §11 copy of
+such a result. Not modelled: `llc`'s bit-test form of an `atomicrmw
+or`/`and` (one instruction) counts as a loop. At SSE without SSE2
+(`pentium3`) an `fpext` of a `float` call result to `double` is an x87
+value that `llc` keeps as `x` for every x87 use in the reach (`faddp`
+of `x`, measured 19 and 22): `x87::push` reads the view's slot for
+every x87 operand, and `x87::cast` (`fpext`/`fptrunc` between
+`double` and `x86_fp80`) pushes what `fp_cast` would
+(`sse::x87_cast_source`: `fptrunc x86_fp80 (fpext w)` to `double`
+rounds `x` through `float`). Without SSE no view exists and neither
+function changes its code.
+
+**`half` with SSE2** (WP-317 third session; measured `llc` 19 and 22,
+`-O0`, `pentium4`, identical but for `fneg`). The function's feature
+set reaches the target through `Target::for_function` (`X86::features`).
+A `half` argument takes a 4-byte stack slot (its two bytes at the
+start); a result is returned in `xmm0` (`abi::assign_for` asks
+`sse::half_place`; glue `load` is `movzx eax` + `movd xmm0`, glue
+`store` `movd eax` + a 16-bit store). A `half` value lives in a 2-byte
+home (class `Mem`). Every operation is `llc`'s libgcc sequence, all
+calls through `pic::emit_call`: each operand widened by `__extendhfsf2`
+(exact, result in `st0`), the `float` operation (`adds`..`divs`,
+`ucomiss` for `fcmp`, `fmodf` for `frem`), and `__truncsfhf2`, whose
+result is read from `xmm0`. `fpext` stores the widened value at the
+result's width (exact for `float`, `double`, `x86_fp80`); `fptrunc`
+passes its operand at the operand's width to `__truncsfhf2` /
+`__truncdfhf2` / `__truncxfhf2` (one rounding; a view of an SSE call
+result is `x` rounded to the operand's type, as `llc` folds no rounding
+into a conversion to `half`). `sitofp`/`uitofp` produce the `float`
+that the `float` conversion would (`cvtsi2ss`; an unsigned `i32` and
+an `i64` by `fild`, the unsigned `i64` with `llc`'s `2^64` addition)
+and narrow it; `fptosi`/`fptoui` widen and truncate with `cvttss2si`
+(every `half` in the result's range converts exactly; an `i64` result
+is sign-extended). `load`, `store`, `freeze`, `select` (the address
+`cmov`), `bitcast` to and from `i16` are 16-bit copies. `fneg` flips bit
+15 (LLVM 22; LLVM 19 widens, negates and narrows, which differs only
+for a signalling NaN: tests use no signalling NaN). The libgcc calls
+are calls, but with SSE2 §11 keeps no 80-bit copy (`float` and
+`double` are SSE values), so they need no `x87::barrier` entry; a
+view of an SSE call result reaches across them as across any call.
+Refused: `half` in a function without SSE2 (`x86:float:half`: `llc`
+returns it in `ax` there and reads `ax` after `__truncsfhf2`, but
+libgcc's routine writes only `xmm0`, an SSE2 `movd`), a `half`
+parameter or result of `fastcc` or `inreg` (`x86:float:half`), and
+the `half` intrinsics (`x86:float:half:intrinsic`).
+
+**Remains refused.** `bfloat` (`x86:float:bfloat`: `llc` 19 aborts on
+part of its operations, "Unsupported library call operation" and
+"soft promote", and errors on its return without SSE: no oracle),
+`fp128` (`x86:float:fp128`: libgcc calls with a
+hidden result pointer, and LLVM 19 and 22 align its arguments
+differently), other
+intrinsics (`x86:float:intrinsic`).
+
+## 17. Vectors (`vector`, WP-317, design 0008 I12 step C)
+
+**Measured** (`llc` 19 and 22, `-O0 -global-isel=0 -fast-isel=0`, at
+`pentium4`): a vector of at most 16 bytes, at least two lanes and lanes
+of 8 to 64 bits is one `xmm`, its bytes packed from lane 0 (`<2 x
+i32>`, `<4 x i8>`, `<3 x i32>` widened, not promoted). The result is in
+`xmm0`; the first three arguments in `xmm0`-`xmm2` (`fastcc` and
+`inreg` the same); every other one, and every vector of a variadic
+call, in a 16-byte stack slot aligned 16. `<1 x T>` is scalarized, `<N
+x i1>` promoted, a wider vector split over several `xmm`: refused at
+the boundary (`x86:vector:abi`, `x86:vector:wide`). Without SSE2
+(`pentium3`, `generic`) `llc` scalarizes every vector: refused
+(`x86:vector:no-sse2`). `llc` does not realign the stack for a 16-byte
+slot: it relies on `esp` being 16-aligned after its prologue, which
+hod's frame keeps (§ "Frame"), so `frame.rs` is unchanged.
+
+**Values.** Every vector is of class `Mem`; its home holds its memory
+image (lanes packed; `i1` lanes bit by bit, lane 0 in bit 0), so
+`load`, `store`, `bitcast`, `freeze` and `phi` are copies and a
+constant is its flattened image. The boundary is `sse::vector_place`
+(the part's size is the allocation size: 2, 4, 8 or 16) with the glue
+moves `sse::load_xmm` / `store_xmm` (`movzx`+`movd`, `movd`, `movsd`,
+`movdqu`).
+
+**Operations**, lane by lane through `eax`, `ecx`, `edx`, `xmm6`:
+integer `add` .. `ashr`, `udiv` .. `srem` (lanes of 1 to 4 bytes,
+extended to 32 bits; a lane divided by zero traps, as `llc`'s);
+`i64` lanes `add`/`adc`, `sub`/`sbb`, bitwise; `i1` lanes bitwise on
+bytes; `fadd` .. `fdiv` (`adds`.. on `xmm6`), `fneg` (the sign bit);
+`icmp` (`i64` lanes by `cmp`/`sbb` of the halves), `fcmp` (§16's
+conditions) into an `i1` vector; `select` by a scalar or an `i1`
+vector without a branch (`f ^ ((t ^ f) & m)`); `extractelement` /
+`insertelement` with a constant or variable index (masked with `N-1`
+for a power-of-two `N`, else 0 when `≥ N`); `shufflevector`; `trunc`,
+`zext`, `sext` (with `i1` lanes), `fpext`, `fptrunc`, `sitofp` and
+`fptosi` (lanes up to 32 bits, `uitofp` / `fptoui` up to 16);
+`llvm.vector.reduce.{add,mul,and,or,xor,smax,smin,umax,umin}` of lanes
+up to 32 bits (`cmov` for the extremes) and of at most 32 `i1`. A
+result whose lanes move (shuffle, cast, compare, `i1`) is built in a
+slot of its own and copied to its home. Nothing branches or calls: no
+vector construct is an x87 barrier.
+
+## 18. Coroutines (`coro`, `coro_body`; WP-327, WP-335)
+
+The handle operations are lowered in any function, as LLVM's
+`coro-early` and `coro-cleanup` leave them on i386 (measured with `opt
+-passes='default<O0>'` + `llc`, 19 and 22). A coroutine body
+(`presplitcoroutine`, the module a front end writes before LLVM's
+passes) is compiled once, as on the 64-bit targets (`spec/codegen.md`
+§7.6); §18.1 is what is particular to i386.
+
+- **The frame header.** The resume function's address is at offset 0
+  and the destroy function's at 4. Each is a `fastcc void(ptr frame)`
+  function: the frame in `ecx`, and the caller pops nothing.
+- **`coro.resume(p)` / `coro.destroy(p)`:** `mov r, [p + 0 | 4]`, then
+  the call sequence through `r` with `p` as the `fastcc` argument
+  (`FnCx::call_through`), as an `invoke` too.
+- **`coro.done(p)`:** `cmp dword [p], 0`, `sete` (into `cl` when the
+  result's register has no low byte), `movzx`.
+- **`coro.promise(p, align, from)`:** `lea r, [p ± alignTo(8, align)]`
+  (LLVM's `{ptr, ptr, i8}` field 2). The alignment is a constant power
+  of two of at most 2^30, and the direction is a constant; otherwise
+  `x86:coro-promise`.
+- **`coro.noop()`:** the address of `.LNoopCoro.Frame.Const`, 8 bytes
+  aligned to 8, two `R_386_32` words naming `__NoopCoro_ResumeDestroy`,
+  whose code is `ret`. The address is `lea r, [frame]` with `R_386_32`,
+  or under PIC it is formed from the GOT pointer with `R_386_GOTOFF`, as
+  `llc` writes it.
+- **The barrier rule (§11).** `coro.resume` and `coro.destroy` are
+  barriers: a `float` or `double` live across either is stored rounded
+  to its own width and loaded again after it. This is measured: `llc` 19
+  and 22 spill such a value as 8 bytes across both. Without the barrier,
+  `handles.ll` prints `0x0p+0` where `llc` prints `-0x1p-54`.
+
+Tests: `crates/hod/tests/i386_coro.rs` (`coro/handles.ll`, static and
+PIE, default CPU and `-mcpu=i686`, three linkers, plain and under
+`Stress::ALL`, against the `opt` + `llc` oracle).
+
+### 18.1 Bodies (`coro_body`, WP-335)
+
+- **The frame base is `esi`**, reserved for the whole function: it is
+  out of the pool and the holdable set (`REG_INFO_CORO`), so a body's
+  general pool is `ebx` and `edi`, and no lowering pins more than two
+  (`MIN_POOL_GPR_32`, WP-331). Under PIC `ebx` is also the GOT pointer
+  of every PLT call (`pic::emit_call` displaces the value it holds), so
+  across such a call `edi` is the one pool register that keeps a value.
+  `esi` is callee-saved in every convention hod writes; the prologue's
+  save, CFI row (CFA − 16) and every exit's restore are the frame's.
+  `FrameRef::Coro(o)` is `[esi + o]`, formed in `common::frame_mem` only.
+- **The header** is two pointers (8 bytes): resume at 0, destroy at 4,
+  the promise at `alignTo(8, align)` (the plan's header follows the
+  data layout's pointer size).
+- **Entry.** The prologue stores 0 to the mode word and the frame word.
+  `coro.begin(id, mem)`: `mov esi, mem`; the stubs' addresses without
+  a relocation in every model (`call .+0` · `pop ecx` · `lea edx, [ecx
+  + stub − end]` · `lea edx, [edx + end − pop]`), stored at 0 and 4;
+  the frame word := `esi`. `F.resume` and `F.destroy` are `fastcc
+  void(ptr)` stubs after the function: the prologue with its rows, `mov
+  esi, ecx`, mode := 1, frame word := `ecx`, `eax` := 0 (resume) or 1
+  (destroy), then `cmp dword [esi + index], k` · `je` per re-entry,
+  `ud2` after the last.
+- **`coro.suspend`:** `mov eax, -1`, the re-entry label, the result
+  from `eax`. `coro.save` stores the index (and 0 to the resume word at
+  the final suspend). The dispatch compares the `i8` low byte (through
+  `cl` when the register has none: `edi`).
+- **Exits.** A ramp that pops (`sret`: `ret $4`) tests the mode word
+  before the teardown: a resumed activation returns with `ret`.
+  `coro.end` not unwinding: a resumed activation leaves by the
+  epilogue; unwinding: it stores 0 to the resume word and the final
+  index. `coro.free` and `coro.frame` are `esi`; `coro.alloc` 1;
+  `coro.size` and `coro.align` the layout's (an `i64` result in its two
+  halves).
+- **Symmetric transfer** (after the handle wrapper returned `h` in
+  `eax`): `mov edx, [eax]` · `mov ecx, eax` · `cmp dword [ebp + mode],
+  0` · `jne exit` · `call edx` (through `pic::emit_call`); `exit` tears
+  the frame down and `jmp edx`.
+- **Barriers (§11).** `coro.suspend` and the three `await.suspend`
+  wrappers are x87 barriers (with `coro.resume` and `coro.destroy`): a
+  resumed activation's machine stack does not hold an 80-bit copy's
+  slot, and `llc` lowers each with a call or a function boundary. A
+  `float` or `double` live across a suspend is a heap value of its own
+  size, so it is rounded there. `llc` can differ: `CoroSplit`
+  rematerialises an arithmetic instruction after the suspend from its
+  spilled operands and computes it again in 80 bits (measured, 19 and
+  22). The IR's rounding is hod's; the excess precision is the oracle's
+  (`spec/harness.md` `x87-precision`).
+- **Exceptions and debug information** are the 64-bit targets': a
+  landing pad runs in the activation that made the call, `esi` restored
+  by the unwinder from the prologue's or the stub's rows; variables'
+  locations go through the frame word (`spec/dwarf.md` §6.16).
+- **Refused:** inline assembly in a body that writes `esi` is
+  `x86:coro:asm-base` (an operand is never given `esi`).
+- **With §19 (the join of WP-324 and WP-335).** A protected body's ramp
+  copies its stack arguments below the guard with `esi` as scratch
+  (`ssp::copy_arguments`) before `esi` is the frame base (`coro.begin`;
+  under `Stress::coro_frame` the `mov esi, ebp` follows the copy). A
+  resumed activation has a machine frame of its own: each stub writes,
+  after the frame word, the guard word (and the low guard), and the
+  guarded block's pointers again (`ssp::stub_enter`, as `llc` guards
+  `F.resume` and `F.destroy`), so the epilogue's check holds; without it
+  every resumed activation of a protected body called
+  `__stack_chk_fail`. Under `cf-protection-branch` each stub begins with
+  `endbr32` (`cet::landing`), as `llc`'s `F.resume` and `F.destroy`
+  do. `indirectbr` in a body is the function's own code in every
+  activation (one function, one frame layout); clang refuses the
+  address of a label in a coroutine, so no C++ program reaches it.
+  Test: `i386_coro.rs` `protected_bodies_run_as_llc_s`
+  (`coro/protected.cpp`, `-fstack-protector-strong`, `-all`, `-all`
+  with `-fcf-protection=branch`).
+
+Tests: `crates/hod/tests/i386_coro.rs` (`bodies_run_as_llc_s`: the
+programs `coro/gen.cpp`, `transfer.cpp`, `throws.cpp` by clang 19 and
+22, CPU `generic` and `i686`, static and PIE, plain and stressed;
+`bodies_with_debug_information_verify_and_run`; `what_is_refused`) and
+the `tests/ir/coro` seeds through `irdiff --target i686`.
+
+## 19. Indirect branches, stack protectors, control-flow protection, `llvm.eh.unwind.init` (WP-324)
+
+### 19.1 Indirect branches (`ibr`, WP-324)
+
+`indirectbr ptr %a, [...]` is `jmp r` on the address's register; on a
+`blockaddress` constant of the function itself it is a direct branch to
+that block (as on x86-64). A `blockaddress` of the function's own block
+in a register is position independent in every relocation model and
+needs no relocation:
+
+```text
+call 0f                ; e8 00000000: pushes the address of 0
+0: pop rd
+lea rd, [rd + disp32]  ; REL32 fixup to the block's label: label - (0 + 7)
+lea rd, [rd + 7]
+```
+
+It writes `rd` only and keeps the flags. `llc` writes `movl $.Ltmp, %r`
+(`R_386_32`) in the static model and `leal .Ltmp@GOTOFF(%ebx), %r` under
+PIC; the value is the same. Neither is an x87 barrier beyond what `llc`
+has: `indirectbr` ends its block, a `blockaddress` is one `mov`/`lea` in
+`llc`. A `blockaddress` in a global's initializer is the module
+emitter's (`R_386_32` against the function's section, plus the block's
+offset). The address of another function's block in code stays refused,
+`x86:blockaddress`. Evidence: `tests/i386_ibr.rs` (a computed-goto
+interpreter with a static table of label addresses, one built at run
+time, a label address selected and compared; `-march=i586` and the
+default CPU, static and PIE, GNU ld, lld and mold, `llc` 19 and 22, also
+under `Stress::ALL`).
+
+### 19.2 Stack protectors (`ssp`, WP-324)
+
+`ssp`, `sspstrong` and `sspreq` follow `spec/codegen.md` §5.6.24 rules 1
+to 4 and 7 unchanged (which functions, which slots move into the guarded
+block and in which order, the block at the top of the local area, the low
+guard at `Local(0)` with a dynamic area, the check at every exit
+sequence: the epilogue and every `musttail` exit; none at `unreachable`,
+a `noreturn` call or `resume`). The i386 parts:
+
+- **The guard value** is `gs:[0x14]` (glibc's TCB `stack_guard`), what
+  `llc` 19 and 22 read for `i686-*-linux-gnu` in the static, PIC and PIE
+  models alike. The guard word is the block's 8 bytes
+  (`hod_cg::GUARD_BYTES`); the value is in its first 4, right after the
+  top slot. The module flags `stack-protector-guard*` are refused by the
+  front half (`module-flag:<name>`, as on the other targets); `safestack`
+  stays refused (`attr:safestack`).
+- **Entry code** (scratch `ecx`, `edx`): `mov ecx, gs:[0x14]` · `lea edx,
+  [ebp + block]` (a local access whose displacement `end_function`
+  writes before the bias) · `mov [edx + guard], ecx` · (`mov [low],
+  ecx`) · per slot of the block `lea ecx, [edx + k]` · `mov [pointer],
+  ecx`.
+- **The check**: `mov ecx, [guard]` · `cmp ecx, gs:[0x14]` · `jne fail`
+  (and the same for the low guard). At a `musttail` exit `ecx` may hold
+  an argument (`fastcc`, `inreg`): there the load and compare are
+  bracketed by `push ecx` · `pop ecx` (`pop` keeps the flags). The result
+  registers (`eax`, `edx`, `st0`) are not touched.
+- **The failure call** follows the last exit, under the body's CFA rule:
+  `call __stack_chk_fail` through `pic::emit_call` (`R_386_PLT32`; under
+  PIC with the GOT pointer in `ebx` first). `llc` 19 and 22 call
+  `__stack_chk_fail@PLT` in the static, PIC and PIE models; they never
+  call `__stack_chk_fail_local`.
+- **x87**: `llc` checks the guard in a block of its own (`SP_return`)
+  before the `ret`, so a `float`/`double` result live into the return
+  is stored at its type before the check and reloaded: a function `llc`
+  protects returns its result rounded to its type, never the 80-bit copy
+  of §11 (`control::ret` passes `!ssp::checks_at_return` to
+  `x87::ret_copy`). Measured with `llc` 19 and 22 at `-O0`, CPU
+  `generic` and `i686`, on a `float` product computed after a call and
+  one computed before it (both are `fstps` · check · `flds` · `ret`).
+  hod protects a superset of `llc`'s functions and its own check does not
+  touch the x87 stack, so the rounding follows `llc`'s choice as far as
+  hod sees it without slot types: `sspreq`; a dynamic area; under
+  `sspstrong` an escaping slot; under `ssp` an escaping slot of at least
+  8 bytes (clang's default `"stack-protector-buffer-size"`). Where that
+  guess differs from `llc` (a struct local reached only through constant
+  field offsets under `sspstrong`, an escaping non-character array of 8
+  bytes or more under `ssp`) a `float`/`double` result live into the
+  return is rounded by hod and not by `llc`. The check is no barrier
+  elsewhere: nothing else is live across it.
+- **The incoming stack arguments are copied below the guard.** They lie
+  above the return address, so an overflow that gets past the guard
+  reaches them before the check runs. `llc` 19 and 22 (`-O0`, CPU
+  `generic` and `i686`, static and PIC) load every stack argument the
+  body uses after the entry block in the entry block, and keep it in a
+  spill slot below the protected arrays: the struct result's hidden
+  pointer (`spec/abi-x86.md` §5.2) for each store of the result and for
+  the `eax` result, a scalar or pointer argument for each later use. It
+  reads `byval` copies in place. In a protected function hod copies, in
+  `begin_function` right after the low guard's slot and before any
+  argument register is read, every word of the incoming area that holds
+  the hidden pointer or a part that is not `byval` (scratch `esi`, which
+  the prologue saved and which carries no argument). The copy goes into
+  one local slot, 16-aligned, that keeps each byte's offset modulo 16.
+  Like every slot outside the guarded block, it lies below the block
+  (`spec/codegen.md` §5.6.24 rule 3). From then on every access to those
+  bytes (`ssp::incoming`, applied by `common::frame_inst`) goes to the
+  copy: argument homes, the hidden pointer for the stores of the result
+  and for `eax`. The exception is a `musttail` call's copy of its stack
+  arguments into the real incoming area. An overflow therefore never
+  makes the body write through an overwritten pointer before the check
+  aborts. `byval` copies stay in place, as under `llc`. Debug locations
+  of stack arguments still name the incoming slot, which holds the same
+  value until it is overwritten.
+
+Evidence: `tests/i386_ssp.rs`: `ssp/smash.c` with `-fstack-protector`,
+`-strong` and `-all` and `ssp/tail.ll` run as `llc`'s (output and status;
+`-march=i586` and the default CPU, static and PIE, GNU ld, lld and mold,
+`llc` 19 and 22, also under `Stress::ALL`); with `-DOVERFLOW=1..6` (one
+buffer, several slots, the low guard, an `i64` result, a `float` result,
+a struct result through its hidden pointer) every build aborts with
+`*** stack smashing detected ***` and SIGABRT, as `llc`'s. `ssp/args.ll`
+(the hidden pointer, a pointer argument and a scalar argument on the
+stack, used after the buffer is written) runs as `llc`'s in bounds. With
+its overflow, every build aborts the same way (CPU `generic` and
+`i686`, static and PIE, `llc` 19 and 22, every linker, also under
+`Stress::ALL`). Without the copy, hod's build faulted on the store
+through the overwritten result pointer.
+
+### 19.3 Control-flow protection (`cet`, WP-324)
+
+The module flags `cf-protection-branch` and `cf-protection-return`
+(clang's `-fcf-protection=`) compile; `x86:cf-protection` is gone.
+
+- **The property note.** `hod_cg`'s emitter writes `.note.gnu.property`
+  for i386 as for x86-64: one `NT_GNU_PROPERTY_TYPE_0` note owned by
+  `GNU` with `GNU_PROPERTY_X86_FEATURE_1_AND` (`0xc0000002`), bit IBT (1)
+  for `cf-protection-branch`, bit SHSTK (2) for `cf-protection-return`.
+  In ELF32 the property array is padded to 4 bytes and the section is
+  aligned to 4 (`hod_obj`'s `add_gnu_properties`, the padding the
+  machine's address size): 28 bytes, `llc`'s byte for byte.
+- **`endbr32`** (`F3 0F 1E FB`) when the module has
+  `cf-protection-branch`, where `llc` 19 and 22 put it
+  (`X86IndirectBranchTracking`): first in every function but a
+  `nocf_check` one, before `push ebp`; at every block whose address is
+  taken and every landing pad (`Target::branch_target`, which `hod_cg`
+  also calls at an `invoke`'s pad stub); right after a direct call of a
+  function declared `returns_twice`. hod's places are a superset of
+  `llc`'s: `llc` leaves the entry of a local function whose address is
+  not taken unmarked, and puts one marker per landing pad where hod has
+  one at the stub and one at the pad. `endbr32` is a no-op outside a CET
+  process.
+- **`cf-protection-return`** changes no code: hod's returns go to the
+  address its calls pushed.
+- **Refused**: an indirect call with `nocf_check` in a module with
+  `cf-protection-branch` needs the `notrack` prefix, which the encoder
+  lacks (`x86:nocf-check-indirect-call`, as on x86-64). Without the flag
+  `nocf_check` changes nothing. hod makes no jump table, so it has no
+  `notrack` jump.
+
+Evidence: `tests/i386_cet.rs`: `cet/cet.c` and `cet/throw.cpp` built
+with `-fcf-protection=full` run as `llc`'s (static and PIE, GNU ld, lld
+and mold, `llc` 19 and 22, also under `Stress::ALL`); the note's bytes,
+type, flags and alignment are `llc`'s and `llvm-readelf -n` reads `x86
+feature: IBT, SHSTK` in both; per function hod has at least `llc`'s
+`endbr32` count, one at every entry where `llc` has one, one after each
+`setjmp` call and none at the `nocf_check` function's entry; a
+freestanding program linked `-nostdlib -static` keeps the property
+through GNU ld, lld and mold when every object has it and loses it when
+one does not, as with `llc`'s objects.
+
+### 19.4 `llvm.eh.unwind.init` (WP-324)
+
+`llc` 19 and 22 make a function that calls `llvm.eh.unwind.init` save
+every callee-saved register: `ebp` (the frame pointer), `ebx`, `edi`,
+`esi`, with their CFI rows. Every hod frame already saves that set
+(`frame::begin`, §3), so the intrinsic emits nothing (`call.rs`). The
+other frame intrinsics are §13.5's; `llvm.eh.dwarf.cfa` stays
+`x86:intrinsic`.
+
+Evidence: `tests/ir/frame_intrinsics.ll` (newly built on i686) passes
+`cargo xtask irdiff --target i686` with LLVM 19 and 22, GNU ld, lld and
+mold.
+
+## 20. Vectors without SSE (`vecscalar`, WP-338)
+
+(Section number given at the merge.) A function whose CPU has no SSE at
+all (`generic`, `i586`, clang's default `i686`: `+cmov,+cx8,+x87`).
+With SSE but not SSE2 (`pentium3`) `llc` keeps `<4 x float>` in `xmm`:
+still `x86:vector:no-sse2`.
+
+**Measured** (`llc` 19 and 22 alike, `-O0 -global-isel=0
+-fast-isel=0`, CPU `i686` and `generic`): `llc` scalarizes every vector
+into its elements.
+
+- *Memory.* The same image as §17: lanes packed from lane 0, `<N x i1>`
+  bit by bit (lane 0 in bit 0 of byte 0); a vector `alloca`, `load`,
+  `store` keeps its IR alignment.
+- *Arguments.* Each lane is an argument of its own, in order, as the
+  scalar of its type is (§3 of `spec/abi-x86.md`): a lane of 1 to 4
+  bytes in a 4-byte slot, `i64` and `double` lanes in 8 bytes, at
+  alignment 4 (`<4 x i32>` after an `i32` at offsets 4..16, `<32 x
+  double>` in 256 bytes, no 16-byte slot). `fastcc` gives integer lanes
+  `ecx`, `edx` then the stack; `inreg` gives `eax`, `edx`, `ecx`.
+- *Results.* The lanes as the scalars of an IR aggregate's leaves
+  (`spec/abi-x86.md` §5): up to three integer words in `eax`, `edx`,
+  `ecx` (`<3 x i32>`; `<2 x i32>`, `<1 x i64>` in `edx:eax`; `<3 x i8>`
+  in `al`, `dl`, `cl`; `<2 x i16>` in `ax`, `dx`), one floating lane in
+  `st0` (`<1 x double>`), two in `st0`, `st1` (`<2 x float>`); anything
+  else through the hidden result pointer, popped by the callee (`<4 x
+  i8>`, `<2 x i64>`, `<4 x float>`, `<32 x i8>`). Under `fastcc` the
+  hidden pointer is in `ecx` and the callee pops nothing.
+- *Floating lanes* are x87 values (§11): `fld`, operate, `fstp` per
+  lane, and `llc` keeps a computed lane at 80 bits for its uses in the
+  block exactly as a scalar (measured: `(a + b) - a` of `<2 x double>`
+  has no rounding between the two operations). A float lane passed as an
+  argument goes through `flds`/`fstps` (a signalling NaN is quieted);
+  `fneg` is `fchs` or an integer sign flip, as the DAG happens to choose.
+- *Barriers.* Nothing in a vector operation branches or calls with
+  `cmov`; without `cmov` a lane `select` and the `min`/`max` reductions
+  branch.
+
+**The scheme.** A vector is of class `Mem` with its memory image in its
+home, as in §17, and every operation is a loop-free sequence over the
+lanes through `eax`, `ecx`, `edx` (integers, `i64` lanes in halves as
+§8) or the x87 stack (floating lanes, pushed from and popped to the
+frame), so no vector holds a pool register. The integer forms of §17
+that use no `xmm` register are §17's code unchanged (`vector.rs`);
+`vecscalar.rs` lowers the others: `fadd`, `fsub`, `fmul`, `fdiv` and
+`fcmp` of `float`/`double` lanes on the x87 (`fucomip` with `cmov`,
+else `fucompp`, `fnstsw`, `sahf`), `insertelement` of an `i64`,
+`float` or `double` lane and of an `i1` lane at a variable index
+through `eax`/`ecx`. Each floating lane is rounded to its type when it
+is popped to the result.
+
+**Excess precision.** hod keeps no 80-bit copy of a lane. A floating
+operand of an x87 lane operation (`fadd`..`fdiv`, `fcmp`,
+`extractelement` of a floating lane) that `llc` would still hold at 80
+bits is refused (`x86:vector:no-sse2:excess-precision`): one defined
+earlier in the same block by a computing instruction (a floating
+operation, a call) or by a lane move (`insertelement`,
+`shufflevector`, `select`, `freeze`, `fneg`) of such a value. A
+result of one or two floating lanes returned by `ret` from such a
+value is refused the same way. Stores, call arguments and `bitcast`
+round in `llc` too and are lowered. A floating operation whose
+operands are constants (`llc` folds it: one rounding, `+qNaN`) is
+refused (`x86:vector:no-sse2:fold`). hod counts a call between the
+definition and the use as no end of the 80 bits (it refuses where
+`llc` would read the value rounded).
+
+**Not lowered** (`x86:vector:no-sse2:<what>`): `:cast` (a cast from or
+to floating lanes), `:select` (without `cmov`), `:reduce` (`min`/`max`
+reductions without `cmov`), `:abi` (an `<N x i1>` or `inreg` vector
+argument or result). As for an aggregate, a `fastcc` vector of floating
+lanes or returned in memory is `x86:abi:cc` and a result of two
+floating lanes (`st0`, `st1`) is `x86:abi:x87-pair`. The other
+refusals of §17 (`:element`, `:i64-op`, `:frem`, `:intrinsic`,
+`:length`, ...) hold. `vecscalar::ret_memory` writes a vector result
+in memory (`control::ret` sends it there, not to `agg`).
+
+**No barrier.** No construct of this section is added to
+`x87::barrier`: the select and reductions that branch are refused.
+
+## 21. Floating-point classes and `modf` (`fpclass`, WP-337)
+
+**`llvm.is.fpclass`** of a scalar `float`, `double` or `x86_fp80`, in a
+function with or without SSE / SSE2: integer tests of the operand's
+home. A `float` / `double` home holds the value rounded to its type, so
+the class is the rounded value's, never the 80-bit copy's (§11): this
+is a rounding point, as in `llc`, which stores the value at its type and
+tests the bits (for the masks "NaN" and "not NaN" it compares the value
+with itself, which rounding does not change). The class's index in the
+mask (`LangRef`'s bits: 0 signalling NaN, 1 quiet NaN, 2 negative
+infinity, ..., 9 positive infinity) is computed in `ecx` (a `double`'s
+low word folded into bit 0 of the high word's magnitude, which no bound
+uses), then `bt` of the mask in `edx`, `setb`; the result is the only
+pool register. Measured with `llc` 19 and 22 over all 1024 masks at CPU
+`generic` and `i686`, with an operand that is a product of the block:
+`llc` never branches, so `is.fpclass` is no barrier (§11), and the run
+continues across it.
+
+*`x86_fp80` encodings only the x87 has* (measured, all 1024 masks):
+- an unnormal (a non-zero exponent without the integer bit, a pseudo-zero
+  included), a pseudo-infinity, a pseudo-NaN (the maximum exponent
+  without the integer bit): true exactly when the mask has both NaN
+  classes or is everything but one NaN class (`llc` 19 and 22 alike);
+- a pseudo-denormal (exponent 0, integer bit set): `llc` 22 compares
+  the value for the masks 3, 7, 99, 243, 508, 515, 780, 924, 1016, 1020
+  (a pseudo-denormal is then a normal number of its sign); for the
+  other masks it tests bits: true when the mask has both NaN classes or
+  all four zero and subnormal classes, with the test inverted first
+  when its complement is one class, one class of one sign, the finite
+  classes (of one sign), zero or NaN, subnormal or zero, subnormal or
+  zero or NaN (`invertFPClassTestIfSimpler`). hod does what `llc` 22
+  does. `llc` 19 compares only 3, 99, 924, 1020 and differs from 22 at
+  the masks 7, 243, 515 and 780 for a pseudo-denormal. (x86-64 decided
+  otherwise: `spec/codegen.md` §5.6.12 counts a pseudo-denormal as a
+  subnormal, as `fxam` does, for every mask; on i386 the two differ at
+  459 of the 1024 masks, measured.)
+
+A vector operand keeps the classifier's `intrinsic:llvm.is.fpclass/vector`;
+`half` keeps its refusal. The mask is an `immarg`; a non-constant one
+would be `x86:intrinsic`.
+
+**`llvm.modf`** of `float`, `double`, `x86_fp80` (LLVM 20 and later;
+clang 22 writes it for `modf`, `modff`, `modfl` on every target, kiln
+calls the routines): `modff` / `modf` / `modfl` (`llc` 22, measured)
+with the operand at its width in the outgoing area and the address of
+the result's second field (the integral part) after it, through
+`pic::emit_call`; the fractional part is popped from `st0` to the first
+field at its type's width (exact). The call is a barrier (`x87::barrier`;
+`llc` 22 does not fold it, and spills a product of the block across it,
+measured). In an SSE function the same sequence (`llc` stores `st0`).
+On x86-64 and AArch64 `llc -O0` makes the same plain call (the operand
+in `xmm0` / `d0` / on the stack for `x86_fp80`, the pointer in `rdi` /
+`x0`), and hod makes it there too (`spec/codegen.md`, WP-340; what
+stays refused on those targets is `intrinsic:llvm.modf`).
+
+**`llvm.frexp`** of `float`, `double`, `x86_fp80` (WP-341; clang 19
+and 22 write it for `__builtin_frexp*`, libc++'s `frexp`): the same
+sequence as `modf` with `frexpf` / `frexp` / `frexpl` (`llc` 19 and 22,
+measured at CPU `generic`, `i686`, with SSE2, static and PIC): the
+operand at its width in the outgoing area (4, 8, or 10 of 12 bytes),
+the address of the result's second field (the `i32` exponent, written
+by the routine) after it, the fraction popped from `st0` to the first
+field at its type's width; `llc`'s exponent temporary is a stack slot
+it copies to the result, hod's is the result's field itself. The call
+is a barrier (`x87::barrier`) unless `llc` folds it: an operand that is
+a constant or a folded result (`llc` 19 and 22 fold `frexp` of a
+constant, with exponent 0 for an infinity or a NaN as libm's); hod
+still calls the routine there (the same values) but keeps the block's
+80-bit copies, as `llc`. A `half`, `fp128` or vector operand is the
+classifier's `intrinsic:llvm.frexp/<class>` on i386.
+
+**`bitcast` between `x86_fp80` and `i80`**: the 10 bytes copied
+between the homes (the `i80`'s is a slot of its size; its bytes above
+80 bits are unspecified). `icmp` of an `i80` with the constant 0, every
+predicate, reads two facts of the 10 bytes: negative (bit 79) and zero
+(clang's `signbit` of a `long double` is `icmp slt i80 %b, 0`). Every
+other operation on an `i80` (shifts, `trunc`, `and`, loads, stores, a
+compare with another value) stays `x86:i64:wide`.
+
+**Not lowered:** `x86:atomic:libatomic` stays: `llc` 19 and 22 call
+`__atomic_compare_exchange` (size 8) for a `cmpxchg i64` at `align 4`
+on every CPU (`generic`, `pentium`, `i686`), never an inline `lock
+cmpxchg8b`; hod's tests link no libatomic.
+
+Tests: `crates/hod/tests/i386_fpclass.rs`, `i386_frexp.rs` (static and PIE, plain and
+under `Stress::ALL`, CPU `generic`, `i686` and `pentium4` through
+`target-cpu`; `llc` 19 and 22 but where named).

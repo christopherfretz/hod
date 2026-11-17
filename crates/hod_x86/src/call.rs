@@ -28,6 +28,7 @@ pub fn check(cx: &FnCx<'_, X86>, inst: Inst<'_>, site: &CallSite<'_>) -> CgResul
     if inst.opcode() == hod_ir::Opcode::CallBr || site.bundle_count() != 0 {
         return unsupported(CALL);
     }
+    crate::cet::check_call(cx, site)?; // WP-324
     crate::abi::check_call(cx, site)
 }
 
@@ -52,6 +53,9 @@ pub fn lower<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, site: &CallSite<'a>) ->
         Some(Intrinsic::EhTypeidFor) if site.args().len() == 1 => {
             crate::eh::typeid_for(cx, inst, site.args()[0])
         }
+        // WP-324: `llc` saves `ebp`, `ebx`, `esi`, `edi`, the set every
+        // hod frame saves (`frame::begin`): nothing to add.
+        Some(Intrinsic::EhUnwindInit) => Ok(()),
         Some(Intrinsic::Trap) => {
             cx.trap();
             Ok(())
@@ -71,6 +75,9 @@ pub fn lower<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, site: &CallSite<'a>) ->
         }
         Some(which @ (Intrinsic::ThreadLocalAddress | Intrinsic::ThreadPointer)) => {
             crate::tls::intrinsic(cx, inst, which, site.args())
+        }
+        Some(which) if crate::coro::owns(which) => {
+            crate::coro::intrinsic(cx, inst, which, site.args())
         }
         Some(which) if crate::agg::is_overflow(which) => {
             crate::agg::overflow(cx, inst, which, site.args())

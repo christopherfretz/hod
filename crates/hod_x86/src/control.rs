@@ -29,6 +29,22 @@ pub fn br(cx: &mut FnCx<'_, X86>, target: BlockId) -> CgResult<()> {
     branch(cx, cx.block_label(target))
 }
 
+/// A branch on a constant (`condbr`, `switch`) folded to `target`: a
+/// `br`; then, when that would leave the branch's line without a row, one
+/// `nop` at its location (WP-252 for i386, found by the debug lane's i686
+/// column, WP-329: `FnCx::folded_branch_row`, `spec/dwarf.md` §5.10), as
+/// `hod_x64` does.
+///
+/// # Errors
+/// What the branch's fixup reports.
+pub fn folded_br(cx: &mut FnCx<'_, X86>, target: BlockId) -> CgResult<()> {
+    if cx.folded_branch_row(target) {
+        put(cx, mc::nop(1));
+        return Ok(());
+    }
+    br(cx, target)
+}
+
 /// `jcc if_true` then `br if_false`, or the inverse when `if_true` is
 /// next.
 fn branch_on(
@@ -57,7 +73,7 @@ pub fn cond_br(
     if_false: BlockId,
 ) -> CgResult<()> {
     if let Some(c) = const_int(cx, cond) {
-        return br(cx, if c & 1 != 0 { if_true } else { if_false });
+        return folded_br(cx, if c & 1 != 0 { if_true } else { if_false });
     }
     if if_true == if_false {
         return br(cx, if_true);
@@ -92,7 +108,7 @@ pub fn switch<'a>(cx: &mut FnCx<'a, X86>, switch: &Switch<'a>) -> CgResult<()> {
             .cases()
             .find(|&(case, _)| case_value(cx, case) == c)
             .map_or(switch.default, |(_, block)| block);
-        return br(cx, target);
+        return folded_br(cx, target);
     }
     let r = gp(cx.use_reg(switch.cond)?);
     extend_to(cx, r, bits, Ext::Zero);
@@ -113,11 +129,15 @@ pub fn switch<'a>(cx: &mut FnCx<'a, X86>, switch: &Switch<'a>) -> CgResult<()> {
 pub fn ret(cx: &mut FnCx<'_, X86>, inst: Inst<'_>, value: Option<Value>) -> CgResult<()> {
     if let Some(value) = value {
         if cx.fn_assignment().ret_memory.is_some() {
-            crate::agg::ret_memory(cx, value)?;
+            if cx.types().is_vector(crate::common::value_ty(cx, value)) {
+                crate::vecscalar::ret_memory(cx, value)?;
+            } else {
+                crate::agg::ret_memory(cx, value)?;
+            }
             return if cx.ret_falls_through() { Ok(()) } else { branch(cx, cx.epilogue()) };
         }
         // A result of the run returns at 80 bits (`x87::ret_copy`).
-        crate::x87::ret_copy(cx, inst, value, true);
+        crate::x87::ret_copy(cx, inst, value, !crate::ssp::checks_at_return(cx));
         let placed = cx.place_return(value);
         crate::x87::ret_copy(cx, inst, value, false);
         placed?;

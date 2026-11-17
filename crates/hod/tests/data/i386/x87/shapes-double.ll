@@ -1437,5 +1437,30 @@ entry:
   ret void
 }
 
-@names = constant [45 x ptr] [ptr @single, ptr @twice, ptr @twice_sep, ptr @call, ptr @call_between, ptr @call_before, ptr @block, ptr @block_and_local, ptr @stored, ptr @stored_after, ptr @nonlifo, ptr @far_int, ptr @far_fp, ptr @many6_fifo, ptr @many6_lifo, ptr @many7_fifo, ptr @many7_lifo, ptr @many8_fifo, ptr @many8_lifo, ptr @many9_fifo, ptr @many9_lifo, ptr @many12_fifo, ptr @many12_lifo, ptr @sqrt_between, ptr @frem_between, ptr @chain_use_twice, ptr @phi_use, ptr @select_use, ptr @cmp_twice, ptr @select_var, ptr @freeze_use, ptr @fpext_use, ptr @fptrunc_use, ptr @sitofp_use, ptr @sitofp_var, ptr @fneg_use, ptr @fmuladd, ptr @intsel_between, ptr @intsel_const, ptr @memcpy_small, ptr @memcpy_big, ptr @memset_small, ptr @memset_big, ptr @fold_const, ptr @frem_const_between]
-@count = constant i32 45
+; i386 join E: a `bitcast` takes the bits of the ROUNDED product, its
+; later use in the run the 80-bit copy; a cast back is not wide.
+define void @bitcast_between(ptr %in, ptr %out) nounwind {
+entry:
+  %ga = getelementptr double, ptr %in, i32 0
+  %a = load double, ptr %ga
+  %gb = getelementptr double, ptr %in, i32 1
+  %b = load double, ptr %gb
+  %gc = getelementptr double, ptr %in, i32 2
+  %c = load double, ptr %gc
+  %p = fmul double %a, %b
+  %w = bitcast double %p to i64
+  %w1 = xor i64 %w, 1
+  %f = bitcast i64 %w1 to double
+  %x = fadd double %p, %c
+  %ox0 = getelementptr double, ptr %out, i32 0
+  store double %x, ptr %ox0
+  %y = fadd double %f, %c
+  %oy1 = getelementptr double, ptr %out, i32 1
+  store double %y, ptr %oy1
+  %ow2 = getelementptr double, ptr %out, i32 2
+  store i64 %w, ptr %ow2
+  ret void
+}
+
+@names = constant [46 x ptr] [ptr @single, ptr @twice, ptr @twice_sep, ptr @call, ptr @call_between, ptr @call_before, ptr @block, ptr @block_and_local, ptr @stored, ptr @stored_after, ptr @nonlifo, ptr @far_int, ptr @far_fp, ptr @many6_fifo, ptr @many6_lifo, ptr @many7_fifo, ptr @many7_lifo, ptr @many8_fifo, ptr @many8_lifo, ptr @many9_fifo, ptr @many9_lifo, ptr @many12_fifo, ptr @many12_lifo, ptr @sqrt_between, ptr @frem_between, ptr @chain_use_twice, ptr @phi_use, ptr @select_use, ptr @cmp_twice, ptr @select_var, ptr @freeze_use, ptr @fpext_use, ptr @fptrunc_use, ptr @sitofp_use, ptr @sitofp_var, ptr @fneg_use, ptr @fmuladd, ptr @intsel_between, ptr @intsel_const, ptr @memcpy_small, ptr @memcpy_big, ptr @memset_small, ptr @memset_big, ptr @fold_const, ptr @frem_const_between, ptr @bitcast_between]
+@count = constant i32 46

@@ -83,6 +83,7 @@ fn forms(b: &mut Batch) {
     emit!(b, pushfq(), "pushfd");
     emit!(b, popfq(), "popfd");
     emit!(b, leave(), "leave");
+    emit!(b, endbr32(), "endbr32");
     emit!(b, ret(), "ret");
     emit!(b, ret_imm(4), "ret 4");
     // ud1 without the 67 of 64-bit mode's 32-bit addressing.

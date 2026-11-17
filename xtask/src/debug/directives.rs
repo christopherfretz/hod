@@ -49,7 +49,7 @@ pub const LINKER_WORDS: [&str; 5] = ["bfd", "lld", "mold", "wild", "mortar"];
 
 /// The targets' names in scopes and in `target:` (WP-136): the
 /// architecture the programs are built for (`--target`).
-pub const TARGET_WORDS: [&str; 2] = ["aarch64", "x86_64"];
+pub const TARGET_WORDS: [&str; 3] = ["aarch64", "x86_64", "i686"];
 
 /// The scope word of a session through an emulator's gdb stub (a target
 /// that is not this machine's, WP-136).

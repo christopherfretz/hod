@@ -202,6 +202,15 @@ impl LinesResult {
     }
 }
 
+/// WP-329: hod's refusals that keep a unit off the i686 column (a SKIP
+/// with the detail [`KEPT_OFF_PREFIX`] and the name, counted in the
+/// summary) until hod lowers what they name for i386. Any other refusal
+/// on i686 is a FAIL, as on every target.
+pub const KEPT_OFF_I686: [&str; 2] = ["debug:split-dwarf-i386", "debug:dwarf-4-i386"];
+
+/// The detail of a unit kept off on i686, before the refusal's name.
+pub const KEPT_OFF_PREFIX: &str = "kept off on i686: ";
+
 /// What a run found.
 #[derive(Clone, Debug, Default)]
 pub struct Report {
@@ -234,6 +243,12 @@ impl Report {
 
     pub fn count(&self, outcome: Outcome) -> usize {
         self.records.iter().filter(|r| r.outcome == outcome).count()
+    }
+
+    /// WP-329: the SKIPs of units kept off on i686 by the refusal `name`.
+    pub fn kept_off(&self, name: &str) -> usize {
+        let detail = format!("{KEPT_OFF_PREFIX}{name}");
+        self.records.iter().filter(|r| r.outcome == Outcome::Skip && r.detail == detail).count()
     }
 
     /// The lines comparison of every unit together.
@@ -309,6 +324,15 @@ impl Report {
             if counts.is_empty() { "none".to_owned() } else { counts.join(", ") },
             self.sessions
         );
+        let kept: Vec<String> = KEPT_OFF_I686
+            .iter()
+            .map(|name| (name, self.kept_off(name)))
+            .filter(|&(_, n)| n > 0)
+            .map(|(name, n)| format!("{n} {name}"))
+            .collect();
+        if !kept.is_empty() {
+            let _ = writeln!(out, "debug: of the SKIPs, kept off on i686: {}", kept.join(", "));
+        }
         if let Some(file) = &self.results_file {
             let _ = writeln!(out, "debug: results in {}", file.display());
         }
@@ -334,6 +358,47 @@ fn test_name(path: &Path) -> String {
     path.strip_prefix(&root).unwrap_or(path).display().to_string()
 }
 
+/// The kiln++ front end, or `None` with a note. kiln is a front end of
+/// this harness, not a tool of the gate: missing, it is not required.
+/// WP-329: kiln++ refuses `--target=i686-*` ("kiln supports `aarch64` and
+/// `x86_64` Linux"): on i686 it is no front end and its units are SKIP.
+fn kiln_frontend(options: &Options, arch: Arch, report: &mut Report) -> Option<PathBuf> {
+    if arch == Arch::I686 {
+        report.notes.push("kiln++ does not compile for i686: its units are SKIP".to_owned());
+        return None;
+    }
+    let kiln = options
+        .kiln
+        .clone()
+        .unwrap_or_else(|| crate::corpus::capture_defaults(&options.build_dir).kiln);
+    if kiln.is_file() {
+        return Some(kiln);
+    }
+    report.notes.push(format!("kiln++ ('{}') not found", kiln.display()));
+    None
+}
+
+/// WP-329: whether the linker `name` links programs of `arch`: wild and
+/// mortar do not link this lane's i686 programs (dynamic PIE),
+/// `hod_testutil::linkers::EXCEPTIONS` case `elf-i386`; a note, or an
+/// error when `--linker` asked for it.
+fn links_i686(
+    arch: Arch,
+    name: &str,
+    options: &Options,
+    report: &mut Report,
+) -> Result<bool, String> {
+    if arch != Arch::I686 || hod_testutil::linkers::links(name, hod_testutil::target::Target::I686)
+    {
+        return Ok(true);
+    }
+    if options.linkers.iter().any(|l| l == name) {
+        return Err(format!("the linker '{name}' does not link i686 programs (elf-i386)"));
+    }
+    report.notes.push(format!("the linker `{name}` does not link i686 (elf-i386)"));
+    Ok(false)
+}
+
 /// Finds the tools of a run, with notes for what is missing.
 fn find_tools(options: &Options, report: &mut Report) -> Result<(Tools, Vec<Debugger>), String> {
     use crate::irdiff::tools::{REQUIRED_LINKERS, Search, find_driver_for, find_linker_for};
@@ -355,15 +420,8 @@ fn find_tools(options: &Options, report: &mut Report) -> Result<(Tools, Vec<Debu
             }
         }
     }
-    let kiln = options
-        .kiln
-        .clone()
-        .unwrap_or_else(|| crate::corpus::capture_defaults(&options.build_dir).kiln);
-    if kiln.is_file() {
+    if let Some(kiln) = kiln_frontend(options, arch, report) {
         frontends.push(("kiln".to_owned(), kiln));
-    } else {
-        // kiln is a front end of this harness, not a tool of the gate.
-        missing(format!("kiln++ ('{}')", kiln.display()), false, report);
     }
     let mut llc = Vec::new();
     for major in [19, 22] {
@@ -379,7 +437,7 @@ fn find_tools(options: &Options, report: &mut Report) -> Result<(Tools, Vec<Debu
     let mut linkers = Vec::new();
     for name in crate::irdiff::LINKER_NAMES {
         let wanted = options.linkers.is_empty() || options.linkers.iter().any(|l| l == name);
-        if !wanted {
+        if !wanted || !links_i686(arch, name, options, report)? {
             continue;
         }
         match find_linker_for(name, arch, &search) {
@@ -732,6 +790,18 @@ impl Run<'_> {
             let hod_o = dir.join(format!("m{i}.hod.o"));
             match build::hod_object(&self.tools.hod, &ir, &hod_o, limits) {
                 HodBuild::Built => {}
+                HodBuild::Declined(reason) if self.target_name() == "i686" => {
+                    // WP-329: what hod does not lower for i386 yet is kept
+                    // off by its refusal name, counted apart (`KEPT_OFF_I686`).
+                    let what = format!("hod declined module {i}: {reason}");
+                    let kept = KEPT_OFF_I686.iter().find(|name| reason.contains(**name));
+                    let (outcome, what) = match kept {
+                        Some(name) => (Outcome::Skip, format!("{KEPT_OFF_PREFIX}{name}")),
+                        None => (Outcome::Fail, what),
+                    };
+                    done.records.push(record("hod", None, None, outcome, what));
+                    return;
+                }
                 HodBuild::Declined(reason) => {
                     let what = format!("hod declined module {i}: {reason}");
                     done.records.push(record("hod", None, None, Outcome::Fail, what));

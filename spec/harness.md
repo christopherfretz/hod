@@ -159,8 +159,8 @@ kiln's lanes). Its rules:
    the `kiln` job builds and saves it on a miss, the `test` jobs restore
    it and fail on a miss, the `irdiff` job builds it on a miss without
    saving; each gets `HOD_MORTAR=/opt/mortar/mortar`. Any failure of
-   these steps fails the job. mortar stays optional to the tests
-   (`MORTAR_REQUIRED` is false) until a hosted run has shown the step.
+   these steps fails the job. mortar is required by the tests under
+   `HOD_REQUIRE_TOOLS=1` (`MORTAR_REQUIRED` is true since wave 45).
 5. **The steps.** The lane's jobs `lints` (`--step fmt`, `--step
    scripts`, `--step workflows`, `--step clippy`), `test <part>` (`--step test --part <part>`, one job per
    part of `xtask::ci::TEST_PARTS`, so that no job runs much over 15
@@ -626,7 +626,7 @@ What is missing:
 | the emulator or the system root, for the other architecture | objects are built, nothing is linked or run ("Cross targets"), with a note | failure |
 | `bfd`, `lld` or `mold` | that linker is not in the matrix, with a note | failure |
 | `wild` | not in the matrix, with a note | still a note: wild is optional (`hod_testutil::linkers::WILD_REQUIRED` is false and stays so; not a condition of 1.0) |
-| `mortar` | not in the matrix, with a note | still a note: mortar is optional (`hod_testutil::linkers::MORTAR_REQUIRED` is false) |
+| `mortar` | not in the matrix, with a note | failure (`hod_testutil::linkers::MORTAR_REQUIRED` is true since wave 45) |
 | a linker named with `--linker` | usage error (exit status 2) | the same |
 
 A failure for a missing tool does not stop the run: the tests still run
@@ -876,6 +876,7 @@ that only i686 is ever named):
 | `tests/ir/fp_intrinsics.ll` | i686 | llc-crash |
 | `tests/ir/half_fp128.ll` | i686 | runtime-routine |
 | `tests/ir/preserve_cc.ll` | i686 | llc-crash |
+| `tests/ir/stack_protector_stack_args.ll` | i686 | lp64-abi |
 | `tests/ir/tail_wide.ll` | i686 | runtime-routine |
 | `tests/ir/tls.ll` | i686 | lp64-abi |
 | `tests/ir/tls_desc.ll` | i686 | lp64-abi |
@@ -1142,7 +1143,7 @@ target"), a line after the coverage counts them by class, in the order
 the classes first occur among the tests:
 
 ```
-irdiff: kept off i686: 25 tests; lp64-abi: 16; runtime-routine: 4; x87-precision: 1; llc-crash: 2; va-list-abi: 2
+irdiff: kept off i686: 26 tests; lp64-abi: 17; runtime-routine: 4; x87-precision: 1; llc-crash: 2; va-list-abi: 2
 ```
 
 Coverage is per test: how many of the objects hod was asked for it built
@@ -1516,8 +1517,8 @@ for every test that links: `MATRIX` is `bfd`, `lld`, `mold`, `wild`,
   the matrix, used where it is installed, as by the lanes' set-up
   `.github/actions/hod-ci`, which exports `HOD_WILD`; its cases are
   excepted on the harness side, never worked around in hod). mortar is
-  optional the same way (`MORTAR_REQUIRED` is false; no hosted lane
-  builds it).
+  required, as GNU ld, lld and mold are (`MORTAR_REQUIRED` is true since
+  wave 45: it is provisioned locally and on both hosted runners).
 - **Refused kinds.** `REFUSALS` lists the output kinds a linker refuses
   by name: linker, version, the flag (`-shared`, `-r`) and the text its
   refusal prints (mortar: `unsupported option: -shared`, `unsupported
@@ -4130,6 +4131,20 @@ links them, and every session is remote:
 - **masking** adds the port (`127.0.0.1:PORT`) and gdb's thread names
   `Thread <pid>.<tid>` (`Thread ?.?`);
 - IR tests (`.ll`) are SKIP: their modules are written for the host.
+
+**i686** (WP-329): `--target i686` runs the same way under `qemu-i386`
+(`-L /usr/i686-linux-gnu`, the CPU of `Target::I686`), gdb as
+`gdb-multiarch` and lldb-19 by `gdb-remote` (both hold on i386). The
+linkers are GNU ld, lld and mold: wild and mortar do not link the
+lane's dynamic PIE programs (`hod_testutil::linkers::EXCEPTIONS` case
+`elf-i386`; a note, and an error when asked for by `--linker`). kiln++
+refuses `--target=i686-*`: its units are SKIP, with a note. A unit hod
+declines with `debug:split-dwarf-i386` or `debug:dwarf-4-i386`
+(`sessions::KEPT_OFF_I686`) is SKIP with the detail `kept off on i686:
+<name>`, and the summary counts them (`debug: of the SKIPs, kept off on
+i686: ...`); any other refusal is a FAIL, as on every target. `debug
+verify --target i686` is refused (no i686 corpus). The full gate has no
+`debug-i686` step yet (`spec/landed/harness/WP-329.md`).
 
 What `qemu-user`'s gdb stub cannot do, and so no remote session asks
 (`cross::STUB_LIMITS`; a test says so with `skip(remote, ...)`):

@@ -99,6 +99,7 @@ pub fn is_fp(which: Intrinsic<'_>) -> bool {
             | I::Powi
             | I::Ldexp
             | I::Frexp
+            | I::Modf
             | I::Lround
             | I::Llround
             | I::Lrint
@@ -249,6 +250,7 @@ pub fn intrinsic<'a>(
         (I::Powi, &[x, n]) => call_math(cx, inst, f, routine(f, FpOp::Powi)?, &[x], Some(n)),
         (I::Ldexp, &[x, n]) => call_math(cx, inst, f, routine(f, FpOp::Ldexp)?, &[x], Some(n)),
         (I::Frexp, &[x]) => frexp(cx, inst, f, x),
+        (I::Modf, &[x]) => modf(cx, inst, f, x),
         _ => unsupported(INTRINSIC),
     }
 }
@@ -929,6 +931,37 @@ fn frexp<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, f: Shape, x: Value) -> CgRe
     }
     load_gpr(cx, RAX, slot, 4);
     store_gpr(cx, RAX, dst.offset_by(exp_at), 4);
+    cx.free_temp(r);
+    Ok(())
+}
+
+/// `modf x` into its `{ T, T }` result (class `Mem`; WP-340): `modff` or
+/// `modf` with the integral part written to a frame slot, then the
+/// fractional part (the routine's result) and the integral part written
+/// to the result's two fields, as `llc` 22. `half` is [`INTRINSIC`]
+/// (`llc` 22 cannot select it), `fp128` [`FP128`] (`llc` calls
+/// `modff128`, which the runtime table does not have).
+fn modf<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, f: Shape, x: Value) -> CgResult<()> {
+    let ty = inst.ty();
+    let elem = value_ty(cx, x);
+    let pair = cx
+        .types()
+        .struct_fields(ty)
+        .is_some_and(|fs| fs.len() == 2 && fs.iter().all(|&t| t == elem));
+    let (func, bytes): (_, u32) = match f {
+        _ if !pair => return unsupported(INTRINSIC),
+        Shape::Float => (RuntimeFn::Modff, 4),
+        Shape::Double => (RuntimeFn::Modf, 8),
+        Shape::Quad => return unsupported(FP128),
+        _ => return unsupported(INTRINSIC),
+    };
+    let second = cx.types().field_offset(ty, 1) as u32;
+    let slot = cx.alloc_slot(u64::from(bytes), bytes)?;
+    let r = runtime(cx, func, &[CallArg::Value(x), CallArg::Addr(slot)])?;
+    let dst = cx.def_mem(inst)?;
+    store_fpr(cx, xm(r), dst, bytes);
+    load_fpr(cx, xm(r), slot, bytes);
+    store_fpr(cx, xm(r), dst.offset_by(second), bytes);
     cx.free_temp(r);
     Ok(())
 }

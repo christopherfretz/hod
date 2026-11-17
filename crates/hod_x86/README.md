@@ -4,6 +4,19 @@
 System V psABI. Design `docs/design/0008-i386.md`; behaviour
 `spec/codegen-x86.md`; convention `spec/abi-x86.md`.
 
+## Rules every module follows
+
+- **Two pool registers** (`spec/codegen-x86.md` §2, WP-331): a lowering
+  pins at most two of `ebx`, `esi`, `edi` at once, on every path (a
+  coroutine body keeps its frame base in `esi`). A third value goes in
+  `eax` / `ecx` / `edx` (`FnCx::put`, after every pool operand is
+  placed: placing one may call), in memory, or in a dead operand's
+  register that the result takes. `min_pool` (`MIN_POOL_GPR_32` = 2)
+  checks it in every test.
+- **Borrowing**: `ebx` is taken with `FnCx::take_reg`; `esi` / `edi` are
+  pushed and popped around the sequence that names them, with no frame
+  access between the first pop and the last.
+
 ## Module table
 
 Each file has one owner. A package extends the functions named here and
@@ -31,10 +44,23 @@ refusal table of `spec/codegen-x86.md` §7) belong to WP-293's owner of
 | `tls.rs` | **I8** (WP-299) | `%gs` TLS: all four models (general and local dynamic through `___tls_get_addr`), `llvm.thread.pointer` | — | — | `x86:tls`, `x86:tls:dynamic` (removed) |
 | `x87.rs` | **I9** (WP-300) | `float`/`double`/`x86_fp80` on the x87 stack, compares, casts, libm calls, the 80-bit copies of a run, call results and returns at 80 bits, `double` folding (`spec/codegen-x86.md` §11); `FnState::x87` | I12 (SSE), any package lowering a call-like or branching instruction (`barrier`) | `target.rs` arms, `materialize_mem`, `barrier`, `call_result`/`store_call_result`, `ret_copy`/`load_ret` | `x86:float*` |
 | `va.rs`, `atomic.rs`, `dynstack.rs` | **I11b** (WP-316) | variadic bodies (`va_start`, `va_copy`, `va_end`, the IR `va_arg`); ordered loads and stores, `atomicrmw`, `cmpxchg` (and `extractvalue` of its result), `fence` (8 bytes through x87 and `cmpxchg8b`); dynamic `alloca`, over-aligned slots, `stacksave`/`stackrestore` (`spec/codegen-x86.md` §12); `atomic::barrier` | — | `x87::barrier` (one arm), `frame.rs`'s `dynamic_slot` glue (now `dynstack::dynamic_slot`), `call::lower` (the `va_*` and stack arms), `begin_function` (`dynstack::check`) | `x86:atomic`, `x86:dynamic-alloca`, `x86:varargs` (narrowed to `va_start` outside a variadic function); new: `x86:varargs:va-arg-type`, `x86:atomic:{no-cx8,libatomic,float-op,op,type}`, `x86:probe-stack` |
+| `sse.rs` | **I12** (WP-317) | scalar `float` (SSE) and `double` (SSE2) as class `Mem` computed through `xmm6` (`spec/codegen-x86.md` §16); `sse::owns` is the one decision point, after the ordered-access arms and before `x87::owns`; the 80-bit value of an SSE call result as `llc` folds it (`sse::Views`, `FnState::sse`), read also by `x87::push`/`x87::cast`; `half` with SSE2 (libgcc calls, `xmm0` return through `sse::half_place`); `bfloat` not yet | — | `target.rs`'s `lower` arm, `materialize_mem` test, `FnState::sse`, `X86::features`/`for_function`, `load`/`store` of `xmm0`; `abi::assign_for`; `x87.rs`'s `call_result`, `store_call_result`, `ret_copy`, `push`, `cast` | `x86:float:sse`; `x86:float:half` with SSE2 |
+| `vector.rs` | **I12** (WP-317 step C) | vectors of at most 16 bytes with SSE2, lane by lane in frame slots; the arguments and results in `xmm0`-`xmm2` and 16-byte stack slots through `sse::vector_place` (`spec/codegen-x86.md` §17) | — | `target.rs`'s `lower` arm (before `sse`'s), `materialize_mem`; `abi.rs`'s vector hooks | `x86:vector` (narrowed to a vector `ptradd`); new: `x86:vector:*` (§7) |
+| `vecscalar.rs` | **WP-338** | vectors in a function without any SSE, lane by lane in frame slots, floating lanes on the x87; vectors returned in memory (`ret_memory`) (`spec/codegen-x86.md` §20) | — | `vector.rs`'s gate, `control::ret`, `abi.rs`'s vector parts | `x86:vector:no-sse2` without SSE (now SSE without SSE2 only); new: `x86:vector:no-sse2:*` (§7) |
 | `asm.rs`, `hod_asm::x86` | **I13** (WP-301) | inline assembly in 32-bit mode (`spec/asm.md` §22) | — | `call::lower`'s asm arm | `x86:inline-asm` (now `x86:inline-asm:<detail>`) |
 | `agg.rs` (and `bytes.rs`, `bits::small`) | **I11** (WP-315) | aggregates in frame slots (`load`, `store`, `select`, `extractvalue`, `insertvalue`, constants, results in memory), the `*.with.overflow` intrinsics at 1 to 64 bits; in `bytes.rs` lengths of 33 to 64 bits and `llc`'s libc-call rule (`calls_libc`, the x87 barrier); in `bits.rs` the small intrinsics (`spec/codegen-x86.md` §13) | — | the `agg::owns` arm and the extract/insert arms of `Target::lower`, `materialize_mem`; `call::lower`'s overflow and small arms; `control::ret`; `x87::barrier`'s memory-intrinsic and aggregate-`select` arms | `x86:aggregate` (but arguments of more than 16 leaves), `x86:i64`, `x86:intrinsic` for the overflow family and the small intrinsics |
+| `fpclass.rs` | WP-337 | `llvm.is.fpclass` of `float` / `double` / `x86_fp80` (integer tests of the home, x87 or SSE), `llvm.modf` (`modff` / `modf` / `modfl`), `llvm.frexp` (`frexpf` / `frexp` / `frexpl`, WP-341), `icmp` of an `i80` with zero (`spec/codegen-x86.md` §21); its `target.rs` arm comes before `sse`'s and `x87`'s | — | `x87.rs`'s `bitcast` (`x86_fp80` / `i80`) and `barrier` (`modf`) | `x86:intrinsic` for `is.fpclass` of those types, `intrinsic:llvm.modf.*` on i386, `x86:float:fp80-cast` |
 | `eh.rs` | **I10** (WP-314) | `landingpad` (`eax`/`edx`), `resume`, `llvm.eh.typeid.for`, `extractvalue`/`insertvalue` of `{ ptr, i32 }` (its arms come before `agg`'s general ones; same layout); `invoke` is `hod_cg`'s call sequence, the tables `hod_eh::I386` (`spec/codegen-x86.md` §14) | — | `target.rs` arms, `call::lower`'s `eh.typeid.for` arm | `x86:eh` (removed; `x86:eh:<detail>` remain) |
+| `ibr.rs` | **WP-324** | `indirectbr`, `blockaddress` of the function's own block in a register (`spec/codegen-x86.md` §19.1) | — | the `IndirectBr` arm of `Target::lower`, `common::materialize_const`'s `BlockAddr` arm | `x86:indirect-branch` |
+| `cet.rs` | **WP-324** | `endbr32` at entries, branch targets and after `returns_twice` calls; the `nocf_check` indirect call refused (`spec/codegen-x86.md` §19.3) | — | `frame::begin` (entry), `Target::branch_target`, `Target::emit_call`, `call::check` | `x86:cf-protection` (new: `x86:nocf-check-indirect-call`) |
+| `ssp.rs` | **WP-324** | stack protectors: guard at `gs:[0x14]`, entry code, checks, `__stack_chk_fail` (`spec/codegen-x86.md` §19.2) | — | `Target::enter_guard`, `FnState::ssp`, hooks in `frame::begin`/`end`, `control::ret`'s `ret_copy` flag | `x86:stack-protector` |
 
-Outside the crate, `hod_cg` refuses `x86:debug-info` (`emit/mod.rs`,
-removed by I10 with the unwind tables in `emit/unwind.rs`) and
-`x86:cf-protection`.
+| `coro.rs`, `coro_body.rs` | **WP-327**, **WP-335** | coroutine handle operations in any function; bodies with `esi` as the frame base (stubs, dispatch, suspend, symmetric transfer, the body intrinsics; `spec/codegen-x86.md` §18) | — | `call::lower`'s coroutine arm (`coro::owns` takes both), `x87::barrier`'s, `frame::begin`/`end`, `common::frame_mem`, `asm::decide` | `coro:target` on i386 (adds `x86:coro-promise`, `x86:coro:asm-base`) |
+
+Debug information (I10, WP-314) is `hod_dwarf`'s at address size 4
+(`spec/codegen-x86.md` §15); the crate's part is `target.rs`'s
+`emit_call` reporting where a call returns. `hod_dwarf` refuses
+`debug:dwarf-4-i386` and `debug:split-dwarf-i386`; `x86:debug-info` was
+removed by I10 (with the unwind tables in `hod_cg`'s `emit/unwind.rs`)
+and `x86:cf-protection` by WP-324 (`cet.rs`, the ELF32 property note in
+`hod_cg`'s `emit/mod.rs` `gnu_property`).

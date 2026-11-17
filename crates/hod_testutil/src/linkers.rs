@@ -8,7 +8,7 @@
 //! by [`find_wild`]. It is optional even under `HOD_REQUIRE_TOOLS=1` until
 //! every hosted lane is proven to install it ([`WILD_REQUIRED`]). mortar
 //! is built from a pinned commit of its repository ([`MORTAR_COMMIT`]),
-//! found by [`find_mortar`], and optional in the same way
+//! found by [`find_mortar`], and required under `HOD_REQUIRE_TOOLS=1`
 //! ([`MORTAR_REQUIRED`]); the output kinds it refuses by name are
 //! [`REFUSALS`].
 
@@ -26,10 +26,11 @@ pub const MATRIX: [&str; 5] = ["bfd", "lld", "mold", "wild", "mortar"];
 pub const MORTAR_COMMIT: &str = "ea9b94f42743d6772d690a374b5bf976e415f812";
 
 /// Whether a missing mortar fails a test under `HOD_REQUIRE_TOOLS=1`.
-/// False (WP-281): the hosted lanes build it since WP-310
-/// (`.github/actions/mortar`, `HOD_MORTAR`), but it stays optional until
-/// a hosted run has shown that step works on both runners, as wild's.
-pub const MORTAR_REQUIRED: bool = false;
+/// True since wave 45: mortar is provisioned locally (the provisioning
+/// script) and on both hosted runners (`.github/actions/mortar`,
+/// `HOD_MORTAR`, since WP-310), so a missing mortar is a failure there,
+/// as a missing GNU ld, lld or mold is (it was optional from WP-281).
+pub const MORTAR_REQUIRED: bool = true;
 
 /// The variable that names the mortar executable, over every other place.
 pub const MORTAR_VARIABLE: &str = "HOD_MORTAR";

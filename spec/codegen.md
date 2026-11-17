@@ -4260,7 +4260,7 @@ are target-neutral (`hod_cg::guard`); each target emits the code
     from then on (a consequence of SelectionDAG's argument lowering, in
     every function); a `byval` argument is the address of the caller's
     copy and is read in place, above the guard. hod, in a protected
-    function that is not a coroutine body: an argument that arrives
+    function (a coroutine body too, below), on all three targets: an argument that arrives
     wholly on the stack in one part (an integer, a pointer, a `float` or
     `double` beyond the FP registers, an `i128` on the stack, a `Mem`
     value in one part) is copied at entry, in `enter_arguments`, before
@@ -4281,7 +4281,12 @@ are target-neutral (`hod_cg::guard`); each target emits the code
     stack-passed argument the ramp reads after writing a buffer (a
     pointer it stores through, a callee-destroyed parameter after
     `coro.end`) is read from below the guard, as `llc`'s split ramp
-    reads it. A
+    reads it. On i386 the copy is a second one: `hod_x86`'s
+    `ssp::copy_arguments` has already copied the whole incoming area
+    below the guard (`spec/codegen-x86.md` §19.2) and every access of
+    those bytes goes to that copy, so the home is a copy of a copy,
+    redundant but harmless (both below the guard); i386's coroutine
+    ramps now match its other protected functions. A
     `#dbg_value` of such an argument now describes the copy
     (`DW_OP_fbreg` of the home); `llc` describes the incoming slot
     (`DW_OP_fbreg` above the frame), which holds the same value until

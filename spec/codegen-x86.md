@@ -559,9 +559,9 @@ Still refused, `x86:inline-asm:operand-type`: a 64-bit or floating-point
 register OUTPUT, direct or tied (`=r`, `=r,0`; `llc` takes two
 registers); a `float`/`double` with `r` only; an integer of 33 to 63
 bits in a register; an indirect 64-bit register input (`*r`, which `llc`
-rejects too); a memory input of another type of class `Mem` (`i128`,
-`half`, `fp128`, vectors; refused earlier today as `x86:i64:wide`,
-`x86:float:*`). More registers than six (four `i64`, three with `ebx`
+rejects too); a memory input of another type of class `Mem` (an
+integer of 65 to 128 bits, §22, refused here; `half`, `fp128` and
+vectors, refused earlier today under their own names). More registers than six (four `i64`, three with `ebx`
 clobbered) is `x86:inline-asm:registers` (`llc` takes `ebp`). A
 template's x87 mnemonics (`fldl %0`) are `asm:mnemonic/<name>`. Tests:
 `crates/hod/tests/i386_asm_wide.rs`. Record:

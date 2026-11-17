@@ -29,8 +29,9 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: buildpack-deps:trixie
-      # SDE (Pin) traces the program it runs.
-      options: --cap-add=SYS_PTRACE --ulimit core=0
+      # SDE (Pin) traces the program it runs. No core dumps, as in the
+      # lane's test jobs (spec/harness.md "CI" 9).
+      options: --cap-add=SYS_PTRACE --ulimit core=0 -v /proc/sys/kernel/core_pattern:/host_core_pattern
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4

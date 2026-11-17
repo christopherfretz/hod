@@ -80,9 +80,11 @@ jobs:
     runs-on: ${{ inputs.runner }}
     container:
       image: buildpack-deps:trixie
-      # No core files: a test's crashing program ends with its signal's
-      # own status, as in the development container.
-      options: --cap-add=SYS_PTRACE --ulimit core=0
+      # No core dumps: a test's crashing program ends with its signal's
+      # own status, as in the development container. The limit alone
+      # does not do that on a hosted runner; the mount lets the hod-ci
+      # action write the plain pattern (spec/harness.md "CI" 9).
+      options: --cap-add=SYS_PTRACE --ulimit core=0 -v /proc/sys/kernel/core_pattern:/host_core_pattern
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -129,7 +131,10 @@ jobs:
   irdiff:
     name: irdiff
     runs-on: ${{ inputs.runner }}
-    container: buildpack-deps:trixie
+    container:
+      image: buildpack-deps:trixie
+      # No core dumps, as in the test jobs: some seeds abort on purpose.
+      options: --ulimit core=0 -v /proc/sys/kernel/core_pattern:/host_core_pattern
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4

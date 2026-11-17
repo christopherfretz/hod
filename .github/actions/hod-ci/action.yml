@@ -62,6 +62,20 @@ runs:
           printf '%-24s %s\n' "$t" "$("$t" --version 2>&1 | head -1)"
         done
         nproc; free -g | head -2
+        # No core dumps (spec/harness.md "CI" 9). A hosted runner's
+        # kernel pipes every core to systemd-coredump, and a pipe is
+        # fed whatever RLIMIT_CORE says (core(5)), so a job's `--ulimit
+        # core=0` alone does not stop it. A job whose programs crash on
+        # purpose mounts the runner's setting at /host_core_pattern;
+        # with the plain pattern and that limit nothing is dumped, as in
+        # the development container.
+        if [ -e /host_core_pattern ]; then
+          echo core > /host_core_pattern
+          case "$(cat /proc/sys/kernel/core_pattern)" in
+            '|'*) echo "hod-ci: core dumps are still piped to a program" >&2; exit 1 ;;
+          esac
+        fi
+        echo "core_pattern: $(cat /proc/sys/kernel/core_pattern); core limit (soft, hard): $(ulimit -Sc), $(ulimit -Hc)"
         # The container runs as root over a checkout the runner owns.
         git config --global --add safe.directory "$GITHUB_WORKSPACE"
         # The build directory outside the checkout, as scripts/env.sh puts

@@ -27,7 +27,14 @@ only, WP-354), and `corpus-aarch64` and `corpus-x86_64`,
 L6: `corpus verify --strict` of that architecture's default corpus
 ("corpus", "Where things are"; the other architecture's under its
 emulator) with the list of expected results ("corpus", "Expected
-results"), `-j` of `irdiff`'s default (4), the workspace's hod. It
+results"), `-j` of `irdiff`'s default (4), the workspace's hod, and
+last `corpus-coro-aarch64` and `corpus-coro-x86_64` (WP-353): the same
+for that architecture's coroutine corpus ("corpus", "The hod route"),
+`<build root>/corpus-coro/` and in it the name of the default corpus
+(`corpus`, `corpus-x64`, `corpus-a64`), with its own list
+`docs/status/corpus-coro-expected.tsv`; an absent corpus skips, or fails
+under `HOD_REQUIRE_TOOLS=1`, as for the main corpus
+(`xtask::ci::corpus_gate_inputs`). It
 stops at the first step that fails, printing `ci: <step> FAILED`. Each
 step that runs ends with `ci: <step>: <result> in <wall time>`; the gate
 then prints a table of every selected step, its result (`passed`,
@@ -35,7 +42,8 @@ then prints a table of every selected step, its result (`passed`,
 failed)`, or `not run (full gate only)` under `--quick`) and its wall
 time, and the total, also when a step failed; it ends with `ci: ok` and
 exit status 0 only if every step passed or was skipped. Tests:
-`xtask::ci::tests::the_full_gates_steps`, `the_gates_table`.
+`xtask::ci::tests::the_full_gates_steps`, `the_gates_table`,
+`the_coroutine_corpus_steps_have_their_own_corpus_and_list`.
 
 **`scripts` and `workflows`** (WP-265, `xtask::scripts`; seconds, in the
 quick gate too). `scripts` runs `python3 -I
@@ -100,8 +108,10 @@ links no dylib), and a second failure of the step, fails the gate.
 
 `--step <name>` (repeatable; `fmt`, `scripts`, `workflows`, `clippy`, `test`, `irdiff`,
 `roundtrip`, `bench-aarch64`, `bench-x86_64`, `debug-x86_64`,
-`debug-aarch64`, `debug-i686`, `corpus-aarch64`, `corpus-x86_64`; WP-251
-replaced `debug` by the `debug-<arch>` steps, WP-354 added `debug-i686`;
+`debug-aarch64`, `debug-i686`, `corpus-aarch64`, `corpus-x86_64`,
+`corpus-coro-aarch64`, `corpus-coro-x86_64`; WP-251
+replaced `debug` by the `debug-<arch>` steps, WP-354 added `debug-i686`,
+WP-353 the `corpus-coro-<arch>` steps;
 the usage of `cargo xtask` names
 them all)
 runs only the named steps, in the gate's order

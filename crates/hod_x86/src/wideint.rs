@@ -20,13 +20,13 @@
 //!
 //! # Refused
 //!
-//! `udiv`/`sdiv`/`urem`/`srem`, the shifts, the integer intrinsics (but
-//! the overflow ones), a `switch` on, and an argument or result of such an
-//! integer, and any integer wider than 128 bits: each under its own name
-//! below.
+//! `udiv`/`sdiv`/`urem`/`srem`, the integer intrinsics [`intrinsic`] leaves
+//! out, an argument or result of such an integer, and any integer wider
+//! than 128 bits: each under its own name below. Shifts and `switch`
+//! compile (WP-355); [`SHIFT`] and [`SWITCH`] are no longer reached.
 
 use hod_cg::{CgResult, FnCx, FrameRef, Label};
-use hod_ir::{Const, Inst, IntPredicate, Opcode, Switch, TypeId, Value, ValueKind};
+use hod_ir::{Const, Inst, IntPredicate, Intrinsic, Opcode, Switch, TypeId, Value, ValueKind};
 use hod_mc_x64 as mc;
 use hod_mc_x64::{Cond, Mem, Reg, Size};
 
@@ -290,10 +290,10 @@ fn shift<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, lhs: Value, rhs: Value) -> 
     let at =
         |i: u32, q: u32| if right { (i + q, i + q + 1) } else { (PAD + i - q, PAD + i - q - 1) };
     let Some(n) = n else {
-        let k = amount.unwrap_or(0) as u32;
-        let (q, s) = (k / 32, (k % 32) as u8);
+        let by = amount.unwrap_or(0) as u32;
+        let (dist, s) = (by / 32, (by % 32) as u8);
         for i in 0..count {
-            let (from, other) = at(i, q);
+            let (from, other) = at(i, dist);
             ld(cx, EAX, buf, from);
             if s != 0 {
                 ld(cx, EDX, buf, other);
@@ -330,6 +330,204 @@ fn shift<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, lhs: Value, rhs: Value) -> 
         });
     }
     Ok(())
+}
+
+// ---- integer intrinsics ----
+
+/// `%r = call iN @llvm.<which>(...)`, `N` from 65 to 128: `ctpop`,
+/// `ctlz`, `cttz`, `bswap`, `bitreverse`, `abs`, `smax` / `smin` /
+/// `umax` / `umin`. The saturating operations, the funnel and saturating
+/// shifts and `scmp` / `ucmp` are [`INTRINSIC`].
+///
+/// # Errors
+/// [`INTRINSIC`], [`WIDTH`]; what the operands report.
+pub fn intrinsic<'a>(
+    cx: &mut FnCx<'a, X86>,
+    inst: Inst<'a>,
+    which: Intrinsic<'a>,
+    args: &'a [Value],
+) -> CgResult<()> {
+    use Intrinsic as I;
+    let bits = cx.types().int_bits(inst.ty()).unwrap_or(128);
+    let count = limbs(bits)?;
+    match (which, args) {
+        (I::Ctpop | I::Ctlz | I::Cttz, &[x, ..]) => {
+            let a = cx.use_mem(x)?;
+            let r = cx.def_mem(inst)?;
+            match which {
+                I::Ctpop => pop_count(cx, a, bits),
+                I::Ctlz => zeros_count(cx, a, bits, true)?,
+                _ => zeros_count(cx, a, bits, false)?,
+            }
+            st(cx, EAX, r, 0);
+            for limb in 1..count {
+                st_imm(cx, r, limb, 0);
+            }
+            Ok(())
+        }
+        (I::Bswap | I::BitReverse, &[x]) => {
+            let a = cx.use_mem(x)?;
+            let r = cx.def_mem(inst)?;
+            reverse(cx, r, a, bits, which == I::Bswap)
+        }
+        (I::Abs, &[x, ..]) => {
+            let a = cx.use_mem(x)?;
+            let r = cx.def_mem(inst)?;
+            abs(cx, r, a, bits);
+            Ok(())
+        }
+        (I::Smax | I::Smin | I::Umax | I::Umin, &[lhs, rhs]) => {
+            let pred = match which {
+                I::Smax => IntPredicate::Sgt,
+                I::Smin => IntPredicate::Slt,
+                I::Umax => IntPredicate::Ugt,
+                _ => IntPredicate::Ult,
+            };
+            let (a, b) = (cx.use_mem(lhs)?, cx.use_mem(rhs)?);
+            let r = cx.def_mem(inst)?;
+            let cond = compare_slots(cx, pred, bits, a, b);
+            let (other, done): (Label, Label) = (cx.new_label(), cx.new_label());
+            branch_cond(cx, cond.invert(), other)?;
+            copy(cx, r, a, count);
+            branch(cx, done)?;
+            cx.bind(other)?;
+            copy(cx, r, b, count);
+            cx.bind(done)
+        }
+        _ => unsupported(INTRINSIC),
+    }
+}
+
+/// The population count of the `bits`-bit integer at `a` into `eax`:
+/// each limb's (the top one zero-extended) summed in `edx`.
+fn pop_count(cx: &mut FnCx<'_, X86>, a: FrameRef, bits: u32) {
+    let count = bits.div_ceil(32);
+    for limb in 0..count {
+        if limb == count - 1 {
+            ld_top(cx, EAX, a, bits, Ext::Zero);
+        } else {
+            ld(cx, EAX, a, limb);
+        }
+        crate::int::pop32(cx, EAX, ECX);
+        if limb == 0 {
+            put(cx, mc::mov_rr(Size::D, EDX, EAX));
+        } else {
+            put(cx, mc::add_rr(Size::D, EDX, EAX));
+        }
+    }
+    put(cx, mc::mov_rr(Size::D, EAX, EDX));
+}
+
+/// The leading (`leading`) or trailing zeros of the `bits`-bit integer at
+/// `a` into `eax`, `bits` for 0. Leading: from the top limb (zero-extended)
+/// down, the first that is not zero gives `bsr`·`xor 31` plus 32 per limb
+/// above it, less the `32 L - N` bits above the width. Trailing: from limb
+/// 0 up, the top limb with bit `N` set (below 32 bits), `bsf` plus 32 per
+/// limb below it. Branches between the limbs; `ecx` is not written.
+///
+/// # Errors
+/// What the branches report.
+fn zeros_count(cx: &mut FnCx<'_, X86>, a: FrameRef, bits: u32, leading: bool) -> CgResult<()> {
+    let count = bits.div_ceil(32);
+    let top = top_bits(bits);
+    let done = cx.new_label();
+    for step in 0..count {
+        let limb = if leading { count - 1 - step } else { step };
+        if limb == count - 1 {
+            ld_top(cx, EAX, a, bits, Ext::Zero);
+            if !leading && top < 32 {
+                put(cx, mc::or_ri(Size::D, EAX, i64::from(1i32 << top)));
+            }
+        } else {
+            ld(cx, EAX, a, limb);
+        }
+        let next = cx.new_label();
+        put(cx, mc::test_rr(Size::D, EAX, EAX));
+        branch_cond(cx, Cond::E, next)?;
+        if leading {
+            put(cx, mc::bsr_rr(Size::D, EAX, EAX));
+            put(cx, mc::xor_ri(Size::D, EAX, 31));
+            let above = 32 * step;
+            let adjust = i64::from(above) - i64::from(32 * count - bits);
+            if adjust != 0 {
+                put(cx, mc::add_ri(Size::D, EAX, adjust));
+            }
+        } else {
+            put(cx, mc::bsf_rr(Size::D, EAX, EAX));
+            if limb != 0 {
+                put(cx, mc::add_ri(Size::D, EAX, i64::from(32 * limb)));
+            }
+        }
+        branch(cx, done)?;
+        cx.bind(next)?;
+    }
+    put(cx, mc::mov_ri(Size::D, EAX, i64::from(bits)));
+    cx.bind(done)
+}
+
+/// `bswap` (`bytes`) or `bitreverse` of the `bits`-bit integer at `a`
+/// into `r`: limb `L - 1 - i` reversed into limb `i` of a frame area
+/// (the bits above the width land in its low `32 L - N` bits), then the
+/// area shifted right by `32 L - N` (`shrd`), the top limb by `shr`.
+///
+/// # Errors
+/// What the frame reports.
+fn reverse(
+    cx: &mut FnCx<'_, X86>,
+    r: FrameRef,
+    a: FrameRef,
+    bits: u32,
+    bytes: bool,
+) -> CgResult<()> {
+    let count = bits.div_ceil(32);
+    let up = (32 * count - bits) as u8;
+    let t = cx.alloc_slot(u64::from(4 * count), 4)?;
+    for limb in 0..count {
+        ld(cx, EAX, a, count - 1 - limb);
+        if bytes {
+            put(cx, mc::bswap(Size::D, EAX));
+        } else {
+            crate::int::rev32(cx, EAX, ECX);
+        }
+        st(cx, EAX, t, limb);
+    }
+    for limb in 0..count {
+        ld(cx, EAX, t, limb);
+        if up != 0 {
+            if limb + 1 < count {
+                ld(cx, EDX, t, limb + 1);
+                put(cx, mc::shrd_rri(Size::D, EAX, EDX, up));
+            } else {
+                put(cx, mc::shr_ri(Size::D, EAX, up));
+            }
+        }
+        st(cx, EAX, r, limb);
+    }
+    Ok(())
+}
+
+/// `abs` of the `bits`-bit integer at `a` into `r`: `edx` = its sign
+/// (the top limb sign-extended, `sar 31`), each limb `xor edx` into `r`
+/// (the top one extended), then `sub` / `sbb [r + 4 k], edx`.
+fn abs(cx: &mut FnCx<'_, X86>, r: FrameRef, a: FrameRef, bits: u32) {
+    let count = bits.div_ceil(32);
+    ld_top(cx, EDX, a, bits, Ext::Sign);
+    put(cx, mc::mov_rr(Size::D, ECX, EDX));
+    put(cx, mc::sar_ri(Size::D, EDX, 31));
+    for limb in 0..count {
+        if limb == count - 1 {
+            put(cx, mc::mov_rr(Size::D, EAX, ECX));
+        } else {
+            ld(cx, EAX, a, limb);
+        }
+        put(cx, mc::xor_rr(Size::D, EAX, EDX));
+        st(cx, EAX, r, limb);
+    }
+    for limb in 0..count {
+        op_m(cx, r, limb, |m| {
+            if limb == 0 { mc::sub_mr(Size::D, m, EDX) } else { mc::sbb_mr(Size::D, m, EDX) }
+        });
+    }
 }
 
 // ---- switch ----

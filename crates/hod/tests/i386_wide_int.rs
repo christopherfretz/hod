@@ -396,14 +396,22 @@ define i1 @f(i64 %a, i32 %b) {
 #[test]
 fn what_stays_refused() {
     let cases = [
-        ("%r = shl i96 %a, %a", "x86:i64:wide:shift"),
-        ("%r = lshr i128 %a, %a", "x86:i64:wide:shift"),
-        ("%r = ashr i65 %a, %a", "x86:i64:wide:shift"),
+        // WP-355: shifts, `switch` and these intrinsics compile now.
+        ("%r = shl i96 %a, %a", ""),
+        ("%r = lshr i128 %a, %a", ""),
+        ("%r = ashr i65 %a, 7", ""),
+        ("%r = call i128 @llvm.ctpop.i128(i128 %a)", ""),
+        ("%r = call i128 @llvm.umax.i128(i128 %a, i128 %a)", ""),
+        ("%r = call i128 @llvm.bswap.i128(i128 %a)", ""),
         ("%r = udiv i128 %a, %a", "x86:i64:wide:div"),
         // An odd width is the shared classifier's `inst:srem/int-wide`.
         ("%r = srem i128 %a, %a", "x86:i64:wide:div"),
-        ("%r = call i128 @llvm.ctpop.i128(i128 %a)", "x86:i64:wide:intrinsic"),
-        ("%r = call i128 @llvm.umax.i128(i128 %a, i128 %a)", "x86:i64:wide:intrinsic"),
+        ("%r = call i128 @llvm.uadd.sat.i128(i128 %a, i128 %a)", "x86:i64:wide:intrinsic"),
+        ("%r = call i128 @llvm.ssub.sat.i128(i128 %a, i128 %a)", "x86:i64:wide:intrinsic"),
+        ("%r = call i128 @llvm.fshl.i128(i128 %a, i128 %a, i128 %a)", "x86:i64:wide:intrinsic"),
+        // An intrinsic at a width other than 128 bits: the shared
+        // classifier's refusal, before `hod_x86`.
+        ("%r = call i96 @llvm.ctpop.i96(i96 %a)", "intrinsic:llvm.ctpop/int-wide"),
     ];
     for (op, name) in cases {
         let ty = op.split_whitespace().find(|w| w.starts_with('i')).unwrap_or("i128");
@@ -421,14 +429,17 @@ fn what_stays_refused() {
             "{declare}define void @f(ptr %p) {{\n  %a = load {ty}, ptr %p\n  {op}\n  \
              store {ty} %r, ptr %p\n  ret void\n}}"
         );
+        if name.is_empty() {
+            assert_eq!(refusal(&text, None), None, "{text}");
+            continue;
+        }
         let error = refusal(&text, None).unwrap_or_else(|| panic!("compiled:\n{text}"));
         assert!(error.contains(name), "{text}\n{error}");
     }
     let switch = "define i32 @f(ptr %p) {\nentry:\n  %a = load i128, ptr %p\n  \
                   switch i128 %a, label %d [ i128 18446744073709551616, label %c ]\n\
                   c:\n  ret i32 1\nd:\n  ret i32 0\n}";
-    let error = refusal(switch, None).expect("a wide switch compiles");
-    assert!(error.contains("x86:i64:wide:switch"), "{error}");
+    assert_eq!(refusal(switch, None), None, "a wide switch is refused");
     // An `i128` result is returned in memory as `llc` does (`abi.rs`);
     // another wide result is refused, as is a wide argument.
     let abi = "define i96 @f(ptr %p) {\n  %a = load i96, ptr %p\n  ret i96 %a\n}";
@@ -956,14 +967,17 @@ fn multiply_random_as_llc() {
 const REST_WIDTHS: [u32; 6] = [65, 72, 96, 100, 120, 128];
 
 /// Runs `text(cpu)` at the three CPUs, static and PIE; the number of runs.
-fn check_all(name: &str, text: impl Fn(Option<&str>) -> String) -> usize {
+/// `back_end`: hod's object from `hod_x86` directly (past the shared
+/// classifier, which refuses the integer intrinsics at widths other than
+/// 128 bits).
+fn check_all(name: &str, back_end: bool, text: impl Fn(Option<&str>) -> String) -> usize {
     let Some(lane) = lane() else { return 1 };
     let scratch = Scratch::new(&format!("i386-wide-int-{name}"));
     let mut runs = 0;
     for (cpu, features) in CPUS {
         let source = text(cpu);
         for pic in [false, true] {
-            let build = Build { pic, features, ..STATIC };
+            let build = Build { pic, features, back_end, ..STATIC };
             let label = format!("{name}-{}", cpu.unwrap_or("generic"));
             runs += lane.check(&scratch, &label, &Source::Ll(&source), build);
         }
@@ -1096,6 +1110,141 @@ d{w}:
     s
 }
 
+/// `@inW(ptr %pa, ptr %pb)`: the integer intrinsics of `iW` on the values
+/// at the pointers (garbage above the width), each result stored,
+/// extended and compared; a `double` quotient kept across each (the x87
+/// barrier of `llc`'s branches without `cmov`).
+fn intrinsic_function(w: u32) -> String {
+    let t = format!("i{w}");
+    let mut b = Body { text: String::new(), n: 0 };
+    let xx = b.val("load i128, ptr %pa");
+    let yy = b.val("load i128, ptr %pb");
+    let x = b.val(&narrow(&xx, w));
+    let y = b.val(&narrow(&yy, w));
+    let one = b.val("load double, ptr @one");
+    let three = b.val("load double, ptr @three");
+    let zero = b.val(&format!("icmp eq {t} {x}, 0"));
+    let mut calls = vec![
+        format!("ctpop.{t}({t} {x})"),
+        format!("ctlz.{t}({t} {x}, i1 false)"),
+        format!("cttz.{t}({t} {x}, i1 false)"),
+        format!("ctlz.{t}({t} {x}, i1 true)"),
+        format!("cttz.{t}({t} {x}, i1 true)"),
+        format!("bitreverse.{t}({t} {x})"),
+        format!("abs.{t}({t} {x}, i1 false)"),
+        format!("smax.{t}({t} {x}, {t} {y})"),
+        format!("smin.{t}({t} {x}, {t} {y})"),
+        format!("umax.{t}({t} {x}, {t} {y})"),
+        format!("umin.{t}({t} {x}, {t} {y})"),
+        format!("smax.{t}({t} {x}, {t} {x})"),
+        format!("umin.{t}({t} {y}, {t} 0)"),
+        format!("umax.{t}({t} {y}, {t} -1)"),
+        format!("smax.{t}({t} {y}, {t} 9223372036854775808)"),
+        format!("smin.{t}({t} {y}, {t} 9223372036854775807)"),
+        format!("smax.{t}({t} {y}, {t} {})", lit(w, 1 << (w - 1))),
+    ];
+    if w.is_multiple_of(16) {
+        calls.push(format!("bswap.{t}({t} {x})"));
+    }
+    for call in calls {
+        let d = b.val(&format!("fdiv double {one}, {three}"));
+        let r = b.val(&format!("call {t} @llvm.{call}"));
+        // A zero operand of a `true` count is poison: 0 is printed instead.
+        let r = if call.contains("i1 true") {
+            b.val(&format!("select i1 {zero}, {t} 0, {t} {r}"))
+        } else {
+            r
+        };
+        b.show(w, &r);
+        if w < 128 {
+            let e = b.val(&format!("sext {t} {r} to i128"));
+            b.show(128, &e);
+        }
+        let c = b.val(&format!("icmp slt {t} {r}, 0"));
+        b.flag(&c);
+        let m = b.val(&format!("fmul double {d}, {three}"));
+        let g = b.val(&format!("fsub double {m}, {one}"));
+        b.val(&format!("call i32 (ptr, ...) @printf(ptr @fmtd, double {g})"));
+    }
+    format!(
+        "define void @in{w}(ptr %pa, ptr %pb) #0 {{\n  %buf = alloca [16 x i8], align 16\n  \
+         store i128 0, ptr %buf\n{}  ret void\n}}\n",
+        b.text
+    )
+}
+
+/// The declarations of the intrinsics of `intrinsic_function(w)`.
+fn intrinsic_declarations(w: u32) -> String {
+    let t = format!("i{w}");
+    let mut s = String::new();
+    for name in ["ctpop", "bitreverse", "bswap"] {
+        writeln!(s, "declare {t} @llvm.{name}.{t}({t})").unwrap();
+    }
+    for name in ["ctlz", "cttz", "abs"] {
+        writeln!(s, "declare {t} @llvm.{name}.{t}({t}, i1)").unwrap();
+    }
+    for name in ["smax", "smin", "umax", "umin"] {
+        writeln!(s, "declare {t} @llvm.{name}.{t}({t}, {t})").unwrap();
+    }
+    s
+}
+
+/// The intrinsic program: `@inW` on every pair of `values(w)` (garbage
+/// above the width) at each width, and `bswap` at 80 and 112 bits.
+fn intrinsic_program(cpu: Option<&str>) -> String {
+    let mut s = format!(
+        "target triple = \"{}\"\n{SHOW}@one = private constant double 1.0\n\
+         @three = private constant double 3.0\n\
+         @fmtd = private constant [6 x i8] c\"%.17g\\0A\"\n\
+         declare i80 @llvm.bswap.i80(i80)\ndeclare i112 @llvm.bswap.i112(i112)\n",
+        i386_support::TRIPLE
+    );
+    let mut main = String::new();
+    for w in REST_WIDTHS {
+        let n = values(w).len();
+        s.push_str(&garbage_table(&format!("iv{w}"), w, &values(w)));
+        s.push_str(&intrinsic_declarations(w));
+        s.push_str(&intrinsic_function(w));
+        main.push_str(&pair_loop(
+            &format!("n{w}"),
+            &format!("in{w}"),
+            &format!("iv{w}"),
+            "i128",
+            n,
+        ));
+    }
+    // `bswap` at widths of 16 bits more than a whole limb.
+    s.push_str(
+        "define void @bs(ptr %p) #0 {\n  %buf = alloca [16 x i8], align 16\n  \
+         store i128 0, ptr %buf\n  %x = load i128, ptr %p\n  %a = trunc i128 %x to i80\n  \
+         %b = call i80 @llvm.bswap.i80(i80 %a)\n  store i80 %b, ptr %buf\n  \
+         call void @show(ptr %buf)\n  %c = trunc i128 %x to i112\n  \
+         %d = call i112 @llvm.bswap.i112(i112 %c)\n  store i112 %d, ptr %buf\n  \
+         call void @show(ptr %buf)\n  ret void\n}\n",
+    );
+    for k in 0..values(128).len() {
+        writeln!(
+            main,
+            "  %bs{k} = getelementptr i128, ptr @iv128, i32 {k}\n  call void @bs(ptr %bs{k})"
+        )
+        .unwrap();
+    }
+    write!(s, "define i32 @main() #0 {{\nentry:\n{main}  ret i32 0\n}}\n{}", attributes(cpu))
+        .unwrap();
+    s
+}
+
+/// `ctpop`, `ctlz`, `cttz`, `bswap`, `bitreverse`, `abs` and the four
+/// min / max at 65 to 128 bits over every pair of boundary values, with
+/// garbage above the width and the constants `llc` treats apart: equal to
+/// llc's, an x87 `double` kept across each.
+#[test]
+fn intrinsics_as_llc() {
+    let runs = check_all("intrinsic", true, intrinsic_program);
+    assert!(runs > 0, "no run was made");
+    eprintln!("i386 wide intrinsics: {runs} runs equal llc's");
+}
+
 /// The amounts of the out-of-range shifts: poison, never printed, but the
 /// code must neither fault nor write outside its slots.
 const POISON_AMOUNTS: [u128; 5] = [128, 200, 0xffff_ffff, (1 << 64) | 3, u128::MAX];
@@ -1172,7 +1321,7 @@ fn switch_program(cpu: Option<&str>) -> String {
 /// run without a fault: equal to llc's.
 #[test]
 fn switch_as_llc() {
-    let runs = check_all("switch", switch_program);
+    let runs = check_all("switch", false, switch_program);
     assert!(runs > 0, "no run was made");
     eprintln!("i386 wide switch: {runs} runs equal llc's");
 }
@@ -1182,7 +1331,7 @@ fn switch_as_llc() {
 /// operands, aliased operands, every consumer: equal to llc's.
 #[test]
 fn shifts_as_llc() {
-    let runs = check_all("shift", shift_program);
+    let runs = check_all("shift", false, shift_program);
     assert!(runs > 0, "no run was made");
     eprintln!("i386 wide shifts: {runs} runs equal llc's");
 }

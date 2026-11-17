@@ -22,7 +22,8 @@
 //! - The libm intrinsics (`sin` .. `log10`, `pow`, `atan2`), `powi`,
 //!   `ldexp` and `frexp` are calls: `sinf`/`sin`/`sinl`, `__powisf2`,
 //!   `ldexpf`, `frexpf`, ...; `half` through the `float` function, the
-//!   result narrowed (as `llc`).
+//!   result narrowed (as `llc`). `modf` (WP-340) calls `modff` / `modf`
+//!   / `modfl` with the integral part in a frame slot, as `frexp`.
 
 #![allow(
     clippy::many_single_char_names,
@@ -36,8 +37,8 @@ use hod_mc_a64 as mc;
 use hod_mc_a64::{Cond, FpFormat, FpSize, Reg, Size, VMemSize, VReg, VecBits};
 
 use crate::common::{
-    Cursor, V31, X16, X17, deferred_first, load_gpr_at, mov_imm, put, size_for_bits, store_fpr_at,
-    store_gpr_at, unsupported, value_ty, vr, xr,
+    Cursor, V31, X16, X17, deferred_first, load_fpr_at, load_gpr_at, mov_imm, put, size_for_bits,
+    store_fpr_at, store_gpr_at, unsupported, value_ty, vr, xr,
 };
 use crate::intrinsic::{INTRINSIC, VECTOR, WIDE};
 use crate::target::A64;
@@ -145,6 +146,7 @@ pub fn is_fp(which: Intrinsic<'_>) -> bool {
             | I::Powi
             | I::Ldexp
             | I::Frexp
+            | I::Modf
             | I::Lround
             | I::Llround
             | I::Lrint
@@ -237,6 +239,7 @@ pub fn fp_intrinsic<'a>(
             call_math(cx, inst, f, func, &args[..1], Some(n))
         }
         (I::Frexp, &[x]) => frexp(cx, inst, f, x),
+        (I::Modf, &[x]) => modf(cx, inst, f, x),
         _ => unsupported(INTRINSIC),
     }
 }
@@ -284,7 +287,7 @@ pub fn lane_plan(
     let (op, clamp) = match which {
         I::Powi => (FpOp::Powi, false),
         I::Ldexp => (FpOp::Ldexp, true),
-        I::Frexp | I::IsFpClass => return unsupported(VECTOR),
+        I::Frexp | I::Modf | I::IsFpClass => return unsupported(VECTOR),
         _ => return Ok(LaneFp::Inline),
     };
     let Some(n_elem) = n_elem else { return unsupported(INTRINSIC) };
@@ -1018,6 +1021,51 @@ fn frexp<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, f: Fmt, x: Value) -> CgResu
     let mut at = Cursor::frame(cx, dst, X16);
     at.advance(exp_at);
     store_gpr_at(cx, hod_mc_a64::MemSize::W, X17.zr(), &mut at);
+    cx.free_temp(r);
+    Ok(())
+}
+
+/// `modf x` into its `{ T, T }` result (class `Mem`; WP-340): `modff`,
+/// `modf`, `modfl` with the integral part written to a frame slot of the
+/// routine's type, then the fractional part (the routine's result) and
+/// the integral part written to the result's two fields, as `llc` 22.
+/// `half` goes through `modff`, both parts narrowed (exact: each part of
+/// a `half` is a `half`).
+fn modf<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, f: Fmt, x: Value) -> CgResult<()> {
+    let ty = inst.ty();
+    let elem = value_ty(cx, x);
+    let pair = cx
+        .types()
+        .struct_fields(ty)
+        .is_some_and(|fs| fs.len() == 2 && fs.iter().all(|&t| t == elem));
+    if !pair {
+        return unsupported(INTRINSIC);
+    }
+    let second = cx.types().field_offset(ty, 1) as u32;
+    deferred_first(cx, inst, None)?;
+    let (func, call_view, bytes): (_, _, u32) = match f {
+        Fmt::H | Fmt::S => (RuntimeFn::Modff, VMemSize::S, 4),
+        Fmt::D => (RuntimeFn::Modf, VMemSize::D, 8),
+        Fmt::Q => (RuntimeFn::Modfl, VMemSize::Q, 16),
+    };
+    let slot = cx.alloc_slot(u64::from(bytes), bytes)?;
+    let arg = fp_arg(cx, f, x)?;
+    let Some(r) = cx.call_runtime(func, &[arg, CallArg::Addr(slot)], None)? else {
+        return cx.bug("a runtime function returned nothing");
+    };
+    let dst = cx.def_mem(inst)?;
+    for (from, field) in [(None, 0), (Some(slot), second)] {
+        if let Some(slot) = from {
+            let mut at = Cursor::frame(cx, slot, X16);
+            load_fpr_at(cx, call_view, vr(r), &mut at);
+        }
+        if f == Fmt::H {
+            narrow(cx, vr(r));
+        }
+        let mut at = Cursor::frame(cx, dst, X16);
+        at.advance(field);
+        store_fpr_at(cx, f.view(), vr(r), &mut at);
+    }
     cx.free_temp(r);
     Ok(())
 }

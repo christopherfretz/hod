@@ -755,6 +755,7 @@ pub fn intrinsic<'a>(
             libcall(cx, RuntimeFn::Ldexpl, &[x], Extra::Int(n), Some(r))
         }
         (I::Frexp, &[x]) => frexp(cx, inst, x),
+        (I::Modf, &[x]) => modf(cx, inst, x),
         _ => unsupported(INTRINSIC),
     }
 }
@@ -966,6 +967,24 @@ fn frexp<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, x: Value) -> CgResult<()> {
     libcall(cx, RuntimeFn::Frexpl, &[x], Extra::Ptr(exp_at), Some(r))
 }
 
+/// `modf x` into its `{ x86_fp80, x86_fp80 }` result (WP-340): `modfl`
+/// with the address of the result's second field (the integral part) in
+/// `rdi`, then the fractional part popped from `st0` to the first field,
+/// as `llc` 22.
+fn modf<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, x: Value) -> CgResult<()> {
+    let ty = inst.ty();
+    let pair = cx
+        .types()
+        .struct_fields(ty)
+        .is_some_and(|fs| fs.len() == 2 && fs.iter().all(|&f| is_x86_fp80(cx, f)));
+    if !pair {
+        return unsupported(INTRINSIC);
+    }
+    let second = cx.types().field_offset(ty, 1) as u32;
+    let r = cx.def_mem(inst)?;
+    libcall(cx, RuntimeFn::Modfl, &[x], Extra::Out(second), Some(r))
+}
+
 /// What [`libcall`] passes besides the `x86_fp80` arguments.
 #[derive(Clone, Copy)]
 enum Extra {
@@ -977,6 +996,9 @@ enum Extra {
     /// first 4 are copied to the result at this offset after the call
     /// (`frexpl`'s exponent).
     Ptr(u32),
+    /// The address of the result at this offset in `rdi` (`modfl`'s
+    /// integral part, written by the routine).
+    Out(u32),
 }
 
 /// Calls `func`, a `long double` routine of libm, with the `x86_fp80`
@@ -1007,8 +1029,13 @@ fn libcall(
     for (i, &place) in places[..xs.len()].iter().enumerate() {
         copy_frame(cx, FrameRef::Outgoing(16 * i as u32), place, BYTES);
     }
-    if matches!(extra, Extra::Ptr(_)) {
-        put(cx, mc::lea(Size::Q, RDI, sp(ptr_at as i32)));
+    match (extra, out) {
+        (Extra::Ptr(_), _) => put(cx, mc::lea(Size::Q, RDI, sp(ptr_at as i32))),
+        (Extra::Out(field), Some(out)) => {
+            frame_inst(cx, out.offset_by(field), |m| mc::lea(Size::Q, RDI, m));
+        }
+        (Extra::Out(_), None) => return cx.bug("an out-parameter of no result"),
+        (Extra::None | Extra::Int(_), _) => {}
     }
     let at = cx.offset();
     crate::frame::emit_call(cx, CallTarget::Sym(SymRef::Runtime(func)), false, 0)?;

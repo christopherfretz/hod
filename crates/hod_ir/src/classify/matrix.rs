@@ -2630,15 +2630,21 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len() - INTRI
         ]),
         "",
     ),
-    // WP-337: i386 calls `modff` / `modf` / `modfl` (`spec/codegen-x86.md`
-    // "Floating-point classes and `modf`"); the 64-bit back ends do not
-    // lower it yet.
-    row("intrinsic:llvm.modf", todo(LATER), todo(LATER), "").on_i386(on(&[
-        TypeClass::Float,
-        TypeClass::Double,
-        TypeClass::X86Fp80,
-        TypeClass::Aggregate,
-    ])),
+    // WP-337 (i386), WP-340 (x86-64, AArch64): `modff` / `modf` / `modfl`
+    // as `llc` 22 calls them. Not on x86-64: `half` (`llc` 22 cannot
+    // select it) and `fp128` (`modff128`); vectors and `bfloat` on both.
+    row(
+        "intrinsic:llvm.modf",
+        on(&[
+            TypeClass::Half,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Fp128,
+            TypeClass::Aggregate,
+        ]),
+        on(&[TypeClass::Float, TypeClass::Double, TypeClass::X86Fp80, TypeClass::Aggregate]),
+        "",
+    ),
     row(
         "intrinsic:llvm.sin",
         on(&[

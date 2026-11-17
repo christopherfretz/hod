@@ -730,7 +730,7 @@ pub fn intrinsic<'a>(
         | I::VectorReduceFadd
         | I::VectorReduceFmul => Family::Reduce,
         I::VectorExtract | I::VectorInsert => Family::Part,
-        I::Frexp | I::IsFpClass => return None,
+        I::Frexp | I::Modf | I::IsFpClass => return None,
         _ if crate::fpintr::is_fp(which) => Family::Fp,
         _ => return None,
     };

@@ -1,3 +1,4 @@
 2026-11-16T14:45:47Z	WP-292: the first counts baseline (instruction counts under callgrind and peak memory of hod with one thread bind; wall time is reported)	20 inputs, hod built 20; hod version 1.0.0; 3 runs; mode counts
 2026-11-16T16:20:22Z	wave 40: the text reader, debug metadata reading and interning got faster (WP-176, WP-290, WP-291)	20 inputs, hod built 20; hod version 1.0.0; 3 runs; mode counts
 2026-11-16T20:24:11Z	wave 42: WP-305 (unit ranges as llc writes them: four -g objects change), WP-308 and WP-311 (debug node decodes), WP-303 step 2	20 inputs, hod built 20; hod version 1.0.0; 3 runs; mode counts
+2026-11-16T22:33:24Z	wave 44: WP-312 (object written from its sections), WP-320 (three debug decodes), WP-321 (section names hashed once), WP-326 (long words against the long keywords only)	20 inputs, hod built 20; hod version 1.0.0; 3 runs; mode counts

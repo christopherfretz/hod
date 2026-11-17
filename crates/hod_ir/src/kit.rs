@@ -871,7 +871,7 @@ pub enum NamedMetadataKind {
     /// `!llvm.dbg.cu`: the compile units (debug information, §6).
     DebugCompileUnits,
     /// `!llvm.ident`, `!llvm.errno.tbaa`, `!llvm.gcov` (the input of the
-    /// GCOVProfiler IR pass, which code generation does not read;
+    /// `GCOVProfiler` IR pass, which code generation does not read;
     /// WP-353): dropped.
     Dropped,
     /// Any other: unsupported, recorded (against no symbol) as

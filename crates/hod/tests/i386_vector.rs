@@ -139,7 +139,8 @@ fn vector_refusals_keep_their_names() {
             "x86:vector:no-sse2",
         ),
         (
-            "generic",
+            // Without any SSE, section V (WP-338) passes it lane by lane.
+            "pentium3",
             "",
             "define <4 x i32> @f(<4 x i32> %a) #0 {\n ret <4 x i32> %a\n}",
             "x86:vector:no-sse2",

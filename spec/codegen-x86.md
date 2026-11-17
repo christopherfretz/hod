@@ -1329,8 +1329,12 @@ definition and the use as no end of the 80 bits (it refuses where
 **Not lowered** (`x86:vector:no-sse2:<what>`): `:cast` (a cast from or
 to floating lanes), `:select` (without `cmov`), `:reduce` (`min`/`max`
 reductions without `cmov`), `:abi` (an `<N x i1>` or `inreg` vector
-argument or result, a `fastcc` result in memory). The other refusals
-of §17 (`:element`, `:i64-op`, `:frem`, `:intrinsic`, ...) hold.
+argument or result). As for an aggregate, a `fastcc` vector of floating
+lanes or returned in memory is `x86:abi:cc` and a result of two
+floating lanes (`st0`, `st1`) is `x86:abi:x87-pair`. The other
+refusals of §17 (`:element`, `:i64-op`, `:frem`, `:intrinsic`,
+`:length`, ...) hold. `vecscalar::ret_memory` writes a vector result
+in memory (`control::ret` sends it there, not to `agg`).
 
 **No barrier.** No construct of this section is added to
 `x87::barrier`: the select and reductions that branch are refused.

@@ -193,6 +193,32 @@ fn odd(attrs: ParamAttrs) -> bool {
         || attrs.stack_align().is_some()
 }
 
+/// A vector at the boundary without SSE (WP-338): the number of its
+/// leaves, the distance between them in its image, and the leaf (an
+/// `i64` lane is two words). `<N x i1>`: [`crate::vecscalar::ABI`].
+fn vector_lanes(types: &TypeTable, ty: TypeId) -> Result<(u32, u32, Leaf), &'static str> {
+    let TypeKind::Vector { elem, len } = types.kind(ty) else {
+        return Err(crate::vector::SCALABLE);
+    };
+    let (parts, leaf) = match types.kind(elem) {
+        TypeKind::Int(1) => return Err(crate::vecscalar::ABI),
+        TypeKind::Int(bits @ (8 | 16 | 32)) => (1, Leaf::Int(bits / 8)),
+        TypeKind::Int(64) => (2, Leaf::Int(4)),
+        TypeKind::Ptr { addr_space: 0 } => (1, Leaf::Int(4)),
+        TypeKind::Float => (1, Leaf::Fp { size: 4, slot: 4 }),
+        TypeKind::Double => (1, Leaf::Fp { size: 8, slot: 8 }),
+        _ => return Err(crate::vector::ELEMENT),
+    };
+    if len > crate::vector::MAX_LANES {
+        return Err(crate::vector::LENGTH);
+    }
+    let stride = match leaf {
+        Leaf::Int(size) => size,
+        Leaf::Fp { size, .. } => size,
+    };
+    Ok((len * parts, stride, leaf))
+}
+
 /// One leaf of a value at the boundary.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Leaf {
@@ -429,6 +455,31 @@ fn assign_into(
             });
             continue;
         }
+        if types.is_vector(ty) && !features.has(X86Features::SSE) {
+            // Without SSE each lane is an argument of its own (WP-338).
+            let (n, stride, leaf) = vector_lanes(types, ty)?;
+            if inreg {
+                return Err(crate::vecscalar::ABI);
+            }
+            if conv == Conv::Fast && matches!(leaf, Leaf::Fp { .. }) {
+                return Err(CC);
+            }
+            let (size, slot) = match leaf {
+                Leaf::Int(size) => (size, 4),
+                Leaf::Fp { size, slot } => (size, slot),
+            };
+            for k in 0..n {
+                let offset = k * stride;
+                let place = if let Some(reg) = (conv == Conv::Fast).then(|| regs.take()).flatten() {
+                    Place::Reg(reg)
+                } else {
+                    at = at.checked_add(slot).ok_or(hod_cg::abi::SIZE_LIMIT)?;
+                    Place::Stack(at - slot)
+                };
+                push_part(out, Part { arg, kind: PartKind::Value, offset, size, place });
+            }
+            continue;
+        }
         if types.is_vector(ty) {
             let (place, size) =
                 crate::sse::vector_place(types, ty, features, sig.variadic, &mut xmm, &mut at)?;
@@ -506,6 +557,34 @@ fn assign_ret(
         || !matches!(attrs.mem(), ParamMem::None | ParamMem::ElementType)
     {
         return Err(ATTR);
+    }
+    if types.is_vector(sig.ret) && !features.has(X86Features::SSE) {
+        // Without SSE the lanes are returned as an aggregate's leaves:
+        // three words, one x87 value, else in memory (WP-338).
+        let (n, stride, leaf) = vector_lanes(types, sig.ret)?;
+        let fp = matches!(leaf, Leaf::Fp { .. });
+        if fp && conv == Conv::Fast {
+            return Err(CC);
+        }
+        if (fp && n > 2) || (!fp && n as usize > RET.len()) {
+            if conv == Conv::Fast {
+                return Err(CC);
+            }
+            out.ret_memory = Some(RetMemory { address: Place::Stack(0), returned_in: Some(EAX) });
+            return Ok(4);
+        }
+        if fp && n == 2 {
+            return Err(X87_PAIR);
+        }
+        let (size, _) = match leaf {
+            Leaf::Int(size) => (size, 4),
+            Leaf::Fp { size, slot } => (size, slot),
+        };
+        for (k, &word) in (0..n).zip(RET.iter()) {
+            let place = Place::Reg(if fp { ST0 } else { word });
+            out.ret.push(Part { arg: 0, kind: PartKind::Value, offset: k * stride, size, place });
+        }
+        return Ok(0);
     }
     if types.is_vector(sig.ret) {
         let (place, size) =

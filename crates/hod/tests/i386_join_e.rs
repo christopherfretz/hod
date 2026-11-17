@@ -306,7 +306,8 @@ fn refusal(cpu: &str, body: &str) -> String {
 fn casts_and_atomics_the_join_still_refuses_keep_their_names() {
     let cases: &[(&str, &str, &str)] = &[
         (
-            "generic",
+            // Without any SSE it is lowered since WP-338 (section V).
+            "pentium3",
             "define void @f(double %x, ptr %p) #0 {\n %v = bitcast double %x to <2 x i32>\n \
              store <2 x i32> %v, ptr %p\n ret void\n}",
             "x86:vector:no-sse2",

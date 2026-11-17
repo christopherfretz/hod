@@ -74,7 +74,7 @@ const X: Xmm = Xmm::Xmm6;
 
 /// A lane.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum E {
+pub(crate) enum E {
     /// `i1`, one bit.
     Mask,
     /// An integer (or pointer) of 1, 2, 4 or 8 bytes.
@@ -87,18 +87,18 @@ enum E {
 
 /// A vector type.
 #[derive(Clone, Copy, Debug)]
-struct Shape {
-    e: E,
-    n: u32,
+pub(crate) struct Shape {
+    pub(crate) e: E,
+    pub(crate) n: u32,
     /// The store size.
-    size: u32,
+    pub(crate) size: u32,
     /// The allocation size (the home's).
-    alloc: u32,
+    pub(crate) alloc: u32,
 }
 
 impl Shape {
     /// The bytes of a lane (0 for `i1`).
-    const fn lane(self) -> u32 {
+    pub(crate) const fn lane(self) -> u32 {
         match self.e {
             E::Mask => 0,
             E::Int(b) => b,
@@ -107,12 +107,12 @@ impl Shape {
         }
     }
 
-    const fn at(self, lane: u32) -> u32 {
+    pub(crate) const fn at(self, lane: u32) -> u32 {
         lane * self.lane()
     }
 }
 
-fn shape(cx: &FnCx<'_, X86>, ty: TypeId) -> CgResult<Shape> {
+pub(crate) fn shape(cx: &FnCx<'_, X86>, ty: TypeId) -> CgResult<Shape> {
     let types = cx.types();
     let (elem, n) = match types.kind(ty) {
         TypeKind::Vector { elem, len } => (elem, len),
@@ -138,7 +138,7 @@ fn shape(cx: &FnCx<'_, X86>, ty: TypeId) -> CgResult<Shape> {
     Ok(Shape { e, n, size, alloc })
 }
 
-fn is_vec(cx: &FnCx<'_, X86>, ty: TypeId) -> bool {
+pub(crate) fn is_vec(cx: &FnCx<'_, X86>, ty: TypeId) -> bool {
     matches!(cx.types().kind(ty), TypeKind::Vector { .. } | TypeKind::ScalableVector { .. })
 }
 
@@ -171,8 +171,16 @@ pub fn owns(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
 /// # Errors
 /// The refusals of this module; what asking for the operands reports.
 pub fn lower<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>) -> CgResult<()> {
-    if !cx.target.features().has(X86Features::SSE2) {
-        return unsupported(NO_SSE2);
+    let features = cx.target.features();
+    if !features.has(X86Features::SSE2) {
+        // Without any SSE: section V (`vecscalar`) takes the forms that
+        // would use `xmm6` or `cmov`; the rest below uses neither.
+        if features.has(X86Features::SSE) {
+            return unsupported(NO_SSE2);
+        }
+        if let Some(done) = crate::vecscalar::lower(cx, inst) {
+            return done;
+        }
     }
     match inst.kind() {
         InstKind::Load { ptr, mem } => {
@@ -212,7 +220,7 @@ fn size_of(width: u32) -> Size {
 }
 
 /// `r` = the `width`-byte integer at `m`, extended to 32 bits.
-fn ld(cx: &mut FnCx<'_, X86>, r: Reg, width: u32, signed: bool, place: FrameRef) {
+pub(crate) fn ld(cx: &mut FnCx<'_, X86>, r: Reg, width: u32, signed: bool, place: FrameRef) {
     frame_inst(cx, place, |m| match (width, signed) {
         (4.., _) => mc::mov_rm(Size::D, r, m),
         (_, true) => mc::movsx_rm(Size::D, r, size_of(width), m),
@@ -227,7 +235,7 @@ fn st(cx: &mut FnCx<'_, X86>, place: FrameRef, r: Reg, width: u32) {
 
 /// Copies `bytes` from `src` to `dst` through `eax` (4, 2, 1 at a
 /// time); nothing when they are the same place.
-fn copy(cx: &mut FnCx<'_, X86>, dst: FrameRef, src: FrameRef, bytes: u32) {
+pub(crate) fn copy(cx: &mut FnCx<'_, X86>, dst: FrameRef, src: FrameRef, bytes: u32) {
     if dst == src {
         return;
     }
@@ -271,7 +279,7 @@ fn bit(cx: &mut FnCx<'_, X86>, image: FrameRef, lane: u32) {
 
 /// Ors bit 0 of `r` (the rest zero) into bit `lane` of the mask image
 /// at `image`.
-fn or_bit(cx: &mut FnCx<'_, X86>, image: FrameRef, lane: u32, r: Reg) {
+pub(crate) fn or_bit(cx: &mut FnCx<'_, X86>, image: FrameRef, lane: u32, r: Reg) {
     if !lane.is_multiple_of(8) {
         put(cx, mc::shl_ri(Size::D, r, (lane % 8) as u8));
     }
@@ -298,7 +306,7 @@ fn lane_in(cx: &mut FnCx<'_, X86>, r: Reg, s: Shape, img: FrameRef, lane: u32, s
 /// Writes `eax` (and `edx` for the high half of an `i64` lane) as lane
 /// `lane` of `img`; a mask lane takes bit 0 of `eax` (the image zeroed
 /// before).
-fn lane_out(cx: &mut FnCx<'_, X86>, s: Shape, img: FrameRef, lane: u32) {
+pub(crate) fn lane_out(cx: &mut FnCx<'_, X86>, s: Shape, img: FrameRef, lane: u32) {
     match s.e {
         E::Mask => {
             put(cx, mc::and_ri(Size::D, EAX, 1));
@@ -313,7 +321,7 @@ fn lane_out(cx: &mut FnCx<'_, X86>, s: Shape, img: FrameRef, lane: u32) {
 }
 
 /// Starts a result built in a slot of its own (a mask zeroed).
-fn begin(cx: &mut FnCx<'_, X86>, s: Shape) -> CgResult<FrameRef> {
+pub(crate) fn begin(cx: &mut FnCx<'_, X86>, s: Shape) -> CgResult<FrameRef> {
     let t = temp(cx, s)?;
     if s.e == E::Mask {
         zero(cx, t, s.alloc.max(1));
@@ -322,7 +330,12 @@ fn begin(cx: &mut FnCx<'_, X86>, s: Shape) -> CgResult<FrameRef> {
 }
 
 /// Copies the result built in `t` to `inst`'s home.
-fn end<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, t: FrameRef, s: Shape) -> CgResult<()> {
+pub(crate) fn end<'a>(
+    cx: &mut FnCx<'a, X86>,
+    inst: Inst<'a>,
+    t: FrameRef,
+    s: Shape,
+) -> CgResult<()> {
     let d = cx.def_mem(inst)?;
     copy(cx, d, t, s.alloc);
     Ok(())
@@ -408,7 +421,7 @@ fn store(cx: &mut FnCx<'_, X86>, value: Value, ptr: Value) -> CgResult<()> {
 /// else 0 when `≥ n`) and puts in `ecx`, with the image's address in
 /// `edx`.
 /// variable one in `ecx`.
-fn ask_index(
+pub(crate) fn ask_index(
     cx: &mut FnCx<'_, X86>,
     v: Value,
     n: u32,
@@ -434,7 +447,12 @@ fn ask_index(
 }
 
 /// `ecx` = the asked index reduced to `n` lanes; `edx` = `&image`.
-fn place_index(cx: &mut FnCx<'_, X86>, asked: (Option<PReg>, u32), n: u32, image: FrameRef) {
+pub(crate) fn place_index(
+    cx: &mut FnCx<'_, X86>,
+    asked: (Option<PReg>, u32),
+    n: u32,
+    image: FrameRef,
+) {
     let (reg, bits) = asked;
     if let Some(r) = reg {
         put(cx, mc::mov_rr(Size::D, ECX, gp(r)));
@@ -463,7 +481,7 @@ fn scale(width: u32) -> Scale {
 }
 
 /// `[edx + ecx * lane + disp]`.
-fn var_mem(s: Shape, disp: i32) -> Mem {
+pub(crate) fn var_mem(s: Shape, disp: i32) -> Mem {
     match ECX.index() {
         Some(ix) => Mem::base_index(EDX, ix, scale(s.lane()), disp),
         None => Mem::base(EDX, disp),

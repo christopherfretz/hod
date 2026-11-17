@@ -227,6 +227,9 @@ pub fn stubs(cx: &mut FnCx<'_, X86>) -> CgResult<()> {
         for saved in SAVED {
             cx.cfi(CfiOp::Restore { reg: dwarf(gpr(saved)) });
         }
+        // WP-324, §19.3: called through a pointer, as `llc`'s
+        // `F.resume` and `F.destroy` begin.
+        crate::cet::landing(cx);
         // The prologue of `frame::begin`, with its rows.
         put(cx, mc::push_r(EBP));
         cx.cfi(CfiOp::DefCfaOffset(8));
@@ -245,6 +248,8 @@ pub fn stubs(cx: &mut FnCx<'_, X86>) -> CgResult<()> {
         put(cx, mc::mov_rr(Size::D, ESI, ECX));
         put(cx, mc::mov_mi(Size::D, mode, 1));
         put(cx, mc::mov_mr(Size::D, word, ECX));
+        // WP-324, §19.2: this activation's guard and guarded block.
+        crate::ssp::stub_enter(cx, &local)?;
         // WP-108 (debug hook): the stub's `prologue_end`.
         cx.coro_stub_ready();
         mov_imm(cx, Reg::Rax, which as u32);

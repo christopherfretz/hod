@@ -483,6 +483,109 @@ fn bodies_with_debug_information_verify_and_run() {
     }
 }
 
+/// `endbr32` (`F3 0F 1E FB`).
+const ENDBR32: [u8; 4] = [0xF3, 0x0F, 0x1E, 0xFB];
+
+/// The offsets of the coroutine stubs in `object`: the prologue
+/// `push ebp` · `mov ebp, esp` · `push ebx` · `push esi` · `push edi` ·
+/// `sub esp, imm32` followed by `mov esi, ecx` (`spec/codegen-x86.md`
+/// §18.1), which only a stub writes.
+fn stub_offsets(object: &[u8]) -> Vec<usize> {
+    let prologue = [0x55, 0x89, 0xE5, 0x53, 0x56, 0x57, 0x81, 0xEC];
+    (0..object.len().saturating_sub(18))
+        .filter(|&at| object[at..at + 8] == prologue && object[at + 12..at + 14] == [0x89, 0xCE])
+        .collect()
+}
+
+/// A protected coroutine body (`spec/codegen-x86.md` §18.1, §19.2,
+/// §19.3; the meeting of WP-324 and WP-335): `coro/protected.cpp` by
+/// clang 19 and 22 under `-fstack-protector-strong` and
+/// `-fstack-protector-all` (stack arguments copied below the guard in
+/// the ramp with `esi` as scratch before `esi` becomes the frame base,
+/// buffers in the guarded block of the ramp and of a resumed activation,
+/// whose stub writes the guard and the block's pointers again), also
+/// with `-fcf-protection=branch` (`endbr32` at both stubs, as at `llc`'s
+/// `F.resume` and `F.destroy`), static and PIE, CPU `generic`, plain and
+/// under `Stress::ALL`, runs as the `opt` + `llc` oracle's.
+#[test]
+fn protected_bodies_run_as_llc_s() {
+    let target = Target::I686;
+    let (Some(gcc), Some(qemu)) = (tool(&target.c_driver()), tool(&target.emulator())) else {
+        return;
+    };
+    let scratch = Scratch::new("i386-coro-protected");
+    let mut runs = 0;
+    let variants: [(&str, &[&str]); 3] = [
+        ("strong", &["-fstack-protector-strong"]),
+        ("all", &["-fstack-protector-all"]),
+        ("all-cet", &["-fstack-protector-all", "-fcf-protection=branch"]),
+    ];
+    for major in LLVM_MAJORS {
+        let (Some(clang), Some(opt), Some(llc)) =
+            (llvm_tool(major, "clang"), llvm_tool(major, "opt"), llvm_tool(major, "llc"))
+        else {
+            continue;
+        };
+        for (variant, extra) in variants {
+            for pic in [false, true] {
+                let model = if pic { "pie" } else { "exe" };
+                let label = format!("protected-{major}-{variant}-{model}");
+                let mut flags = vec![if pic { "-fPIE" } else { "-fno-pic" }];
+                flags.extend_from_slice(extra);
+                let source = data("coro", "protected.cpp");
+                let ll = pre_opt(&scratch, &clang, &source, &flags, &label);
+                let text = generic(&std::fs::read_to_string(&ll).unwrap());
+                assert!(text.contains("sspreq") || text.contains("sspstrong"), "{label}");
+                let source = scratch.write(&format!("{label}.g.ll"), text.as_bytes());
+                let lowered = scratch.join(format!("{label}.o0.ll"));
+                let mut command = Command::new(&opt);
+                command.arg("-passes=default<O0>").arg("-S").arg(&source);
+                checked(&format!("opt {label}"), command.arg("-o").arg(&lowered));
+                let llc_flags: &[&str] = if pic { &["-relocation-model=pic"] } else { &[] };
+                let build = Build { pic, ..STATIC };
+                let (plain, stress) = hod_objects(text.as_bytes(), build, &label);
+                if variant == "all-cet" {
+                    for (who, object) in [("hod", &plain), ("stress", &stress)] {
+                        let stubs = stub_offsets(object);
+                        assert_eq!(stubs.len(), 2, "{label}: {who}'s stubs");
+                        for at in stubs {
+                            assert_eq!(
+                                object[at - 4..at],
+                                ENDBR32,
+                                "{label}: {who}'s stub at {at}"
+                            );
+                        }
+                    }
+                }
+                let objects = [
+                    (
+                        "llc",
+                        llc_object(&scratch, &llc, &lowered, llc_flags, &format!("{label}-llc")),
+                    ),
+                    ("hod", scratch.write(&format!("{label}-hod.o"), plain)),
+                    ("stress", scratch.write(&format!("{label}-stress.o"), stress)),
+                ];
+                let mut results = Vec::new();
+                for (who, object) in &objects {
+                    let exe = scratch.join(format!("{label}-{who}"));
+                    link_cxx(&gcc, object, pic, &exe);
+                    results.push(run_with_features(&qemu, &exe, &[]));
+                    runs += 1;
+                }
+                let want = String::from_utf8_lossy(&results[0].1);
+                assert_eq!(results[0].0, Some(0), "{label}: llc's run failed: {want}");
+                assert!(want.contains("protected: "), "{label}: {want}");
+                for (who, (status, out)) in ["hod", "stress"].iter().zip(&results[1..]) {
+                    let got = String::from_utf8_lossy(out);
+                    assert_eq!(results[0].0, *status, "{label}: {who}'s status: {got}");
+                    assert_eq!(want, got, "{label}: {who}'s output");
+                }
+            }
+        }
+    }
+    eprintln!("i386 coro protected bodies: {runs} runs equal llc's");
+}
+
 /// A promise alignment that is no constant power of two is refused by
 /// name; a coroutine body compiles (WP-335), and inline assembly that
 /// writes its frame base `esi` is `x86:coro:asm-base`.

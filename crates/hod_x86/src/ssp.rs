@@ -238,6 +238,35 @@ pub fn enter(cx: &mut FnCx<'_, X86>) -> CgResult<()> {
     Ok(())
 }
 
+/// A coroutine stub's entry code (`spec/codegen-x86.md` §19.2, §18.1;
+/// the 64-bit targets' `guard::stub_enter`): a resumed activation has a
+/// machine frame of its own, so its guard words and the guarded block's
+/// pointers are written again, as [`enter`] wrote them in the ramp. The
+/// stub runs after `end_function` placed the block: `local` gives a
+/// local slot's final operand. Scratch `ecx` (the stub has copied the
+/// frame pointer it brought into `esi` and the frame word).
+///
+/// # Errors
+/// What `local` reports.
+pub fn stub_enter(
+    cx: &mut FnCx<'_, X86>,
+    local: impl Fn(FrameRef) -> CgResult<Mem>,
+) -> CgResult<()> {
+    let Some(guard) = cx.state.ssp.guard else { return Ok(()) };
+    let block = guard - cx.stack_guard().guard_offset();
+    put(cx, mc::mov_rm(Size::D, ECX, guard_value()));
+    put(cx, mc::mov_mr(Size::D, local(FrameRef::Local(guard))?, ECX));
+    if cx.stack_guard().low() {
+        put(cx, mc::mov_mr(Size::D, local(LOW_GUARD)?, ECX));
+    }
+    for index in 0..cx.stack_guard().pointers().len() {
+        let (pointer, offset) = cx.stack_guard().pointers()[index];
+        put(cx, mc::lea(Size::D, ECX, local(FrameRef::Local(block + offset))?));
+        put(cx, mc::mov_mr(Size::D, local(pointer)?, ECX));
+    }
+    Ok(())
+}
+
 /// `end_function`, before the local area's size is read: the block as
 /// the local area's last allocation, so that it ends at its top, and its
 /// offset written into the entry code.

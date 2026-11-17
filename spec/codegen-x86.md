@@ -1311,6 +1311,23 @@ PIE, default CPU and `-mcpu=i686`, three linkers, plain and under
   locations go through the frame word (`spec/dwarf.md` §6.16).
 - **Refused:** inline assembly in a body that writes `esi` is
   `x86:coro:asm-base` (an operand is never given `esi`).
+- **With §19 (the join of WP-324 and WP-335).** A protected body's ramp
+  copies its stack arguments below the guard with `esi` as scratch
+  (`ssp::copy_arguments`) before `esi` is the frame base (`coro.begin`;
+  under `Stress::coro_frame` the `mov esi, ebp` follows the copy). A
+  resumed activation has a machine frame of its own: each stub writes,
+  after the frame word, the guard word (and the low guard), and the
+  guarded block's pointers again (`ssp::stub_enter`, as `llc` guards
+  `F.resume` and `F.destroy`), so the epilogue's check holds; without it
+  every resumed activation of a protected body called
+  `__stack_chk_fail`. Under `cf-protection-branch` each stub begins with
+  `endbr32` (`cet::landing`), as `llc`'s `F.resume` and `F.destroy`
+  do. `indirectbr` in a body is the function's own code in every
+  activation (one function, one frame layout); clang refuses the
+  address of a label in a coroutine, so no C++ program reaches it.
+  Test: `i386_coro.rs` `protected_bodies_run_as_llc_s`
+  (`coro/protected.cpp`, `-fstack-protector-strong`, `-all`, `-all`
+  with `-fcf-protection=branch`).
 
 Tests: `crates/hod/tests/i386_coro.rs` (`bodies_run_as_llc_s`: the
 programs `coro/gen.cpp`, `transfer.cpp`, `throws.cpp` by clang 19 and

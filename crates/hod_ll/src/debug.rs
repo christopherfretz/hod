@@ -51,6 +51,29 @@ fn required(kind: DiKind) -> &'static [&'static str] {
     }
 }
 
+/// The most fields outside a node's record `node_body` remembers by name.
+const SEEN_MAX: usize = 48;
+
+/// [`required`] as the bits of the fields' positions in the record
+/// (`DiKind::field_index`), built once (WP-356): a node that has met
+/// them all is checked by one compare instead of a lookup by name of
+/// each.
+fn required_mask(kind: DiKind) -> u64 {
+    static MASKS: std::sync::OnceLock<Vec<u64>> = std::sync::OnceLock::new();
+    let masks = MASKS.get_or_init(|| {
+        let mut masks = vec![0; usize::from(u8::MAX) + 1];
+        for &kind in DiKind::ALL {
+            // A field without a position (none today) leaves every node
+            // of the kind to the check by name: no 64-bit mask is met.
+            masks[kind as usize] = required(kind).iter().fold(0, |mask, field| {
+                kind.field_index(field.as_bytes(), 0).map_or(u64::MAX, |index| mask | 1 << index)
+            });
+        }
+        masks
+    });
+    masks[kind as usize]
+}
+
 /// The kind with a record in `hod_ir` that the metadata index found:
 /// `DiKind::named` of the same name, without comparing it again.
 fn record_kind(kind: MdKind) -> Option<DiKind> {
@@ -762,8 +785,9 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
         // required ones present. The record's fields by position (at most
         // 32, `spec/ir.md` §6.2), the few others by name.
         let mut met = 0u64;
-        let mut seen: [&[u8]; 48] = [b""; 48];
-        let mut count = 0;
+        // The others by name, at most 48: rare (older spellings), so kept
+        // where nothing is set up until one comes (WP-356).
+        let mut seen: Vec<&[u8]> = Vec::new();
         // Where the next field is looked for first: LLVM writes them in
         // the record's order.
         let mut hint = 0;
@@ -789,7 +813,7 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
             let index = kind.field_index(field, hint);
             let again = match index {
                 Some(index) => met & (1 << index) != 0,
-                None => seen[..count].contains(&field),
+                None => seen.contains(&field),
             };
             if again {
                 let field = String::from_utf8_lossy(field);
@@ -807,9 +831,8 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
                 }
                 continue;
             }
-            if count < seen.len() {
-                seen[count] = field;
-                count += 1;
+            if seen.len() < SEEN_MAX {
+                seen.push(field);
             }
             match di_field(name, field) {
                 Some(DiMapping::Mapped) => {
@@ -833,10 +856,16 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
                 self.expect(Tok::Comma, "expected ',' between fields")?;
             }
         }
+        // Every required field has a position: the fields of the record
+        // met cover them, or the first missing is found by name.
+        let need = required_mask(kind);
+        if met & need == need {
+            return Ok(Made { kind: Some(kind), name, first });
+        }
         for &field in required(kind) {
             let present = match kind.field_index(field.as_bytes(), 0) {
                 Some(index) => met & (1 << index) != 0,
-                None => seen[..count].contains(&field.as_bytes()),
+                None => seen.contains(&field.as_bytes()),
             };
             if !present {
                 let message = format!("missing required field '{field}'");
@@ -1523,6 +1552,18 @@ impl Made<'_> {
             return kit::di_node(None, self.name, []);
         };
         let mut node = DiNode::llvm_default(kind);
+        Self::fill(&mut node, fields, scratch, src)?;
+        Ok(node)
+    }
+
+    /// Sets the fields of `node` from `fields`.
+    #[inline]
+    fn fill<'s>(
+        node: &mut DiNode<'s>,
+        fields: &'s [(Key, Val)],
+        scratch: &'s DebugScratch,
+        src: &'s [u8],
+    ) -> hod_ir::IrResult<()> {
         for &(key, value) in fields {
             let value = match value {
                 Val::UInt(value) => DiFieldValue::UInt(value),
@@ -1543,7 +1584,7 @@ impl Made<'_> {
                 Key::Name(field) => node.set(field.as_bytes(), value)?,
             }
         }
-        Ok(node)
+        Ok(())
     }
 
     fn define<L: Layering>(
@@ -1554,7 +1595,15 @@ impl Made<'_> {
         src: &[u8],
         distinct: bool,
     ) -> hod_ir::IrResult<()> {
-        let node = self.node(&scratch.fields[self.first..], scratch, src)?;
+        // The node built where it is defined from (WP-356): no copy of a
+        // returned node.
+        let fields = &scratch.fields[self.first..];
+        let Some(kind) = self.kind else {
+            let node = kit::di_node(None, self.name, [])?;
+            return kit::define_di_node(debug, id, &node, distinct);
+        };
+        let mut node = DiNode::llvm_default(kind);
+        Self::fill(&mut node, fields, scratch, src)?;
         kit::define_di_node(debug, id, &node, distinct)
     }
 

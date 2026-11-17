@@ -302,6 +302,9 @@ fn barrier(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
             (Some(which), _) if crate::coro::is_barrier(which) => true,
             // `modf` is a libm call, never folded by `llc` 22 (WP-337).
             (Some(Intrinsic::Modf), _) => true,
+            // `frexp` is a libm call unless `llc` 19 and 22 fold it: an
+            // operand that is a constant or folded (WP-341).
+            (Some(Intrinsic::Frexp), args) => !operands_folded(cx, inst, args, FOLD_DEPTH),
             (Some(Intrinsic::Memcpy | Intrinsic::Memmove | Intrinsic::Memset), _) => {
                 crate::bytes::site_calls_libc(cx, &site)
             }

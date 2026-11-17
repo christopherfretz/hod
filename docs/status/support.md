@@ -1619,6 +1619,7 @@ classified as x86_64 except for the rows below.
 | `cc:win64cc` (i386) | supported | not-implemented | i386 `x86:abi:cc` |
 | `attr:inreg` (i386) | not-implemented | supported |  |
 | `attr:nest` (i386) | not-implemented | supported |  |
+| `intrinsic:llvm.frexp` (i386) | supported (int, half, float, double, fp128, x86_fp80, aggregate) | supported (int, float, double, x86_fp80, aggregate) |  |
 | `intrinsic:llvm.modf` (i386) | not-implemented | supported (float, double, x86_fp80, aggregate) |  |
 
 ## Structural rules

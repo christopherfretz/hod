@@ -1,5 +1,5 @@
-//! `llvm.is.fpclass` and `llvm.modf` of `float`, `double` and `x86_fp80`
-//! (WP-337, `spec/codegen-x86.md` "Floating-point classes and `modf`").
+//! `llvm.is.fpclass`, `llvm.modf` and `llvm.frexp` of `float`, `double`
+//! and `x86_fp80` (WP-337, WP-341, `spec/codegen-x86.md` "Floating-point classes and `modf`").
 //!
 //! # `is.fpclass`
 //!
@@ -28,6 +28,12 @@
 //! popped to the first field at the type's width (exact: a fractional
 //! part is representable in its type). A call: an x87 barrier
 //! (`x87::barrier`).
+//!
+//! # `frexp`
+//!
+//! `frexpf` / `frexp` / `frexpl` by the same sequence (WP-341), the
+//! second field being the `i32` exponent. A barrier unless `llc` folds
+//! it (a constant operand: `x87::barrier`).
 
 use hod_cg::{CallTarget, CgResult, FnCx, FrameRef, RuntimeFn, SymRef};
 use hod_ir::{Const, Inst, InstKind, IntPredicate, Intrinsic, TypeId, TypeKind, Value, ValueKind};
@@ -91,7 +97,7 @@ pub fn owns(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
         _ => return false,
     };
     match (site.intrinsic(), site.args()) {
-        (Some(Intrinsic::IsFpClass | Intrinsic::Modf), &[x, ..]) => {
+        (Some(Intrinsic::IsFpClass | Intrinsic::Modf | Intrinsic::Frexp), &[x, ..]) => {
             Ty::of(cx, value_ty(cx, x)).is_some()
         }
         _ => false,
@@ -112,6 +118,7 @@ pub fn lower<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>) -> CgResult<()> {
     match (site.intrinsic(), site.args()) {
         (Some(Intrinsic::IsFpClass), &[x, mask]) => is_fpclass(cx, inst, x, mask),
         (Some(Intrinsic::Modf), &[x]) => modf(cx, inst, x),
+        (Some(Intrinsic::Frexp), &[x]) => frexp(cx, inst, x),
         _ => unsupported(INTRINSIC),
     }
 }
@@ -284,10 +291,50 @@ fn modf<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, x: Value) -> CgResult<()> {
     if !pair {
         return unsupported(INTRINSIC);
     }
-    let (func, size) = match ty {
-        Ty::F32 => (RuntimeFn::Modff, X87Size::S),
-        Ty::F64 => (RuntimeFn::Modf, X87Size::D),
-        Ty::F80 => (RuntimeFn::Modfl, X87Size::T),
+    let func = match ty {
+        Ty::F32 => RuntimeFn::Modff,
+        Ty::F64 => RuntimeFn::Modf,
+        Ty::F80 => RuntimeFn::Modfl,
+    };
+    out_param_call(cx, inst, x, ty, func)
+}
+
+/// `%r = call { T, i32 } @llvm.frexp(x)`: the libm routine of `T`
+/// (`frexpf` / `frexp` / `frexpl`) with the operand and the address of
+/// `%r`'s second field, which receives the exponent; the fraction is
+/// popped from `st0` to the first (exact: a fraction is in `T`).
+fn frexp<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, x: Value) -> CgResult<()> {
+    let Some(ty) = Ty::of(cx, value_ty(cx, x)) else { return unsupported(INTRINSIC) };
+    let pair = cx.types().struct_fields(inst.ty()).is_some_and(|fs| {
+        fs.len() == 2 && fs[0] == value_ty(cx, x) && cx.types().int_bits(fs[1]) == Some(32)
+    });
+    if !pair {
+        return unsupported(INTRINSIC);
+    }
+    let func = match ty {
+        Ty::F32 => RuntimeFn::Frexpf,
+        Ty::F64 => RuntimeFn::Frexp,
+        Ty::F80 => RuntimeFn::Frexpl,
+    };
+    out_param_call(cx, inst, x, ty, func)
+}
+
+/// `func(x, &r.1)` with `r` = `inst`'s pair in memory, as `llc` calls
+/// `modf` and `frexp`: the operand copied to the outgoing area at its
+/// width, the address of the second field after it, the call through
+/// [`crate::pic::emit_call`], then `st0` popped to the first field at
+/// `ty`'s width. Uses `eax` only; pins no pool register.
+fn out_param_call<'a>(
+    cx: &mut FnCx<'a, X86>,
+    inst: Inst<'a>,
+    x: Value,
+    ty: Ty,
+    func: RuntimeFn,
+) -> CgResult<()> {
+    let size = match ty {
+        Ty::F32 => X87Size::S,
+        Ty::F64 => X87Size::D,
+        Ty::F80 => X87Size::T,
     };
     let second = cx.types().field_offset(inst.ty(), 1) as u32;
     let a = cx.use_mem(x)?;

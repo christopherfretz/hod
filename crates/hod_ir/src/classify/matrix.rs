@@ -2629,7 +2629,16 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len() - INTRI
             TypeClass::X86Fp80,
         ]),
         "",
-    ),
+    )
+    // WP-341: i386 calls `frexpf` / `frexp` / `frexpl` (`spec/codegen-x86.md`
+    // "Floating-point classes and `modf`"); `half` stays refused there.
+    .on_i386(on(&[
+        TypeClass::Float,
+        TypeClass::Double,
+        TypeClass::X86Fp80,
+        TypeClass::Int,
+        TypeClass::Aggregate,
+    ])),
     // WP-337: i386 calls `modff` / `modf` / `modfl` (`spec/codegen-x86.md`
     // "Floating-point classes and `modf`"); the 64-bit back ends do not
     // lower it yet.

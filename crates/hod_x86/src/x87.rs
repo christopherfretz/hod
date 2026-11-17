@@ -1163,6 +1163,9 @@ fn bitcast<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, arg: Value, from: TypeId)
         // The `i64` side is §8's slot of two words, low first: the
         // `double`'s memory image.
         (Fp::F64, Some(64)) => copy_of(cx, inst, arg, fp),
+        // WP-337: the `i80` side is a slot whose first 10 bytes are the
+        // image (`crate::fpclass`'s compares read them).
+        (Fp::F80, Some(80)) => copy_of(cx, inst, arg, fp),
         (Fp::F80, _) => unsupported(FP80_CAST),
         _ => unsupported(CAST),
     }

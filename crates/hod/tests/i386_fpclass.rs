@@ -486,3 +486,128 @@ fn run_22(name: &str, text: &str, features: &[&str]) -> usize {
     }
     runs
 }
+
+// ---- `bitcast` between `x86_fp80` and `i80` ----
+
+/// Every predicate of `icmp i80 %x, 0` on the bits of the `x86_fp80`
+/// patterns (both signs, zeros, NaNs, the x87-only encodings), and the
+/// round trip `x86_fp80` to `i80` and back.
+fn i80_program(cpu: Option<&str>) -> String {
+    let mut s = format!("target triple = \"{}\"\n", i386_support::TRIPLE);
+    let pats = f80_patterns(true);
+    let words: Vec<String> = pats
+        .iter()
+        .map(|&(e, m)| {
+            format!(
+                "[3 x i32] [i32 {}, i32 {}, i32 {}]",
+                m as u32 as i32,
+                (m >> 32) as u32 as i32,
+                e
+            )
+        })
+        .collect();
+    writeln!(s, "@p = global [{} x [3 x i32]] [{}]", pats.len(), words.join(", ")).unwrap();
+    s.push_str("define i32 @preds(ptr %p, ptr %out) #0 {\n  %x = load x86_fp80, ptr %p\n  %b = bitcast x86_fp80 %x to i80\n");
+    let preds = ["eq", "ne", "ugt", "uge", "ult", "ule", "sgt", "sge", "slt", "sle"];
+    for (k, pred) in preds.iter().enumerate() {
+        writeln!(
+            s,
+            "  %c{k} = icmp {pred} i80 %b, 0\n  %z{k} = zext i1 %c{k} to i32\n  %s{k} = shl i32 %z{k}, {k}"
+        )
+        .unwrap();
+    }
+    s.push_str("  %o0 = or i32 %s0, 0\n");
+    for k in 1..preds.len() {
+        writeln!(s, "  %o{k} = or i32 %o{}, %s{k}", k - 1).unwrap();
+    }
+    s.push_str(
+        "  %back = bitcast i80 %b to x86_fp80
+  store x86_fp80 %back, ptr %out
+  ret i32 %o9
+}
+define i32 @main() #0 {
+entry:
+  %out = alloca [3 x i32], align 4
+  br label %l
+l:
+  %i = phi i32 [ 0, %entry ], [ %i1, %l ]
+  store [3 x i32] [i32 -1, i32 -1, i32 -1], ptr %out
+  %pp = getelementptr [3 x i32], ptr @p, i32 %i
+  %r = call i32 @preds(ptr %pp, ptr %out)
+  call void @bits(i32 %r, i32 10)
+  %w0 = load i32, ptr %out
+  %o1 = getelementptr i32, ptr %out, i32 1
+  %w1 = load i32, ptr %o1
+  %o2 = getelementptr i32, ptr %out, i32 2
+  %w2 = load i32, ptr %o2
+  call void @bits(i32 %w0, i32 32)
+  call void @bits(i32 %w1, i32 32)
+  call void @bits(i32 %w2, i32 32)
+  %i1 = add i32 %i, 1
+  %more = icmp ult i32 %i1, ",
+    );
+    writeln!(s, "{}\n  br i1 %more, label %l, label %done\ndone:\n  ret i32 0\n}}", pats.len())
+        .unwrap();
+    s.push_str(PRINT_BITS);
+    s.push_str(&attrs(cpu));
+    s
+}
+
+#[test]
+fn i80_compares_with_zero_and_the_round_trip() {
+    run_everywhere("i80", i80_program);
+}
+
+/// `signbit`, `isnan`, `isinf`, `isfinite`, `isnormal` and `fpclassify`
+/// of `long double` as clang writes them (`bitcast` to `i80` for
+/// `signbit`; `is.fpclass` with clang 22), over the `x86_fp80` patterns.
+const LONG_DOUBLE_C: &str = r#"#include <math.h>
+#include <stdio.h>
+#include <string.h>
+static const unsigned short se[] = {0, 0x8000, 0, 0x3fff, 0xbfff, 0x7ffe, 0x7fff, 0xffff, 0x7fff, 0x7fff, 0xffff, 0x3fff, 0x7fff, 0};
+static const unsigned long long m[] = {0, 0, 1, 1ull << 63, 1ull << 63, ~0ull, 1ull << 63, 1ull << 63, 3ull << 62, (1ull << 63) | 1, 3ull << 62, 1ull << 62, 0, 1ull << 63};
+int main(void) {
+  for (unsigned i = 0; i < sizeof se / sizeof se[0]; i++) {
+    long double x;
+    unsigned char b[sizeof x];
+    memset(b, 0, sizeof b);
+    memcpy(b, &m[i], 8);
+    memcpy(b + 8, &se[i], 2);
+    memcpy(&x, b, sizeof x);
+    printf("%d %d %d %d %d %d\n", signbit(x) != 0, isnan(x) != 0, isinf(x) != 0,
+           isfinite(x) != 0, isnormal(x) != 0, fpclassify(x));
+  }
+  return 0;
+}
+"#;
+
+#[test]
+fn long_double_classification_from_c() {
+    let Some(lane) = lane() else { return };
+    let scratch = Scratch::new("i386-fpclass-long-double");
+    let source = scratch.write("long_double.c", LONG_DOUBLE_C);
+    let mut runs = 0;
+    for (flags, features) in
+        [(&[][..], &[][..]), (&["-march=i586"][..], &[][..]), (&["-march=pentium4"][..], P4)]
+    {
+        for pic in [false, true] {
+            let build = Build { pic, features, ..STATIC };
+            let name = format!("long-double-{}", flags.first().unwrap_or(&"i686"));
+            runs += lane.check(&scratch, &name, &Source::C(&source, flags), build);
+        }
+    }
+    assert!(runs > 0, "no run was made");
+    eprintln!("i386 long double classification: {runs} runs equal llc's");
+}
+
+#[test]
+fn other_i80_operations_stay_refused() {
+    let shift = "define i32 @f(x86_fp80 %x) {
+  %b = bitcast x86_fp80 %x to i80
+  %s = lshr i80 %b, 64
+  %t = trunc i80 %s to i32
+  ret i32 %t
+}";
+    let error = refusal(shift, None).expect("an i80 shift compiles");
+    assert!(error.contains("x86:i64:wide"), "{error}");
+}

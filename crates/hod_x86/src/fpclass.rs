@@ -30,7 +30,7 @@
 //! (`x87::barrier`).
 
 use hod_cg::{CallTarget, CgResult, FnCx, FrameRef, RuntimeFn, SymRef};
-use hod_ir::{Inst, InstKind, Intrinsic, TypeId, TypeKind, Value};
+use hod_ir::{Const, Inst, InstKind, IntPredicate, Intrinsic, TypeId, TypeKind, Value, ValueKind};
 use hod_mc_x64 as mc;
 use hod_mc_x64::{Cond, Size, X87Size};
 
@@ -82,9 +82,14 @@ impl Ty {
 
 /// Whether `inst` is this module's: `is.fpclass` of a scalar `float`,
 /// `double` or `x86_fp80`; `modf` of one of them. A vector, `half` and
-/// the other types stay with their modules' refusals.
+/// the other types stay with their modules' refusals. Also `icmp` of an
+/// `i80` with zero ([`i80_sign_test`]).
 pub fn owns(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
-    let InstKind::Call(site) = inst.kind() else { return false };
+    let site = match inst.kind() {
+        InstKind::Call(site) => site,
+        InstKind::ICmp { lhs, rhs, .. } => return is_i80(cx, lhs) && is_zero(cx, rhs),
+        _ => return false,
+    };
     match (site.intrinsic(), site.args()) {
         (Some(Intrinsic::IsFpClass | Intrinsic::Modf), &[x, ..]) => {
             Ty::of(cx, value_ty(cx, x)).is_some()
@@ -99,8 +104,10 @@ pub fn owns(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
 /// [`INTRINSIC`] for a mask that is not a constant or a `modf` result
 /// that is not the pair of the operand's type; what the operands report.
 pub fn lower<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>) -> CgResult<()> {
-    let InstKind::Call(site) = inst.kind() else {
-        return cx.bug("fpclass::lower of no call");
+    let site = match inst.kind() {
+        InstKind::Call(site) => site,
+        InstKind::ICmp { pred, lhs, .. } => return i80_sign_test(cx, inst, pred, lhs),
+        _ => return cx.bug("fpclass::lower of no call"),
     };
     match (site.intrinsic(), site.args()) {
         (Some(Intrinsic::IsFpClass), &[x, mask]) => is_fpclass(cx, inst, x, mask),
@@ -299,4 +306,68 @@ fn modf<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, x: Value) -> CgResult<()> {
     put(cx, mc::add_ri(Size::D, ESP, i64::from(area)));
     frame_inst(cx, r, |m| mc::fstp_m(size, m));
     Ok(())
+}
+
+// ---- `i80` ----
+
+/// Whether `value` is an `i80`: only `bitcast` from `x86_fp80` makes one
+/// on i386 (`x87.rs`), into a slot whose first 10 bytes are its bits.
+fn is_i80(cx: &FnCx<'_, X86>, value: Value) -> bool {
+    cx.types().int_bits(value_ty(cx, value)) == Some(80)
+}
+
+/// Whether `value` is the constant zero (of any width).
+fn is_zero(cx: &FnCx<'_, X86>, value: Value) -> bool {
+    let ValueKind::Const(id) = value.kind() else { return false };
+    match cx.module.consts.get(id) {
+        Const::WideInt { words, .. } => words.iter().all(|&w| w == 0),
+        Const::Int { value, .. } => value == 0,
+        Const::Zero(_) => true,
+        _ => false,
+    }
+}
+
+/// `icmp <pred> i80 %x, 0`: what clang writes for `signbit` of a `long
+/// double` (`slt`), and the other predicates against zero, from two
+/// facts of the 10 bytes: negative (bit 79) in `ecx`, zero in `edx`.
+/// Every other `i80` operation stays `x86:i64:wide`.
+fn i80_sign_test<'a>(
+    cx: &mut FnCx<'a, X86>,
+    inst: Inst<'a>,
+    pred: IntPredicate,
+    x: Value,
+) -> CgResult<()> {
+    use IntPredicate as P;
+    let a = cx.use_mem(x)?;
+    let rd = cx.def_reg(inst)?;
+    let r = gp(rd);
+    frame_inst(cx, a.offset_by(8), |m| mc::movzx_rm(Size::D, EAX, Size::W, m));
+    frame_inst(cx, a, |m| mc::or_rm(Size::D, EAX, m));
+    frame_inst(cx, a.offset_by(4), |m| mc::or_rm(Size::D, EAX, m));
+    put(cx, mc::setcc_r(Cond::E, EDX));
+    put(cx, mc::movzx_rr(Size::D, EDX, Size::B, EDX));
+    frame_inst(cx, a.offset_by(9), |m| mc::movzx_rm(Size::D, ECX, Size::B, m));
+    put(cx, mc::shr_ri(Size::D, ECX, 7));
+    // (the fact, or with the other, negated)
+    let (fact, or_other, negate) = match pred {
+        P::Eq | P::Ule => (EDX, false, false),
+        P::Ne | P::Ugt => (EDX, false, true),
+        P::Slt => (ECX, false, false),
+        P::Sge => (ECX, false, true),
+        P::Sle => (ECX, true, false),
+        P::Sgt => (ECX, true, true),
+        // Nothing is below zero unsigned.
+        P::Ult | P::Uge => {
+            mov_imm(cx, r, u32::from(pred == P::Uge));
+            return cx.finish(inst, rd);
+        }
+    };
+    put(cx, mc::mov_rr(Size::D, r, fact));
+    if or_other {
+        put(cx, mc::or_rr(Size::D, r, EDX));
+    }
+    if negate {
+        put(cx, mc::xor_ri(Size::D, r, 1));
+    }
+    cx.finish(inst, rd)
 }

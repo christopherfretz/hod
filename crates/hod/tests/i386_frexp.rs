@@ -198,10 +198,10 @@ fn program(cpu: Option<&str>) -> String {
 ",
     );
     write!(s, "define i32 @main() #0 {{\n{calls}  ret i32 0\n}}\n").unwrap();
-    s.push_str(
-        &cpu.map(|c| format!("attributes #0 = {{ \"target-cpu\"=\"{c}\" }}\n"))
-            .unwrap_or_else(|| "attributes #0 = { nounwind }\n".to_owned()),
-    );
+    match cpu {
+        Some(c) => writeln!(s, "attributes #0 = {{ \"target-cpu\"=\"{c}\" }}").unwrap(),
+        None => s.push_str("attributes #0 = { nounwind }\n"),
+    }
     s
 }
 

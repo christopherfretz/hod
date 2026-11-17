@@ -264,6 +264,7 @@ impl Target for X86 {
             InstKind::ExtractValue { agg, offset } if crate::atomic::is_cmpxchg_result(cx, agg) => {
                 crate::atomic::extract(cx, inst, agg, offset)
             }
+            _ if crate::fpclass::owns(cx, inst) => crate::fpclass::lower(cx, inst),
             // I12: after `atomic`'s arms, before x87's; no aggregate's.
             _ if sse_family_owns(cx, inst) => sse_family(cx, inst),
             _ if crate::x87::owns(cx, inst) => crate::x87::lower(cx, inst),

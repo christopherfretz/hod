@@ -300,6 +300,8 @@ fn barrier(cx: &FnCx<'_, X86>, inst: Inst<'_>) -> bool {
                 _ => true,
             },
             (Some(which), _) if crate::coro::is_barrier(which) => true,
+            // `modf` is a libm call, never folded by `llc` 22 (WP-337).
+            (Some(Intrinsic::Modf), _) => true,
             (Some(Intrinsic::Memcpy | Intrinsic::Memmove | Intrinsic::Memset), _) => {
                 crate::bytes::site_calls_libc(cx, &site)
             }

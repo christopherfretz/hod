@@ -214,6 +214,12 @@ runtime_fns! {
     Frexp = "frexp": (DOUBLE, PTR) -> DOUBLE;
     /// `llvm.frexp.f128` (WP-070).
     Frexpl = "frexpl": (FP128, PTR) -> FP128;
+    /// `llvm.modf.f32` (i386, WP-337).
+    Modff = "modff": (FLOAT, PTR) -> FLOAT;
+    /// `llvm.modf.f64` (i386, WP-337).
+    Modf = "modf": (DOUBLE, PTR) -> DOUBLE;
+    /// `llvm.modf.f80` (i386, WP-337).
+    Modfl = "modfl": (FP128, PTR) -> FP128;
     /// `llvm.sin.f32` (and `half` through it) (WP-070).
     Sinf = "sinf": (FLOAT) -> FLOAT;
     /// `llvm.sin.f64` (WP-070).

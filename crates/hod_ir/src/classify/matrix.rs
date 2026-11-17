@@ -2630,6 +2630,15 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len() - INTRI
         ]),
         "",
     ),
+    // WP-337: i386 calls `modff` / `modf` / `modfl` (`spec/codegen-x86.md`
+    // "Floating-point classes and `modf`"); the 64-bit back ends do not
+    // lower it yet.
+    row("intrinsic:llvm.modf", todo(LATER), todo(LATER), "").on_i386(on(&[
+        TypeClass::Float,
+        TypeClass::Double,
+        TypeClass::X86Fp80,
+        TypeClass::Aggregate,
+    ])),
     row(
         "intrinsic:llvm.sin",
         on(&[

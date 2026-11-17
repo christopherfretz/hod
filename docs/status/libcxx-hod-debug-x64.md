@@ -1,5 +1,66 @@
 # libc++ test suite through hod with `-g` (x86-64)
 
+## At the candidate a68a0d5d (release 1.1.0, 2026-11-17, strict, `-g`, whole suite under qemu)
+
+The 1.1.0 release candidate, hod `main` at `a68a0d5d` (release binary,
+frozen copy, sha256
+`baf397f0f4cd9b2325884e122d39f2b1de000135486f2b832b1d22334b566077`),
+with kiln 1.2.0 at `8f93304ee`, LLVM `/usr/lib/llvm-22` behind the shim,
+target `x86_64-unknown-linux-gnu` (`RELEASE.md` 4.7). All 9,247 tests ran
+in strict mode, in 20 shards, each test binary run under `qemu-x86_64`
+on the AArch64 host. The script was `scripts/libcxx-hod-debug.sh` at
+`a68a0d5d` with its x86-64 defaults (`--timeout 160 --run-timeout-long
+1920 --mem-limit 3072 --no-fail`), `-j 4`, and `HOD_DEBUG_FLAGS` unset,
+so every compile carries `-g`. The runner drew its jobs from the lanes'
+pool.
+
+The control is the `-g` control of the `cd6ef6bc` section below
+(`.build/libcxx-5/x64-g/control.tsv`, kiln + `llc` at `8f93304ee`).
+kiln's pin has not moved since, so the control was reused, not re-run.
+
+```
+# for K in 1..20, one after another
+env -u HOD_DEBUG_FLAGS HOD_DEBUG_TARGET=x86_64 HOD_JOBS=4 HOD_JOBSERVER_FIFO=/run/hod/lanes.fifo HOD_SHIM=$S scripts/libcxx-hod-debug.sh strict $X --shard K/20
+scripts/libcxx-hod-debug.sh merge $X strict
+python3 -I scripts/libcxx-hod-report.py $X/strict $X/strict.tsv <the cd6ef6bc control.tsv>
+```
+
+| | control (kiln + `llc`, at `cd6ef6bc`'s run) | **strict at `a68a0d5d`** |
+|---|---|---|
+| date (EST) | 2026-11-15 20:48:13 to 22:53:16 | 2026-11-17 11:21:54 to 13:36:35 |
+| total | 9,247 | 9,247 |
+| pass | 8,607 | **8,608** |
+| fail | 6 | 5 |
+| xfail | 45 | 45 |
+| xpass | 3 | 3 |
+| unsupported | 585 | 585 |
+| timeout | 1 | 1 |
+| shards with exit 0 | 20 of 20 | 20 of 20 |
+| wall time, sum over shards | 7,167.4 s | 8,066.0 s |
+| `oom_kill` (cgroup `memory.events`) | 1 before, 1 after, every shard | 0 before, 0 after, every shard |
+| modules by hod | - | 7,226 of 7,226; 0 refused, 0 fallback |
+
+**Result: strict equals the `-g` control, test by test.** Only one test
+changed outcome:
+`std/input.output/syncstream/osyncstream/thread/several_threads.pass.cpp`,
+which is FAIL in the control and PASS in strict. This test is known to
+fail sometimes under qemu with the 3 GiB address-space cap: WP-135 saw it
+fail with `llc`-built objects as well, and at `cd6ef6bc` it failed in
+both modes. It was not rerun, because a pass in strict is not a
+regression. The other failures (the four filesystem tests and
+`copy_file_procfs.pass.cpp`), the three XPASSes and the timeout
+`offset_range.pass.cpp` are the same tests in both modes. In strict,
+7,218 tests have objects, all of them built by hod, and 7,185 of those
+pass. The inputs are 392 bitcode and 6,834 text modules. hod's time
+summed over modules is 324.3 s. There was no hod panic, internal error,
+hod timeout or link failure. Raw results:
+`.build/release-1.1.0/libcxx-x64/debug/` (`strict.tsv`,
+`report-strict.txt`, the shard logs).
+
+Not covered at `a68a0d5d`: the debug information quality (`cargo xtask
+debug trees`) was not sampled again. Only `-O0 -g` was run, as the suite
+builds it, and only under qemu-user on an AArch64 host.
+
 ## At the candidate cd6ef6bc (WP-271, 2026-11-15, control and strict, `-g`, whole suite under qemu)
 
 The 1.0 release candidate, hod `main` at `cd6ef6bc` (release binary,

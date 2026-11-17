@@ -528,6 +528,44 @@ Module-level assembly with code or data is `hod_asm`'s 32-bit module
 assembler (`spec/asm.md` §23, WP-307); text of symbol directives only is
 written as on the other targets.
 
+**Operands wider than a register (WP-347).** clang writes C's `"r,m"`
+as `r|m` and an in-out `"+r,m"`/`"+m,r"` as an indirect output
+(`=*r|m`, `=*m|r`) with a tied input. The alternative is `llc`'s by
+weight (`code_weight`): an integer takes the first alternative, any
+other type (a pointer, `float`, `double`, `x86_fp80`) the memory one.
+Measured with `llc` 19 and 22 (`-O0 -global-isel=0 -fast-isel=0`) on
+clang 19 and 22's `--target=i686-linux-gnu -O0` modules:
+
+| operand | `r\|m` input | `+r,m` / `+m,r` |
+|---|---|---|
+| `int`, `i32` | register | memory (the variable) |
+| `long long`, an 8-byte struct (`i64`) | two registers | memory |
+| pointer, `float`, `double`, `long double` | memory: a copy | memory |
+
+- A direct `i64` input in a register (`r`, `q`, the `r` of `r|m`, a
+  constant too) is two registers, the next two free of the order, low
+  half in the first; the operand prints as the low register (`%eax`,
+  `${0:k}`, `${0:w}` of it): `Place::Halves`. Both are written.
+- A direct memory input of class `Mem` (an integer of 33 to 64 bits,
+  `float`, `double`, `x86_fp80`) is a copy of its home in a slot of its
+  own (its alloc size, at least 8 bytes) whose address is in a register
+  (§22.4 of `spec/asm.md`: hod's memory operand prints as `(%reg)`,
+  `llc`'s as the frame object, `-8(%ebp)`).
+- In-outs in memory already worked (the variable's address; the value is
+  read and written by the template in place).
+
+Still refused, `x86:inline-asm:operand-type`: a 64-bit or floating-point
+register OUTPUT, direct or tied (`=r`, `=r,0`; `llc` takes two
+registers); a `float`/`double` with `r` only; an integer of 33 to 63
+bits in a register; an indirect 64-bit register input (`*r`, which `llc`
+rejects too); a memory input of another type of class `Mem` (`i128`,
+`half`, `fp128`, vectors; refused earlier today as `x86:i64:wide`,
+`x86:float:*`). More registers than six (four `i64`, three with `ebx`
+clobbered) is `x86:inline-asm:registers` (`llc` takes `ebp`). A
+template's x87 mnemonics (`fldl %0`) are `asm:mnemonic/<name>`. Tests:
+`crates/hod/tests/i386_asm_wide.rs`. Record:
+`spec/landed/codegen/WP-347.md`.
+
 ## 11. Floating point on the x87 (`x87`, WP-300, design 0008 I9)
 
 **Types and homes.** `float`, `double` and `x86_fp80` are class `Mem`:

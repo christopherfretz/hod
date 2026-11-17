@@ -212,10 +212,7 @@ fn vector_lanes(types: &TypeTable, ty: TypeId) -> Result<(u32, u32, Leaf), &'sta
     if len > crate::vector::MAX_LANES {
         return Err(crate::vector::LENGTH);
     }
-    let stride = match leaf {
-        Leaf::Int(size) => size,
-        Leaf::Fp { size, .. } => size,
-    };
+    let (Leaf::Int(stride) | Leaf::Fp { size: stride, .. }) = leaf;
     Ok((len * parts, stride, leaf))
 }
 

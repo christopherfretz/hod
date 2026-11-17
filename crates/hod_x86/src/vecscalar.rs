@@ -16,6 +16,11 @@
 //!
 //! Registers written: `eax`, `ecx`, `edx`, the x87 stack, the flags.
 
+#![allow(
+    clippy::many_single_char_names,
+    reason = "operands `a`, `b`, result `d`, temporary `t`, shape `s`, as the spec writes them"
+)]
+
 use hod_cg::{CgResult, FnCx};
 use hod_ir::{
     FloatPredicate, Inst, InstKind, Intrinsic, Opcode, TypeKind, Value, ValueKind, X86Features,

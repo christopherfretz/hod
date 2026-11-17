@@ -4139,8 +4139,9 @@ linkers are GNU ld, lld and mold: wild and mortar do not link the
 lane's dynamic PIE programs (`hod_testutil::linkers::EXCEPTIONS` case
 `elf-i386`; a note, and an error when asked for by `--linker`). kiln++
 refuses `--target=i686-*`: its units are SKIP, with a note. A unit hod
-declines with `debug:split-dwarf-i386` or `debug:dwarf-4-i386`
-(`sessions::KEPT_OFF_I686`) is SKIP with the detail `kept off on i686:
+declines with `debug:split-dwarf-i386`, `debug:dwarf-4-i386` or
+`x86:probe-stack` (`sessions::KEPT_OFF_I686`; the last is the i386
+refusal of `"probe-stack"="inline-asm"`, which x86-64 lowers, WP-352) is SKIP with the detail `kept off on i686:
 <name>`, and the summary counts them (`debug: of the SKIPs, kept off on
 i686: ...`); any other refusal is a FAIL, as on every target. `debug
 verify --target i686` is refused (no i686 corpus). The full gate has no

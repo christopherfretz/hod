@@ -206,7 +206,10 @@ impl LinesResult {
 /// with the detail [`KEPT_OFF_PREFIX`] and the name, counted in the
 /// summary) until hod lowers what they name for i386. Any other refusal
 /// on i686 is a FAIL, as on every target.
-pub const KEPT_OFF_I686: [&str; 2] = ["debug:split-dwarf-i386", "debug:dwarf-4-i386"];
+/// `x86:probe-stack` (WP-352): `"probe-stack"="inline-asm"`, which hod
+/// lowers on x86-64 and refuses on i386 (`hod_x86::dynstack::PROBE`).
+pub const KEPT_OFF_I686: [&str; 3] =
+    ["debug:split-dwarf-i386", "debug:dwarf-4-i386", "x86:probe-stack"];
 
 /// The detail of a unit kept off on i686, before the refusal's name.
 pub const KEPT_OFF_PREFIX: &str = "kept off on i686: ";

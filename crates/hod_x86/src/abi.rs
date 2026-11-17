@@ -159,10 +159,11 @@ pub fn callee_pop(asg: &Assignment) -> u32 {
 }
 
 /// The refusal of a value of type `ty` that is no `Gpr` value: by the
-/// family that owns it (an integer wider than 64 bits: `x86:i64:wide`).
+/// family that owns it (an integer wider than 64 bits:
+/// [`crate::wideint::boundary_refusal`]).
 pub fn type_refusal(types: &TypeTable, ty: TypeId) -> &'static str {
     match types.kind(ty) {
-        TypeKind::Int(bits) if bits > 64 => crate::int::WIDE,
+        TypeKind::Int(bits) if bits > 64 => crate::wideint::boundary_refusal(bits),
         TypeKind::Int(_) => crate::int::I64,
         TypeKind::Half
         | TypeKind::BFloat
@@ -671,12 +672,15 @@ mod tests {
         asg.args.iter().map(|p| (p.arg, p.offset, p.size, p.place)).collect()
     }
 
-    /// i386 join C: an integer wider than 64 bits is `x86:i64:wide`, one of
-    /// 33 to 63 bits (no `Gpr` value, no ABI leaf) `x86:i64`.
+    /// i386 join C: an integer of 65 to 128 bits at the boundary is
+    /// `x86:i64:wide:abi` (WP-346), a wider one `x86:i64:wide:width`, one
+    /// of 33 to 63 bits (no `Gpr` value, no ABI leaf) `x86:i64`.
     #[test]
     fn integer_refusals_by_width() {
         let mut types = table();
-        assert_eq!(type_refusal(&types, TypeId::I128), "x86:i64:wide");
+        assert_eq!(type_refusal(&types, TypeId::I128), "x86:i64:wide:abi");
+        let i200 = types.int(200).unwrap();
+        assert_eq!(type_refusal(&types, i200), "x86:i64:wide:width");
         let i40 = types.int(40).unwrap();
         assert_eq!(type_refusal(&types, i40), "x86:i64");
     }

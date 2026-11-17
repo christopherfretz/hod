@@ -73,7 +73,10 @@ pub mod switch;
 pub mod sym;
 mod target;
 
-pub use access::{Access, CallAccess, TlsAccess, call_access, prefers_local_alias, sym_access};
+pub use access::{
+    Access, CallAccess, ModelUsed, TlsAccess, call_access, model_used, prefers_local_alias,
+    sym_access,
+};
 pub use call::CallArg;
 pub use coro::NOOP_CORO_TARGET;
 pub use coro_body::{

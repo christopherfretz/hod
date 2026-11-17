@@ -6965,6 +6965,55 @@ header fields and the bytes of `crates/hod_cg/tests/data/exclude/mason_meta.ll`
 through the session from text and from bitcode, and links it with bfd,
 lld and mold (the section is not in the program, which runs).
 
+#### 9.7.5 hod's own `.mason.meta` unit (WP-332, `emit/mason.rs`)
+
+Every object hod writes, on every target (x86-64, AArch64, i386), holds
+one unit of hod's own in the section `.mason.meta`, the container of the
+mortar linker's metadata (github.com/christopherfretz/mortar,
+`spec/meta.md` MT-10, MT-11, MT-12, MT-26; its request H-3, `spec/odr.md`
+§11). `llc` writes no such unit: this paragraph is the rule that permits
+that difference from `llc`, and the only one it permits. Every
+comparison of hod's objects with `llc`'s leaves out exactly hod's unit
+(producer 2, ending the section) in the section named `.mason.meta` of
+type `SHT_PROGBITS` whose flags are exactly `SHF_EXCLUDE`, and that
+section itself when the unit is all it holds (`hod_testutil::mason`);
+nothing else is left out for it.
+
+- The section: `SHT_PROGBITS`, `sh_flags` exactly `SHF_EXCLUDE`,
+  `sh_addralign` 8, in no group, no relocation section, never
+  `SHF_GNU_RETAIN`. It is the section §9.7.4 made for excluded variables
+  named `.mason.meta` with no group and not in `llvm.used` (kiln's
+  container, H-1) when the module has one whose alignment is at least 8
+  and whose size is a multiple of 8 (MT-10: it then ends with a whole
+  unit), else a new section of that name after every other (so a section
+  of another shape stays `llc`'s byte for byte, and hod never pads it).
+  The unit is appended once every variable is placed: kiln's units come
+  first and their bytes are unchanged (H-2). (mortar's MT-10 reads a container as a sequence of
+  units and fixes no order between producers; this is hod's.)
+- The unit, 88 bytes, every integer little-endian in both ELF classes
+  (MT-10): the header (`MASN`, major 1, minor 0, `unit_size` 88,
+  `header_size` 32, `block_count` 1, `strtab_offset` 64, `strtab_size`
+  the exact length of the string table, `producer` 2, `flags` 0); one
+  block (MT-11: kind 1, version 1, `block_size` 32, `row_size` 16,
+  `row_count` 1); one row (MT-26: name, value, flags 0, reserved 0); the
+  string table (MT-12) `"\0reloc-model\0<value>\0"`; zero bytes to 88.
+- The value is the relocation model code generation used,
+  `hod_cg::model_used` (`access.rs`), the one function every
+  "shared object or not" decision of §7.4 reads: `static` for
+  `-relocation-model=static` (the default) and `dynamic-no-pic`; `pie`
+  for `pic` with a `PIE Level` (the module's own definitions bind
+  locally); `pic` for `pic` without one (a default-visibility
+  definition is reached through the GOT and PLT unless the IR marks it
+  `dso_local`, and then through its local alias). The model is one per
+  module; no option turns the unit off; its bytes hold no time, path or
+  host.
+
+Linkers drop the section (`SHF_EXCLUDE`). Tests: `emit/mason.rs` (the
+bytes for each value); `crates/hod/tests/mason_reloc.rs` (every target
+and model through the session, with and without kiln's container, the
+header fields, determinism, and a program linked by every linker
+present runs and holds no `.mason.meta`).
+
 ## 10. Errors and limits
 
 ```rust

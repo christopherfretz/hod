@@ -109,7 +109,12 @@ fn check_object(object: &[u8], who: &str) {
     assert_eq!(meta.flags, SHF_EXCLUDE, "{who}: flags exactly SHF_EXCLUDE");
     assert_eq!(meta.align, 8, "{who}");
     let start = meta.offset as usize;
-    assert_eq!(&object[start..start + meta.size as usize], &BYTES, "{who}: the bytes verbatim");
+    let data = &object[start..start + meta.size as usize];
+    // kiln's bytes verbatim (H-2), then hod's own unit (`spec/codegen.md`
+    // §9.7.5, WP-332; `tests/mason_reloc.rs` checks its contents).
+    let hods = hod_testutil::mason::hods_unit_start(&meta.name, meta.sh_type, meta.flags, data);
+    assert_eq!(hods, Some(BYTES.len()), "{who}: hod's unit right after the constant");
+    assert_eq!(&data[..BYTES.len()], &BYTES, "{who}: the bytes verbatim");
     for section in &all {
         if section.sh_type == SHT_RELA {
             assert_ne!(section.info as usize, index, "{who}: a relocation section for it");

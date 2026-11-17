@@ -147,32 +147,27 @@ section 6.4). WP-135.
 
 ## Native x86-64 runner
 
-Run [43465227200](https://github.com/christopherfretz/hod/actions/runs/43465227200)
-of `.github/workflows/sweep.yml` (WP-164; `spec/harness.md` "CI", rule
-6), 2026-11-13: `wp/158-sweep` at `a67370e`, kiln 1.0.1 at `bd60e1829`,
-LLVM 22.1.8 (Debian 13), libc++ 22.1.8 from Debian's `libc++-22-dev`,
-the locales generated; kiln's `cargo xtask libcxx std libcxx --tag
-llvmorg-22.1.8 -j 4 --timeout 60 --mem-limit 3072 --no-fail` in six
-shards, once with hod strict (`HOD_STRICT=1`, no fallback) and once with
-kiln++ and `llc` alone, natively on the runner. Every test binary runs on
-the runner's own CPU, no emulator.
+Run [44078910283](https://github.com/christopherfretz/hod/actions/runs/44078910283)
+of `.github/workflows/sweep.yml` (`spec/harness.md` "CI", rule 6),
+2026-11-17, of exactly the 1.1.0 candidate `a68a0d5d`: kiln 1.2.0 at
+`8f93304ee`, LLVM 22.1.8, libc++ 22.1.8, the locales generated; kiln's
+`cargo xtask libcxx std libcxx --tag llvmorg-22.1.8 -j 4 --timeout 60
+--mem-limit 3072 --no-fail` in six shards, once with hod strict
+(`HOD_STRICT=1`, no fallback) and once with kiln++ and `llc` alone,
+natively on the runner. Every test binary runs on the runner's own CPU,
+no emulator.
 
 | `ubuntu-24.04` | total | pass | fail | xfail | xpass | unsupported | timeout | shards (s) | modules by hod |
 |---|---:|---:|---:|---:|---:|---:|---:|---|---|
-| hod, strict | 9,247 | 8,749 | 5 | 46 | 1 | 446 | 0 | 371 to 596 | 7,364 of 7,365 |
-| `llc` | 9,247 | 8,750 | 4 | 46 | 1 | 446 | 0 | 323 to 632 | - |
+| hod, strict | 9,247 | 8,750 | 4 | 45 | 2 | 446 | 0 | 269 to 620 | 7,365 of 7,365 |
+| `llc` | 9,247 | 8,750 | 4 | 45 | 2 | 446 | 0 | 331 to 688 | - |
 
-The one difference: `std/experimental/simd/simd.class/simd_unary.pass.cpp`
-FAILs to compile with hod (`unsupported construct 'x64:vector-wide-element'`,
-`i128` lanes; **open, WP-161**) and passes with `llc`. The four other
-failures (`directory_iterator` and `recursive_directory_iterator`
-`ctor.pass.cpp`, `remove.pass.cpp`, `remove_all.pass.cpp`, in
-`std/input.output/filesystems/`) fail with `llc` as well: the runner's
-environment, not hod. Against the qemu run above, the 139 tests that need
-locales run here (pass), `several_threads` and `copy_file_procfs` pass,
-`setfill_wchar_max` passes rather than XPASS, and with the 60 s limit
-nothing times out (`lost_wakeup` and `offset_range` timed out at 20 s in
-the first native run, 43459455103).
+No test's outcome differs between hod and `llc`: the run's summary lists
+none, and no test passes with `llc` and not with hod. The 4 failures are
+therefore the same tests on both sides (the runner's environment, not
+hod). The earlier hosted run of this section (43465227200, 2026-11-13,
+one test refused by name, `x64:vector-wide-element`; no module of the
+suite is refused now) is in this file's history.
 
 ## Numbers
 

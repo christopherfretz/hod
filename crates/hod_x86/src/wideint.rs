@@ -192,6 +192,9 @@ pub fn materialize_mem(cx: &mut FnCx<'_, X86>, dst: FrameRef, value: Value) -> C
 
 // ---- binary operations ----
 
+/// A `reg, mem` instruction's constructor.
+type RegMem = fn(Size, Reg, Mem) -> mc::Inst;
+
 /// `%r = <op> %lhs, %rhs`: `add`/`adc`, `sub`/`sbb` and the bitwise
 /// operations limb by limb through `eax`.
 ///
@@ -201,7 +204,6 @@ pub fn binary<'a>(cx: &mut FnCx<'a, X86>, inst: Inst<'a>, lhs: Value, rhs: Value
     let bits = cx.types().int_bits(inst.ty()).unwrap_or(128);
     let count = limbs(bits)?;
     let op = inst.opcode();
-    type RegMem = fn(Size, Reg, Mem) -> mc::Inst;
     let (first, rest): (RegMem, RegMem) = match op {
         Opcode::Add => (mc::add_rm, mc::adc_rm),
         Opcode::Sub => (mc::sub_rm, mc::sbb_rm),

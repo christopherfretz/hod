@@ -16,6 +16,12 @@
 //!
 //! A missing tool is skipped with a note, unless `HOD_REQUIRE_TOOLS=1`.
 
+#![allow(
+    clippy::too_many_lines,
+    clippy::many_single_char_names,
+    reason = "IR text built from short value names"
+)]
+
 use std::fmt::Write as _;
 
 use hod_testutil::Scratch;
@@ -347,7 +353,7 @@ fn overflow_c() -> String {
 fn overflow_builtins_from_c() {
     let Some(lane) = lane() else { return };
     let scratch = Scratch::new("i386-wide-int-c");
-    let source = scratch.write("overflow.c", &overflow_c());
+    let source = scratch.write("overflow.c", overflow_c());
     let mut runs = 0;
     for (flags, features) in
         [(&[][..], &[][..]), (&["-march=i586"][..], &[][..]), (&["-march=pentium4"][..], P4)]
@@ -478,7 +484,8 @@ fn narrow(v: &str, w: u32) -> String {
 /// `x` (an `iW` value) with ones and a pattern above bit `w`: the `i128`
 /// whose `trunc` to `iW` has garbage in the bits above the width.
 fn garbage(w: u32, x: u128, k: usize) -> u128 {
-    let above = if k % 2 == 0 { u128::MAX } else { 0x5a5a_c3c3_f0f0_9696_a5a5_3c3c_0f0f_6969 };
+    let above =
+        if k.is_multiple_of(2) { u128::MAX } else { 0x5a5a_c3c3_f0f0_9696_a5a5_3c3c_0f0f_6969 };
     if w == 128 { x } else { (x & mask(w)) | (above & !mask(w)) | (1 << w) }
 }
 
@@ -805,7 +812,7 @@ fn mul_pairs(w: u32) -> Vec<(u128, u128)> {
     let one = |next: &mut dyn FnMut() -> u64| {
         let r = (u128::from(next()) << 64) | u128::from(next());
         let v = r >> (next() % 128);
-        let v = if next() % 4 == 0 { v.wrapping_neg() } else { v };
+        let v = if next().is_multiple_of(4) { v.wrapping_neg() } else { v };
         v & mask(w)
     };
     for _ in 0..2048 {

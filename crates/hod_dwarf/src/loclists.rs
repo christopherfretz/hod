@@ -639,7 +639,7 @@ fn fits_i386(debug: &hod_ir::DebugInfo, at: ValueLoc, expr: ExprId, args: &[Loca
             });
             let ops = body(debug, expr).all(|op| match op {
                 DiOp::Deref | DiOp::DerefSize(_) => false,
-                DiOp::Constu(v) | DiOp::PlusUconst(v) => v <= u64::from(u32::MAX),
+                DiOp::Constu(v) | DiOp::PlusUconst(v) => u32::try_from(v).is_ok(),
                 DiOp::Consts(v) => i32::try_from(v as i64).is_ok(),
                 DiOp::Convert(bits, _) => bits <= 32,
                 _ => true,

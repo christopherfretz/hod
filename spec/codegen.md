@@ -1102,6 +1102,12 @@ them there, and has the saturating arithmetic, `scmp`/`ucmp`, the
   `frexp` call the routines of §7.3 "Runtime routines by type and
   target" (`sinf`/`sin`/`sinl`, `__powisf2`, ...); `frexp` with the
   address of a 4-byte slot, its `{T, i32}` result a `Mem`-class value.
+  `modf` (WP-340, LLVM 20 and later) calls `modff` / `modf` / `modfl`
+  (`fp128`) with the address of a slot of the routine's type for the
+  integral part; the `{T, T}` result gets the fractional part (the
+  routine's result) then the integral part, as `llc` 22. `half` goes
+  through `modff`, both parts narrowed (exact); `bfloat` and vectors
+  are refused by the classifier (`intrinsic:llvm.modf` of the type).
   `half` goes through the `float` function. An exponent narrower than 32
   bits is sign-extended; a wider `ldexp` exponent is clamped to the
   `int` range (`llc` truncates it); a wider `powi` exponent is refused
@@ -2886,7 +2892,12 @@ above it (no `roundss`, no `cvttps2udq`, no AVX, no x87: `x86_fp80` is
   `mulsd`, exact for two `half`s, then `addsd`, rounding as `llc`'s call
   of `fma` does), `fp128` calls the `...f128` functions; `powi`,
   `ldexp` (an `i64` exponent clamped to `int`), `frexp` and the libm
-  intrinsics are calls. Refused: `x64:fp-intrinsic` (a non-constant
+  intrinsics are calls. `modf` (WP-340, LLVM 20 and later) of `float`
+  and `double` calls `modff` / `modf` with the address of a frame slot
+  for the integral part, the result's fields then written (fractional
+  part first), as `llc` 22; `half` (`llc` 22 cannot select it), `fp128`
+  (`llc` calls `modff128`), `bfloat` and vectors are refused by the
+  classifier (`intrinsic:llvm.modf` of the type). Refused: `x64:fp-intrinsic` (a non-constant
   `is.fpclass` mask, a `powi` exponent wider than 32 bits),
   `x64:intrinsic-fp128` (`fptosi.sat`/`fptoui.sat` of `fp128`),
   `x64:intrinsic-wide` (an integer result wider than 64 bits).
@@ -3453,20 +3464,32 @@ only around a truncating store (below).
   `fminimum_numl`/`fmaximum_numl`, `powl`, the transcendental
   functions, `lroundl`/`llroundl` (the result in `rax`), `ldexpl` (the
   `i32` in `edi`), `frexpl` (the exponent's address, in the area, in
-  `rdi`); `powi` calls `__powixf2`. Refused: `x64:x87-intrinsic` (a
+  `rdi`), `modfl` (WP-340: the address of the result's second field,
+  the integral part, in `rdi`; the fractional part popped from `st0` to
+  the first, as `llc` 22); `powi` calls `__powixf2`. Refused: `x64:x87-intrinsic` (a
   non-constant `is.fpclass` mask, a `powi`/`ldexp` exponent other than
   `i32`, an integer result wider than 64 bits, an intrinsic with no
   routine).
-- **`is.fpclass` of the encodings only the x87 has.** A pseudo-denormal
-  (exponent 0, integer bit set) is a subnormal of its sign for every
-  mask, as `fxam` classifies it (denormal: C3 C2 C0 = 1 1 0) and as the
-  x87 loads it. `llc` is not followed: 19 and 22 put it in no class
-  (false for each single class) yet answer true for some unions by
-  their expansion, differing on four (19: `0x7`, `0xf3`, `0x203`; 22:
-  `0x30c`), which no class gives (WP-147). An
-  unnormal, a pseudo-zero, a pseudo-infinity or a pseudo-NaN is in the
-  test when the test has both NaN classes, or is all classes but one NaN
-  class (`x87::invalid_in`): `llc` 19 and 22 agree on all 1024 masks.
+- **`is.fpclass` of the encodings only the x87 has** (WP-340: one rule
+  on x86-64 and i386, `llc` 22's, mask by mask). A pseudo-denormal
+  (exponent 0, integer bit set) is in the test as `llc` 22 expands it
+  (`x87::pseudo_denormal_in`, the same function as i386's
+  `fpclass::pseudo_denormal_in`, `spec/codegen-x86.md` section F): for
+  the masks `llc` 22 tests by an x87 compare of the value (3, 7, 99,
+  243, 508, 515, 780, 924, 1016, 1020) as the normal number it loads
+  as; otherwise as a NaN when the test has both NaN classes and as zero
+  or subnormal when it has all four of those classes, a test that `llc`
+  inverts (`invertFPClassTestIfSimpler`: one class, one class of one
+  sign, the finite classes, ...) answering the negation of its
+  complement's. No single class holds for it. LLVM 19 compares fewer
+  masks and differs at 7, 243, 515 and 780: this part is tested against
+  `llc` 22 only (`hod_x64/tests/leftovers2.rs`, all 1024 masks against
+  operands of every class, both signs). Before WP-340 x86-64 answered
+  "subnormal" for every mask (as `fxam`), 459 masks apart. An unnormal,
+  a pseudo-zero, a pseudo-infinity or a pseudo-NaN is in the test when
+  the test has both NaN classes, or is all classes but one NaN class
+  (`x87::invalid_in`): `llc` 19 and 22 agree on all 1024 masks. The
+  ordinary classes answer their bit of the mask, unchanged by WP-340.
 
 A lowering here writes, besides its operands' slots, `rax`, `rcx`,
 `rdx`, `r10`, `r11` and the flags (the libcalls: every caller-saved

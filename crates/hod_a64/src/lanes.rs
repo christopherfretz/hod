@@ -315,7 +315,7 @@ pub fn intrinsic<'a>(
         I::Scmp | I::Ucmp => Family::ThreeWay,
         I::Fshl | I::Fshr => Family::Funnel,
         I::Ptrmask => Family::Ptrmask,
-        I::Frexp | I::IsFpClass => return None,
+        I::Frexp | I::Modf | I::IsFpClass => return None,
         _ if fpintr::is_fp(which) => Family::Fp,
         _ => return None,
     };

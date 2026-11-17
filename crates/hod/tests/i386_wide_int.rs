@@ -74,11 +74,7 @@ fn values(w: u32) -> Vec<u128> {
 
 /// `x` as a signed decimal literal of `iW`.
 fn lit(w: u32, x: u128) -> String {
-    if x >> (w - 1) & 1 == 1 {
-        format!("-{}", x.wrapping_neg() & mask(w))
-    } else {
-        x.to_string()
-    }
+    if x >> (w - 1) & 1 == 1 { format!("-{}", x.wrapping_neg() & mask(w)) } else { x.to_string() }
 }
 
 /// The shared part of every program: `@show` prints the four words of a
@@ -154,9 +150,8 @@ fn pair_function(w: u32) -> String {
     let g = b.val(&format!("add {t} {f}, 1"));
     b.show(w, &g);
     for op in ["sadd", "uadd", "ssub", "usub", "smul", "umul"] {
-        let r = b.val(&format!(
-            "call {{ {t}, i1 }} @llvm.{op}.with.overflow.{t}({t} {x}, {t} {y})"
-        ));
+        let r =
+            b.val(&format!("call {{ {t}, i1 }} @llvm.{op}.with.overflow.{t}({t} {x}, {t} {y})"));
         let v = b.val(&format!("extractvalue {{ {t}, i1 }} {r}, 0"));
         let o = b.val(&format!("extractvalue {{ {t}, i1 }} {r}, 1"));
         b.show(w, &v);
@@ -247,7 +242,8 @@ fn program(cpu: Option<&str>) -> String {
         let items: Vec<String> = vals.iter().map(|&v| format!("i{w} {}", lit(w, v))).collect();
         writeln!(s, "@v{w} = private constant [{n} x i{w}] [{}]", items.join(", ")).unwrap();
         for op in ["sadd", "uadd", "ssub", "usub", "smul", "umul"] {
-            writeln!(s, "declare {{ i{w}, i1 }} @llvm.{op}.with.overflow.i{w}(i{w}, i{w})").unwrap();
+            writeln!(s, "declare {{ i{w}, i1 }} @llvm.{op}.with.overflow.i{w}(i{w}, i{w})")
+                .unwrap();
         }
         s.push_str(&pair_function(w));
         s.push_str(&loop_function(w, n));
@@ -310,12 +306,8 @@ fn wide_operations_as_llc() {
 }
 
 /// The C types of the overflow builtins and their printf formats.
-const C_TYPES: [(&str, &str); 4] = [
-    ("int", "%d"),
-    ("unsigned", "%u"),
-    ("long long", "%lld"),
-    ("unsigned long long", "%llu"),
-];
+const C_TYPES: [(&str, &str); 4] =
+    [("int", "%d"), ("unsigned", "%u"), ("long long", "%lld"), ("unsigned long long", "%llu")];
 
 /// clang's overflow builtins over every triple of the four types, each
 /// over every pair of boundary values (converted to the operand types).
@@ -428,4 +420,508 @@ fn what_stays_refused() {
                  store i200 %r, ptr %p\n  ret void\n}";
     let error = refusal(width, None).expect("an i200 add compiles");
     assert!(error.contains("x86:i64:wide:width"), "{error}");
+}
+
+// ---- the edges of a limb-wise lowering (WP-346 review) ----
+
+/// The odd widths of the high-bits programs: a top limb of 1, 8, 4 and 24
+/// bits.
+const ODD: [u32; 4] = [65, 72, 100, 120];
+
+/// The two builds of the edge programs: generic static, `pentium4` PIE.
+const EDGE_BUILDS: [(Option<&str>, bool); 2] = [(None, false), (Some("pentium4"), true)];
+
+/// The attribute group `#0` for `cpu`.
+fn attributes(cpu: Option<&str>) -> String {
+    match cpu {
+        Some(c) => format!("attributes #0 = {{ \"target-cpu\"=\"{c}\" }}\n"),
+        None => "attributes #0 = { nounwind }\n".into(),
+    }
+}
+
+/// Runs `text(cpu)` in both edge builds; the number of runs.
+fn check_edges(name: &str, text: impl Fn(Option<&str>) -> String) -> usize {
+    let Some(lane) = lane() else { return 1 };
+    let scratch = Scratch::new(&format!("i386-wide-int-{name}"));
+    let mut runs = 0;
+    for (cpu, pic) in EDGE_BUILDS {
+        let features = if cpu.is_some() { P4 } else { &[] };
+        let build = Build { pic, features, ..STATIC };
+        let label = format!("{name}-{}", cpu.unwrap_or("generic"));
+        runs += lane.check(&scratch, &label, &Source::Ll(&text(cpu)), build);
+    }
+    runs
+}
+
+/// The right-hand side that narrows the `i128` `v` to `iW` (`freeze` at
+/// 128 bits, where a `trunc` is malformed).
+fn narrow(v: &str, w: u32) -> String {
+    if w == 128 { format!("freeze i128 {v}") } else { format!("trunc i128 {v} to i{w}") }
+}
+
+/// `x` (an `iW` value) with ones and a pattern above bit `w`: the `i128`
+/// whose `trunc` to `iW` has garbage in the bits above the width.
+fn garbage(w: u32, x: u128, k: usize) -> u128 {
+    let above = if k % 2 == 0 { u128::MAX } else { 0x5a5a_c3c3_f0f0_9696_a5a5_3c3c_0f0f_6969 };
+    if w == 128 { x } else { (x & mask(w)) | (above & !mask(w)) | (1 << w) }
+}
+
+/// The `iW` value `x` sign-extended to `i128`.
+fn sx(w: u32, x: u128) -> i128 {
+    ((x << (128 - w)) as i128) >> (128 - w)
+}
+
+/// A loop in `@main` calling `@func(ptr, ptr)` on every pair of the `n`
+/// elements of type `ty` of `@table`; `tag` keeps its labels apart.
+fn pair_loop(tag: &str, func: &str, table: &str, ty: &str, n: usize) -> String {
+    format!(
+        "  br label %{tag}e
+{tag}e:
+  br label %{tag}o
+{tag}o:
+  %{tag}i = phi i32 [ 0, %{tag}e ], [ %{tag}i1, %{tag}x ]
+  br label %{tag}l
+{tag}l:
+  %{tag}j = phi i32 [ 0, %{tag}o ], [ %{tag}j1, %{tag}l ]
+  %{tag}a = getelementptr {ty}, ptr @{table}, i32 %{tag}i
+  %{tag}b = getelementptr {ty}, ptr @{table}, i32 %{tag}j
+  call void @{func}(ptr %{tag}a, ptr %{tag}b)
+  %{tag}j1 = add i32 %{tag}j, 1
+  %{tag}jd = icmp eq i32 %{tag}j1, {n}
+  br i1 %{tag}jd, label %{tag}x, label %{tag}l
+{tag}x:
+  %{tag}i1 = add i32 %{tag}i, 1
+  %{tag}id = icmp eq i32 %{tag}i1, {n}
+  br i1 %{tag}id, label %{tag}d, label %{tag}o
+{tag}d:
+"
+    )
+}
+
+/// `@gW(ptr %pa, ptr %pb)`: two `iW` values truncated from `i128`s with
+/// garbage above the width, through every consumer that reads the bits
+/// above it.
+fn garbage_function(w: u32) -> String {
+    let mut b = Body { text: String::new(), n: 0 };
+    let t = format!("i{w}");
+    let xx = b.val("load i128, ptr %pa");
+    let yy = b.val("load i128, ptr %pb");
+    let x = b.val(&format!("trunc i128 {xx} to {t}"));
+    let y = b.val(&format!("trunc i128 {yy} to {t}"));
+    for pred in ["eq", "ne", "ult", "ule", "ugt", "uge", "slt", "sle", "sgt", "sge"] {
+        let c = b.val(&format!("icmp {pred} {t} {x}, {y}"));
+        b.flag(&c);
+    }
+    for op in ["sadd", "uadd", "ssub", "usub", "smul", "umul"] {
+        let r =
+            b.val(&format!("call {{ {t}, i1 }} @llvm.{op}.with.overflow.{t}({t} {x}, {t} {y})"));
+        let v = b.val(&format!("extractvalue {{ {t}, i1 }} {r}, 0"));
+        let o = b.val(&format!("extractvalue {{ {t}, i1 }} {r}, 1"));
+        b.show(w, &v);
+        b.flag(&o);
+    }
+    for ext in ["zext", "sext"] {
+        let e = b.val(&format!("{ext} {t} {x} to i128"));
+        b.show(128, &e);
+    }
+    if w < 120 {
+        let e = b.val(&format!("sext {t} {y} to i120"));
+        b.show(120, &e);
+    }
+    let m = b.val(&format!("mul {t} {x}, {y}"));
+    b.show(w, &m);
+    let mz = b.val(&format!("icmp eq {t} {m}, 0"));
+    b.flag(&mz);
+    let s = b.val(&format!("sub {t} {x}, {y}"));
+    let sn = b.val(&format!("icmp slt {t} {s}, 0"));
+    b.flag(&sn);
+    let a = b.val(&format!("add {t} {x}, {y}"));
+    b.show(w, &a);
+    b.show(w, &x);
+    if w > 65 {
+        let tr = b.val(&format!("trunc {t} {x} to i65"));
+        let tn = b.val(&format!("icmp slt i65 {tr}, 0"));
+        b.flag(&tn);
+        let te = b.val(&format!("icmp eq i65 {tr}, 0"));
+        b.flag(&te);
+    }
+    let c = b.val(&format!("icmp ult {t} {x}, {y}"));
+    let sel = b.val(&format!("select i1 {c}, {t} {x}, {t} {y}"));
+    let sp = b.val(&format!("icmp sgt {t} {sel}, 0"));
+    b.flag(&sp);
+    b.show(w, &sel);
+    format!(
+        "define void @g{w}(ptr %pa, ptr %pb) #0 {{\nentry:\n  %buf = alloca [16 x i8], align 16\n  \
+         store i128 0, ptr %buf\n{}  br i1 {c}, label %l, label %r\nl:\n  br label %j\nr:\n  \
+         br label %j\nj:\n  %ph = phi {t} [ {x}, %l ], [ {y}, %r ]\n  \
+         %pc = icmp sle {t} %ph, {x}\n  call void @flag(i1 %pc)\n  \
+         %pz = icmp eq {t} %ph, 0\n  call void @flag(i1 %pz)\n  ret void\n}}\n",
+        b.text
+    )
+}
+
+/// `@ix()`: `getelementptr` with wide indices whose high limbs are not
+/// zero, or negative as wide values: the index is truncated to 32 bits.
+fn index_function() -> (String, String) {
+    let cases: [(u32, &str, u128); 7] = [
+        (65, "i8", (1 << 64) | 5),
+        (96, "i8", 3u128.wrapping_neg()),
+        (128, "i8", (0xdead_beef_u128 << 64) | 0xffff_fff0),
+        (128, "i16", (1u128 << 100).wrapping_add(7).wrapping_neg()),
+        (100, "i32", (1 << 99) | 6),
+        (72, "i8", (0xab << 64) | (7 << 32) | 1),
+        (120, "i16", (1 << 119) | (0x8000_0000 << 32) | 0xffff_fffe),
+    ];
+    let table: Vec<String> = cases
+        .iter()
+        .enumerate()
+        .map(|(k, &(w, _, v))| format!("i128 {}", lit(128, garbage(w, v, k))))
+        .collect();
+    let mut globals = format!(
+        "@ixv = private constant [{} x i128] [{}]\n@bytes = private constant [64 x i8] [{}]\n",
+        cases.len(),
+        table.join(", "),
+        (0..64).map(|i| format!("i8 {i}")).collect::<Vec<_>>().join(", ")
+    );
+    globals.push_str(
+        "define void @byte(i8 %b) #0 {\n  %z = zext i8 %b to i32\n  \
+         %u = call i32 (ptr, ...) @printf(ptr @fmt1, i32 %z)\n  ret void\n}\n",
+    );
+    let mut f =
+        String::from("define void @ix() #0 {\n  %base = getelementptr i8, ptr @bytes, i32 32\n");
+    for (k, &(w, scale, _)) in cases.iter().enumerate() {
+        writeln!(
+            f,
+            "  %K{k}p = getelementptr i128, ptr @ixv, i32 {k}\n  %K{k} = load i128, ptr %K{k}p\n  \
+             %k{k} = {}\n  %p{k} = getelementptr {scale}, ptr %base, i{w} %k{k}\n  \
+             %b{k} = load i8, ptr %p{k}\n  call void @byte(i8 %b{k})",
+            narrow(&format!("%K{k}"), w)
+        )
+        .unwrap();
+    }
+    // Constant wide indices.
+    f.push_str(
+        "  %c0 = getelementptr i8, ptr %base, i128 -5\n  %d0 = load i8, ptr %c0\n  \
+         call void @byte(i8 %d0)\n  %c1 = getelementptr i8, ptr %base, i96 18446744073709551619\n  \
+         %d1 = load i8, ptr %c1\n  call void @byte(i8 %d1)\n  ret void\n}\n",
+    );
+    (globals, f)
+}
+
+/// The widths of the memory programs.
+const MEM_WIDTHS: [u32; 6] = [65, 72, 96, 100, 120, 128];
+
+/// `@mem()`: for each width, a value with garbage above it stored (at an
+/// odd offset and at a 16-byte one) into a 48-byte buffer of `0xaa` guard
+/// bytes, reloaded, stored again, the buffer printed; then a store, load
+/// and store again at the end of a mapping whose next 64 KiB are
+/// `PROT_NONE`. Returns 2 when the protection fails.
+fn mem_function() -> (String, String) {
+    let values: Vec<String> = MEM_WIDTHS
+        .iter()
+        .enumerate()
+        .map(|(k, &w)| {
+            let x = 0xfedc_ba98_7654_3210_0f1e_2d3c_4b5a_6978_u128 ^ ((k as u128) << (w - 1));
+            format!("i128 {}", lit(128, garbage(w, x, k)))
+        })
+        .collect();
+    let globals = format!(
+        "@memv = private constant [{} x i128] [{}]\ndeclare ptr @mmap(ptr, i32, i32, i32, i32, i32)\n\
+         declare i32 @mprotect(ptr, i32, i32)\n",
+        MEM_WIDTHS.len(),
+        values.join(", ")
+    );
+    let mut f = String::from(
+        "define i32 @mem() #0 {\nentry:\n  %gb = alloca [48 x i8], align 16\n  \
+         %m = call ptr @mmap(ptr null, i32 196608, i32 3, i32 34, i32 -1, i32 0)\n  \
+         %mi = ptrtoint ptr %m to i32\n  %q0 = add i32 %mi, 65536\n  \
+         %q1 = and i32 %q0, -65536\n  %q = inttoptr i32 %q1 to ptr\n  \
+         %pr = call i32 @mprotect(ptr %q, i32 65536, i32 0)\n  %bad = icmp ne i32 %pr, 0\n  \
+         br i1 %bad, label %fail, label %go\nfail:\n  ret i32 2\ngo:\n  \
+         %g16 = getelementptr i8, ptr %gb, i32 16\n  %g32 = getelementptr i8, ptr %gb, i32 32\n  \
+         %g3 = getelementptr i8, ptr %gb, i32 3\n  %g24 = getelementptr i8, ptr %gb, i32 24\n",
+    );
+    for (k, &w) in MEM_WIDTHS.iter().enumerate() {
+        let t = format!("i{w}");
+        let size = w.div_ceil(8);
+        for word in 0..12 {
+            writeln!(
+                f,
+                "  %f{k}_{word} = getelementptr i32, ptr %gb, i32 {word}\n  \
+                 store i32 -1431655766, ptr %f{k}_{word}"
+            )
+            .unwrap();
+        }
+        writeln!(
+            f,
+            "  %X{k}p = getelementptr i128, ptr @memv, i32 {k}\n  %X{k} = load i128, ptr %X{k}p\n  \
+             %x{k} = {}\n  store {t} %x{k}, ptr %g3, align 1\n  \
+             store {t} %x{k}, ptr %g24, align 8\n  %l{k} = load {t}, ptr %g3, align 1\n  \
+             %l{k}a = add {t} %l{k}, 1\n  store {t} %l{k}a, ptr %g24, align 8\n  \
+             call void @show(ptr %gb)\n  call void @show(ptr %g16)\n  call void @show(ptr %g32)\n  \
+             %e{k} = getelementptr i8, ptr %q, i32 -{size}\n  store {t} %x{k}, ptr %e{k}, align 1\n  \
+             %r{k} = load {t}, ptr %e{k}, align 1\n  %r{k}a = sub {t} %r{k}, 3\n  \
+             store {t} %r{k}a, ptr %e{k}, align 1\n  %s{k} = load {t}, ptr %e{k}, align 1\n  \
+             store i128 0, ptr %gb\n  store {t} %s{k}, ptr %gb\n  call void @show(ptr %gb)",
+            narrow(&format!("%X{k}"), w)
+        )
+        .unwrap();
+    }
+    f.push_str("  ret i32 0\n}\n");
+    (globals, f)
+}
+
+/// `@cW()`: an `add` of a value to itself, a `sub` of a `phi` from that,
+/// and two `phi`s that swap each iteration, printed every iteration.
+fn carry_function(w: u32) -> String {
+    let t = format!("i{w}");
+    let m = mask(w);
+    let c1 = lit(w, 0x8000_0001_ffff_ffff_8000_0001_ffff_ffff & m);
+    let c2 = lit(w, 0xffff_ffff_0000_0000_ffff_ffff_0000_0001 & m);
+    let c3 = lit(w, 0x0000_0001_ffff_ffff_ffff_ffff_ffff_ffff & m);
+    format!(
+        "define void @c{w}() #0 {{
+entry:
+  %buf = alloca [16 x i8], align 16
+  store i128 0, ptr %buf
+  br label %loop
+loop:
+  %i = phi i32 [ 0, %entry ], [ %i1, %loop ]
+  %a = phi {t} [ {c1}, %entry ], [ %a2, %loop ]
+  %x = phi {t} [ {c2}, %entry ], [ %y, %loop ]
+  %y = phi {t} [ {c3}, %entry ], [ %x, %loop ]
+  %a1 = add {t} %a, %a
+  %a2 = sub {t} %a1, %x
+  %s = add {t} %x, %y
+  %d = sub {t} %y, %y
+  store {t} %a2, ptr %buf
+  call void @show(ptr %buf)
+  store {t} %s, ptr %buf
+  call void @show(ptr %buf)
+  store {t} %d, ptr %buf
+  call void @show(ptr %buf)
+  %i1 = add i32 %i, 1
+  %done = icmp eq i32 %i1, 6
+  br i1 %done, label %out, label %loop
+out:
+  ret void
+}}
+"
+    )
+}
+
+/// The program of the edge checks a, b, c, e and the wide index.
+fn edges_program(cpu: Option<&str>) -> String {
+    let mut s = format!("target triple = \"{}\"\n{SHOW}", i386_support::TRIPLE);
+    let mut main = String::new();
+    for w in ODD {
+        let vals = values(w);
+        let n = vals.len();
+        let items: Vec<String> = vals
+            .iter()
+            .enumerate()
+            .map(|(k, &v)| format!("i128 {}", lit(128, garbage(w, v, k))))
+            .collect();
+        writeln!(s, "@gv{w} = private constant [{n} x i128] [{}]", items.join(", ")).unwrap();
+        for op in ["sadd", "uadd", "ssub", "usub", "smul", "umul"] {
+            writeln!(s, "declare {{ i{w}, i1 }} @llvm.{op}.with.overflow.i{w}(i{w}, i{w})")
+                .unwrap();
+        }
+        s.push_str(&garbage_function(w));
+        main.push_str(&pair_loop(&format!("q{w}"), &format!("g{w}"), &format!("gv{w}"), "i128", n));
+    }
+    let (ig, ifn) = index_function();
+    let (mg, mfn) = mem_function();
+    s.push_str(&ig);
+    s.push_str(&ifn);
+    s.push_str(&mg);
+    s.push_str(&mfn);
+    for w in [65, 96, 100, 128] {
+        s.push_str(&carry_function(w));
+        writeln!(main, "  call void @c{w}()").unwrap();
+    }
+    write!(
+        s,
+        "define i32 @main() #0 {{\nentry:\n{main}  call void @ix()\n  %r = call i32 @mem()\n  \
+         ret i32 %r\n}}\n{}",
+        attributes(cpu)
+    )
+    .unwrap();
+    s
+}
+
+/// a. memory extent and guard bytes, b. garbage above the width through
+/// every consumer, c. carries with aliased operands and swapping `phi`s,
+/// e. compares at the limb edges at odd widths, and a wide `getelementptr`
+/// index: equal to llc's.
+#[test]
+fn limb_edges_as_llc() {
+    let runs = check_edges("edges", edges_program);
+    assert!(runs > 0, "no run was made");
+    eprintln!("i386 wide integer edges: {runs} runs equal llc's");
+}
+
+/// The `iW` product of `a` and `b` and the `smul` / `umul` overflow flags.
+fn mul_truth(w: u32, a: u128, b: u128) -> (u128, bool, bool) {
+    let m = mask(w);
+    let r = a.wrapping_mul(b) & m;
+    let s = match sx(w, a).checked_mul(sx(w, b)) {
+        None => true,
+        Some(p) => sx(w, p as u128 & m) != p,
+    };
+    let u = a.checked_mul(b).is_none_or(|p| p > m);
+    (r, s, u)
+}
+
+/// The operand pairs of width `w`: every pair of the boundary values, then
+/// 2,048 pairs of a fixed-seed generator over every magnitude and sign.
+fn mul_pairs(w: u32) -> Vec<(u128, u128)> {
+    let vals = values(w);
+    let mut pairs: Vec<(u128, u128)> =
+        vals.iter().flat_map(|&a| vals.iter().map(move |&b| (a, b))).collect();
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64 ^ u64::from(w);
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let one = |next: &mut dyn FnMut() -> u64| {
+        let r = (u128::from(next()) << 64) | u128::from(next());
+        let v = r >> (next() % 128);
+        let v = if next() % 4 == 0 { v.wrapping_neg() } else { v };
+        v & mask(w)
+    };
+    for _ in 0..2048 {
+        let a = one(&mut next);
+        let b = one(&mut next);
+        pairs.push((a, b));
+    }
+    pairs
+}
+
+/// d. `mul`, `smul.with.overflow`, `umul.with.overflow` over the pairs of
+/// [`mul_pairs`] at 65, 96 and 128 bits, each checked against the exact
+/// result in a table: the first mismatching index (exit 1), else a checksum
+/// of the products and flags.
+fn mul_program(cpu: Option<&str>) -> String {
+    let mut s = format!(
+        "target triple = \"{}\"\ndeclare i32 @printf(ptr, ...)\n\
+         @fmtm = private constant [9 x i8] c\"%d %08x\\0A\\00\"\n\
+         @fmtb = private constant [11 x i8] c\"bad %d %d\\0A\\00\"\n",
+        i386_support::TRIPLE
+    );
+    let mut main = String::new();
+    for w in WIDTHS {
+        let t = format!("i{w}");
+        let pairs = mul_pairs(w);
+        let n = pairs.len();
+        let (mut a, mut b, mut r, mut f) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for &(x, y) in &pairs {
+            let (p, so, uo) = mul_truth(w, x, y);
+            a.push(format!("{t} {}", lit(w, x)));
+            b.push(format!("{t} {}", lit(w, y)));
+            r.push(format!("{t} {}", lit(w, p)));
+            f.push(format!("i8 {}", u8::from(so) | (u8::from(uo) << 1)));
+        }
+        for (name, items, ty) in [("a", &a, &t), ("b", &b, &t), ("r", &r, &t)] {
+            writeln!(s, "@m{name}{w} = private constant [{n} x {ty}] [{}]", items.join(", "))
+                .unwrap();
+        }
+        writeln!(s, "@mf{w} = private constant [{n} x i8] [{}]", f.join(", ")).unwrap();
+        for op in ["smul", "umul"] {
+            writeln!(s, "declare {{ {t}, i1 }} @llvm.{op}.with.overflow.{t}({t}, {t})").unwrap();
+        }
+        write!(
+            s,
+            "define i32 @m{w}() #0 {{
+entry:
+  %buf = alloca [16 x i8], align 16
+  br label %loop
+loop:
+  %i = phi i32 [ 0, %entry ], [ %i1, %next ]
+  %h = phi i32 [ 0, %entry ], [ %h5, %next ]
+  %pa = getelementptr {t}, ptr @ma{w}, i32 %i
+  %pb = getelementptr {t}, ptr @mb{w}, i32 %i
+  %pr = getelementptr {t}, ptr @mr{w}, i32 %i
+  %pf = getelementptr i8, ptr @mf{w}, i32 %i
+  %a = load {t}, ptr %pa
+  %b = load {t}, ptr %pb
+  %r = load {t}, ptr %pr
+  %f = load i8, ptr %pf
+  %m = mul {t} %a, %b
+  %so = call {{ {t}, i1 }} @llvm.smul.with.overflow.{t}({t} %a, {t} %b)
+  %uo = call {{ {t}, i1 }} @llvm.umul.with.overflow.{t}({t} %a, {t} %b)
+  %sv = extractvalue {{ {t}, i1 }} %so, 0
+  %sf = extractvalue {{ {t}, i1 }} %so, 1
+  %uv = extractvalue {{ {t}, i1 }} %uo, 0
+  %uf = extractvalue {{ {t}, i1 }} %uo, 1
+  %e1 = icmp eq {t} %m, %r
+  %e2 = icmp eq {t} %sv, %r
+  %e3 = icmp eq {t} %uv, %r
+  %fs = zext i1 %sf to i8
+  %fu = zext i1 %uf to i8
+  %fu2 = shl i8 %fu, 1
+  %fl = or i8 %fs, %fu2
+  %e4 = icmp eq i8 %fl, %f
+  %o1 = and i1 %e1, %e2
+  %o2 = and i1 %e3, %e4
+  %ok = and i1 %o1, %o2
+  store i128 0, ptr %buf
+  store {t} %m, ptr %buf
+  %q1 = getelementptr i8, ptr %buf, i32 4
+  %q2 = getelementptr i8, ptr %buf, i32 8
+  %q3 = getelementptr i8, ptr %buf, i32 12
+  %w0 = load i32, ptr %buf
+  %w1 = load i32, ptr %q1
+  %w2 = load i32, ptr %q2
+  %w3 = load i32, ptr %q3
+  %fl32 = zext i8 %fl to i32
+  %h0 = mul i32 %h, 31
+  %h1 = xor i32 %h0, %w0
+  %h2 = add i32 %h1, %w1
+  %h3 = xor i32 %h2, %w2
+  %h4 = add i32 %h3, %w3
+  %h5 = xor i32 %h4, %fl32
+  br i1 %ok, label %next, label %bad
+bad:
+  %u0 = call i32 (ptr, ...) @printf(ptr @fmtb, i32 {w}, i32 %i)
+  ret i32 1
+next:
+  %i1 = add i32 %i, 1
+  %done = icmp eq i32 %i1, {n}
+  br i1 %done, label %out, label %loop
+out:
+  %u1 = call i32 (ptr, ...) @printf(ptr @fmtm, i32 {w}, i32 %h5)
+  ret i32 0
+}}
+"
+        )
+        .unwrap();
+        writeln!(
+            main,
+            "  %r{w} = call i32 @m{w}()\n  %z{w} = icmp ne i32 %r{w}, 0\n  \
+             br i1 %z{w}, label %fail, label %ok{w}\nok{w}:"
+        )
+        .unwrap();
+    }
+    write!(
+        s,
+        "define i32 @main() #0 {{\nentry:\n{main}  ret i32 0\nfail:\n  ret i32 1\n}}\n{}",
+        attributes(cpu)
+    )
+    .unwrap();
+    s
+}
+
+/// d. a random differential test of the multiplications against the exact
+/// result (llc's run must exit 0) and llc's output.
+#[test]
+fn multiply_random_as_llc() {
+    for w in WIDTHS {
+        assert!(mul_pairs(w).len() >= 2000);
+    }
+    let runs = check_edges("mul", mul_program);
+    assert!(runs > 0, "no run was made");
+    eprintln!("i386 wide multiplication: {runs} runs equal llc's");
 }

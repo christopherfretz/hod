@@ -716,8 +716,8 @@ set of (line, column) positions 666 before, 732 after of 981; positions
 only `llc` has 777 before, 320 after. With key instructions it decides
 statements (§5.9): the compare and the branch are separate atoms.
 
-The **row location** of an instruction is its location, except for two
-whose code has none, so that it stays in the row before it (a line-0
+The **row location** of an instruction is its location, except for
+those whose code has none, so that it stays in the row before it (a line-0
 row when it is the first code of its block, §5.3):
 
 - `unreachable`: `llc` writes no code for it; hod's trap is no statement
@@ -727,7 +727,15 @@ row when it is the first code of its block, §5.3):
   the first member of a struct): its value is its base's, so its code is
   a copy or reload of the base or the materialization of a frame or
   symbol address, which `llc` folds into the user or emits without a
-  location (frame-index materializations, register-allocator reloads).
+  location (frame-index materializations, register-allocator reloads);
+- on i386 only (WP-352), a `ptradd` whose base is a slot of the guarded
+  block (§5.6.24 of `spec/codegen.md`, reached through its pointer slot,
+  `spec/codegen-x86.md` §19.2) and whose indices are all constants: its
+  code (the reload of the pointer, the `lea`) is `llc`'s frame-index
+  materialization, which `llc` folds into the user. With a row of its
+  own the first row of the line was the `getelementptr`'s column
+  (`stack_protector.c` 42:14 against `llc`'s 42:44, an lldb step stop).
+  The 64-bit targets fold that address into its use and are unchanged.
 
 Nothing here changes code: the `.text` of the corpus's and the `-g`
 set's modules is byte-identical before and after (WP-097). Making a

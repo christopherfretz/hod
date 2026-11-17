@@ -213,7 +213,9 @@ their values).
 | `x86:float:cast` | a cast of a floating value not in §11 (no verified IR reaches it since the i386 join E lowers `bitcast`) | — |
 | `x86:float:fp80-cast` | a `bitcast` between `x86_fp80` and `i80` | — |
 | `x86:vector` | a vector `ptradd` (§17) | I12 |
-| `x86:vector:no-sse2` | a vector in a function without SSE2 (§17) | — |
+| `x86:vector:no-sse2` | a vector in a function with SSE but without SSE2 (§17; without any SSE: §20) | WP-338 (no SSE) |
+| `x86:vector:no-sse2:excess-precision`, `:fold` | a floating lane `llc` holds at 80 bits or folds (§20) | — |
+| `x86:vector:no-sse2:cast`, `:select`, `:reduce`, `:abi` | without SSE: casts of floating lanes; `select` and `min`/`max` reductions without `cmov`; `i1`/`inreg` vectors and `fastcc` memory results at the boundary (§20) | — |
 | `x86:vector:wide` | a vector of more than 16 bytes passed or returned | — |
 | `x86:vector:abi` | a vector of `i1`, of one lane or of odd-width integers passed or returned | — |
 | `x86:vector:element` | lanes of `half`, `bfloat`, `fp128`, `x86_fp80`, odd-width integers | — |
@@ -1507,3 +1509,82 @@ other frame intrinsics are §13.5's; `llvm.eh.dwarf.cfa` stays
 Evidence: `tests/ir/frame_intrinsics.ll` (newly built on i686) passes
 `cargo xtask irdiff --target i686` with LLVM 19 and 22, GNU ld, lld and
 mold.
+
+## 20. Vectors without SSE (`vecscalar`, WP-338)
+
+(Section number given at the merge.) A function whose CPU has no SSE at
+all (`generic`, `i586`, clang's default `i686`: `+cmov,+cx8,+x87`).
+With SSE but not SSE2 (`pentium3`) `llc` keeps `<4 x float>` in `xmm`:
+still `x86:vector:no-sse2`.
+
+**Measured** (`llc` 19 and 22 alike, `-O0 -global-isel=0
+-fast-isel=0`, CPU `i686` and `generic`): `llc` scalarizes every vector
+into its elements.
+
+- *Memory.* The same image as §17: lanes packed from lane 0, `<N x i1>`
+  bit by bit (lane 0 in bit 0 of byte 0); a vector `alloca`, `load`,
+  `store` keeps its IR alignment.
+- *Arguments.* Each lane is an argument of its own, in order, as the
+  scalar of its type is (§3 of `spec/abi-x86.md`): a lane of 1 to 4
+  bytes in a 4-byte slot, `i64` and `double` lanes in 8 bytes, at
+  alignment 4 (`<4 x i32>` after an `i32` at offsets 4..16, `<32 x
+  double>` in 256 bytes, no 16-byte slot). `fastcc` gives integer lanes
+  `ecx`, `edx` then the stack; `inreg` gives `eax`, `edx`, `ecx`.
+- *Results.* The lanes as the scalars of an IR aggregate's leaves
+  (`spec/abi-x86.md` §5): up to three integer words in `eax`, `edx`,
+  `ecx` (`<3 x i32>`; `<2 x i32>`, `<1 x i64>` in `edx:eax`; `<3 x i8>`
+  in `al`, `dl`, `cl`; `<2 x i16>` in `ax`, `dx`), one floating lane in
+  `st0` (`<1 x double>`), two in `st0`, `st1` (`<2 x float>`); anything
+  else through the hidden result pointer, popped by the callee (`<4 x
+  i8>`, `<2 x i64>`, `<4 x float>`, `<32 x i8>`). Under `fastcc` the
+  hidden pointer is in `ecx` and the callee pops nothing.
+- *Floating lanes* are x87 values (§11): `fld`, operate, `fstp` per
+  lane, and `llc` keeps a computed lane at 80 bits for its uses in the
+  block exactly as a scalar (measured: `(a + b) - a` of `<2 x double>`
+  has no rounding between the two operations). A float lane passed as an
+  argument goes through `flds`/`fstps` (a signalling NaN is quieted);
+  `fneg` is `fchs` or an integer sign flip, as the DAG happens to choose.
+- *Barriers.* Nothing in a vector operation branches or calls with
+  `cmov`; without `cmov` a lane `select` and the `min`/`max` reductions
+  branch.
+
+**The scheme.** A vector is of class `Mem` with its memory image in its
+home, as in §17, and every operation is a loop-free sequence over the
+lanes through `eax`, `ecx`, `edx` (integers, `i64` lanes in halves as
+§8) or the x87 stack (floating lanes, pushed from and popped to the
+frame), so no vector holds a pool register. The integer forms of §17
+that use no `xmm` register are §17's code unchanged (`vector.rs`);
+`vecscalar.rs` lowers the others: `fadd`, `fsub`, `fmul`, `fdiv` and
+`fcmp` of `float`/`double` lanes on the x87 (`fucomip` with `cmov`,
+else `fucompp`, `fnstsw`, `sahf`), `insertelement` of an `i64`,
+`float` or `double` lane and of an `i1` lane at a variable index
+through `eax`/`ecx`. Each floating lane is rounded to its type when it
+is popped to the result.
+
+**Excess precision.** hod keeps no 80-bit copy of a lane. A floating
+operand of an x87 lane operation (`fadd`..`fdiv`, `fcmp`,
+`extractelement` of a floating lane) that `llc` would still hold at 80
+bits is refused (`x86:vector:no-sse2:excess-precision`): one defined
+earlier in the same block by a computing instruction (a floating
+operation, a call) or by a lane move (`insertelement`,
+`shufflevector`, `select`, `freeze`, `fneg`) of such a value. A
+result of one or two floating lanes returned by `ret` from such a
+value is refused the same way. Stores, call arguments and `bitcast`
+round in `llc` too and are lowered. A floating operation whose
+operands are constants (`llc` folds it: one rounding, `+qNaN`) is
+refused (`x86:vector:no-sse2:fold`). hod counts a call between the
+definition and the use as no end of the 80 bits (it refuses where
+`llc` would read the value rounded).
+
+**Not lowered** (`x86:vector:no-sse2:<what>`): `:cast` (a cast from or
+to floating lanes), `:select` (without `cmov`), `:reduce` (`min`/`max`
+reductions without `cmov`), `:abi` (an `<N x i1>` or `inreg` vector
+argument or result). As for an aggregate, a `fastcc` vector of floating
+lanes or returned in memory is `x86:abi:cc` and a result of two
+floating lanes (`st0`, `st1`) is `x86:abi:x87-pair`. The other
+refusals of §17 (`:element`, `:i64-op`, `:frem`, `:intrinsic`,
+`:length`, ...) hold. `vecscalar::ret_memory` writes a vector result
+in memory (`control::ret` sends it there, not to `agg`).
+
+**No barrier.** No construct of this section is added to
+`x87::barrier`: the select and reductions that branch are refused.

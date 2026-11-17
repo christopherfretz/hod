@@ -37,6 +37,7 @@ pub mod ssp;
 pub mod target;
 pub mod tls;
 pub mod va;
+pub mod vecscalar;
 pub mod vector;
 pub mod x87;
 

@@ -129,7 +129,11 @@ pub fn switch<'a>(cx: &mut FnCx<'a, X86>, switch: &Switch<'a>) -> CgResult<()> {
 pub fn ret(cx: &mut FnCx<'_, X86>, inst: Inst<'_>, value: Option<Value>) -> CgResult<()> {
     if let Some(value) = value {
         if cx.fn_assignment().ret_memory.is_some() {
-            crate::agg::ret_memory(cx, value)?;
+            if cx.types().is_vector(crate::common::value_ty(cx, value)) {
+                crate::vecscalar::ret_memory(cx, value)?;
+            } else {
+                crate::agg::ret_memory(cx, value)?;
+            }
             return if cx.ret_falls_through() { Ok(()) } else { branch(cx, cx.epilogue()) };
         }
         // A result of the run returns at 80 bits (`x87::ret_copy`).
